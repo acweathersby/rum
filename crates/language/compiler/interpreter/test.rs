@@ -1,14 +1,8 @@
 use super::{
-  ll::x86::compile_from_ssa_fn,
   runner::{interpret_string, RumScriptResult},
   types::Context,
 };
-use crate::compiler::parser::{self, parse_ll};
-use rum_istring::{CachedString, IString};
-use std::{
-  collections::BTreeMap,
-  path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 fn get_source_path(file_name: &str) -> Result<PathBuf, std::io::Error> {
   PathBuf::from("/home/work/projects/lib_rum_common/crates/language/test_scripts/")

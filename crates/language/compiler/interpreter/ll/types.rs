@@ -3,12 +3,13 @@ use rum_istring::IString;
 use std::{
   collections::{BTreeMap, BTreeSet},
   fmt::{Debug, Display},
+  panic::Location,
 };
 
 /// Operations that a register can perform.
 
 #[repr(u32)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Hash, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[allow(unused, non_camel_case_types, non_upper_case_globals)]
 pub enum BitSize {
   Zero = 0,
@@ -68,16 +69,20 @@ pub struct TypeInfo(u64);
 impl From<TypeInfo> for BitSize {
   fn from(value: TypeInfo) -> Self {
     use BitSize::*;
-    match value.bit_count() {
-      8 => b8,
-      16 => b16,
-      32 => b32,
-      64 => b64,
-      128 => b128,
-      256 => b256,
-      512 => b512,
-      1024 => b((value.0 & TypeInfo::DEFBITS_MASK) >> TypeInfo::DEFBITS_OFF),
-      _ => Zero,
+    if value.is_ptr() {
+      Self::b64
+    } else {
+      match value.bit_count() {
+        8 => b8,
+        16 => b16,
+        32 => b32,
+        64 => b64,
+        128 => b128,
+        256 => b256,
+        512 => b512,
+        1024 => b((value.0 & TypeInfo::DEFBITS_MASK) >> TypeInfo::DEFBITS_OFF),
+        _ => Zero,
+      }
     }
   }
 }
@@ -96,7 +101,9 @@ impl TypeInfo {
   /// Total number of bytes needed to store this type. None is returned
   /// if the size cannot be calculated statically.
   pub fn total_byte_size(&self) -> Option<usize> {
-    if let Some(count) = self.num_of_elements() {
+    if self.is_ptr() {
+      Some(8)
+    } else if let Some(count) = self.num_of_elements() {
       Some(self.ele_byte_size() * count)
     } else {
       None
@@ -164,8 +171,33 @@ impl TypeInfo {
     }
   }
 
-  fn vec_val(&self) -> u64 {
+  pub fn vec_val(&self) -> u64 {
     ((self.0 & TypeInfo::VECT_MASK) >> TypeInfo::VECT_OFF).max(1)
+  }
+
+  pub fn stack_id(&self) -> Option<usize> {
+    let val = ((self.0 & TypeInfo::STACK_ID_MASK) >> TypeInfo::STACK_ID_OFF);
+    if val > 0 {
+      Some(val as usize - 1)
+    } else {
+      None
+    }
+  }
+
+  pub fn location(&self) -> DataLocation {
+    let location_val = (self.0 & Self::LOCATION_MASK) >> Self::LOCATION_OFFSET;
+    match location_val {
+      1 => DataLocation::StackOff(self.stack_id().unwrap_or_default()),
+      2 => DataLocation::SsaStack(self.stack_id().unwrap_or_default()),
+      3 => DataLocation::Heap,
+      _ => DataLocation::Undefined,
+    }
+  }
+}
+
+impl TypeInfo {
+  pub fn mask_out_location(self) -> TypeInfo {
+    Self(self.0 & !Self::LOCATION_MASK)
   }
 
   pub fn mask_out_elements(self) -> TypeInfo {
@@ -184,13 +216,26 @@ impl TypeInfo {
     Self(self.0 & !Self::SIZE_MASK)
   }
 
-  pub fn derefed(&self) -> TypeInfo {
+  pub fn mask_out_stack_id(self) -> TypeInfo {
+    Self(self.0 & !Self::STACK_ID_MASK)
+  }
+
+  /// Removes the pointer flag from the type info if set.
+  pub fn deref(&self) -> TypeInfo {
     Self(self.0 & !Self::PTR_MASK)
+  }
+
+  pub fn unstacked(&self) -> TypeInfo {
+    Self(self.0 & !Self::STACK_ID_MASK)
   }
 }
 
 impl TypeInfo {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
+  /// If the type is a pointer, LOCATION stores the area of memory
+  /// where to which this point to.
+  const LOCATION_MASK: u64 = 0x0000_0007;
+  const LOCATION_OFFSET: u64 = 0x0;
 
   const SIZE_MASK: u64 = 0x0000_07F8;
   const SIZE_OFF: u64 = 02;
@@ -202,6 +247,8 @@ impl TypeInfo {
   const TYPE_OFF: u64 = 12;
   const VECT_MASK: u64 = 0x000F_0000;
   const VECT_OFF: u64 = 15;
+  const STACK_ID_MASK: u64 = 0xFFF0_0000;
+  const STACK_ID_OFF: u64 = 20;
   const ELE_COUNT_MASK: u64 = 0x0000_FFFF_0000_0000;
   const ELE_COUNT_OFF: u64 = 32;
   const DEFBITS_MASK: u64 = 0xFFFF_0000_0000_0000;
@@ -235,11 +282,22 @@ fn display_type_prop() {
   assert_eq!(Vectorized::Vector4, T::v4.vec());
   assert_eq!(Vectorized::Vector8, T::v8.vec());
   assert_eq!(Vectorized::Vector16, T::v16.vec());
+
+  assert_eq!(None, T::default().stack_id());
+  assert_eq!(Some(0), T::at_stack_id(0).stack_id());
+  assert_eq!(Some(1), T::at_stack_id(1).stack_id());
+  assert_eq!(Some(4093), T::at_stack_id(4093).stack_id());
+
+  assert_eq!(DataLocation::Heap, T::to_location(DataLocation::Heap).location());
 }
 
 impl TypeInfo {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
-  pub fn elements(array_elements: u16) -> Self {
+  pub fn at_stack_id(id: u16) -> TypeInfo {
+    Self(((id as u64 + 1) << Self::STACK_ID_OFF) & Self::STACK_ID_MASK)
+  }
+
+  pub fn elements(array_elements: u16) -> TypeInfo {
     if array_elements == 0 {
       Self(0)
     } else {
@@ -249,11 +307,11 @@ impl TypeInfo {
   }
 
   /// An array with more than 0 units, but with an unknown upper bound.
-  pub fn unknown_ele_count() -> Self {
+  pub fn unknown_ele_count() -> TypeInfo {
     Self((u16::MAX as u64) << Self::ELE_COUNT_OFF)
   }
 
-  pub fn bytes(byte_size: u16) -> Self {
+  pub fn bytes(byte_size: u16) -> TypeInfo {
     if byte_size <= 64 {
       let mut b = byte_size as i32 - 1;
       b |= b >> 1;
@@ -267,6 +325,17 @@ impl TypeInfo {
     } else {
       TypeInfo(((byte_size as u64) << Self::DEFBYTES_OFF) | TypeInfo::bUnknown.0)
     }
+  }
+
+  pub fn to_location(location: DataLocation) -> TypeInfo {
+    let location = match location {
+      DataLocation::StackOff(..) => 1,
+      DataLocation::SsaStack(..) => 2,
+      DataLocation::Heap => 3,
+      DataLocation::Undefined => 0,
+    };
+
+    Self(((location as u64) << Self::LOCATION_OFFSET) & Self::LOCATION_MASK)
   }
 
   // Bit sizes ----------------------------------------------------------
@@ -348,6 +417,24 @@ impl std::ops::BitOr for TypeInfo {
           "Cannot merge type props with different vector lengths:\n    {self:?} | {rhs:?} not allowed"
         )
       }
+
+      let a_id = self.stack_id();
+      let b_id = rhs.stack_id();
+
+      if a_id != b_id && a_id.is_some() && b_id.is_some() {
+        panic!(
+          "Cannot merge type props with different stack ids:\n    {self:?} | {rhs:?} not allowed"
+        )
+      }
+
+      let a_loc = self.location();
+      let b_loc = rhs.location();
+
+      if a_loc != b_loc && a_loc != DataLocation::Undefined && b_loc != DataLocation::Undefined {
+        panic!(
+          "Cannot merge type props with different stack ids:\n    {self:?} | {rhs:?} not allowed"
+        )
+      }
     }
 
     TypeInfo(self.0 | rhs.0)
@@ -398,12 +485,32 @@ impl Display for TypeInfo {
       "[?]".to_string()
     };
 
+    let stack_id = if let Some(id) = self.stack_id() {
+      format!("stack<{:03}> ", id)
+    } else {
+      Default::default()
+    };
+
     let ty_val = (val & TypeInfo::TYPE_MASK) >> (TypeInfo::TYPE_OFF - 1);
     let ty = TYPE_NAMES[ty_val.checked_ilog2().unwrap_or_default() as usize];
 
     let ptr = if self.is_ptr() { "*" } else { "" };
 
-    f.write_fmt(format_args!("{}{}{}{}{}", ptr, ty, bits, vecs, num_of_eles))
+    let loc = match self.location() {
+      DataLocation::Undefined => {
+        if self.is_ptr() {
+          "{?}"
+        } else {
+          ""
+        }
+      }
+      .to_string(),
+      loc => {
+        format!("{loc:?}")
+      }
+    };
+
+    f.write_fmt(format_args!("{}{}{}{}{}{}{}", stack_id, ptr, loc, ty, bits, vecs, num_of_eles))
   }
 }
 
@@ -417,10 +524,14 @@ impl Debug for TypeInfo {
 pub struct LLVal {
   pub info: TypeInfo,
   val:      Option<[u8; 16]>,
+  ssa_id:   usize,
 }
 
 impl Debug for LLVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if self.ssa_id > 0 {
+      f.write_fmt(format_args!("<ssa:{:03}>", self.ssa_id))?;
+    }
     fn fmt_val<T: Display + Default>(
       val: &LLVal,
       f: &mut std::fmt::Formatter<'_>,
@@ -431,6 +542,7 @@ impl Debug for LLVal {
         f.write_fmt(format_args!("{}", val.info))
       }
     }
+
     match self.info.ty() {
       LLType::Float => match self.info.bit_count() {
         32 => fmt_val::<f32>(self, f),
@@ -464,11 +576,19 @@ impl LLVal {
   }
 
   pub fn new(info: TypeInfo) -> Self {
-    LLVal { info, val: None }
+    LLVal { info, val: None, ssa_id: 0 }
   }
 
   pub fn derefed(&self) -> LLVal {
-    LLVal { info: self.info.derefed(), val: self.val }
+    LLVal {
+      info:   self.info.deref().mask_out_location(),
+      val:    self.val,
+      ssa_id: self.ssa_id,
+    }
+  }
+
+  pub fn unstacked(&self) -> LLVal {
+    LLVal { info: self.info.unstacked(), val: self.val, ssa_id: self.ssa_id }
   }
 
   pub fn load<T>(&self) -> Option<T> {
@@ -503,10 +623,13 @@ pub enum OpArg<R: Debug> {
   /// A static value that is fully defined; can be used to to perform compile
   /// time operations
   Lit(LLVal),
-  /// Default op args used for SSA expressions
-  SSA_DECL(usize, DataLocation, LLVal),
+  /// Valued with a defined location on the stack, which may intern point to
+  /// another memory location
+  STACK(usize, LLVal),
   /// Default op args used for SSA expressions
   SSA(usize, LLVal),
+  /// Should be handled with return value conventions
+  SSA_RETURN(LLVal),
   /// Replaces SSA arguments with register names.
   REG(R, LLVal),
   /// Used for targeting jumps between blocks
@@ -518,14 +641,9 @@ impl<R: Debug> Debug for OpArg<R> {
     match self {
       OpArg::Undefined => f.write_fmt(format_args!("UNDEF")),
       OpArg::Lit(val) => f.write_fmt(format_args!("{:?}", val)),
-      OpArg::SSA_DECL(pos, loc, val) => {
-        if val.info.is_ptr() {
-          f.write_fmt(format_args!("stack[{pos}]({{{loc:?}}}{val:?})"))
-        } else {
-          f.write_fmt(format_args!("stack[{pos}]({val:?})"))
-        }
-      }
+      OpArg::STACK(pos, val) => f.write_fmt(format_args!("({val:?})")),
       OpArg::SSA(id, val) => f.write_fmt(format_args!("${id}({val:?})")),
+      OpArg::SSA_RETURN(val) => f.write_fmt(format_args!("&return ({val:?})")),
       OpArg::REG(id, val) => f.write_fmt(format_args!("{id:?}({val:?})")),
       OpArg::BLOCK(val) => f.write_fmt(format_args!("BLOCK({val})")),
     }
@@ -534,7 +652,7 @@ impl<R: Debug> Debug for OpArg<R> {
 
 impl<R: Debug> From<SymbolDeclaration> for OpArg<R> {
   fn from(value: SymbolDeclaration) -> Self {
-    Self::SSA_DECL(value.data_loc, value.ptr_loc, value.ty)
+    Self::STACK(value.ty.info.stack_id().unwrap(), value.ty)
   }
 }
 
@@ -562,7 +680,7 @@ impl<R: Debug> OpArg<R> {
   pub fn ll_val(&self) -> LLVal {
     use OpArg::*;
     match self {
-      REG(_, ll_val) | SSA(_, ll_val) | SSA_DECL(_, _, ll_val) | Lit(ll_val) => *ll_val,
+      REG(_, ll_val) | SSA(_, ll_val) | STACK(_, ll_val) | Lit(ll_val) => *ll_val,
       _ => Default::default(),
     }
   }
@@ -583,7 +701,7 @@ pub struct LLFunctionSSABlocks<R: Debug + Default + Copy> {
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub enum DataLocation {
   /// No allocation process has been performed
-  Unallocated,
+  Undefined,
   /// An unsized stack marker
   SsaStack(usize),
   /// Binary offset to a stack location
@@ -595,16 +713,17 @@ pub enum DataLocation {
 impl Debug for DataLocation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      DataLocation::Heap => f.write_str("hp"),
-      DataLocation::SsaStack(_) => f.write_str("ssa-st"),
-      DataLocation::StackOff(_) => f.write_str("st"),
-      DataLocation::Unallocated => f.write_str("un"),
+      DataLocation::Heap => f.write_str("{hp} "),
+      DataLocation::SsaStack(_) => f.write_str("{ssa-st} "),
+      DataLocation::StackOff(_) => f.write_str("{stk} "),
+      DataLocation::Undefined => f.write_str("{?} "),
     }
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum SSAExpr<R: Debug> {
+  Debug(Token),
   NullOp(SSAOp, OpArg<R>),
   UnaryOp(SSAOp, OpArg<R>, OpArg<R>),
   BinaryOp(SSAOp, OpArg<R>, OpArg<R>, OpArg<R>),
@@ -614,6 +733,7 @@ impl<R: Debug> SSAExpr<R> {
   pub fn name(&self) -> SSAOp {
     match self {
       Self::BinaryOp(op, ..) | Self::UnaryOp(op, ..) | Self::NullOp(op, ..) => *op,
+      Self::Debug(_) => SSAOp::NOOP,
     }
   }
 }
@@ -633,6 +753,10 @@ impl<R: Debug> Debug for SSAExpr<R> {
         "{op:?}{}",
         if let OpArg::Undefined = c { Default::default() } else { format!(" => {c: >16?}") }
       )),
+      SSAExpr::Debug(token) => {
+        f.write_str(token.blame(0, 0, "", None).trim())?;
+        f.write_str("\n")
+      }
     }
   }
 }
@@ -640,6 +764,7 @@ impl<R: Debug> Debug for SSAExpr<R> {
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy)]
 pub enum SSAOp {
+  NOOP,
   ADD,
   SUB,
   MUL,
@@ -665,32 +790,33 @@ pub enum SSAOp {
   EXIT_BLOCK,
   JUMP,
   JUMP_ZE,
-  JUMP_NZ,
-  JUMP_EQ,
+  NE,
+  EQ,
 }
 
 #[derive(Debug)]
 pub struct SSAContextBuilder<R: Debug> {
-  pub(super) blocks: Vec<*mut SSABlock<R>>,
-  ssa_index:         isize,
-  stack_offset:      isize,
-  block_top:         usize,
+  pub(super) blocks:    Vec<*mut SSABlock<R>>,
+  pub(super) ssa_index: isize,
+  pub(super) stack_ids: isize,
+  pub(super) block_top: usize,
 }
 
 impl<R: Debug> Default for SSAContextBuilder<R> {
   fn default() -> Self {
     Self {
-      blocks:       Default::default(),
-      ssa_index:    -1,
-      stack_offset: -1,
-      block_top:    0,
+      blocks:    Default::default(),
+      ssa_index: 0,
+      stack_ids: -1,
+      block_top: 0,
     }
   }
 }
 
 impl<R: Debug + Default + Copy> SSAContextBuilder<R> {
-  pub fn create_ssa_id(&mut self, val: LLVal) -> OpArg<R> {
-    OpArg::SSA(self.get_ssa_id(), val)
+  pub fn create_ssa_id(&mut self, mut val: LLVal) -> OpArg<R> {
+    val.ssa_id = self.get_ssa_id();
+    OpArg::SSA(val.ssa_id, val)
   }
 
   pub fn push_block<'a>(&mut self, predecessor: Option<usize>) -> &'a mut SSABlock<R> {
@@ -720,8 +846,8 @@ impl<R: Debug + Default + Copy> SSAContextBuilder<R> {
     (*ssa) as usize
   }
 
-  pub fn push_stack_offset(&mut self) -> usize {
-    let so = &mut self.stack_offset;
+  pub fn push_stack_element(&mut self) -> usize {
+    let so = &mut self.stack_ids;
     (*so) += 1;
     (*so) as usize
   }
@@ -744,14 +870,11 @@ impl<R: Debug + Default + Copy> SSAContextBuilder<R> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SymbolDeclaration {
-  pub name:     IString,
-  /// Location on the stack that may store the backing data of the type
-  pub data_loc: usize,
+  pub name: IString,
   /// If the type is a pointer, then this represents the location where the data
   /// of the type the pointer points to. For non-pointer types this is
   /// Unallocated.
-  pub ptr_loc:  DataLocation,
-  pub ty:       LLVal,
+  pub ty:   LLVal,
 }
 
 #[derive(Clone)]
@@ -807,15 +930,18 @@ impl<R: Debug + Default + Copy> Default for SSABlock<R> {
 }
 
 impl<R: Debug + Default + Copy> SSABlock<R> {
-  pub fn push_binary_op(
+  pub fn binary_op(
     &mut self,
     op: SSAOp,
     out_val: LLVal,
     left: OpArg<R>,
     right: OpArg<R>,
+    ret_val: bool,
   ) -> OpArg<R> {
     let out_val = if out_val.info.is_undefined() {
       OpArg::Undefined
+    } else if ret_val {
+      OpArg::SSA_RETURN(out_val)
     } else {
       self.ctx().create_ssa_id(out_val)
     };
@@ -824,9 +950,15 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
     out_val
   }
 
-  pub fn unary_op(&mut self, op: SSAOp, out_val: LLVal, val: OpArg<R>) -> OpArg<R> {
+  pub fn debug_op(&mut self, tok: Token) {
+    self.ops.push(SSAExpr::Debug(tok));
+  }
+
+  pub fn unary_op(&mut self, op: SSAOp, out_val: LLVal, val: OpArg<R>, ret_val: bool) -> OpArg<R> {
     let out_val = if out_val.info.is_undefined() {
       OpArg::Undefined
+    } else if ret_val {
+      OpArg::SSA_RETURN(out_val)
     } else {
       self.ctx().create_ssa_id(out_val)
     };
@@ -836,7 +968,7 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
     out_val
   }
 
-  pub fn push_null_op(&mut self, op: SSAOp, out_val: LLVal) -> OpArg<R> {
+  pub fn null_op(&mut self, op: SSAOp, out_val: LLVal) -> OpArg<R> {
     let out_val = if out_val.info.is_undefined() {
       OpArg::Undefined
     } else {
@@ -873,8 +1005,8 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
     unsafe { &mut *self.ctx().blocks[id] }
   }
   /// Pushs a new monotonic stack offset value and returns it.
-  pub fn push_stack_offset(&mut self, increment: usize) -> usize {
-    self.ctx().push_stack_offset()
+  pub fn push_stack_offset(&mut self) -> usize {
+    self.ctx().push_stack_element()
   }
 
   pub fn get_id_cloned(
@@ -914,18 +1046,17 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
     None
   }
 
-  pub fn declare_symbol(&mut self, name: IString, ty: LLVal, tok: Token) {
+  pub fn declare_symbol(&mut self, name: IString, mut ty: LLVal, tok: Token) {
     self.decl_tok.push(tok);
-    self.decls.push(SymbolDeclaration {
-      name,
-      data_loc: self.decls.len(),
-      ptr_loc: DataLocation::Unallocated,
-      ty,
-    })
+    ty.info |= TypeInfo::at_stack_id(self.push_stack_offset() as u16);
+    self.decls.push(SymbolDeclaration { name, ty })
   }
 }
 
 #[derive(Debug)]
 pub struct SSAFunction<R: Debug + Default + Copy> {
-  pub(crate) blocks: Vec<Box<SSABlock<R>>>,
+  pub(crate) blocks:       Vec<Box<SSABlock<R>>>,
+  /// Total number of declarations defined in this function, including
+  /// arguments.
+  pub(crate) declarations: usize,
 }

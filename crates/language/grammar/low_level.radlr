@@ -99,15 +99,15 @@ IMPORT expression as expr
 
   > (id | memory_location ) "=" expression ";"?
 
-    :ast { t_LL_Assign, location: $1, expression  }
+    :ast { t_LL_Assign, location: $1, expression, tok  }
 
   | id "<-" "heap(" (primitive_unsigned_integer | id)^byte_count ")" ";"? 
 
-    :ast { t_LL_HeapAllocate, id, byte_count  }
+    :ast { t_LL_HeapAllocate, id, byte_count, tok  }
 
   | id "<-" "stack(" (primitive_unsigned_integer | id)^byte_count ")" ";"? 
 
-    :ast { t_LL_StackAllocate, id, byte_count  }
+    :ast { t_LL_StackAllocate, id, byte_count, tok  }
 
   | "free(" id ")" ";"?
 
@@ -225,15 +225,15 @@ IMPORT expression as expr
 
   > boolean^left "||"{1}  boolean{1}^right
     
-    :ast { t_OR, left, right } 
+    :ast { t_OR, left, right, tok } 
 
   | boolean^left "|||"{2}  boolean{2}^right
     
-    :ast { t_XOR, left, right } 
+    :ast { t_XOR, left, right, tok } 
 
   | boolean^left "&&"{3}  boolean{3}^right
     
-    :ast { t_AND, left, right }
+    :ast { t_AND, left, right, tok }
 
   | logical
 
@@ -246,27 +246,27 @@ IMPORT expression as expr
 
   > arithmetic^left "=="{3}  arithmetic{3}^right
     
-    :ast { t_EQ, left, right } 
+    :ast { t_EQ, left, right, tok } 
 
   | arithmetic^left "!="{3}  arithmetic{3}^right
     
-    :ast { t_NE, left, right } 
+    :ast { t_NE, left, right, tok } 
 
   | arithmetic^left ">="{3}  arithmetic{3}^right
     
-    :ast { t_GE, left, right } 
+    :ast { t_GE, left, right, tok } 
 
   | arithmetic^left "<="{3}  arithmetic{3}^right
     
-    :ast { t_LE, left, right } 
+    :ast { t_LE, left, right, tok } 
 
   | arithmetic^left  ">"{3}  arithmetic{3}^right
     
-    :ast { t_GR, left, right } 
+    :ast { t_GR, left, right, tok } 
 
   | arithmetic^left  "<"{3}  arithmetic{3}^right
     
-    :ast { t_LS, left, right } 
+    :ast { t_LS, left, right, tok } 
 
   | "!"{4} logical^expr{3}
     
@@ -362,11 +362,11 @@ IMPORT expression as expr
 
   > mem_expr^left "+"{1} mem_expr{1}^right
 
-    :ast { t_LL_MemAdd, left, right }
+    :ast { t_LL_MemAdd, left, right, tok }
 
   | mem_expr^left "*"{2} mem_expr{2}^right
 
-    :ast { t_LL_MemMul, left, right }
+    :ast { t_LL_MemMul, left, right, tok }
 
   | id
 
