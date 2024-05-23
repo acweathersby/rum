@@ -1,8 +1,8 @@
-use crate::stack_vec::StackVec;
+use crate::stack_vec::ArrayVec;
 
 #[test]
 pub fn allocates_on_stack_only() {
-  let mut vec = StackVec::<1024, u32>::new();
+  let mut vec = ArrayVec::<1024, u32>::new();
 
   vec.push(1);
   vec.push(2);
@@ -11,7 +11,7 @@ pub fn allocates_on_stack_only() {
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4]);
 
-  assert!(vec.data_is_on_stack());
+  assert!(vec.data_is_bounded());
 
   assert_eq!(vec.pop(), Some(4));
   assert_eq!(vec.pop(), Some(3));
@@ -22,7 +22,7 @@ pub fn allocates_on_stack_only() {
 
 #[test]
 pub fn over_allocates_are_moved_into_vector() {
-  let mut vec = StackVec::<3, u32>::new();
+  let mut vec = ArrayVec::<3, u32>::new();
 
   vec.push(1);
   vec.push(2);
@@ -31,7 +31,7 @@ pub fn over_allocates_are_moved_into_vector() {
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4]);
 
-  assert!(!vec.data_is_on_stack());
+  assert!(!vec.data_is_bounded());
 
   assert_eq!(vec.pop(), Some(4));
   assert_eq!(vec.pop(), Some(3));
@@ -41,8 +41,37 @@ pub fn over_allocates_are_moved_into_vector() {
 }
 
 #[test]
+pub fn sorted_insert() {
+  let mut vec = ArrayVec::<11, u32>::new();
+
+  vec.push_ordered(9);
+  vec.push_ordered(5);
+  vec.push_ordered(2);
+  vec.push_ordered(7);
+  vec.push_ordered(1);
+  vec.push_ordered(6);
+  vec.push_ordered(10);
+  vec.push_ordered(3);
+  vec.push_ordered(4);
+  vec.push_ordered(8);
+
+  assert_eq!(vec.as_slice(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+  assert!(vec.data_is_bounded());
+  assert!(vec.data_is_ordered());
+
+  vec.push_ordered(29);
+  vec.push_ordered(23);
+
+  assert_eq!(vec.as_slice(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 23, 29]);
+
+  assert!(!vec.data_is_bounded());
+  assert!(vec.data_is_ordered());
+}
+
+#[test]
 pub fn over_allocates_are_moved_into_vector_large_stack_allocation() {
-  let mut vec = StackVec::<30000, _>::new();
+  let mut vec = ArrayVec::<30000, _>::new();
 
   vec.push(1);
   vec.push(2);
@@ -51,7 +80,7 @@ pub fn over_allocates_are_moved_into_vector_large_stack_allocation() {
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4]);
 
-  assert!(vec.data_is_on_stack());
+  assert!(vec.data_is_bounded());
 
   assert_eq!(vec.pop(), Some(4));
   assert_eq!(vec.pop(), Some(3));
@@ -73,14 +102,14 @@ pub fn data_with_drop_trait_is_properly_handle_from_vec() {
     }
   }
 
-  let mut vec = StackVec::<1, _>::new();
+  let mut vec = ArrayVec::<1, _>::new();
 
   vec.push(Data(1));
   vec.push(Data(2));
   vec.push(Data(3));
   vec.push(Data(4));
 
-  assert!(!vec.data_is_on_stack());
+  assert!(!vec.data_is_bounded());
 
   assert_eq!(vec.pop(), Some(Data(4)));
   assert_eq!(vec.pop(), Some(Data(3)));
@@ -105,14 +134,14 @@ pub fn data_with_drop_trait_is_properly_handled_on_stack() {
     }
   }
 
-  let mut vec = StackVec::<40, _>::new();
+  let mut vec = ArrayVec::<40, _>::new();
 
   vec.push(Data(1));
   vec.push(Data(2));
   vec.push(Data(3));
   vec.push(Data(4));
 
-  assert!(vec.data_is_on_stack());
+  assert!(vec.data_is_bounded());
 
   assert_eq!(vec.pop(), Some(Data(4)));
   assert_eq!(vec.pop(), Some(Data(3)));

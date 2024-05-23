@@ -7,7 +7,8 @@ const GRAMMAR_ROOT: &'static str = "rum_lang.radlr";
 
 const BUILD_OUTPUT_PATH: &'static str = "./compiler/parser/";
 
-fn main() -> RadlrResult<()> {
+fn main() {}
+fn main_() -> RadlrResult<()> {
   let workspace_dir = Path::new(GRAMMAR_PATH).parent().unwrap();
 
   let grammar_root_dir =

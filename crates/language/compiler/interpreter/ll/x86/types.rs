@@ -4,11 +4,6 @@ impl OpArg<x86Reg> {
   pub fn arg(&self, so: &[usize]) -> Arg {
     match self {
       OpArg::REG(reg, _) => Arg::Reg(*reg),
-      OpArg::STACK(_, l) => {
-        let stack_id = l.info.stack_id().expect("Loads should have an associated stack id");
-        let offset = (so[stack_id] as isize);
-        Arg::Mem(x86Reg::RSP_REL(offset as u64))
-      }
       OpArg::Lit(literal) => {
         let val = literal.load::<u64>().unwrap();
         Arg::Imm_Int(val)
@@ -24,7 +19,7 @@ pub(super) enum OpEncoding {
   /// ### Register to Memory/Register
   ///
   /// | opcode      
-  /// | ------     
+  /// | ------    
   /// | opcode + rd (r)
   O,
   /// ### Register to Memory/Register
@@ -81,6 +76,8 @@ pub(super) enum OpEncoding {
   /// | ------     | ------        | ------        |
   /// | op         | Reg           | imm           |
   I,
+
+  RMI,
 }
 
 #[allow(non_camel_case_types, unused)]

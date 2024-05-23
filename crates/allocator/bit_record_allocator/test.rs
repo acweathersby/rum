@@ -3,7 +3,7 @@ use std::{
   hash::{BuildHasher, Hasher},
 };
 
-use rum_container::StackVec;
+use rum_container::ArrayVec;
 use rum_profile::NSReporter;
 
 use super::{block_record::BlockRecord, BlockRecordAllocator};
@@ -170,7 +170,7 @@ pub fn massive_allocation_1_gb() {
   allocator.free(ptr).expect("Should free ptr");
 
   for _ in 0..10000 {
-    let mut vec = StackVec::<2, _>::new();
+    let mut vec = ArrayVec::<2, _>::new();
     vec.push(allocator.alloc(_1GB >> 1).expect("Should allocate"));
     vec.push(allocator.alloc(_1GB >> 1).expect("Should allocate"));
 
@@ -183,7 +183,7 @@ pub fn massive_allocation_1_gb() {
     assert!(allocator.is_empty());
   }
 
-  let mut vec = StackVec::<2, _>::new();
+  let mut vec = ArrayVec::<2, _>::new();
   let r = NSReporter::new("alloc");
   vec.push(allocator.alloc(_1GB >> 1).expect("Should allocate"));
   vec.push(allocator.alloc(_1GB >> 1).expect("Should allocate"));

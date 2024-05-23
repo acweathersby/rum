@@ -30,7 +30,13 @@ mod test {
   use super::compile_from_ssa_fn;
   use crate::{
     compiler::{
-      interpreter::{error::RumResult, ll::ssa_block_compiler::compile_function_blocks},
+      interpreter::{
+        error::RumResult,
+        ll::{
+          ssa_block_compiler::compile_function_blocks,
+          ssa_block_optimizer::optimize_function_blocks,
+        },
+      },
       parser::parse_ll,
     },
     utils::get_source_file,
@@ -44,9 +50,14 @@ mod test {
 
     let blocks = compile_function_blocks(&funct)?;
 
-    let funct = compile_from_ssa_fn(&blocks)?;
+    //dbg!(&blocks);
 
-    funct.call();
+    let optimized_blocks = optimize_function_blocks(blocks);
+
+    // /    dbg!(optimized_blocks);
+    // let funct = compile_from_ssa_fn(&blocks)?;
+    //
+    // funct.call();
 
     Ok(())
   }

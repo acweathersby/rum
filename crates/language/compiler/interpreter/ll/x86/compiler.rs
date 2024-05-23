@@ -70,7 +70,9 @@ impl LowLevelFunction {
 
       let ptr = funct();
 
-      dbg!(std::slice::from_raw_parts::<f32>(ptr, 8));
+      dbg!(ptr);
+
+      dbg!(std::slice::from_raw_parts::<f32>(ptr, 100));
 
       panic!("That's all she wrote!");
     }
@@ -138,7 +140,7 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction<()>) -> RumResult<LowLevelFunctio
   offsets.resize_with(funct.declarations, || 0);
 
   for block in &funct.blocks {
-    for decl in &block.decls {
+    /*    for decl in &block.decls {
       let ty = decl.ty;
       if let Some(byte_size) = ty.info.total_byte_size() {
         if let Some(id) = ty.info.stack_id() {
@@ -147,7 +149,7 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction<()>) -> RumResult<LowLevelFunctio
           ctx.stack_size += byte_size as u64;
         }
       }
-    }
+    } */
   }
 
   funct_preamble(&mut ctx);
@@ -262,11 +264,11 @@ fn adapt_ssa_expr(op_expr: &SSAExpr<()>, register: &mut RegisterAllocator) -> SS
         let out = register.modify_register(&left, out);
         SSAExpr::UnaryOp(*op, out, left)
       }
-      SSAOp::LOAD => {
+      /*   SSAOp::LOAD => {
         let left = convert_ssa_to_reg(left, register);
         let mut out = convert_ssa_to_reg(out, register);
         SSAExpr::UnaryOp(*op, out, left)
-      }
+      } */
       _ => {
         let left = convert_ssa_to_reg(left, register);
         let out = convert_ssa_to_reg(out, register);
@@ -343,7 +345,15 @@ pub fn compile_op(
         panic!()
       }
     }
-    SSAOp::MUL => todo!("TODO: {op_expr:?}"),
+    SSAOp::MUL => {
+      let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
+      if let SSAExpr::BinaryOp(op, val, op1, op2) = op_expr {
+        let bit_size = op1.ll_val().info.into();
+        encode(bin, &imul, bit_size, op1.arg(so), op1.arg(so), op2.arg(so));
+      } else {
+        panic!()
+      }
+    }
     SSAOp::DIV => todo!("TODO: {op_expr:?}"),
     SSAOp::LOG => todo!("TODO: {op_expr:?}"),
     SSAOp::POW => todo!("TODO: {op_expr:?}"),
@@ -428,7 +438,9 @@ pub fn compile_op(
     SSAOp::JUMP_ZE => todo!("TODO: {op_expr:?}"),
     SSAOp::NE => todo!("TODO: {op_expr:?}"),
     SSAOp::EQ => todo!("TODO: {op_expr:?}"),
-    SSAOp::LOAD => {
+    SSAOp::DEREF => todo!("TODO: {op_expr:?}"),
+    SSAOp::MEM_STORE => todo!("TODO: {op_expr:?}"),
+    /*     SSAOp::LOAD => {
       let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
       if let SSAExpr::UnaryOp(op, val, op1) = op_expr {
         debug_assert!(op1.ll_val().info.stack_id().is_some());
@@ -448,7 +460,7 @@ pub fn compile_op(
       } else {
         panic!()
       }
-    }
+    } */
     SSAOp::STORE => {
       let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
       if let SSAExpr::BinaryOp(op, val, op1, op2) = op_expr {
@@ -514,7 +526,6 @@ fn convert_ssa_to_reg(op: &OpArg<()>, register: &mut RegisterAllocator) -> OpArg
       OpArg::REG(register.set(val.info.into(), val), val)
     }
     OpArg::SSA_RETURN(llval) => register.return_register(llval),
-    OpArg::STACK(i, reference) => OpArg::STACK(i, reference),
     OpArg::BLOCK(block) => OpArg::BLOCK(block),
     OpArg::Lit(literal) => OpArg::Lit(literal),
     OpArg::Undefined => OpArg::Undefined,

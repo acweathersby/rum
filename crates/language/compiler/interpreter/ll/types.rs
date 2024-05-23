@@ -1,10 +1,9 @@
 use radlr_rust_runtime::types::Token;
+use rum_container::ArrayVec;
 use rum_istring::IString;
-use std::{
-  collections::{BTreeMap, BTreeSet},
-  fmt::{Debug, Display},
-  panic::Location,
-};
+use std::fmt::{Debug, Display};
+
+use crate::compiler::interpreter::error::RumResult;
 
 /// Operations that a register can perform.
 
@@ -48,7 +47,8 @@ pub enum LLType {
   Unsigned  = 1,
   Integer   = 2,
   Float     = 3,
-  Generic   = 4,
+  /// A type that is defined outside this immediate type system.
+  Custom    = 4,
 }
 
 #[repr(u32)]
@@ -150,7 +150,7 @@ impl TypeInfo {
       1 => LLType::Unsigned,
       2 => LLType::Integer,
       3 => LLType::Float,
-      4 => LLType::Generic,
+      4 => LLType::Custom,
       _ => LLType::Undefined,
     }
   }
@@ -275,7 +275,7 @@ fn display_type_prop() {
   assert_eq!(LLType::Unsigned, T::Unsigned.ty());
   assert_eq!(LLType::Integer, T::Integer.ty());
   assert_eq!(LLType::Float, T::Float.ty());
-  assert_eq!(LLType::Generic, T::Generic.ty());
+  assert_eq!(LLType::Custom, T::Generic.ty());
 
   assert_eq!(Vectorized::Scalar, T::default().vec());
   assert_eq!(Vectorized::Vector2, T::v2.vec());
@@ -485,11 +485,8 @@ impl Display for TypeInfo {
       "[?]".to_string()
     };
 
-    let stack_id = if let Some(id) = self.stack_id() {
-      format!("stack<{:03}> ", id)
-    } else {
-      Default::default()
-    };
+    let stack_id =
+      if let Some(id) = self.stack_id() { format!("stk<{:03}> ", id) } else { Default::default() };
 
     let ty_val = (val & TypeInfo::TYPE_MASK) >> (TypeInfo::TYPE_OFF - 1);
     let ty = TYPE_NAMES[ty_val.checked_ilog2().unwrap_or_default() as usize];
@@ -523,14 +520,14 @@ impl Debug for TypeInfo {
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Default)]
 pub struct LLVal {
   pub info: TypeInfo,
-  val:      Option<[u8; 16]>,
   ssa_id:   usize,
+  val:      Option<[u8; 16]>,
 }
 
 impl Debug for LLVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.ssa_id > 0 {
-      f.write_fmt(format_args!("<ssa:{:03}>", self.ssa_id))?;
+      f.write_fmt(format_args!("<{:03}> ", self.ssa_id))?;
     }
     fn fmt_val<T: Display + Default>(
       val: &LLVal,
@@ -564,7 +561,7 @@ impl Debug for LLVal {
         64 => fmt_val::<u64>(self, f),
         _ => fmt_val::<u8>(self, f),
       },
-      LLType::Generic | _ => fmt_val::<u64>(self, f),
+      LLType::Custom | _ => fmt_val::<u64>(self, f),
     }
   }
 }
@@ -623,9 +620,6 @@ pub enum OpArg<R: Debug> {
   /// A static value that is fully defined; can be used to to perform compile
   /// time operations
   Lit(LLVal),
-  /// Valued with a defined location on the stack, which may intern point to
-  /// another memory location
-  STACK(usize, LLVal),
   /// Default op args used for SSA expressions
   SSA(usize, LLVal),
   /// Should be handled with return value conventions
@@ -641,30 +635,11 @@ impl<R: Debug> Debug for OpArg<R> {
     match self {
       OpArg::Undefined => f.write_fmt(format_args!("UNDEF")),
       OpArg::Lit(val) => f.write_fmt(format_args!("{:?}", val)),
-      OpArg::STACK(pos, val) => f.write_fmt(format_args!("({val:?})")),
       OpArg::SSA(id, val) => f.write_fmt(format_args!("${id}({val:?})")),
       OpArg::SSA_RETURN(val) => f.write_fmt(format_args!("&return ({val:?})")),
       OpArg::REG(id, val) => f.write_fmt(format_args!("{id:?}({val:?})")),
       OpArg::BLOCK(val) => f.write_fmt(format_args!("BLOCK({val})")),
     }
-  }
-}
-
-impl<R: Debug> From<SymbolDeclaration> for OpArg<R> {
-  fn from(value: SymbolDeclaration) -> Self {
-    Self::STACK(value.ty.info.stack_id().unwrap(), value.ty)
-  }
-}
-
-impl<R: Debug> From<&SymbolDeclaration> for OpArg<R> {
-  fn from(value: &SymbolDeclaration) -> Self {
-    (*value).into()
-  }
-}
-
-impl<R: Debug> From<&mut SymbolDeclaration> for OpArg<R> {
-  fn from(value: &mut SymbolDeclaration) -> Self {
-    (*value).into()
   }
 }
 
@@ -680,7 +655,7 @@ impl<R: Debug> OpArg<R> {
   pub fn ll_val(&self) -> LLVal {
     use OpArg::*;
     match self {
-      REG(_, ll_val) | SSA(_, ll_val) | STACK(_, ll_val) | Lit(ll_val) => *ll_val,
+      REG(_, ll_val) | SSA(_, ll_val) | Lit(ll_val) => *ll_val,
       _ => Default::default(),
     }
   }
@@ -742,22 +717,43 @@ impl<R: Debug> Debug for SSAExpr<R> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       SSAExpr::BinaryOp(op, c, a, b) => f.write_fmt(format_args!(
-        "{op:?} {a:?} {b:?}{}",
-        if let OpArg::Undefined = c { Default::default() } else { format!(" => {c: >16?}") }
+        "{}{op:?} {a:?} {b:?}\n",
+        if let OpArg::Undefined = c { Default::default() } else { format!("{c: >16?} = ") }
       )),
       SSAExpr::UnaryOp(op, c, a) => f.write_fmt(format_args!(
-        "{op:?} {a:?}{}",
-        if let OpArg::Undefined = c { Default::default() } else { format!(" => {c: >16?}") }
+        "{}{op:?} {a:?}\n",
+        if let OpArg::Undefined = c { Default::default() } else { format!("{c: >16?} = ") }
       )),
       SSAExpr::NullOp(op, c) => f.write_fmt(format_args!(
-        "{op:?}{}",
-        if let OpArg::Undefined = c { Default::default() } else { format!(" => {c: >16?}") }
+        "{}{op:?}\n",
+        if let OpArg::Undefined = c { Default::default() } else { format!("{c: >16?} = ") }
       )),
       SSAExpr::Debug(token) => {
         f.write_str(token.blame(0, 0, "", None).trim())?;
         f.write_str("\n")
       }
     }
+  }
+}
+
+pub struct OpGraphNode {
+  id:       usize,
+  op:       SSAOp,
+  output:   LLVal,
+  operands: ArrayVec<3, usize>,
+  block_id: usize,
+}
+
+impl Debug for OpGraphNode {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!(
+      "[{}:03 in {:3}]:{:20?} = {:5?} {}",
+      self.block_id,
+      self.id,
+      self.output,
+      self.op,
+      self.operands.iter().map(|i| format!("{i:5}")).collect::<Vec<_>>().join(" ") //--
+    ))
   }
 }
 
@@ -779,8 +775,12 @@ pub enum SSAOp {
   XOR,
   AND,
   NOT,
-  LOAD,
+  //LOAD,
+  DEREF,
   STORE,
+  /// Performs a memory dereference on a pointer and stores the given value at
+  /// that memory location
+  MEM_STORE,
   CALL,
   CONVERT,
   /// Allocate heap memory and return pointer.
@@ -796,19 +796,23 @@ pub enum SSAOp {
 
 #[derive(Debug)]
 pub struct SSAContextBuilder<R: Debug> {
-  pub(super) blocks:    Vec<*mut SSABlock<R>>,
-  pub(super) ssa_index: isize,
-  pub(super) stack_ids: isize,
-  pub(super) block_top: usize,
+  pub(super) blocks:      Vec<*mut SSABlock<R>>,
+  pub(super) ssa_index:   isize,
+  pub(super) stack_ids:   isize,
+  pub(super) block_top:   usize,
+  pub(super) active_type: Vec<LLVal>,
+  pub(super) graph:       Vec<OpGraphNode>,
 }
 
 impl<R: Debug> Default for SSAContextBuilder<R> {
   fn default() -> Self {
     Self {
-      blocks:    Default::default(),
-      ssa_index: 0,
-      stack_ids: -1,
-      block_top: 0,
+      blocks:      Default::default(),
+      ssa_index:   0,
+      stack_ids:   -1,
+      block_top:   0,
+      active_type: Default::default(),
+      graph:       Default::default(),
     }
   }
 }
@@ -863,18 +867,32 @@ impl<R: Debug + Default + Copy> SSAContextBuilder<R> {
   pub fn get_head_block(&mut self) -> &mut SSABlock<R> {
     self.get_block_mut(self.block_top).unwrap()
   }
+
+  pub fn push_graph_node(&mut self, mut node: OpGraphNode) {
+    node.id = self.graph.len();
+    self.graph.push(node);
+  }
 }
 
 // ---------------------------------------------------------------------
 // LLBlock
 
-#[derive(Debug, Clone, Copy)]
-pub struct SymbolDeclaration {
-  pub name: IString,
+#[derive(Clone)]
+pub struct SymbolBinding {
+  pub name:   IString,
   /// If the type is a pointer, then this represents the location where the data
   /// of the type the pointer points to. For non-pointer types this is
   /// Unallocated.
-  pub ty:   LLVal,
+  pub ty:     TypeInfo,
+  /// A function unique id for the declaration.
+  pub ssa_id: usize,
+  pub tok:    Token,
+}
+
+impl Debug for SymbolBinding {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("decl({:?} : {:?})", self.name.to_str().as_str(), self.ty))
+  }
 }
 
 #[derive(Clone)]
@@ -882,12 +900,11 @@ pub struct SSABlock<R: Debug> {
   pub id:                   usize,
   pub scope_parent:         Option<*mut SSABlock<R>>,
   pub ctx:                  *mut SSAContextBuilder<R>,
+  pub predecessors:         ArrayVec<20, u16>,
   pub ops:                  Vec<SSAExpr<R>>,
-  pub decls:                Vec<SymbolDeclaration>,
-  pub decl_tok:             Vec<Token>,
-  pub outputs:              BTreeMap<IString, LLVal>,
+  pub outs:                 Vec<(usize, OpArg<R>)>,
+  pub decls:                Vec<SymbolBinding>,
   pub return_val:           Option<OpArg<R>>,
-  pub predecessors:         BTreeSet<usize>,
   pub branch_unconditional: Option<usize>,
   pub branch_succeed:       Option<usize>,
   pub branch_fail:          Option<usize>,
@@ -895,18 +912,38 @@ pub struct SSABlock<R: Debug> {
 
 impl<R: Debug + Default + Copy> Debug for SSABlock<R> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let mut s = f.debug_struct("LLBlock");
-    s.field("id", &self.id);
-    s.field("scope_parent", &self.scope_parent);
-    s.field("predecessors", &self.predecessors);
-    s.field("ops", &self.ops);
-    s.field("decls", &self.decls);
-    s.field("outputs", &self.outputs);
-    s.field("return_val", &self.return_val);
-    s.field("branch_unconditional", &self.branch_unconditional);
-    s.field("branch_succeed", &self.branch_succeed);
-    s.field("branch_fail", &self.branch_fail);
-    s.finish()
+    let id = self.id;
+    let ops = self
+      .ops
+      .iter()
+      .enumerate()
+      .map(|(index, val)| format!("{val:?}"))
+      .collect::<Vec<_>>()
+      .join("\n  ");
+
+    let preds = if self.predecessors.len() > 0 {
+      format!("  preds: [ {} ]\n\n", self.predecessors.join(" "))
+    } else {
+      Default::default()
+    };
+
+    let branch = if let Some(ret) = self.return_val {
+      format!("\n\n  return: {ret:?}")
+    } else if let (Some(fail), Some(pass)) = (self.branch_fail, self.branch_succeed) {
+      format!("\n\n  pass: Block-{pass:03}\n  fail: Block-{fail:03}")
+    } else if let Some(branch) = self.branch_unconditional {
+      format!("\n\n  jump: Block-{branch:03}")
+    } else {
+      Default::default()
+    };
+
+    f.write_fmt(format_args!(
+      r###"
+Block-{id:03} {{
+  
+{preds}  {ops}{branch}
+}}"###
+    ))
   }
 }
 
@@ -918,9 +955,8 @@ impl<R: Debug + Default + Copy> Default for SSABlock<R> {
       ctx:                  std::ptr::null_mut(),
       predecessors:         Default::default(),
       ops:                  Default::default(),
+      outs:                 Default::default(),
       decls:                Default::default(),
-      decl_tok:             Default::default(),
-      outputs:              Default::default(),
       return_val:           Default::default(),
       branch_succeed:       Default::default(),
       branch_unconditional: Default::default(),
@@ -930,6 +966,18 @@ impl<R: Debug + Default + Copy> Default for SSABlock<R> {
 }
 
 impl<R: Debug + Default + Copy> SSABlock<R> {
+  pub fn tenary_op(
+    &mut self,
+    op: SSAOp,
+    out_val: LLVal,
+    op1: OpArg<R>,
+    op2: OpArg<R>,
+    op3: OpArg<R>,
+    ret_val: bool,
+  ) -> OpArg<R> {
+    op1
+  }
+
   pub fn binary_op(
     &mut self,
     op: SSAOp,
@@ -951,7 +999,7 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
   }
 
   pub fn debug_op(&mut self, tok: Token) {
-    self.ops.push(SSAExpr::Debug(tok));
+    //self.ops.push(SSAExpr::Debug(tok));
   }
 
   pub fn unary_op(&mut self, op: SSAOp, out_val: LLVal, val: OpArg<R>, ret_val: bool) -> OpArg<R> {
@@ -980,7 +1028,7 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
     out_val
   }
 
-  pub(super) fn ctx(&self) -> &mut SSAContextBuilder<R> {
+  pub(super) fn ctx<'a>(&self) -> &'a mut SSAContextBuilder<R> {
     unsafe { &mut *self.ctx }
   }
 
@@ -1000,6 +1048,72 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
     }
   }
 
+  pub fn get_binding(&self, id: IString, search_hierarchy: bool) -> Option<SymbolBinding> {
+    for binding in &self.decls {
+      if binding.name == id {
+        return Some(binding.clone());
+      }
+    }
+
+    if let Some(par) = self.scope_parent {
+      return unsafe { (&*par).get_binding(id, search_hierarchy) };
+    }
+
+    None
+  }
+
+  pub(super) fn refine_binding(&mut self, name: IString, mut ty: TypeInfo) {
+    for binding in &mut self.decls {
+      if binding.name == name {
+        binding.ty |= ty;
+        return;
+      }
+    }
+
+    if let Some(par) = self.scope_parent {
+      return unsafe { (&mut *par).refine_binding(name, ty) };
+    }
+  }
+
+  pub(super) fn create_binding(
+    &mut self,
+    name: IString,
+    mut ty: TypeInfo,
+    tok: Token,
+  ) -> RumResult<()> {
+    let ctx = self.ctx();
+    for binding in &mut self.decls {
+      if binding.name == name {
+        let stack_id = ctx.stack_ids + 1;
+        ctx.stack_ids += 1;
+
+        let ssa_id = (ctx.ssa_index + 1) as usize;
+        ctx.ssa_index += 1;
+
+        ty |= TypeInfo::at_stack_id(stack_id as u16);
+        binding.ty = ty;
+        binding.tok = tok;
+        binding.ssa_id = ssa_id;
+
+        return Ok(());
+      }
+    }
+
+    let stack_id = ctx.stack_ids + 1;
+    ctx.stack_ids += 1;
+
+    let ssa_id = (ctx.ssa_index + 1) as usize;
+    ctx.ssa_index += 1;
+
+    ty |= TypeInfo::at_stack_id(stack_id as u16);
+    ctx.stack_ids += 1;
+    self.decls.push(SymbolBinding { name, ty, ssa_id, tok });
+
+    Ok(())
+  }
+
+  pub(super) fn add_output(&mut self, id: usize, op: OpArg<()>) {}
+
   pub(super) fn create_successor<'a>(&self) -> &'a mut SSABlock<R> {
     let id = self.ctx().push_block(Some(self.id)).id;
     unsafe { &mut *self.ctx().blocks[id] }
@@ -1009,51 +1123,33 @@ impl<R: Debug + Default + Copy> SSABlock<R> {
     self.ctx().push_stack_element()
   }
 
-  pub fn get_id_cloned(
-    &mut self,
-    id: IString,
-    search_hierarchy: bool,
-  ) -> Option<(SymbolDeclaration)> {
-    self.get_id_mut(id, search_hierarchy).map(|(d, tok)| *d)
-  }
-
-  pub fn get_id(
-    &mut self,
-    id: IString,
-    search_hierarchy: bool,
-  ) -> Option<(&SymbolDeclaration, &Token)> {
-    self.get_id_mut(id, search_hierarchy).map(|(d, tok)| (&*d, tok))
-  }
-
-  pub fn get_id_mut(
-    &mut self,
-    id: IString,
-    search_hierarchy: bool,
-  ) -> Option<(&mut SymbolDeclaration, &Token)> {
-    for i in 0..self.decls.len() {
-      let decl = &self.decls[i];
-      if decl.name == id {
-        return Some((&mut self.decls[i], &self.decl_tok[i]));
+  pub fn add_load(&mut self, index: usize, op: OpArg<R>) {
+    for (e_index, exising_op) in self.outs.iter_mut() {
+      if index == *e_index {
+        *exising_op = op;
+        return;
       }
     }
 
-    if search_hierarchy {
-      if let Some(par) = self.scope_parent {
-        unsafe { return par.as_mut().unwrap().get_id_mut(id, true) }
+    self.outs.push((index, op));
+  }
+
+  fn get_symbol_assignment(&self, index: usize) -> Option<OpArg<R>> {
+    for (i, op) in &self.outs {
+      if *i == index {
+        return Some(*op);
       }
     }
 
-    None
-  }
-
-  pub fn declare_symbol(&mut self, name: IString, mut ty: LLVal, tok: Token) {
-    self.decl_tok.push(tok);
-    ty.info |= TypeInfo::at_stack_id(self.push_stack_offset() as u16);
-    self.decls.push(SymbolDeclaration { name, ty })
+    if let Some(par) = self.scope_parent {
+      unsafe { return par.as_mut().unwrap().get_symbol_assignment(index) }
+    } else {
+      None
+    }
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SSAFunction<R: Debug + Default + Copy> {
   pub(crate) blocks:       Vec<Box<SSABlock<R>>>,
   /// Total number of declarations defined in this function, including

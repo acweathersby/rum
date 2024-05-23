@@ -13,6 +13,7 @@ type OpEncoder = fn(
   enc: OpEncoding,
   op1: Arg,
   op2: Arg,
+  op3: Arg,
   ext: u8,
 );
 
@@ -295,6 +296,22 @@ op_table!(sub [
   ((64, OT::REG, OT::IMM_INT, OT::NONE), (0x0081, 0x05, OpEncoding::MI, gen_bin_op)),
 ]);
 
+/// https://www.felixcloutier.com/x86/mul
+op_table!(mul [  //
+  ((08, OT::REG, OT::IMM_INT, OT::NONE), (0x00F6, 0x04, OpEncoding::MI, gen_bin_op)),
+  ((16, OT::REG, OT::IMM_INT, OT::NONE), (0x00F7, 0x04, OpEncoding::MI, gen_bin_op)),
+  ((32, OT::REG, OT::IMM_INT, OT::NONE), (0x00F7, 0x04, OpEncoding::MI, gen_bin_op)),
+  ((64, OT::REG, OT::IMM_INT, OT::NONE), (0x00F7, 0x04, OpEncoding::MI, gen_bin_op)),
+]);
+
+/// https://www.felixcloutier.com/x86/imul
+op_table!(imul [  //
+  ((08, OT::REG, OT::REG, OT::IMM_INT), (0x0068, 0x00, OpEncoding::RMI, gen_tri_op)),
+  ((16, OT::REG, OT::REG, OT::IMM_INT), (0x0069, 0x00, OpEncoding::RMI, gen_tri_op)),
+  ((32, OT::REG, OT::REG, OT::IMM_INT), (0x0069, 0x00, OpEncoding::RMI, gen_tri_op)),
+  ((64, OT::REG, OT::REG, OT::IMM_INT), (0x0069, 0x00, OpEncoding::RMI, gen_tri_op)),
+]);
+
 pub(super) fn encode_zero<'bin>(
   binary: &'bin mut Vec<u8>,
   table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, OpEncoder))]),
@@ -341,7 +358,7 @@ pub(super) fn encode<'bin>(
         displacement_index:    0,
         displacement_bit_size: 0,
       };
-      encoder(&mut props, *op_code, bit_size, *encoding, op1, op2, *ext);
+      encoder(&mut props, *op_code, bit_size, *encoding, op1, op2, op3, *ext);
       return props;
     }
   }
@@ -473,6 +490,7 @@ pub(super) fn gen_zero_op(
   enc: OpEncoding,
   _: Arg,
   _: Arg,
+  _: Arg,
   ext: u8,
 ) {
   use Arg::*;
@@ -492,6 +510,7 @@ pub(super) fn gen_unary_op(
   bit_size: BitSize,
   enc: OpEncoding,
   op1: Arg,
+  _: Arg,
   _: Arg,
   ext: u8,
 ) {
@@ -544,6 +563,7 @@ pub(super) fn gen_bin_op(
   enc: OpEncoding,
   op1: Arg,
   op2: Arg,
+  _: Arg,
   ext: u8,
 ) {
   use Arg::*;
@@ -594,6 +614,37 @@ pub(super) fn gen_bin_op(
           BitSize::b8 => push_bytes(props.bin, imm as u8),
           BitSize::b64 | BitSize::b32 => push_bytes(props.bin, 3 as u32),
           size => panic!("Invalid immediate size {size:?} for OI encoding"),
+        }
+      }
+      imm => panic!("Invalid immediate arg op2 of {imm:?} for MI encoding"),
+    },
+    enc => panic!("{enc:?} not valid for binary operations on {op1:?} on {op2:?}"),
+  }
+}
+
+pub(super) fn gen_tri_op(
+  props: &mut InstructionProps,
+  op_code: u32,
+  bit_size: BitSize,
+  enc: OpEncoding,
+  op1: Arg,
+  op2: Arg,
+  op3: Arg,
+  ext: u8,
+) {
+  use Arg::*;
+  use OpEncoding::*;
+
+  match enc {
+    RMI => match op3 {
+      Imm_Int(imm) => {
+        insert_rex_if_required(props, bit_size, op1, op2);
+        insert_op_code_bytes(props.bin, op_code);
+
+        push_mod_rm_reg_op(props, op1, op2);
+        match bit_size {
+          BitSize::b8 => push_bytes(props.bin, imm as u8),
+          _ => push_bytes(props.bin, imm as u32),
         }
       }
       imm => panic!("Invalid immediate arg op2 of {imm:?} for MI encoding"),

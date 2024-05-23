@@ -31,7 +31,7 @@ pub fn parse_RS(input: &str) -> Result<ASTNode, String> {
 }
 
 /// Parses input based on the LL grammar.
-pub fn parse_ll(input: &str) -> Result<LL_function<Token>, String> {
+pub fn parse_ll(input: &str) -> Result<LLFunction<Token>, String> {
   let parser_db = parser::ParserDB::new();
   match parser_db.build_ast(
     &mut StringInput::from(input),
@@ -42,6 +42,6 @@ pub fn parse_ll(input: &str) -> Result<LL_function<Token>, String> {
       println!("{err:?}");
       Err("Failed to parse input".to_string())
     }
-    Ok(node) => Ok(*node.into_LL_function().unwrap()),
+    Ok(node) => Ok(*node.into_LLFunction().unwrap()),
   }
 }
