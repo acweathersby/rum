@@ -41,24 +41,4 @@ mod test {
     },
     utils::get_source_file,
   };
-
-  #[test]
-  fn construct_function_blocks() -> RumResult<()> {
-    let (input, _) = get_source_file("run_ll_script.lang")?;
-
-    let funct = parse_ll(&input)?;
-
-    let blocks = compile_function_blocks(&funct)?;
-
-    //dbg!(&blocks);
-
-    let optimized_blocks = optimize_function_blocks(blocks);
-
-    // /    dbg!(optimized_blocks);
-    // let funct = compile_from_ssa_fn(&blocks)?;
-    //
-    // funct.call();
-
-    Ok(())
-  }
 }

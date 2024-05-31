@@ -9,7 +9,7 @@ pub type RumScriptResult<T> = Result<T, RumScriptError>;
 
 pub fn interpret_string(input: &str, ctx: &mut Context) -> RumScriptResult<()> {
   let output =
-    super::super::parser::parse_RS(input)?.into_RumScript().expect("Could not load script");
+    super::super::script_parser::parse_RS(input)?.into_RumScript().expect("Could not load script");
 
   let mut pending_table_generating = rum_container::ArrayVec::<8, _>::new();
 

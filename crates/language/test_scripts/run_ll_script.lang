@@ -1,10 +1,10 @@
 *32 <- table_row_added( test:f32 ) {
   
-  table_22:*32 <-{ 100 }  // ptr(*32, #mem, 22)
+  table_22:*32 <-{ 64 }  // ptr(*32, #mem, 22)
   table_33:*32 <-<test>
 
   i:i32 
-  i = 99
+  i = 64
 
   loop {
     match i >= 0 {

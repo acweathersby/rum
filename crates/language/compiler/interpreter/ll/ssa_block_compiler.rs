@@ -2,20 +2,23 @@
 
 use super::types::{
   BitSize,
+  BlockId,
+  ConstVal,
   DataLocation,
-  LLFunctionSSABlocks,
+  GraphNodeId,
   SSABlock,
-  SSAContextBuilder,
   SSAFunction,
+  SSAGraphNode,
   SSAOp,
+  SymbolBinding,
 };
 use crate::compiler::{
   self,
   interpreter::{
     error::RumResult,
-    ll::types::{LLType, LLVal, OpArg, TypeInfo},
+    ll::types::{LLType, LLVal, TypeInfo},
   },
-  parser::{
+  script_parser::{
     arithmetic_Value,
     assignment_Value,
     assignment_group_Value,
@@ -56,6 +59,7 @@ use crate::compiler::{
 };
 use num_traits::{Num, NumCast};
 use radlr_rust_runtime::types::Token;
+use rum_container::ArrayVec;
 use rum_istring::{CachedString, IString};
 use rum_logger::todo_note;
 use std::{
@@ -64,17 +68,15 @@ use std::{
   fmt::{Debug, Write},
 };
 
-use TypeInfo as TI;
-
-pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFunction<()>> {
-  let mut ctx: SSAContextBuilder<()> = SSAContextBuilder::<()>::default();
+pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFunction> {
+  let mut ctx = SSAContextBuilder::default();
   let root_block = ctx.push_block(None);
 
   if let Err(err) = process_params(&funct.params, root_block) {
     panic!("{err:>?}");
   }
 
-  let active_block = match process_block(&funct.block, root_block, 0) {
+  let active_block = match process_block(&funct.block, root_block, BlockId::default()) {
     Err(err) => {
       panic!("failed {err:?}");
     }
@@ -83,28 +85,41 @@ pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFuncti
 
   match &funct.block.ret.expression {
     arithmetic_Value::None => {
-      active_block.null_op(SSAOp::RETURN, Default::default());
+      active_block.push_zero_op(SSAOp::RETURN, Default::default());
     }
     expr => {
       let block = active_block.create_successor();
-      let ty = ty_to_ll_value(&funct.return_type)?;
-      let val = process_arithmetic_expression(&expr, block, ty.info, true)?;
+      let ty = ast_ty_to_ssa_ty(&funct.return_type);
+      let val = process_arithmetic_expression(&expr, block, ty, true)?;
 
       // replace ssa with SSA_RETURN
-      block.unary_op(SSAOp::RETURN, val.ll_val(), val, true);
-      block.return_val = Some(OpArg::SSA_RETURN(val.ll_val()));
+      block.push_unary_op(SSAOp::RETURN, Default::default(), val);
     }
   }
 
-  Ok(SSAFunction {
-    blocks:       ctx.blocks.into_iter().map(|b| unsafe { Box::from_raw(b) }).collect(),
-    declarations: ctx.stack_ids as usize,
-  })
+  let funct = SSAFunction {
+    blocks:    ctx
+      .blocks
+      .into_iter()
+      .map(|b| unsafe {
+        {
+          let b = Box::from_raw(b);
+          b.inner
+        }
+      })
+      .collect(),
+    graph:     ctx.graph,
+    constants: ctx.constants,
+  };
+
+  dbg!(&funct);
+
+  Ok(funct)
 }
 
 fn process_params(
   params: &Vec<Box<LLParamBinding<Token>>>,
-  block: &mut SSABlock<()>,
+  block: &mut SSABlockConstructor,
 ) -> RumResult<()> {
   for (index, param) in params.iter().enumerate() {
     process_binding(&param.id, &param.ty, &param.tok, block)?;
@@ -115,9 +130,9 @@ fn process_params(
 
 fn process_block<'a>(
   ast_block: &LLBlock<Token>,
-  block: &'a mut SSABlock<()>,
-  loop_block_id: usize,
-) -> RumResult<&'a mut SSABlock<()>> {
+  block: &'a mut SSABlockConstructor,
+  loop_block_id: BlockId,
+) -> RumResult<&'a mut SSABlockConstructor> {
   let mut block = block;
   for stmt in &ast_block.statements {
     block = process_statements(stmt, block, loop_block_id)?;
@@ -127,14 +142,14 @@ fn process_block<'a>(
 
 fn process_statements<'a>(
   statement: &block_list_Value<Token>,
-  block: &'a mut SSABlock<()>,
-  loop_block_id: usize,
-) -> RumResult<&'a mut SSABlock<()>> {
+  block: &'a mut SSABlockConstructor,
+  loop_block_id: BlockId,
+) -> RumResult<&'a mut SSABlockConstructor> {
   use SSAOp::*;
 
   match statement {
     block_list_Value::LLContinue(t) => {
-      block.branch_unconditional = Some(loop_block_id);
+      block.inner.branch_unconditional = Some(loop_block_id);
       return Ok(block);
     }
     block_list_Value::LLPtrDeclaration(ptr_decl) => {
@@ -157,7 +172,9 @@ fn process_statements<'a>(
 
       match &prim_decl.expression {
         arithmetic_Value::None => {}
-        expression => process_assignment(block, &location, &expression, &prim_decl.tok)?,
+        expression => {
+          process_assignment(block, &location, &expression, &prim_decl.tok)?;
+        }
       }
     }
     /// Binds a variable to a type.
@@ -166,7 +183,7 @@ fn process_statements<'a>(
     }
     block_list_Value::LLLoop(loop_) => {
       let predecessor = block.create_successor();
-      let id = predecessor.id;
+      let id = predecessor.inner.id;
       return Ok(process_block(&loop_.block, predecessor, id)?);
     }
     block_list_Value::LLMatch(m) => {
@@ -182,24 +199,24 @@ fn process_statements<'a>(
             match match_block {
               match_list_1_Value::LLBlock(block) => {
                 let start_block = bool_block.create_successor();
-                let start_block_id = start_block.id;
+                let start_block_id = start_block.inner.id;
                 let end_block = process_block(&block, start_block, loop_block_id)?;
                 default_case = Some((start_block_id, end_block));
               }
 
               match_list_1_Value::LLMatchCase(case) => {
                 let start_block = bool_block.create_successor();
-                let start_block_id = start_block.id;
+                let start_block_id = start_block.inner.id;
                 let end_block = process_block(&case.block, start_block, loop_block_id)?;
 
                 match &case.val {
-                  compiler::parser::match_case_Value::LLFalse(_) => {
+                  compiler::script_parser::match_case_Value::LLFalse(_) => {
                     default_case = Some((start_block_id, end_block));
                   }
-                  compiler::parser::match_case_Value::LLTrue(_) => {
+                  compiler::script_parser::match_case_Value::LLTrue(_) => {
                     bool_success_case = Some((start_block_id, end_block));
                   }
-                  compiler::parser::match_case_Value::LLNum(val) => {
+                  compiler::script_parser::match_case_Value::LLNum(val) => {
                     panic!("Incorrect expression for logical type");
                   }
                   _ => unreachable!(),
@@ -212,21 +229,25 @@ fn process_statements<'a>(
           let join_block = bool_block.create_successor();
 
           if let Some((start_block_id, end_block)) = default_case {
-            bool_block.branch_fail = Some(start_block_id);
-            if end_block.branch_unconditional.is_none() && end_block.branch_fail.is_none() {
-              end_block.branch_unconditional = Some(join_block.id);
+            bool_block.inner.branch_fail = Some(start_block_id);
+            if end_block.inner.branch_unconditional.is_none()
+              && end_block.inner.branch_fail.is_none()
+            {
+              end_block.inner.branch_unconditional = Some(join_block.inner.id);
             }
           } else {
-            bool_block.branch_fail = Some(join_block.id);
+            bool_block.inner.branch_fail = Some(join_block.inner.id);
           }
 
           if let Some((start_block_id, end_block)) = bool_success_case {
-            bool_block.branch_succeed = Some(start_block_id);
-            if end_block.branch_unconditional.is_none() && end_block.branch_fail.is_none() {
-              end_block.branch_unconditional = Some(join_block.id);
+            bool_block.inner.branch_succeed = Some(start_block_id);
+            if end_block.inner.branch_unconditional.is_none()
+              && end_block.inner.branch_fail.is_none()
+            {
+              end_block.inner.branch_unconditional = Some(join_block.inner.id);
             }
           } else {
-            bool_block.branch_succeed = Some(join_block.id);
+            bool_block.inner.branch_succeed = Some(join_block.inner.id);
           }
 
           return Ok(join_block);
@@ -242,11 +263,11 @@ fn process_statements<'a>(
 }
 
 fn process_assignment(
-  block: &mut SSABlock<()>,
+  block: &mut SSABlockConstructor,
   location: &assignment_Value<Token>,
   expression: &arithmetic_Value<Token>,
   tok: &Token,
-) -> RumResult<()> {
+) -> RumResult<GraphNodeId> {
   match location {
     assignment_Value::Id(id) => {
       let name = id.id.intern();
@@ -256,14 +277,9 @@ fn process_assignment(
         let decl = decl.clone();
         let value = process_arithmetic_expression(&expression, block, decl.ty.unstacked(), false)?;
 
-        let mut ll_val = value.ll_val();
-        ll_val.info = ty;
-
-        let stack_op = OpArg::SSA(decl.ssa_id, LLVal::new(ty));
-
         block.debug_op(tok.clone());
 
-        block.binary_op(SSAOp::STORE, ll_val, stack_op, value, false);
+        Ok(block.push_binary_op(SSAOp::STORE, ty, decl.ssa_id.into(), value))
 
       /*         if let PtrType::Unallocated = ptr_data.ptr {
         let offset = block.get_stack_offset(1);
@@ -289,82 +305,43 @@ fn process_assignment(
       let base_ptr = resolve_base_ptr(&location.base_ptr, block);
       let offset = resolve_mem_offset(&location.expression, block);
 
-      if let ref_val @ OpArg::SSA(decl, ty) = base_ptr {
-        let base_type = ty.derefed().info;
-        let element_byte_size = base_type.ele_byte_size() as u32;
+      let mut ty = block.get_type(base_ptr);
+      let base_type = ty.deref();
+      let element_byte_size = base_type.ele_byte_size() as u32;
 
-        let expression =
-          process_arithmetic_expression(&expression, block, TI::Integer | TI::b64, false)?;
+      let expression = process_arithmetic_expression(
+        &expression,
+        block,
+        TypeInfo::Integer | TypeInfo::b64,
+        false,
+      )?;
 
-        match (offset, ty.info.num_of_elements()) {
-          (OpArg::Lit(lit), Some(count)) if count > 0 => {
-            let mut offset_val = match lit.info.ty() {
-              LLType::Float => from_flt(lit) as u32,
-              LLType::Unsigned => from_uint(lit) as u32,
-              LLType::Integer => from_int(lit) as u32,
-              _ => unreachable!(),
-            };
+      ty = ty.mask_out_elements() | TypeInfo::unknown_ele_count();
 
-            if offset_val > count as u32 {
-              panic!("Out of bounds access");
-            }
+      let multiple = block
+        .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store(element_byte_size));
 
-            // Ensure offset value is scaled by the correct element count.
-            offset_val *= element_byte_size;
+      let offset =
+        block.push_binary_op(SSAOp::MUL, TypeInfo::Integer | TypeInfo::b64, offset, multiple);
 
-            let ty = ty.info.mask_out_elements() | TI::elements((count as u32 - offset_val) as u16);
+      let ptr_location = block.push_binary_op(SSAOp::ADD, ty, base_ptr, offset);
 
-            let ptr_location = block.binary_op(
-              SSAOp::ADD,
-              LLVal::new(ty),
-              base_ptr,
-              OpArg::Lit(LLVal::new(TI::Integer | TI::b32).store(offset_val)),
-              false,
-            );
+      block.debug_op(tok.clone());
 
-            block.debug_op(tok.clone());
-
-            block.binary_op(SSAOp::MEM_STORE, Default::default(), ptr_location, expression, false);
-          }
-          (OpArg::Undefined, _) => {
-            block.debug_op(tok.clone());
-            block.binary_op(SSAOp::STORE, Default::default(), base_ptr, expression, false);
-          }
-          _ => {
-            let mut ty = ty.info;
-
-            ty = ty.mask_out_elements() | TI::unknown_ele_count();
-
-            let multiple = OpArg::Lit(LLVal::new(TI::Integer | TI::b32).store(element_byte_size));
-
-            let offset =
-              block.binary_op(SSAOp::MUL, offset.ll_val().unstacked(), offset, multiple, false);
-
-            let ptr_location = block.binary_op(SSAOp::ADD, LLVal::new(ty), base_ptr, offset, false);
-
-            block.debug_op(tok.clone());
-
-            block.binary_op(SSAOp::MEM_STORE, Default::default(), ptr_location, expression, false);
-          }
-        }
-      } else {
-        unreachable!()
-      }
+      Ok(block.push_binary_op(SSAOp::MEM_STORE, base_type, ptr_location, expression))
     }
     _ => unreachable!(),
   }
-
-  Ok(())
 }
 
 fn resolve_base_ptr(
   base_ptr: &pointer_offset_group_Value<Token>,
-  block: &mut SSABlock<()>,
-) -> OpArg<()> {
+  block: &mut SSABlockConstructor,
+) -> GraphNodeId {
   match base_ptr {
     pointer_offset_group_Value::Id(id) => {
       if let Some(decl) = block.get_binding(id.id.to_token(), true) {
-        OpArg::SSA(decl.ssa_id, LLVal::new(decl.ty))
+        decl.ssa_id.into()
       } else {
         panic!("Couldn't find base pointer");
       }
@@ -374,92 +351,51 @@ fn resolve_base_ptr(
   }
 }
 
-fn resolve_mem_offset(expr: &mem_expr_Value<Token>, block: &mut SSABlock<()>) -> OpArg<()> {
+fn resolve_mem_offset(
+  expr: &mem_expr_Value<Token>,
+  block: &mut SSABlockConstructor,
+) -> GraphNodeId {
   match expr {
     mem_expr_Value::Id(id) => {
       if let Some(val) = block.get_binding(id.id.to_token(), true) {
         let op = resolve_base_ptr(&id.clone().into(), block);
         block.debug_op(id.tok.clone());
 
-        OpArg::SSA(val.ssa_id, LLVal::new(val.ty))
+        val.ssa_id.into()
       } else {
         panic!()
       }
     }
-    mem_expr_Value::LLInt(int) => {
-      OpArg::Lit(LLVal::new(TI::Integer | TI::b64).store::<u64>(int.val as u64))
-    }
+    mem_expr_Value::LLInt(int) => block
+      .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store::<u64>(int.val as u64)),
     mem_expr_Value::LLMemAdd(add) => {
       let left = resolve_mem_offset(&add.left, block);
       let right = resolve_mem_offset(&add.right, block);
-      let right = convert_val(right, left.ll_val().info, block, false);
 
-      if left.is_lit() && right.is_lit() {
-        let l_val = left.ll_val();
-        let r_val = right.ll_val();
-        match l_val.info.ty() {
-          LLType::Integer => {
-            let val = from_int(l_val) * from_int(r_val);
-            (to_int(l_val, val as u64))
-          }
-          LLType::Unsigned => {
-            let val = from_uint(l_val) * from_uint(r_val);
-            (to_int(l_val, val as u64))
-          }
-          LLType::Float => {
-            let val = from_flt(l_val) * from_flt(r_val);
-            (to_flt(l_val, val as u64))
-          }
-          _ => unreachable!(),
-        }
-      } else {
-        block.debug_op(add.tok.clone());
-        block.binary_op(SSAOp::ADD, left.ll_val().drop_val(), left, right, false)
-      }
+      block.debug_op(add.tok.clone());
+      block.push_binary_op(SSAOp::ADD, TypeInfo::Integer | TypeInfo::b64, left, right)
     }
     mem_expr_Value::LLMemMul(mul) => {
       let left = resolve_mem_offset(&mul.left, block);
       let right = resolve_mem_offset(&mul.right, block);
-      let right = convert_val(right, left.ll_val().info, block, false);
-
-      if left.is_lit() && right.is_lit() {
-        let l_val = left.ll_val();
-        let r_val = right.ll_val();
-        match l_val.info.ty() {
-          LLType::Integer => {
-            let val = from_int(l_val) * from_int(r_val);
-            (to_int(l_val, val as u64))
-          }
-          LLType::Unsigned => {
-            let val = from_uint(l_val) * from_uint(r_val);
-            (to_int(l_val, val as u64))
-          }
-          LLType::Float => {
-            let val = from_flt(l_val) * from_flt(r_val);
-            (to_flt(l_val, val as u64))
-          }
-          _ => unreachable!(),
-        }
-      } else {
-        block.debug_op(mul.tok.clone());
-        block.binary_op(SSAOp::MUL, left.ll_val(), left, right, false)
-      }
+      block.debug_op(mul.tok.clone());
+      block.push_binary_op(SSAOp::MUL, TypeInfo::Integer | TypeInfo::b64, left, right)
     }
-    mem_expr_Value::None => OpArg::Undefined,
+    mem_expr_Value::None => GraphNodeId::Invalid,
     ast => unreachable!("{ast:?}"),
   }
 }
 
 enum LogicalExprType<'a> {
   /// Index of the boolean expression block.
-  Boolean(&'a mut SSABlock<()>),
-  Arithmatic(OpArg<()>, &'a mut SSABlock<()>),
+  Boolean(&'a mut SSABlockConstructor),
+  Arithmatic(GraphNodeId, &'a mut SSABlockConstructor),
 }
 
 impl<'a> LogicalExprType<'a> {
   pub fn map_arith_result(
-    result: RumResult<OpArg<()>>,
-    block: &'a mut SSABlock<()>,
+    result: RumResult<GraphNodeId>,
+    block: &'a mut SSABlockConstructor,
   ) -> RumResult<Self> {
     match result {
       Err(err) => Err(err),
@@ -470,7 +406,7 @@ impl<'a> LogicalExprType<'a> {
 
 fn process_match_expression<'b, 'a: 'b>(
   expression: &match_group_Value<Token>,
-  block: &'a mut SSABlock<()>,
+  block: &'a mut SSABlockConstructor,
   e_val: TypeInfo,
 ) -> RumResult<LogicalExprType<'a>> {
   use LogicalExprType as LET;
@@ -526,18 +462,20 @@ fn process_match_expression<'b, 'a: 'b>(
 
 fn process_arithmetic_expression(
   expression: &arithmetic_Value<Token>,
-  block: &mut SSABlock<()>,
+  block: &mut SSABlockConstructor,
   expected_ty: TypeInfo,
   ret_val: bool,
-) -> RumResult<OpArg<()>> {
+) -> RumResult<GraphNodeId> {
   match expression {
     arithmetic_Value::LLMember(mem) => handle_member(mem, block, ret_val),
     //arithmetic_Value::LLSelfMember(mem) => handle_self_member(mem, block),
     //arithmetic_Value::LLMemLocation(mem) => handle_mem_location(mem, block),
     //arithmetic_Value::LLCall(val) => handle_call(val, block),
-    arithmetic_Value::LLPrimitiveCast(prim) => handle_primitive_cast(prim, block, ret_val),
+    arithmetic_Value::LLPrimitiveCast(prim) => {
+      handle_primitive_cast(prim, block, expected_ty, ret_val)
+    }
     //arithmetic_Value::LLStr(..) => todo!(),
-    arithmetic_Value::LLNum(val) => handle_num(val, expected_ty, ret_val),
+    arithmetic_Value::LLNum(val) => handle_num(val, block, expected_ty),
     arithmetic_Value::Add(val) => handle_add(val, block, expected_ty, ret_val),
     arithmetic_Value::Div(val) => handle_div(val, block, expected_ty, ret_val),
     //arithmetic_Value::Log(val) => handle_log(val, block),
@@ -551,409 +489,138 @@ fn process_arithmetic_expression(
 }
 
 fn handle_primitive_cast(
-  val: &compiler::parser::LLPrimitiveCast<Token>,
-  block: &mut SSABlock<()>,
+  val: &compiler::script_parser::LLPrimitiveCast<Token>,
+  block: &mut SSABlockConstructor,
+  e_val: TypeInfo,
   ret_val: bool,
-) -> RumResult<OpArg<()>> {
-  block.debug_op(val.tok.clone());
-  let ty = val.ty.clone().into();
-  let ty: LLVal = ty_to_ll_value(&ty)?;
-
-  Ok(convert_val(
-    process_arithmetic_expression(&val.expression, block, ty.info, ret_val)?,
-    ty.info,
-    block,
-    ret_val,
-  ))
+) -> RumResult<GraphNodeId> {
+  process_arithmetic_expression(&val.expression, block, e_val, ret_val)
 }
 
 fn handle_sub(
-  sub: &compiler::parser::Sub<Token>,
-  block: &mut SSABlock<()>,
+  sub: &compiler::script_parser::Sub<Token>,
+  block: &mut SSABlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
-) -> RumResult<OpArg<()>> {
+) -> RumResult<GraphNodeId> {
   let left = process_arithmetic_expression(&sub.left, block, e_val, ret_val)?;
-  let right = convert_val(
-    process_arithmetic_expression(&sub.right, block, e_val, ret_val)?,
-    left.ll_val().info,
-    block,
-    ret_val,
-  );
+  let right = process_arithmetic_expression(&sub.right, block, e_val, ret_val)?;
+  //let right = convert_val(right, left.ll_val().info, block, ret_val);
 
-  if left.is_lit() && right.is_lit() {
-    let l_val = left.ll_val();
-    let r_val = right.ll_val();
-    match l_val.info.ty() {
-      LLType::Integer => {
-        let val = from_int(l_val) - from_int(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Unsigned => {
-        let val = from_uint(l_val) - from_uint(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Float => {
-        let val = from_flt(l_val) - from_flt(r_val);
-        Ok((to_flt(l_val, val as u64)))
-      }
-      _ => unreachable!(),
-    }
-  } else {
-    block.debug_op(sub.tok.clone());
-    Ok(block.binary_op(SSAOp::SUB, left.ll_val().unstacked().drop_val(), left, right, ret_val))
-  }
+  let l_val = block.get_type(left);
+  let r_val = block.get_type(right);
+
+  block.debug_op(sub.tok.clone());
+  Ok(block.push_binary_op(SSAOp::SUB, l_val, left, right))
 }
 
 fn handle_add(
-  add: &compiler::parser::Add<Token>,
-  block: &mut SSABlock<()>,
+  add: &compiler::script_parser::Add<Token>,
+  block: &mut SSABlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
-) -> RumResult<OpArg<()>> {
+) -> RumResult<GraphNodeId> {
   let left = process_arithmetic_expression(&add.left, block, e_val, ret_val)?;
+  let right = process_arithmetic_expression(&add.right, block, e_val, ret_val)?;
+  //let right = convert_val(right, left.ll_val().info, block, ret_val);
 
-  let right = convert_val(
-    process_arithmetic_expression(&add.right, block, e_val, ret_val)?,
-    left.ll_val().info,
-    block,
-    ret_val,
-  );
+  let l_val = block.get_type(left);
+  let r_val = block.get_type(right);
 
-  if left.is_lit() && right.is_lit() {
-    let l_val = left.ll_val();
-    let r_val = right.ll_val();
-    match l_val.info.ty() {
-      LLType::Integer => {
-        let val = from_int(l_val) + from_int(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Unsigned => {
-        let val = from_uint(l_val) + from_uint(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Float => {
-        let val = from_flt(l_val) + from_flt(r_val);
-        Ok((to_flt(l_val, val as u64)))
-      }
-      _ => unreachable!(),
-    }
-  } else {
-    block.debug_op(add.tok.clone());
-    Ok(block.binary_op(SSAOp::ADD, left.ll_val().unstacked().drop_val(), left, right, ret_val))
-  }
+  block.debug_op(add.tok.clone());
+  Ok(block.push_binary_op(SSAOp::ADD, l_val, left, right))
 }
 
 fn handle_div(
-  div: &compiler::parser::Div<Token>,
-  block: &mut SSABlock<()>,
+  div: &compiler::script_parser::Div<Token>,
+  block: &mut SSABlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
-) -> RumResult<OpArg<()>> {
+) -> RumResult<GraphNodeId> {
   let left = process_arithmetic_expression(&div.left, block, e_val, ret_val)?;
+  let right = process_arithmetic_expression(&div.right, block, e_val, ret_val)?;
+  //let right = convert_val(right, left.ll_val().info, block, ret_val);
 
-  let right = convert_val(
-    process_arithmetic_expression(&div.right, block, e_val, ret_val)?,
-    left.ll_val().info,
-    block,
-    ret_val,
-  );
+  let l_val = block.get_type(left);
+  let r_val = block.get_type(right);
 
-  if left.is_lit() && right.is_lit() {
-    let l_val = left.ll_val();
-    let r_val = right.ll_val();
-    match l_val.info.ty() {
-      LLType::Integer => {
-        let val = from_int(l_val) / from_int(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Unsigned => {
-        let val = from_uint(l_val) / from_uint(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Float => {
-        let val = from_flt(l_val) / from_flt(r_val);
-        Ok((to_flt(l_val, val as u64)))
-      }
-      _ => unreachable!(),
-    }
-  } else {
-    block.debug_op(div.tok.clone());
-    Ok(block.binary_op(SSAOp::DIV, left.ll_val().unstacked().drop_val(), left, right, ret_val))
-  }
+  block.debug_op(div.tok.clone());
+  Ok(block.push_binary_op(SSAOp::DIV, l_val, left, right))
 }
 
 fn handle_mul(
-  mul: &compiler::parser::Mul<Token>,
-  block: &mut SSABlock<()>,
+  mul: &compiler::script_parser::Mul<Token>,
+  block: &mut SSABlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
-) -> RumResult<OpArg<()>> {
+) -> RumResult<GraphNodeId> {
   let left = process_arithmetic_expression(&mul.left, block, e_val, ret_val)?;
+  let right = process_arithmetic_expression(&mul.right, block, e_val, ret_val)?;
+  //let right = convert_val(right, left.ll_val().info, block, ret_val);
 
-  let right = convert_val(
-    process_arithmetic_expression(&mul.right, block, e_val, ret_val)?,
-    left.ll_val().info,
-    block,
-    ret_val,
-  );
+  let l_val = block.get_type(left);
+  let r_val = block.get_type(right);
 
-  if left.is_lit() && right.is_lit() {
-    let l_val = left.ll_val();
-    let r_val = right.ll_val();
-    match l_val.info.ty() {
-      LLType::Integer => {
-        let val = from_int(l_val) * from_int(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Unsigned => {
-        let val = from_uint(l_val) * from_uint(r_val);
-        Ok((to_int(l_val, val as u64)))
-      }
-      LLType::Float => {
-        let val = from_flt(l_val) * from_flt(r_val);
-        Ok((to_flt(l_val, val as u64)))
-      }
-      _ => unreachable!(),
-    }
-  } else {
-    block.debug_op(mul.tok.clone());
-    Ok(block.binary_op(SSAOp::MUL, left.ll_val().unstacked().drop_val(), left, right, ret_val))
-  }
+  block.debug_op(mul.tok.clone());
+  Ok(block.push_binary_op(SSAOp::MUL, l_val, left, right))
 }
 
 fn handle_ge<'a>(
-  val: &compiler::parser::GE<Token>,
-  block: &'a mut SSABlock<()>,
+  val: &compiler::script_parser::GE<Token>,
+  block: &'a mut SSABlockConstructor,
   e_val: TypeInfo,
 ) -> RumResult<LogicalExprType<'a>> {
   let left = process_arithmetic_expression(&val.left, block, e_val, false)?;
-  let right = convert_val(
-    process_arithmetic_expression(&val.right, block, e_val, false)?,
-    left.ll_val().info,
-    block,
-    false,
-  );
-  // If both left and right are literal values, we perform the calculation and
-  // return a literal u64 of the result.
-  // Otherwise, we return a SSE reference val
+  let right = process_arithmetic_expression(&val.right, block, e_val, false)?;
 
-  if left.is_lit() && right.is_lit() {
-    let l_val = left.ll_val();
-    let r_val = right.ll_val();
-    match l_val.info.ty() {
-      LLType::Integer => {
-        let val = from_int(l_val) >= from_int(r_val);
-        Ok(LogicalExprType::Arithmatic(to_int(l_val, val as u64), block))
-      }
-      LLType::Unsigned => {
-        let val = from_uint(l_val) >= from_uint(r_val);
-        Ok(LogicalExprType::Arithmatic(to_int(l_val, val as u64), block))
-      }
-      LLType::Float => {
-        let val = from_flt(l_val) >= from_flt(r_val);
-        Ok(LogicalExprType::Arithmatic(to_int(l_val, val as u64), block))
-      }
-      _ => unreachable!(),
-    }
-  } else {
-    block.debug_op(val.tok.clone());
-    block.binary_op(SSAOp::GE, LLVal::new(TI::Integer | TI::b8), left, right, false);
-    Ok(LogicalExprType::Boolean(block))
-  }
-}
+  let l_val = block.get_type(left);
+  let r_val = block.get_type(right);
 
-pub fn from_uint(val: LLVal) -> u64 {
-  let info = val.info;
-  debug_assert!(info.ty() == LLType::Unsigned);
-  match info.bit_count() {
-    8 => val.load::<u8>().unwrap() as u64,
-    16 => val.load::<u16>().unwrap() as u64,
-    32 => val.load::<u32>().unwrap() as u64,
-    64 => val.load::<u64>().unwrap() as u64,
-    val => unreachable!("{val:?}"),
-  }
-}
+  block.debug_op(val.tok.clone());
+  block.push_binary_op(SSAOp::GE, TypeInfo::Integer | TypeInfo::b8, left, right);
 
-pub fn from_int(val: LLVal) -> i64 {
-  let info = val.info;
-  debug_assert!(info.ty() == LLType::Integer);
-  match info.bit_count() {
-    8 => val.load::<i8>().unwrap() as i64,
-    16 => val.load::<i16>().unwrap() as i64,
-    32 => val.load::<i32>().unwrap() as i64,
-    64 => val.load::<i64>().unwrap() as i64,
-    val => unreachable!("{val:?}"),
-  }
-}
-
-pub fn from_flt(val: LLVal) -> f64 {
-  let info = val.info;
-  debug_assert!(info.ty() == LLType::Float);
-  match info.bit_count() {
-    32 => val.load::<f32>().unwrap() as f64,
-    64 => val.load::<f64>().unwrap() as f64,
-    val => unreachable!("{val:?}"),
-  }
-}
-
-fn to_flt<T: Num + NumCast>(l_val: LLVal, val: T) -> OpArg<()> {
-  debug_assert!(l_val.info.ty() == LLType::Float);
-  match (l_val.info.bit_count()) {
-    32 => OpArg::Lit(l_val.store(val.to_f32().unwrap())),
-    64 => OpArg::Lit(l_val.store(val.to_f64().unwrap())),
-    val => unreachable!("{val:?}"),
-  }
-}
-
-fn to_int<T: Num + NumCast>(l_val: LLVal, val: T) -> OpArg<()> {
-  debug_assert!(l_val.info.ty() == LLType::Integer);
-  match (l_val.info.bit_count()) {
-    8 => OpArg::Lit(l_val.store(val.to_i8().unwrap())),
-    16 => OpArg::Lit(l_val.store(val.to_i16().unwrap())),
-    32 => OpArg::Lit(l_val.store(val.to_i32().unwrap())),
-    64 => OpArg::Lit(l_val.store(val.to_i64().unwrap())),
-    val => unreachable!("{val:?}"),
-  }
-}
-
-fn to_uint<T: Num + NumCast>(l_val: LLVal, val: T) -> OpArg<()> {
-  debug_assert!(l_val.info.ty() == LLType::Integer);
-  match (l_val.info.bit_count()) {
-    8 => OpArg::Lit(l_val.store(val.to_u8().unwrap())),
-    16 => OpArg::Lit(l_val.store(val.to_u16().unwrap())),
-    32 => OpArg::Lit(l_val.store(val.to_u32().unwrap())),
-    64 => OpArg::Lit(l_val.store(val.to_u64().unwrap())),
-    val => unreachable!("{val:?}"),
-  }
-}
-
-fn convert_val(
-  r_arg: OpArg<()>,
-  l_info: TypeInfo,
-  block: &mut SSABlock<()>,
-  ret_val: bool,
-) -> OpArg<()> {
-  use SSAOp::*;
-  let r_info = r_arg.ll_val().info;
-
-  match (l_info.ty(), r_info.ty()) {
-    (LLType::Float, LLType::Float) => {
-      if let OpArg::Lit(val) = r_arg {
-        to_flt(LLVal::new(l_info), from_flt(val))
-      } else if r_info.bit_count() != l_info.bit_count() {
-        block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-      } else {
-        r_arg
-      }
-    }
-    (LLType::Float, LLType::Unsigned) => {
-      if let OpArg::Lit(val) = r_arg {
-        to_flt(LLVal::new(l_info), from_uint(val))
-      } else {
-        block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-      }
-    }
-    (LLType::Float, LLType::Integer) => {
-      if let OpArg::Lit(val) = r_arg {
-        to_flt(LLVal::new(l_info), from_int(val))
-      } else {
-        block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-      }
-    }
-
-    (LLType::Unsigned, LLType::Unsigned) => {
-      if r_info.bit_count() != l_info.bit_count() {
-        if let OpArg::Lit(val) = r_arg {
-          to_uint(LLVal::new(l_info), from_uint(val))
-        } else {
-          block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-        }
-      } else {
-        r_arg
-      }
-    }
-    (LLType::Unsigned, LLType::Float) => {
-      if let OpArg::Lit(val) = r_arg {
-        to_uint(LLVal::new(l_info), from_flt(val))
-      } else {
-        block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-      }
-    }
-    (LLType::Unsigned, LLType::Integer) => {
-      if let OpArg::Lit(val) = r_arg {
-        to_uint(LLVal::new(l_info), from_int(val))
-      } else {
-        block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-      }
-    }
-
-    (LLType::Integer, LLType::Integer) => {
-      if r_info.bit_count() != l_info.bit_count() {
-        if let OpArg::Lit(val) = r_arg {
-          to_int(LLVal::new(l_info), from_int(val))
-        } else {
-          block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-        }
-      } else {
-        r_arg
-      }
-    }
-    (LLType::Integer, LLType::Float) => {
-      if let OpArg::Lit(val) = r_arg {
-        to_int(LLVal::new(l_info), from_flt(val))
-      } else {
-        block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-      }
-    }
-    (LLType::Integer, LLType::Unsigned) => {
-      if let OpArg::Lit(val) = r_arg {
-        to_int(LLVal::new(l_info), from_uint(val))
-      } else {
-        block.unary_op(CONVERT, LLVal::new(l_info), r_arg, ret_val)
-      }
-    }
-
-    _ => r_arg,
-  }
+  Ok(LogicalExprType::Boolean(block))
 }
 
 fn handle_num(
-  num: &compiler::parser::LLNum<Token>,
+  num: &compiler::script_parser::LLNum<Token>,
+  block: &mut SSABlockConstructor,
   expected_val: TypeInfo,
-  ret_val: bool,
-) -> RumResult<OpArg<()>> {
+) -> RumResult<GraphNodeId> {
   let val = num.val;
   let bit_size: BitSize = expected_val.into();
-  match expected_val.ty() {
+
+  let constant = match expected_val.ty() {
     LLType::Integer => match bit_size {
-      BitSize::b8 => Ok(OpArg::Lit(LLVal::new(TI::Integer | TI::b8).store(val as i8))),
-      BitSize::b16 => Ok(OpArg::Lit(LLVal::new(TI::Integer | TI::b16).store(val as i16))),
-      BitSize::b32 => Ok(OpArg::Lit(LLVal::new(TI::Integer | TI::b32).store(val as i32))),
-      BitSize::b64 => Ok(OpArg::Lit(LLVal::new(TI::Integer | TI::b64).store(val as i64))),
-      BitSize::b128 => Ok(OpArg::Lit(LLVal::new(TI::Integer | TI::b128).store(val as i128))),
-      _ => Ok(OpArg::Lit(LLVal::new(TI::Integer | TI::b128).store(val as i128))),
+      BitSize::b8 => ConstVal::new(TypeInfo::Integer | TypeInfo::b8).store(val as i8),
+      BitSize::b16 => ConstVal::new(TypeInfo::Integer | TypeInfo::b16).store(val as i16),
+      BitSize::b32 => ConstVal::new(TypeInfo::Integer | TypeInfo::b32).store(val as i32),
+      BitSize::b64 => ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store(val as i64),
+      BitSize::b128 => ConstVal::new(TypeInfo::Integer | TypeInfo::b128).store(val as i128),
+      _ => ConstVal::new(TypeInfo::Integer | TypeInfo::b128).store(val as i128),
     },
     LLType::Unsigned => match bit_size {
-      BitSize::b8 => Ok(OpArg::Lit(LLVal::new(TI::Unsigned | TI::b8).store(val as u8))),
-      BitSize::b16 => Ok(OpArg::Lit(LLVal::new(TI::Unsigned | TI::b16).store(val as u16))),
-      BitSize::b32 => Ok(OpArg::Lit(LLVal::new(TI::Unsigned | TI::b32).store(val as u32))),
-      BitSize::b64 => Ok(OpArg::Lit(LLVal::new(TI::Unsigned | TI::b64).store(val as u64))),
-      BitSize::b128 => Ok(OpArg::Lit(LLVal::new(TI::Unsigned | TI::b128).store(val as u128))),
-      _ => Ok(OpArg::Lit(LLVal::new(TI::Unsigned | TI::b128).store(val as u128))),
+      BitSize::b8 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b8).store(val as u8),
+      BitSize::b16 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b16).store(val as u16),
+      BitSize::b32 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b32).store(val as u32),
+      BitSize::b64 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b64).store(val as u64),
+      BitSize::b128 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b128).store(val as u128),
+      _ => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b128).store(val as u128),
     },
     LLType::Float | _ => match bit_size {
-      BitSize::b32 => Ok(OpArg::Lit(LLVal::new(TI::Float | TI::b32).store(val as f32))),
-      _ | BitSize::b64 => Ok(OpArg::Lit(LLVal::new(TI::Float | TI::b64).store(val as f64))),
+      BitSize::b32 => ConstVal::new(TypeInfo::Float | TypeInfo::b32).store(val as f32),
+      _ | BitSize::b64 => ConstVal::new(TypeInfo::Float | TypeInfo::b64).store(val as f64),
     },
-  }
+  };
+
+  Ok(block.push_constant(constant))
 }
 
 fn handle_member(
-  val: &compiler::parser::LLMember<Token>,
-  block: &mut SSABlock<()>,
+  val: &compiler::script_parser::LLMember<Token>,
+  block: &mut SSABlockConstructor,
   ret_val: bool,
-) -> RumResult<OpArg<()>> {
+) -> RumResult<GraphNodeId> {
   if val.branches.len() > 0 {
     todo!("Handle Member Expression - Multi Level Case, \n{val:?}");
   }
@@ -961,8 +628,7 @@ fn handle_member(
     Some(decl) => {
       block.debug_op(val.root.tok.clone());
       let val = LLVal::new(decl.ty);
-      let op = OpArg::SSA(decl.ssa_id, LLVal::new(decl.ty));
-      Ok(op)
+      Ok(decl.ssa_id.into())
     }
     None => {
       panic!(
@@ -975,7 +641,7 @@ fn handle_member(
 }
 
 fn create_allocation(
-  block: &mut SSABlock<()>,
+  block: &mut SSABlockConstructor,
   target_name: IString,
   is_heap: bool,
   byte_count: &mem_binding_group_Value<Token>,
@@ -986,6 +652,8 @@ fn create_allocation(
         panic!("Already allocated! {}", decl.tok.blame(1, 1, "", None))
       }
 
+      let target: GraphNodeId = decl.ssa_id.into();
+
       if !decl.ty.is_ptr() {
         panic!(
           "Variable is not bound to a ptr type! {} \n {}",
@@ -994,11 +662,11 @@ fn create_allocation(
         )
       }
       if is_heap {
-        block.refine_binding(target_name, TI::to_location(DataLocation::Heap));
+        block.refine_binding(target_name, TypeInfo::to_location(DataLocation::Heap));
       } else {
         block.refine_binding(
           target_name,
-          TI::to_location(DataLocation::SsaStack(decl.ty.stack_id().unwrap())),
+          TypeInfo::to_location(DataLocation::SsaStack(decl.ty.stack_id().unwrap())),
         );
       }
 
@@ -1007,7 +675,8 @@ fn create_allocation(
           let val = int.val;
           let num_of_bytes = (64 - int.val.leading_zeros()).div_ceil(8);
 
-          let ty = LLVal::new(TI::Unsigned | TI::bytes(num_of_bytes as u16)).store(val as i64);
+          let constant = ConstVal::new(TypeInfo::Unsigned | TypeInfo::bytes(num_of_bytes as u16))
+            .store(val as i64);
 
           if val < u16::MAX as i64 {
             decl.ty |= TypeInfo::elements(val as u16);
@@ -1016,8 +685,8 @@ fn create_allocation(
           }
 
           if is_heap {
-            let op = OpArg::SSA(decl.ssa_id, LLVal::new(decl.ty));
-            block.binary_op(SSAOp::ALLOC, Default::default(), op, OpArg::Lit(ty), false);
+            let arg = block.push_constant(constant);
+            block.push_binary_op(SSAOp::MALLOC, decl.ty, target, arg);
           }
         }
 
@@ -1028,10 +697,9 @@ fn create_allocation(
             if is_heap {
               block.debug_op(id.tok.clone());
 
-              let val = LLVal::new(ptr_id.ty.deref());
-              let op_val = OpArg::SSA(ptr_id.ssa_id, LLVal::new(decl.ty));
-              let op = OpArg::SSA(decl.ssa_id, LLVal::new(decl.ty));
-              block.binary_op(SSAOp::ALLOC, Default::default(), op, op_val, false);
+              let arg: GraphNodeId = ptr_id.ssa_id.into();
+
+              block.push_binary_op(SSAOp::MALLOC, ptr_id.ty.deref(), target, arg);
             }
           } else {
             panic!()
@@ -1051,9 +719,9 @@ fn process_binding(
   id: &Id<Token>,
   ty: &type_Value,
   tok: &Token,
-  block: &mut SSABlock<()>,
+  block: &mut SSABlockConstructor,
 ) -> Result<(), compiler::interpreter::error::RumScriptError> {
-  let ty = ty_to_ll_value(&ty)?.info;
+  let ty = ast_ty_to_ssa_ty(&ty);
   let name = id.id.intern();
   if ty.is_undefined() {
     return Err(format!("Invalid function parameter: \n{}", tok.blame(1, 1, "", None)).into());
@@ -1064,25 +732,314 @@ fn process_binding(
   Ok(())
 }
 
-fn ty_to_ll_value(val: &type_Value) -> RumResult<LLVal> {
+fn ast_ty_to_ssa_ty(val: &type_Value) -> TypeInfo {
   let val = match val {
-    type_Value::Type_u64(..) => LLVal::new(TI::Unsigned | TI::b64),
-    type_Value::Type_u32(..) => LLVal::new(TI::Unsigned | TI::b32),
-    type_Value::Type_u16(..) => LLVal::new(TI::Unsigned | TI::b16),
-    type_Value::Type_u8(..) => LLVal::new(TI::Unsigned | TI::b8),
-    type_Value::Type_i64(..) => LLVal::new(TI::Integer | TI::b64),
-    type_Value::Type_i32(..) => LLVal::new(TI::Integer | TI::b32),
-    type_Value::Type_i16(..) => LLVal::new(TI::Integer | TI::b16),
-    type_Value::Type_i8(..) => LLVal::new(TI::Integer | TI::b8),
-    type_Value::Type_f64(..) => LLVal::new(TI::Float | TI::b64),
-    type_Value::Type_f32(..) => LLVal::new(TI::Float | TI::b32),
-    type_Value::Type_8BitPointer(..) => LLVal::new(TI::Generic | TI::Ptr | TI::b8),
-    type_Value::Type_16BitPointer(..) => LLVal::new(TI::Generic | TI::Ptr | TI::b16),
-    type_Value::Type_32BitPointer(..) => LLVal::new(TI::Generic | TI::Ptr | TI::b32),
-    type_Value::Type_64BitPointer(..) => LLVal::new(TI::Generic | TI::Ptr | TI::b64),
-    type_Value::Type_128BitPointer(..) => LLVal::new(TI::Generic | TI::Ptr | TI::b128),
+    type_Value::Type_u64(..) => TypeInfo::Unsigned | TypeInfo::b64,
+    type_Value::Type_u32(..) => TypeInfo::Unsigned | TypeInfo::b32,
+    type_Value::Type_u16(..) => TypeInfo::Unsigned | TypeInfo::b16,
+    type_Value::Type_u8(..) => TypeInfo::Unsigned | TypeInfo::b8,
+    type_Value::Type_i64(..) => TypeInfo::Integer | TypeInfo::b64,
+    type_Value::Type_i32(..) => TypeInfo::Integer | TypeInfo::b32,
+    type_Value::Type_i16(..) => TypeInfo::Integer | TypeInfo::b16,
+    type_Value::Type_i8(..) => TypeInfo::Integer | TypeInfo::b8,
+    type_Value::Type_f64(..) => TypeInfo::Float | TypeInfo::b64,
+    type_Value::Type_f32(..) => TypeInfo::Float | TypeInfo::b32,
+    type_Value::Type_8BitPointer(..) => TypeInfo::Generic | TypeInfo::Ptr | TypeInfo::b8,
+    type_Value::Type_16BitPointer(..) => TypeInfo::Generic | TypeInfo::Ptr | TypeInfo::b16,
+    type_Value::Type_32BitPointer(..) => TypeInfo::Generic | TypeInfo::Ptr | TypeInfo::b32,
+    type_Value::Type_64BitPointer(..) => TypeInfo::Generic | TypeInfo::Ptr | TypeInfo::b64,
+    type_Value::Type_128BitPointer(..) => TypeInfo::Generic | TypeInfo::Ptr | TypeInfo::b128,
     _ => Default::default(),
   };
 
-  Ok(val)
+  val
+}
+
+#[derive(Debug)]
+pub struct SSAContextBuilder {
+  pub(super) blocks:      Vec<*mut SSABlockConstructor>,
+  pub(super) ssa_index:   isize,
+  pub(super) stack_ids:   isize,
+  pub(super) block_top:   BlockId,
+  pub(super) active_type: Vec<LLVal>,
+  pub(super) graph:       Vec<SSAGraphNode>,
+  pub(super) constants:   Vec<ConstVal>,
+}
+
+impl Default for SSAContextBuilder {
+  fn default() -> Self {
+    Self {
+      blocks:      Default::default(),
+      ssa_index:   0,
+      stack_ids:   -1,
+      block_top:   Default::default(),
+      active_type: Default::default(),
+      graph:       Default::default(),
+      constants:   Default::default(),
+    }
+  }
+}
+
+impl SSAContextBuilder {
+  pub fn push_block<'a>(&mut self, predecessor: Option<u32>) -> &'a mut SSABlockConstructor {
+    self.block_top = BlockId(self.blocks.len() as u32);
+
+    let mut block = Box::new(SSABlockConstructor::default());
+
+    block.inner.id = self.block_top;
+    block.ctx = self;
+
+    if let Some(predecessor) = predecessor {
+      block.scope_parent = Some(self.blocks[predecessor as usize])
+    }
+
+    self.blocks.push(Box::into_raw(block));
+
+    unsafe { &mut *self.blocks[self.block_top] }
+  }
+
+  pub fn get_current_ssa_id(&self) -> usize {
+    self.ssa_index as usize
+  }
+
+  fn get_ssa_id(&mut self) -> usize {
+    let ssa = &mut self.ssa_index;
+    (*ssa) += 1;
+    (*ssa) as usize
+  }
+
+  pub fn push_stack_element(&mut self) -> usize {
+    let so = &mut self.stack_ids;
+    (*so) += 1;
+    (*so) as usize
+  }
+
+  pub fn next_block_id(&self) -> usize {
+    (self.block_top.0 + 1) as usize
+  }
+
+  pub fn get_block_mut(&mut self, block_id: usize) -> Option<&mut SSABlockConstructor> {
+    self.blocks.get_mut(block_id).map(|b| unsafe { &mut **b })
+  }
+
+  pub fn get_head_block(&mut self) -> &mut SSABlockConstructor {
+    self.get_block_mut(self.block_top.0 as usize).unwrap()
+  }
+
+  pub fn push_graph_node(&mut self, mut node: SSAGraphNode) -> GraphNodeId {
+    let id: GraphNodeId = self.graph.len().into();
+    node.id = id;
+    self.graph.push(node);
+    id
+  }
+}
+
+#[derive(Debug)]
+pub struct SSABlockConstructor {
+  inner:            Box<SSABlock>,
+  pub scope_parent: Option<*mut SSABlockConstructor>,
+  pub decls:        Vec<SymbolBinding>,
+  pub ctx:          *mut SSAContextBuilder,
+}
+
+impl Default for SSABlockConstructor {
+  fn default() -> Self {
+    Self {
+      ctx:          std::ptr::null_mut(),
+      decls:        Default::default(),
+      scope_parent: Default::default(),
+      inner:        Box::new(SSABlock {
+        id:                   Default::default(),
+        predecessors:         Default::default(),
+        ops:                  Default::default(),
+        branch_succeed:       Default::default(),
+        branch_unconditional: Default::default(),
+        branch_fail:          Default::default(),
+      }),
+    }
+  }
+}
+
+impl Into<Box<SSABlock>> for SSABlockConstructor {
+  fn into(self) -> Box<SSABlock> {
+    self.inner
+  }
+}
+
+impl SSABlockConstructor {
+  pub fn push_binary_op(
+    &mut self,
+    op: SSAOp,
+    output: TypeInfo,
+    left: GraphNodeId,
+    right: GraphNodeId,
+  ) -> GraphNodeId {
+    let id = self.ctx().push_graph_node(SSAGraphNode {
+      block_id: self.inner.id,
+      op,
+      id: GraphNodeId::Invalid,
+      output,
+      operands: [left, right, Default::default()],
+    });
+    self.inner.ops.push(id);
+    id
+  }
+
+  pub fn push_unary_op(&mut self, op: SSAOp, output: TypeInfo, left: GraphNodeId) -> GraphNodeId {
+    let id = self.ctx().push_graph_node(SSAGraphNode {
+      block_id: self.inner.id,
+      op,
+      id: GraphNodeId::Invalid,
+      output,
+      operands: [left, Default::default(), Default::default()],
+    });
+    self.inner.ops.push(id);
+    id
+  }
+
+  pub fn push_zero_op(&mut self, op: SSAOp, output: TypeInfo) -> GraphNodeId {
+    let id = self.ctx().push_graph_node(SSAGraphNode {
+      block_id: self.inner.id,
+      op,
+      id: GraphNodeId::Invalid,
+      output,
+      operands: Default::default(),
+    });
+    self.inner.ops.push(id);
+    id
+  }
+
+  pub fn push_constant(&mut self, output: ConstVal) -> GraphNodeId {
+    let const_index = if let Some((index, val)) =
+      self.ctx().constants.iter().enumerate().find(|v| v.1.clone() == output)
+    {
+      index
+    } else {
+      let val = self.ctx().constants.len();
+      self.ctx().constants.push(output);
+      val
+    };
+
+    self.ctx().push_graph_node(SSAGraphNode {
+      block_id: self.inner.id,
+      op:       SSAOp::CONSTANT,
+      id:       GraphNodeId::Invalid,
+      output:   output.ty,
+      operands: [GraphNodeId(const_index as u32), Default::default(), Default::default()],
+    })
+  }
+
+  pub fn debug_op(&mut self, tok: Token) {
+    //self.ops.push(SSAExpr::Debug(tok));
+  }
+
+  pub(super) fn ctx<'a>(&self) -> &'a mut SSAContextBuilder {
+    unsafe { &mut *self.ctx }
+  }
+
+  pub(super) fn get_current_ssa_id(&self) -> usize {
+    if self.ctx.is_null() {
+      usize::MAX
+    } else {
+      self.ctx().get_current_ssa_id()
+    }
+  }
+
+  pub fn get_binding(&self, id: IString, search_hierarchy: bool) -> Option<SymbolBinding> {
+    for binding in &self.decls {
+      if binding.name == id {
+        return Some(binding.clone());
+      }
+    }
+
+    if let Some(par) = self.scope_parent {
+      return unsafe { (&*par).get_binding(id, search_hierarchy) };
+    }
+
+    None
+  }
+
+  pub(super) fn refine_binding(&mut self, name: IString, ty: TypeInfo) {
+    let ctx = self.ctx();
+    for binding in &mut self.decls {
+      if binding.name == name {
+        let id = binding.ssa_id;
+        ctx.graph[id].output |= ty;
+        binding.ty |= ty;
+        return;
+      }
+    }
+
+    if let Some(par) = self.scope_parent {
+      return unsafe { (&mut *par).refine_binding(name, ty) };
+    }
+  }
+
+  pub(super) fn create_binding(
+    &mut self,
+    name: IString,
+    mut ty: TypeInfo,
+    tok: Token,
+  ) -> RumResult<()> {
+    let ctx = self.ctx();
+    for binding in &mut self.decls {
+      if binding.name == name {
+        let stack_id = ctx.stack_ids + 1;
+        ctx.stack_ids += 1;
+
+        ty |= TypeInfo::at_stack_id(stack_id as u16);
+
+        let id = ctx.push_graph_node(SSAGraphNode {
+          id:       GraphNodeId::Invalid,
+          op:       SSAOp::STACK_DEFINE,
+          output:   ty,
+          operands: Default::default(),
+          block_id: self.inner.id,
+        });
+
+        ctx.ssa_index += 1;
+
+        binding.ty = ty;
+        binding.tok = tok;
+        binding.ssa_id = id.0 as usize;
+
+        return Ok(());
+      }
+    }
+
+    let stack_id = ctx.stack_ids + 1;
+    ctx.stack_ids += 1;
+
+    ty |= TypeInfo::at_stack_id(stack_id as u16);
+
+    let id = ctx.push_graph_node(SSAGraphNode {
+      id:       GraphNodeId::Invalid,
+      op:       SSAOp::STACK_DEFINE,
+      output:   ty,
+      operands: Default::default(),
+      block_id: self.inner.id,
+    });
+
+    ctx.ssa_index += 1;
+
+    let ssa_id = id.0 as usize;
+
+    self.decls.push(SymbolBinding { name, ty, ssa_id, tok });
+
+    Ok(())
+  }
+
+  pub(super) fn get_type(&self, id: GraphNodeId) -> TypeInfo {
+    debug_assert!(!id.is_invalid());
+    self.ctx().graph[id.0 as usize].output
+  }
+
+  pub(super) fn create_successor<'a>(&self) -> &'a mut SSABlockConstructor {
+    let id = self.ctx().push_block(Some(self.inner.id.0)).inner.id;
+    unsafe { &mut *self.ctx().blocks[id] }
+  }
+  /// Pushs a new monotonic stack offset value and returns it.
+  pub fn push_stack_offset(&mut self) -> usize {
+    self.ctx().push_stack_element()
+  }
 }

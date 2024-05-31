@@ -480,7 +480,7 @@ pub fn compile_op(
         panic!()
       }
     }
-    SSAOp::ALLOC => {
+    SSAOp::MALLOC => {
       let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
       if let SSAExpr::BinaryOp(op, val, op1, op2) = op_expr {
         debug_assert!(op1.ll_val().info.is_ptr());

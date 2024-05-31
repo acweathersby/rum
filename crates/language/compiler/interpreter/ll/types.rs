@@ -1,9 +1,14 @@
 use radlr_rust_runtime::types::Token;
 use rum_container::ArrayVec;
 use rum_istring::IString;
-use std::fmt::{Debug, Display};
+use std::{
+  fmt::{Debug, Display},
+  ops::IndexMut,
+  slice::SliceIndex,
+};
 
-use crate::compiler::interpreter::error::RumResult;
+mod const_val;
+pub use const_val::*;
 
 /// Operations that a register can perform.
 
@@ -524,7 +529,7 @@ pub struct LLVal {
   val:      Option<[u8; 16]>,
 }
 
-impl Debug for LLVal {
+impl Display for LLVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.ssa_id > 0 {
       f.write_fmt(format_args!("<{:03}> ", self.ssa_id))?;
@@ -566,6 +571,12 @@ impl Debug for LLVal {
   }
 }
 
+impl Debug for LLVal {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(self, f)
+  }
+}
+
 impl LLVal {
   pub fn drop_val(mut self) -> Self {
     self.val = None;
@@ -601,6 +612,10 @@ impl LLVal {
     }
   }
 
+  pub fn is_lit(&self) -> bool {
+    self.val.is_some()
+  }
+
   pub fn store<T>(mut self, val: T) -> Self {
     let mut bytes: [u8; 16] = Default::default();
 
@@ -612,65 +627,6 @@ impl LLVal {
 
     self
   }
-}
-
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
-pub enum OpArg<R: Debug> {
-  Undefined,
-  /// A static value that is fully defined; can be used to to perform compile
-  /// time operations
-  Lit(LLVal),
-  /// Default op args used for SSA expressions
-  SSA(usize, LLVal),
-  /// Should be handled with return value conventions
-  SSA_RETURN(LLVal),
-  /// Replaces SSA arguments with register names.
-  REG(R, LLVal),
-  /// Used for targeting jumps between blocks
-  BLOCK(usize),
-}
-
-impl<R: Debug> Debug for OpArg<R> {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      OpArg::Undefined => f.write_fmt(format_args!("UNDEF")),
-      OpArg::Lit(val) => f.write_fmt(format_args!("{:?}", val)),
-      OpArg::SSA(id, val) => f.write_fmt(format_args!("${id}({val:?})")),
-      OpArg::SSA_RETURN(val) => f.write_fmt(format_args!("&return ({val:?})")),
-      OpArg::REG(id, val) => f.write_fmt(format_args!("{id:?}({val:?})")),
-      OpArg::BLOCK(val) => f.write_fmt(format_args!("BLOCK({val})")),
-    }
-  }
-}
-
-impl<R: Debug> OpArg<R> {
-  pub fn undefined(&self) -> bool {
-    matches!(self, OpArg::Undefined)
-  }
-
-  pub fn is_reg(&self) -> bool {
-    matches!(self, OpArg::REG(..))
-  }
-
-  pub fn ll_val(&self) -> LLVal {
-    use OpArg::*;
-    match self {
-      REG(_, ll_val) | SSA(_, ll_val) | Lit(ll_val) => *ll_val,
-      _ => Default::default(),
-    }
-  }
-
-  pub fn is_lit(&self) -> bool {
-    match self {
-      Self::Lit(..) => true,
-      _ => false,
-    }
-  }
-}
-
-#[derive(Debug)]
-pub struct LLFunctionSSABlocks<R: Debug + Default + Copy> {
-  pub(crate) blocks: Vec<Box<SSABlock<R>>>,
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
@@ -696,70 +652,38 @@ impl Debug for DataLocation {
   }
 }
 
-#[derive(Clone)]
-pub enum SSAExpr<R: Debug> {
-  Debug(Token),
-  NullOp(SSAOp, OpArg<R>),
-  UnaryOp(SSAOp, OpArg<R>, OpArg<R>),
-  BinaryOp(SSAOp, OpArg<R>, OpArg<R>, OpArg<R>),
+#[derive(Clone, Copy)]
+pub struct SSAGraphNode {
+  pub(super) id:       GraphNodeId,
+  pub(super) block_id: BlockId,
+  pub(super) op:       SSAOp,
+  pub(super) output:   TypeInfo,
+  pub(super) operands: [GraphNodeId; 3],
 }
 
-impl<R: Debug> SSAExpr<R> {
-  pub fn name(&self) -> SSAOp {
-    match self {
-      Self::BinaryOp(op, ..) | Self::UnaryOp(op, ..) | Self::NullOp(op, ..) => *op,
-      Self::Debug(_) => SSAOp::NOOP,
-    }
-  }
-}
-
-impl<R: Debug> Debug for SSAExpr<R> {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      SSAExpr::BinaryOp(op, c, a, b) => f.write_fmt(format_args!(
-        "{}{op:?} {a:?} {b:?}\n",
-        if let OpArg::Undefined = c { Default::default() } else { format!("{c: >16?} = ") }
-      )),
-      SSAExpr::UnaryOp(op, c, a) => f.write_fmt(format_args!(
-        "{}{op:?} {a:?}\n",
-        if let OpArg::Undefined = c { Default::default() } else { format!("{c: >16?} = ") }
-      )),
-      SSAExpr::NullOp(op, c) => f.write_fmt(format_args!(
-        "{}{op:?}\n",
-        if let OpArg::Undefined = c { Default::default() } else { format!("{c: >16?} = ") }
-      )),
-      SSAExpr::Debug(token) => {
-        f.write_str(token.blame(0, 0, "", None).trim())?;
-        f.write_str("\n")
-      }
-    }
-  }
-}
-
-pub struct OpGraphNode {
-  id:       usize,
-  op:       SSAOp,
-  output:   LLVal,
-  operands: ArrayVec<3, usize>,
-  block_id: usize,
-}
-
-impl Debug for OpGraphNode {
+impl Debug for SSAGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_fmt(format_args!(
-      "[{}:03 in {:3}]:{:20?} = {:5?} {}",
-      self.block_id,
+      "{}@{:03}: {:28} = {:15} {}",
       self.id,
-      self.output,
-      self.op,
-      self.operands.iter().map(|i| format!("{i:5}")).collect::<Vec<_>>().join(" ") //--
+      self.block_id,
+      format!("{}", self.output),
+      format!("{:?}", self.op),
+      self
+        .operands
+        .iter()
+        .filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) })
+        .collect::<Vec<_>>()
+        .join("  ") //--
     ))
   }
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SSAOp {
+  STACK_DEFINE,
+  CONSTANT,
   NOOP,
   ADD,
   SUB,
@@ -784,7 +708,7 @@ pub enum SSAOp {
   CALL,
   CONVERT,
   /// Allocate heap memory and return pointer.
-  ALLOC,
+  MALLOC,
   RETURN,
   CALL_BLOCK,
   EXIT_BLOCK,
@@ -792,85 +716,87 @@ pub enum SSAOp {
   JUMP_ZE,
   NE,
   EQ,
+  PHI,
 }
 
-#[derive(Debug)]
-pub struct SSAContextBuilder<R: Debug> {
-  pub(super) blocks:      Vec<*mut SSABlock<R>>,
-  pub(super) ssa_index:   isize,
-  pub(super) stack_ids:   isize,
-  pub(super) block_top:   usize,
-  pub(super) active_type: Vec<LLVal>,
-  pub(super) graph:       Vec<OpGraphNode>,
-}
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
+pub struct GraphNodeId(pub u32);
 
-impl<R: Debug> Default for SSAContextBuilder<R> {
+impl Default for GraphNodeId {
   fn default() -> Self {
-    Self {
-      blocks:      Default::default(),
-      ssa_index:   0,
-      stack_ids:   -1,
-      block_top:   0,
-      active_type: Default::default(),
-      graph:       Default::default(),
-    }
+    Self::Invalid
   }
 }
 
-impl<R: Debug + Default + Copy> SSAContextBuilder<R> {
-  pub fn create_ssa_id(&mut self, mut val: LLVal) -> OpArg<R> {
-    val.ssa_id = self.get_ssa_id();
-    OpArg::SSA(val.ssa_id, val)
+impl<T> std::ops::Index<GraphNodeId> for [T] {
+  type Output = T;
+  fn index(&self, index: GraphNodeId) -> &Self::Output {
+    &self[index.0 as usize]
   }
+}
 
-  pub fn push_block<'a>(&mut self, predecessor: Option<usize>) -> &'a mut SSABlock<R> {
-    self.block_top = self.blocks.len();
-
-    let mut block = Box::new(SSABlock::default());
-
-    block.id = self.block_top as usize;
-    block.ctx = self;
-
-    if let Some(predecessor) = predecessor {
-      block.scope_parent = Some(self.blocks[predecessor])
-    }
-
-    self.blocks.push(Box::into_raw(block));
-
-    unsafe { &mut *self.blocks[self.block_top] }
+impl<T> std::ops::IndexMut<GraphNodeId> for [T] {
+  fn index_mut(&mut self, index: GraphNodeId) -> &mut Self::Output {
+    &mut self[index.0 as usize]
   }
+}
 
-  pub fn get_current_ssa_id(&self) -> usize {
-    self.ssa_index as usize
+impl<T> std::ops::Index<GraphNodeId> for Vec<T> {
+  type Output = T;
+  fn index(&self, index: GraphNodeId) -> &Self::Output {
+    &self[index.0 as usize]
   }
+}
 
-  fn get_ssa_id(&mut self) -> usize {
-    let ssa = &mut self.ssa_index;
-    (*ssa) += 1;
-    (*ssa) as usize
+impl<T> std::ops::IndexMut<GraphNodeId> for Vec<T> {
+  fn index_mut(&mut self, index: GraphNodeId) -> &mut Self::Output {
+    &mut self[index.0 as usize]
   }
+}
 
-  pub fn push_stack_element(&mut self) -> usize {
-    let so = &mut self.stack_ids;
-    (*so) += 1;
-    (*so) as usize
+impl<T, const SIZE: usize> std::ops::Index<GraphNodeId> for ArrayVec<SIZE, T> {
+  type Output = T;
+
+  fn index(&self, index: GraphNodeId) -> &Self::Output {
+    &self[index.0 as usize]
   }
+}
 
-  pub fn next_block_id(&self) -> usize {
-    (self.block_top + 1) as usize
+impl<T, const SIZE: usize> std::ops::IndexMut<GraphNodeId> for ArrayVec<SIZE, T> {
+  fn index_mut(&mut self, index: GraphNodeId) -> &mut Self::Output {
+    &mut self[index.0 as usize]
   }
+}
 
-  pub fn get_block_mut(&mut self, block_id: usize) -> Option<&mut SSABlock<R>> {
-    self.blocks.get_mut(block_id).map(|b| unsafe { &mut **b })
+impl GraphNodeId {
+  pub const Invalid: GraphNodeId = GraphNodeId(u32::MAX);
+
+  pub fn is_invalid(&self) -> bool {
+    *self == Self::Invalid
   }
+}
 
-  pub fn get_head_block(&mut self) -> &mut SSABlock<R> {
-    self.get_block_mut(self.block_top).unwrap()
+impl Display for GraphNodeId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("${:03}", self.0))
   }
+}
 
-  pub fn push_graph_node(&mut self, mut node: OpGraphNode) {
-    node.id = self.graph.len();
-    self.graph.push(node);
+impl Debug for GraphNodeId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(self, f)
+  }
+}
+
+impl From<GraphNodeId> for usize {
+  fn from(value: GraphNodeId) -> Self {
+    value.0 as usize
+  }
+}
+
+impl From<usize> for GraphNodeId {
+  fn from(value: usize) -> Self {
+    Self(value as u32)
   }
 }
 
@@ -896,21 +822,16 @@ impl Debug for SymbolBinding {
 }
 
 #[derive(Clone)]
-pub struct SSABlock<R: Debug> {
-  pub id:                   usize,
-  pub scope_parent:         Option<*mut SSABlock<R>>,
-  pub ctx:                  *mut SSAContextBuilder<R>,
+pub struct SSABlock {
+  pub id:                   BlockId,
   pub predecessors:         ArrayVec<20, u16>,
-  pub ops:                  Vec<SSAExpr<R>>,
-  pub outs:                 Vec<(usize, OpArg<R>)>,
-  pub decls:                Vec<SymbolBinding>,
-  pub return_val:           Option<OpArg<R>>,
-  pub branch_unconditional: Option<usize>,
-  pub branch_succeed:       Option<usize>,
-  pub branch_fail:          Option<usize>,
+  pub ops:                  Vec<GraphNodeId>,
+  pub branch_unconditional: Option<BlockId>,
+  pub branch_succeed:       Option<BlockId>,
+  pub branch_fail:          Option<BlockId>,
 }
 
-impl<R: Debug + Default + Copy> Debug for SSABlock<R> {
+impl Debug for SSABlock {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let id = self.id;
     let ops = self
@@ -927,9 +848,9 @@ impl<R: Debug + Default + Copy> Debug for SSABlock<R> {
       Default::default()
     };
 
-    let branch = if let Some(ret) = self.return_val {
+    let branch = /* if let Some(ret) = self.return_val {
       format!("\n\n  return: {ret:?}")
-    } else if let (Some(fail), Some(pass)) = (self.branch_fail, self.branch_succeed) {
+    } else  */if let (Some(fail), Some(pass)) = (self.branch_fail, self.branch_succeed) {
       format!("\n\n  pass: Block-{pass:03}\n  fail: Block-{fail:03}")
     } else if let Some(branch) = self.branch_unconditional {
       format!("\n\n  jump: Block-{branch:03}")
@@ -947,212 +868,59 @@ Block-{id:03} {{
   }
 }
 
-impl<R: Debug + Default + Copy> Default for SSABlock<R> {
-  fn default() -> Self {
-    Self {
-      id:                   Default::default(),
-      scope_parent:         Default::default(),
-      ctx:                  std::ptr::null_mut(),
-      predecessors:         Default::default(),
-      ops:                  Default::default(),
-      outs:                 Default::default(),
-      decls:                Default::default(),
-      return_val:           Default::default(),
-      branch_succeed:       Default::default(),
-      branch_unconditional: Default::default(),
-      branch_fail:          Default::default(),
-    }
-  }
-}
-
-impl<R: Debug + Default + Copy> SSABlock<R> {
-  pub fn tenary_op(
-    &mut self,
-    op: SSAOp,
-    out_val: LLVal,
-    op1: OpArg<R>,
-    op2: OpArg<R>,
-    op3: OpArg<R>,
-    ret_val: bool,
-  ) -> OpArg<R> {
-    op1
-  }
-
-  pub fn binary_op(
-    &mut self,
-    op: SSAOp,
-    out_val: LLVal,
-    left: OpArg<R>,
-    right: OpArg<R>,
-    ret_val: bool,
-  ) -> OpArg<R> {
-    let out_val = if out_val.info.is_undefined() {
-      OpArg::Undefined
-    } else if ret_val {
-      OpArg::SSA_RETURN(out_val)
-    } else {
-      self.ctx().create_ssa_id(out_val)
-    };
-
-    self.ops.push(SSAExpr::BinaryOp(op, out_val, left, right));
-    out_val
-  }
-
-  pub fn debug_op(&mut self, tok: Token) {
-    //self.ops.push(SSAExpr::Debug(tok));
-  }
-
-  pub fn unary_op(&mut self, op: SSAOp, out_val: LLVal, val: OpArg<R>, ret_val: bool) -> OpArg<R> {
-    let out_val = if out_val.info.is_undefined() {
-      OpArg::Undefined
-    } else if ret_val {
-      OpArg::SSA_RETURN(out_val)
-    } else {
-      self.ctx().create_ssa_id(out_val)
-    };
-
-    self.ops.push(SSAExpr::UnaryOp(op, out_val, val));
-
-    out_val
-  }
-
-  pub fn null_op(&mut self, op: SSAOp, out_val: LLVal) -> OpArg<R> {
-    let out_val = if out_val.info.is_undefined() {
-      OpArg::Undefined
-    } else {
-      self.ctx().create_ssa_id(out_val)
-    };
-
-    self.ops.push(SSAExpr::NullOp(op, out_val));
-
-    out_val
-  }
-
-  pub(super) fn ctx<'a>(&self) -> &'a mut SSAContextBuilder<R> {
-    unsafe { &mut *self.ctx }
-  }
-
-  pub(super) fn create_ssa_id(&self, val: LLVal) -> OpArg<R> {
-    if self.ctx.is_null() {
-      OpArg::SSA(usize::MAX, val)
-    } else {
-      self.ctx().create_ssa_id(val)
-    }
-  }
-
-  pub(super) fn get_current_ssa_id(&self) -> usize {
-    if self.ctx.is_null() {
-      usize::MAX
-    } else {
-      self.ctx().get_current_ssa_id()
-    }
-  }
-
-  pub fn get_binding(&self, id: IString, search_hierarchy: bool) -> Option<SymbolBinding> {
-    for binding in &self.decls {
-      if binding.name == id {
-        return Some(binding.clone());
-      }
-    }
-
-    if let Some(par) = self.scope_parent {
-      return unsafe { (&*par).get_binding(id, search_hierarchy) };
-    }
-
-    None
-  }
-
-  pub(super) fn refine_binding(&mut self, name: IString, mut ty: TypeInfo) {
-    for binding in &mut self.decls {
-      if binding.name == name {
-        binding.ty |= ty;
-        return;
-      }
-    }
-
-    if let Some(par) = self.scope_parent {
-      return unsafe { (&mut *par).refine_binding(name, ty) };
-    }
-  }
-
-  pub(super) fn create_binding(
-    &mut self,
-    name: IString,
-    mut ty: TypeInfo,
-    tok: Token,
-  ) -> RumResult<()> {
-    let ctx = self.ctx();
-    for binding in &mut self.decls {
-      if binding.name == name {
-        let stack_id = ctx.stack_ids + 1;
-        ctx.stack_ids += 1;
-
-        let ssa_id = (ctx.ssa_index + 1) as usize;
-        ctx.ssa_index += 1;
-
-        ty |= TypeInfo::at_stack_id(stack_id as u16);
-        binding.ty = ty;
-        binding.tok = tok;
-        binding.ssa_id = ssa_id;
-
-        return Ok(());
-      }
-    }
-
-    let stack_id = ctx.stack_ids + 1;
-    ctx.stack_ids += 1;
-
-    let ssa_id = (ctx.ssa_index + 1) as usize;
-    ctx.ssa_index += 1;
-
-    ty |= TypeInfo::at_stack_id(stack_id as u16);
-    ctx.stack_ids += 1;
-    self.decls.push(SymbolBinding { name, ty, ssa_id, tok });
-
-    Ok(())
-  }
-
-  pub(super) fn add_output(&mut self, id: usize, op: OpArg<()>) {}
-
-  pub(super) fn create_successor<'a>(&self) -> &'a mut SSABlock<R> {
-    let id = self.ctx().push_block(Some(self.id)).id;
-    unsafe { &mut *self.ctx().blocks[id] }
-  }
-  /// Pushs a new monotonic stack offset value and returns it.
-  pub fn push_stack_offset(&mut self) -> usize {
-    self.ctx().push_stack_element()
-  }
-
-  pub fn add_load(&mut self, index: usize, op: OpArg<R>) {
-    for (e_index, exising_op) in self.outs.iter_mut() {
-      if index == *e_index {
-        *exising_op = op;
-        return;
-      }
-    }
-
-    self.outs.push((index, op));
-  }
-
-  fn get_symbol_assignment(&self, index: usize) -> Option<OpArg<R>> {
-    for (i, op) in &self.outs {
-      if *i == index {
-        return Some(*op);
-      }
-    }
-
-    if let Some(par) = self.scope_parent {
-      unsafe { return par.as_mut().unwrap().get_symbol_assignment(index) }
-    } else {
-      None
-    }
-  }
-}
-
 #[derive(Debug, Clone)]
-pub struct SSAFunction<R: Debug + Default + Copy> {
-  pub(crate) blocks:       Vec<Box<SSABlock<R>>>,
-  /// Total number of declarations defined in this function, including
-  /// arguments.
-  pub(crate) declarations: usize,
+pub struct SSAFunction {
+  pub(crate) blocks: Vec<Box<SSABlock>>,
+
+  pub(crate) graph: Vec<SSAGraphNode>,
+
+  pub(crate) constants: Vec<const_val::ConstVal>,
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default)]
+pub struct BlockId(pub u32);
+
+impl BlockId {
+  pub fn usize(&self) -> usize {
+    self.0 as usize
+  }
+}
+
+impl Display for BlockId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self.0, f)
+  }
+}
+
+impl Debug for BlockId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self.0, f)
+  }
+}
+
+impl<T> std::ops::Index<BlockId> for Vec<T> {
+  type Output = T;
+  fn index(&self, index: BlockId) -> &Self::Output {
+    &self[index.0 as usize]
+  }
+}
+
+impl<T> std::ops::IndexMut<BlockId> for Vec<T> {
+  fn index_mut(&mut self, index: BlockId) -> &mut Self::Output {
+    &mut self[index.0 as usize]
+  }
+}
+
+impl<T, const SIZE: usize> std::ops::Index<BlockId> for ArrayVec<SIZE, T> {
+  type Output = T;
+
+  fn index(&self, index: BlockId) -> &Self::Output {
+    &self[index.0 as usize]
+  }
+}
+
+impl<T, const SIZE: usize> std::ops::IndexMut<BlockId> for ArrayVec<SIZE, T> {
+  fn index_mut(&mut self, index: BlockId) -> &mut Self::Output {
+    &mut self[index.0 as usize]
+  }
 }

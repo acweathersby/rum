@@ -124,7 +124,7 @@ impl<const STACK_SIZE: usize, T: Ord + PartialOrd> ArrayVec<STACK_SIZE, T> {
     }
   }
 
-  pub fn contains(&mut self, item: &T) -> bool {
+  pub fn contains(&self, item: &T) -> bool {
     if self.ordered == false {
       self.as_slice().contains(item)
     } else {
