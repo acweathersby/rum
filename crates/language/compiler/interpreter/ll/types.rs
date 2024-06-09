@@ -654,11 +654,11 @@ impl Debug for DataLocation {
 
 #[derive(Clone, Copy)]
 pub struct SSAGraphNode {
-  pub(super) id:       GraphNodeId,
+  pub(super) id:       GraphId,
   pub(super) block_id: BlockId,
   pub(super) op:       SSAOp,
   pub(super) output:   TypeInfo,
-  pub(super) operands: [GraphNodeId; 3],
+  pub(super) operands: [GraphId; 3],
 }
 
 impl Debug for SSAGraphNode {
@@ -683,7 +683,6 @@ impl Debug for SSAGraphNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SSAOp {
   STACK_DEFINE,
-  CONSTANT,
   NOOP,
   ADD,
   SUB,
@@ -701,7 +700,8 @@ pub enum SSAOp {
   NOT,
   //LOAD,
   DEREF,
-  STORE,
+  /// Indicates the preservation of sequence of operations.
+  SINK,
   /// Performs a memory dereference on a pointer and stores the given value at
   /// that memory location
   MEM_STORE,
@@ -719,82 +719,141 @@ pub enum SSAOp {
   PHI,
 }
 
-#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
-pub struct GraphNodeId(pub u32);
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub struct GraphId(pub u32);
 
-impl Default for GraphNodeId {
+impl Default for GraphId {
   fn default() -> Self {
-    Self::Invalid
+    Self::INVALID
   }
 }
 
-impl<T> std::ops::Index<GraphNodeId> for [T] {
+impl<T> std::ops::Index<GraphId> for [T] {
   type Output = T;
-  fn index(&self, index: GraphNodeId) -> &Self::Output {
-    &self[index.0 as usize]
+  fn index(&self, index: GraphId) -> &Self::Output {
+    &self[(index.0 & !GraphId::FLAGS_MASK) as usize]
   }
 }
 
-impl<T> std::ops::IndexMut<GraphNodeId> for [T] {
-  fn index_mut(&mut self, index: GraphNodeId) -> &mut Self::Output {
-    &mut self[index.0 as usize]
+impl<T> std::ops::IndexMut<GraphId> for [T] {
+  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
+    &mut self[(index.0 & !GraphId::FLAGS_MASK) as usize]
   }
 }
 
-impl<T> std::ops::Index<GraphNodeId> for Vec<T> {
+impl<T> std::ops::Index<GraphId> for Vec<T> {
   type Output = T;
-  fn index(&self, index: GraphNodeId) -> &Self::Output {
-    &self[index.0 as usize]
+  fn index(&self, index: GraphId) -> &Self::Output {
+    &self[(index.0 & !GraphId::FLAGS_MASK) as usize]
   }
 }
 
-impl<T> std::ops::IndexMut<GraphNodeId> for Vec<T> {
-  fn index_mut(&mut self, index: GraphNodeId) -> &mut Self::Output {
-    &mut self[index.0 as usize]
+impl<T> std::ops::IndexMut<GraphId> for Vec<T> {
+  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
+    &mut self[(index.0 & !GraphId::FLAGS_MASK) as usize]
   }
 }
 
-impl<T, const SIZE: usize> std::ops::Index<GraphNodeId> for ArrayVec<SIZE, T> {
+impl<T, const SIZE: usize> std::ops::Index<GraphId> for ArrayVec<SIZE, T> {
   type Output = T;
 
-  fn index(&self, index: GraphNodeId) -> &Self::Output {
-    &self[index.0 as usize]
+  fn index(&self, index: GraphId) -> &Self::Output {
+    &self[(index.0 & !GraphId::FLAGS_MASK) as usize]
   }
 }
 
-impl<T, const SIZE: usize> std::ops::IndexMut<GraphNodeId> for ArrayVec<SIZE, T> {
-  fn index_mut(&mut self, index: GraphNodeId) -> &mut Self::Output {
-    &mut self[index.0 as usize]
+impl<T, const SIZE: usize> std::ops::IndexMut<GraphId> for ArrayVec<SIZE, T> {
+  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
+    &mut self[(index.0 & !0x8000_0000) as usize]
   }
 }
 
-impl GraphNodeId {
-  pub const Invalid: GraphNodeId = GraphNodeId(u32::MAX);
+impl GraphId {
+  pub const INVALID: GraphId = GraphId(u32::MAX);
+  pub const CONST_MASK: u32 = 0x8000_0000;
+  pub const REGISTER_MASK: u32 = 0x4000_0000;
+  pub const VAR_MASK: u32 = 0x2000_0000;
+  pub const FLAGS_MASK: u32 = Self::CONST_MASK | Self::REGISTER_MASK | Self::VAR_MASK;
 
-  pub fn is_invalid(&self) -> bool {
-    *self == Self::Invalid
+  pub const fn is_invalid(&self) -> bool {
+    self.0 == Self::INVALID.0
+  }
+
+  pub fn is_const(&self) -> bool {
+    !self.is_invalid() && (self.0 & Self::CONST_MASK) > 0
+  }
+
+  pub fn is_register(&self) -> bool {
+    !self.is_invalid() && (self.0 & Self::REGISTER_MASK) > 0
+  }
+
+  pub fn is_var(&self) -> bool {
+    !self.is_invalid() && (self.0 & Self::VAR_MASK) > 0
+  }
+
+  pub fn is_ssa_id(&self) -> bool {
+    !self.is_invalid() && (self.0 & Self::FLAGS_MASK) == 0
+  }
+
+  pub const fn as_register(&self) -> Self {
+    if self.is_invalid() {
+      *self
+    } else {
+      Self(self.0 | Self::REGISTER_MASK)
+    }
+  }
+
+  /// Return the value of the id with the flags masked out.
+  pub const fn raw_val(&self) -> u32 {
+    self.0 & !Self::FLAGS_MASK
+  }
+
+  pub fn as_var(&self) -> Self {
+    if self.is_invalid() {
+      *self
+    } else {
+      Self(self.0 | Self::VAR_MASK)
+    }
+  }
+
+  pub fn as_const(&self) -> Self {
+    if self.is_invalid() {
+      *self
+    } else {
+      Self(self.0 | Self::CONST_MASK)
+    }
   }
 }
 
-impl Display for GraphNodeId {
+impl Display for GraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("${:03}", self.0))
+    if self.is_ssa_id() {
+      f.write_fmt(format_args!("${:03}", self.0))
+    } else if self.is_var() {
+      f.write_fmt(format_args!("V{:03}", self.raw_val()))
+    } else if self.is_register() {
+      f.write_fmt(format_args!("R{:03}", self.raw_val()))
+    } else if self.is_const() {
+      f.write_fmt(format_args!("€{:03}", self.raw_val()))
+    } else {
+      f.write_fmt(format_args!("xxxx"))
+    }
   }
 }
 
-impl Debug for GraphNodeId {
+impl Debug for GraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(self, f)
   }
 }
 
-impl From<GraphNodeId> for usize {
-  fn from(value: GraphNodeId) -> Self {
+impl From<GraphId> for usize {
+  fn from(value: GraphId) -> Self {
     value.0 as usize
   }
 }
 
-impl From<usize> for GraphNodeId {
+impl From<usize> for GraphId {
   fn from(value: usize) -> Self {
     Self(value as u32)
   }
@@ -805,14 +864,15 @@ impl From<usize> for GraphNodeId {
 
 #[derive(Clone)]
 pub struct SymbolBinding {
-  pub name:   IString,
+  pub name:     IString,
   /// If the type is a pointer, then this represents the location where the data
   /// of the type the pointer points to. For non-pointer types this is
   /// Unallocated.
-  pub ty:     TypeInfo,
+  pub ty:       TypeInfo,
   /// A function unique id for the declaration.
-  pub ssa_id: usize,
-  pub tok:    Token,
+  pub ssa_id:   GraphId,
+  pub tok:      Token,
+  pub stack_id: usize,
 }
 
 impl Debug for SymbolBinding {
@@ -824,8 +884,7 @@ impl Debug for SymbolBinding {
 #[derive(Clone)]
 pub struct SSABlock {
   pub id:                   BlockId,
-  pub predecessors:         ArrayVec<20, u16>,
-  pub ops:                  Vec<GraphNodeId>,
+  pub ops:                  Vec<GraphId>,
   pub branch_unconditional: Option<BlockId>,
   pub branch_succeed:       Option<BlockId>,
   pub branch_fail:          Option<BlockId>,
@@ -842,12 +901,6 @@ impl Debug for SSABlock {
       .collect::<Vec<_>>()
       .join("\n  ");
 
-    let preds = if self.predecessors.len() > 0 {
-      format!("  preds: [ {} ]\n\n", self.predecessors.join(" "))
-    } else {
-      Default::default()
-    };
-
     let branch = /* if let Some(ret) = self.return_val {
       format!("\n\n  return: {ret:?}")
     } else  */if let (Some(fail), Some(pass)) = (self.branch_fail, self.branch_succeed) {
@@ -862,7 +915,7 @@ impl Debug for SSABlock {
       r###"
 Block-{id:03} {{
   
-{preds}  {ops}{branch}
+{ops}{branch}
 }}"###
     ))
   }
@@ -875,6 +928,8 @@ pub struct SSAFunction {
   pub(crate) graph: Vec<SSAGraphNode>,
 
   pub(crate) constants: Vec<const_val::ConstVal>,
+
+  pub stack_id: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default)]

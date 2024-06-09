@@ -1,7 +1,7 @@
 #![allow(unused, non_upper_case_globals)]
 
 use super::{push_bytes, set_bytes, types::*};
-use crate::compiler::interpreter::ll::types::{BitSize, OpArg};
+use crate::compiler::interpreter::ll::types::BitSize;
 use std::collections::HashMap;
 use OperandType as OT;
 
@@ -414,12 +414,12 @@ fn push_mod_rm_reg_op(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
 
   let sib = match rm_index {
     4 => match r_m {
-      Arg::Mem(x86Reg::RSP) | Arg::Mem(x86Reg::R12) => {
+      Arg::Mem(RSP) | Arg::Mem(R12) => {
         // use sib index to access the RSP register
-        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | x86Reg::RSP.index()) as u8
+        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | RSP.index()) as u8
       }
 
-      Arg::Mem(x86Reg::RSP_REL(val)) => {
+      Arg::RSP_REL(val) => {
         if (val & !0xFF) > 0 {
           mem_encoding = 0b10
         } else {
@@ -428,20 +428,20 @@ fn push_mod_rm_reg_op(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
 
         displace_val = val;
 
-        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | x86Reg::RSP.index()) as u8
+        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | RSP.index()) as u8
       }
-      Arg::Reg(x86Reg::RSP) | Arg::Reg(x86Reg::R12) => {
+      Arg::Reg(RSP) | Arg::Reg(R12) => {
         ///
         0
       }
       arg => unreachable!("{arg:?}"),
     },
     5 => match r_m {
-      Arg::Mem(x86Reg::RIP_REL(val)) => {
+      Arg::RSP_REL(val) => {
         displace_val = val;
         0
       }
-      Arg::Mem(x86Reg::RBP) | Arg::Mem(x86Reg::R13) => {
+      Arg::Mem(RBP) | Arg::Mem(R13) => {
         // use sib index to access the RSP register
         mem_encoding = 0b01;
         (SIB_NO_INDEX_SCALE | (0b000 << 3) | 0b000) as u8

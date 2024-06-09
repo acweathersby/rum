@@ -4,28 +4,37 @@ use std::{
   mem::ManuallyDrop,
 };
 
-/// A vector which derives its initial capacity from its binding. The data is
-/// moved to the heap if the number of elements pushed to the vector exceed
-/// the stack capacity.
+const VECTORIZED_MASK: u8 = 1 << 0;
+const ORDERED_MASK: u8 = 1 << 1;
+
+union ArrayVecInner<const STACK_SIZE: usize, T: Sized> {
+  array: (usize, std::mem::ManuallyDrop<[T; STACK_SIZE]>),
+  vec:   std::mem::ManuallyDrop<Vec<T>>,
+}
+
+/// A vector which derives its initial capacity in place. The data is
+/// moved to a heap location if the number of elements pushed to the vector
+/// exceed the initial capacity.
 pub struct ArrayVec<const STACK_SIZE: usize, T: Sized> {
-  inner:       std::mem::ManuallyDrop<[T; STACK_SIZE]>,
-  vec:         Option<Vec<T>>,
-  allocations: usize,
-  ordered:     bool,
+  inner: ArrayVecInner<STACK_SIZE, T>,
+  flags: u8,
 }
 
 impl<const STACK_SIZE: usize, T: Clone> Clone for ArrayVec<STACK_SIZE, T> {
   fn clone(&self) -> Self {
     let mut other = ArrayVec::new();
 
-    if let Some(vec) = &self.vec {
-      other.vec = Some(vec.clone());
-    } else {
-      for i in self.as_slice() {
-        other.push(i.clone())
-      }
+    other.flags = self.flags;
 
-      other.ordered = self.ordered;
+    unsafe {
+      if (self.flags & VECTORIZED_MASK) > 0 {
+        let vec = self.inner.vec.clone();
+        other.inner.vec = self.inner.vec.clone();
+      } else {
+        for i in self.as_slice() {
+          other.push(i.clone())
+        }
+      }
     }
 
     other
@@ -71,11 +80,7 @@ impl<const STACK_SIZE: usize, T> Index<usize> for ArrayVec<STACK_SIZE, T> {
       panic!("Index {index} is out of range of 0..{}", self.len());
     }
 
-    if let Some(vec) = &self.vec {
-      &vec[index]
-    } else {
-      &self.inner[index]
-    }
+    &self.as_slice()[index]
   }
 }
 
@@ -87,17 +92,13 @@ impl<const STACK_SIZE: usize, T: ToString> ArrayVec<STACK_SIZE, T> {
 
 impl<const STACK_SIZE: usize, T> IndexMut<usize> for ArrayVec<STACK_SIZE, T> {
   fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-    self.ordered = false;
+    self.flags &= !ORDERED_MASK;
 
     if index >= self.len() {
       panic!("Index {index} is out of range of 0..{}", self.len());
     }
 
-    if let Some(vec) = &mut self.vec {
-      &mut vec[index]
-    } else {
-      &mut self.inner[index]
-    }
+    unsafe { &mut self.as_slice_mut()[index] }
   }
 }
 
@@ -125,7 +126,7 @@ impl<const STACK_SIZE: usize, T: Ord + PartialOrd> ArrayVec<STACK_SIZE, T> {
   }
 
   pub fn contains(&self, item: &T) -> bool {
-    if self.ordered == false {
+    if !self.data_is_ordered() {
       self.as_slice().contains(item)
     } else {
       self.as_slice().binary_search(item).is_ok()
@@ -134,64 +135,76 @@ impl<const STACK_SIZE: usize, T: Ord + PartialOrd> ArrayVec<STACK_SIZE, T> {
 
   pub fn sort(&mut self) {
     self.as_mut_slice().sort();
-    self.ordered = true
+    self.flags |= ORDERED_MASK;
   }
 
-  pub fn push_ordered(&mut self, mut entry: T) -> Result<(), &str> {
+  pub fn find_ordered(&self, entry: &T) -> Option<usize> {
+    if self.data_is_ordered() {
+      if let Ok(result) = self.as_slice().binary_search(entry) {
+        return Some(result);
+      }
+    }
+    return None;
+  }
+
+  pub fn insert_ordered(&mut self, mut entry: T) -> Result<usize, &str> {
     self.push_ordered_internal(entry, false)
   }
 
-  pub fn push_unique(&mut self, mut entry: T) -> Result<(), &str> {
+  pub fn push_unique(&mut self, mut entry: T) -> Result<usize, &str> {
     self.push_ordered_internal(entry, true)
   }
 
   #[inline(always)]
-  fn push_ordered_internal(&mut self, mut entry: T, dedup: bool) -> Result<(), &str> {
-    if self.ordered == false {
-      Err("ArrayVec is not ordered, cannot perform an ordered push")
+  fn push_ordered_internal(&mut self, mut entry: T, dedup: bool) -> Result<usize, &str> {
+    if !self.data_is_ordered() {
+      Err("ArrayVec is not ordered, cannot perform an ordered insert")
     } else {
-      if let Some(vec) = &mut self.vec {
-        vec.push(entry);
-        vec.sort();
-        if (dedup) {
-          vec.dedup();
-        }
-        Ok(())
-      } else {
-        if self.allocations == 0 {
-          self.push(entry);
-          self.ordered = true;
-          Ok(())
-        } else if self.allocations < STACK_SIZE {
-          let entries = self.inner.as_mut_slice();
+      if self.data_is_vectorized() {
+        let vec = unsafe { &mut *self.inner.vec };
+        let entries = vec.as_mut_slice();
 
-          let (pos, ord) = Self::binary_search(0, self.allocations, &entry, &entries);
+        let (pos, ord) = Self::binary_search(0, entries.len(), &entry, &entries);
+
+        if dedup && ord.is_eq() {
+          Ok(pos)
+        } else {
+          vec.insert(pos, entry);
+          self.flags |= ORDERED_MASK;
+          Ok(pos)
+        }
+      } else {
+        let (len, array) = unsafe { &mut self.inner.array };
+
+        if *len == 0 {
+          self.push(entry);
+          self.flags |= ORDERED_MASK;
+          Ok(0)
+        } else if *len < STACK_SIZE {
+          let entries = array.as_mut_slice();
+
+          let (pos, ord) = Self::binary_search(0, *len, &entry, &entries);
 
           if dedup && ord.is_eq() {
-            Ok(())
+            Ok(pos)
           } else {
             unsafe {
               entries
                 .as_ptr()
                 .offset(pos as isize)
-                .copy_to(entries.as_mut_ptr().offset(pos as isize + 1), self.allocations - pos);
+                .copy_to(entries.as_mut_ptr().offset(pos as isize + 1), *len - pos);
             };
 
             core::mem::swap(&mut entries[pos], &mut entry);
             core::mem::forget(entry);
 
-            self.allocations += 1;
-            self.ordered = true;
-            Ok(())
+            *len += 1;
+            self.flags |= ORDERED_MASK;
+            Ok(pos)
           }
         } else {
-          unsafe {
-            let mut vec = Vec::<T>::with_capacity(self.allocations);
-            core::ptr::copy(self.inner.as_ptr(), vec.as_mut_ptr(), self.allocations);
-            vec.set_len(self.allocations);
-            self.vec = Some(vec);
-            self.push_ordered(entry)
-          }
+          self.convert_to_vector();
+          self.insert_ordered(entry)
         }
       }
     }
@@ -215,45 +228,67 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
   pub fn new() -> Self {
     let inner: [T; STACK_SIZE] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
     let out = Self {
-      inner:       ManuallyDrop::new(inner),
-      vec:         None,
-      allocations: 0,
-      ordered:     true,
+      inner: ArrayVecInner { array: (0, ManuallyDrop::new(inner)) },
+      flags: ORDERED_MASK,
     };
 
     out
   }
 
+  pub fn reverse(&mut self) {
+    self.as_mut_slice().reverse();
+    self.flags &= !ORDERED_MASK
+  }
+
+  fn convert_to_vector(&mut self) {
+    unsafe {
+      let (len, array) = unsafe { &mut self.inner.array };
+      let mut vec = Vec::<T>::with_capacity(*len);
+      core::ptr::copy(array.as_ptr(), vec.as_mut_ptr(), *len);
+      vec.set_len(*len);
+      let spot = &mut self.inner.vec;
+      std::mem::swap(&mut vec, spot);
+      self.flags |= VECTORIZED_MASK;
+
+      std::mem::forget(vec);
+    }
+  }
+
   /// Converts the stack vec into a regular vector, consuming the stack vec in
   /// the process.
   pub fn to_vec(mut self) -> Vec<T> {
-    let vec = if let Some(vec) = self.vec.take() {
-      vec
+    if self.data_is_vectorized() {
+      unsafe { ManuallyDrop::take(&mut self.inner.vec) }
     } else {
-      let data = &mut self.inner;
-      let mut vec = Vec::<T>::with_capacity(self.allocations);
+      let (len, array) = unsafe { &mut self.inner.array };
+      let mut vec = Vec::<T>::with_capacity(*len);
+
       unsafe {
-        core::ptr::copy(data.as_ptr(), vec.as_mut_ptr(), self.allocations);
-        vec.set_len(self.allocations);
+        core::ptr::copy(array.as_ptr(), vec.as_mut_ptr(), *len);
+        vec.set_len(*len);
       };
 
-      vec
-    };
+      *len = 0;
 
-    self.allocations = 0;
-    vec
+      vec
+    }
   }
 
   pub fn clear(&mut self) {
-    if self.data_is_bounded() {
+    if self.data_is_vectorized() {
+      unsafe { drop(ManuallyDrop::take(&mut self.inner.vec)) };
+      let inner: [T; STACK_SIZE] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+      self.inner.array = (0, ManuallyDrop::new(inner));
+    } else {
+      let (len, array) = unsafe { &mut self.inner.array };
       // Retrieve items from the manual drop to begin the drop process.
-      let items = unsafe { ManuallyDrop::take(&mut self.inner) };
+      let items = unsafe { ManuallyDrop::take(array) };
 
       // We'll iterate through the "valid" items, and manually drop each one.
       let mut iter = items.into_iter();
 
       // Make sure we only drop the allocated items by limiting the range.
-      for _ in 0..self.allocations {
+      for _ in 0..*len {
         if let Some(i) = iter.next() {
           drop(i)
         }
@@ -261,18 +296,16 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
 
       // The rest is garbage data so we'll just forget it.
       std::mem::forget(iter);
-    } else {
-      drop(self.vec.take())
-    }
 
-    self.allocations = 0;
+      *len = 0
+    }
   }
 
   pub fn len(&self) -> usize {
-    if let Some(vec) = &self.vec {
-      vec.len()
+    if self.data_is_vectorized() {
+      unsafe { self.inner.vec.len() }
     } else {
-      self.allocations
+      unsafe { self.inner.array.0 }
     }
   }
 
@@ -281,7 +314,7 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
   }
 
   pub fn iter_mut<'stack>(&'stack mut self) -> ArrayVecIteratorMut<'stack, STACK_SIZE, T> {
-    self.ordered = false;
+    self.flags &= !ORDERED_MASK;
     ArrayVecIteratorMut { len: self.len(), inner: self, tracker: 0 }
   }
 
@@ -290,33 +323,39 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
   }
 
   pub fn push(&mut self, mut element: T) {
-    self.ordered = false;
-    if let Some(vec) = &mut self.vec {
-      vec.push(element);
+    self.flags &= !ORDERED_MASK;
+    if self.data_is_vectorized() {
+      unsafe { (*self.inner.vec).push(element) };
     } else {
-      if self.allocations < STACK_SIZE {
-        core::mem::swap(&mut self.inner[self.allocations], &mut element);
+      let (len, array) = unsafe { &mut self.inner.array };
+
+      if *len < STACK_SIZE {
+        core::mem::swap(&mut array[*len], &mut element);
         core::mem::forget(element);
-        self.allocations += 1;
+        *len += 1;
       } else {
         unsafe {
-          let mut vec = Vec::<T>::with_capacity(self.allocations);
-          core::ptr::copy(self.inner.as_ptr(), vec.as_mut_ptr(), self.allocations);
-          vec.set_len(self.allocations);
-          vec.push(element);
-          self.vec = Some(vec);
+          self.convert_to_vector();
+          self.push(element)
         }
       }
     }
   }
 
+  pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+    for i in iter {
+      self.push(i)
+    }
+  }
+
   pub fn pop(&mut self) -> Option<T> {
-    if let Some(vec) = &mut self.vec {
-      vec.pop()
+    if self.data_is_vectorized() {
+      unsafe { (*self.inner.vec).pop() }
     } else {
-      if self.allocations > 0 {
-        self.allocations -= 1;
-        Some(unsafe { std::mem::transmute_copy(&self.inner[self.allocations]) })
+      let (len, array) = unsafe { &mut self.inner.array };
+      if *len > 0 {
+        *len -= 1;
+        Some(unsafe { std::mem::transmute_copy(&array[*len]) })
       } else {
         None
       }
@@ -325,29 +364,42 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
 
   #[inline(never)]
   pub fn as_slice(&self) -> &[T] {
-    if let Some(vec) = &self.vec {
-      vec.as_slice()
+    if (self.flags & VECTORIZED_MASK) > 0 {
+      unsafe { self.inner.vec.as_slice() }
     } else {
-      unsafe { core::slice::from_raw_parts(self.inner.as_ptr(), self.allocations) }
+      let (len, array) = unsafe { &self.inner.array };
+      unsafe { core::slice::from_raw_parts(array.as_ptr(), *len) }
+    }
+  }
+
+  #[inline(never)]
+  pub fn as_slice_mut(&mut self) -> &mut [T] {
+    if (self.flags & VECTORIZED_MASK) > 0 {
+      unsafe { (*self.inner.vec).as_mut_slice() }
+    } else {
+      let (len, array) = unsafe { &mut self.inner.array };
+      unsafe { core::slice::from_raw_parts_mut(array.as_mut_ptr(), *len) }
     }
   }
 
   /// The stored data bound within the local backing store.
-  pub fn data_is_bounded(&self) -> bool {
-    self.vec.is_none()
+  pub fn data_is_vectorized(&self) -> bool {
+    self.flags & VECTORIZED_MASK > 0
   }
 
   pub fn data_is_ordered(&self) -> bool {
-    self.ordered
+    self.flags & ORDERED_MASK > 0
   }
 
   #[inline(never)]
   pub fn as_mut_slice(&mut self) -> &mut [T] {
-    self.ordered = false;
-    if let Some(vec) = &mut self.vec {
-      vec.as_mut_slice()
+    self.flags &= !ORDERED_MASK;
+
+    if self.data_is_vectorized() {
+      unsafe { (*self.inner.vec).as_mut_slice() }
     } else {
-      unsafe { core::slice::from_raw_parts_mut(self.inner.as_mut_ptr(), self.allocations) }
+      let (len, array) = unsafe { &mut self.inner.array };
+      unsafe { core::slice::from_raw_parts_mut(array.as_mut_ptr(), *len) }
     }
   }
 }
@@ -386,11 +438,9 @@ impl<'stack, const STACK_SIZE: usize, T> Iterator for ArrayVecIteratorMut<'stack
       let index = self.tracker;
       self.tracker += 1;
       let inner: *mut ArrayVec<STACK_SIZE, T> = self.inner as *mut _;
-      if let Some(vec) = &mut (unsafe { &mut *inner }).vec {
-        Some(&mut vec[index])
-      } else {
-        Some(&mut (unsafe { &mut *inner }).inner[index])
-      }
+      let inner = (unsafe { &mut *inner });
+
+      Some(&mut inner[index])
     } else {
       None
     }

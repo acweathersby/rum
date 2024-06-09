@@ -22,7 +22,7 @@ fn construct_function_blocks() -> RumResult<()> {
 
   let optimized_blocks = optimize_function_blocks(blocks);
 
-  dbg!(optimized_blocks);
+  super::x86::compiler::compile_from_ssa_fn(&optimized_blocks);
   // let funct = compile_from_ssa_fn(&blocks)?;
   //
   // funct.call();

@@ -1,17 +1,4 @@
-use crate::compiler::interpreter::ll::types::OpArg;
-
-impl OpArg<x86Reg> {
-  pub fn arg(&self, so: &[usize]) -> Arg {
-    match self {
-      OpArg::REG(reg, _) => Arg::Reg(*reg),
-      OpArg::Lit(literal) => {
-        let val = literal.load::<u64>().unwrap();
-        Arg::Imm_Int(val)
-      }
-      _ => Arg::None,
-    }
-  }
-}
+use crate::compiler::interpreter::ll::types::{GraphId, SSAFunction, TypeInfo};
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub(super) enum OpEncoding {
@@ -80,62 +67,51 @@ pub(super) enum OpEncoding {
   RMI,
 }
 
-#[allow(non_camel_case_types, unused)]
-pub(super) enum RegisterName {
-  GeneralRegisterName(x86Reg),
-  AVX_64,
-  AVX_128,
-  AVX_512,
-}
+pub const RAX: GraphId = GraphId(00).as_register();
+pub const RCX: GraphId = GraphId(01).as_register();
+pub const RDX: GraphId = GraphId(02).as_register();
+pub const RBX: GraphId = GraphId(03).as_register();
+pub const RSP: GraphId = GraphId(04).as_register();
+pub const RBP: GraphId = GraphId(05).as_register();
+pub const RSI: GraphId = GraphId(06).as_register();
+pub const RDI: GraphId = GraphId(07).as_register();
 
-#[repr(u32)]
-#[allow(non_camel_case_types, unused)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum x86Reg {
-  FLAGS = 0,
-  RAX   = 0x00 | 0x0_00 | 0xF0_00,
-  RCX   = 0x01 | 0x0_00 | 0xF0_00,
-  RDX   = 0x02 | 0x0_00 | 0xF0_00,
-  RBX   = 0x03 | 0x0_00 | 0xF0_00,
-  RSP   = 0x04 | 0x0_00 | 0xF0_00,
-  RBP   = 0x05 | 0x0_00 | 0xF0_00,
-  RSI   = 0x06 | 0x0_00 | 0xF0_00,
-  RDI   = 0x07 | 0x0_00 | 0xF0_00,
-  //
-  R8    = 0x00 | 0x1_00 | 0xF0_00,
-  R9    = 0x01 | 0x1_00 | 0xF0_00,
-  R10   = 0x02 | 0x1_00 | 0xF0_00,
-  R11   = 0x03 | 0x1_00 | 0xF0_00,
-  R12   = 0x04 | 0x1_00 | 0xF0_00,
-  R13   = 0x05 | 0x1_00 | 0xF0_00,
-  R14   = 0x06 | 0x1_00 | 0xF0_00,
-  R15   = 0x07 | 0x1_00 | 0xF0_00,
-  XMM1,
-  XMM2,
-  XMM3,
-  XMM4,
-  XMM5,
-  XMM6,
-  XMM7,
-  XMM8,
-  // Allows displacement bytes to be inserted for relative addressing.
-  RSP_REL(u64),
-  RIP_REL(u64),
-}
+pub const R8: GraphId = GraphId(08).as_register();
+pub const R9: GraphId = GraphId(09).as_register();
+pub const R10: GraphId = GraphId(10).as_register();
+pub const R11: GraphId = GraphId(11).as_register();
+pub const R12: GraphId = GraphId(12).as_register();
+pub const R13: GraphId = GraphId(13).as_register();
+pub const R14: GraphId = GraphId(14).as_register();
+pub const R15: GraphId = GraphId(15).as_register();
 
-impl x86Reg {
+pub const XMM1: GraphId = GraphId(16).as_register();
+pub const XMM2: GraphId = GraphId(17).as_register();
+pub const XMM3: GraphId = GraphId(18).as_register();
+pub const XMM4: GraphId = GraphId(19).as_register();
+pub const XMM5: GraphId = GraphId(20).as_register();
+pub const XMM6: GraphId = GraphId(21).as_register();
+pub const XMM7: GraphId = GraphId(22).as_register();
+pub const XMM8: GraphId = GraphId(23).as_register();
+
+pub const RIP_REL: GraphId = GraphId(62).as_register();
+
+impl GraphId {
   const SIB_RM: u8 = 0b100;
 
   pub(super) fn displacement(&self) -> Option<u64> {
-    match self {
-      Self::RSP_REL(val) => Some(*val),
-      _ => None,
+    let val = self.0 & !Self::FLAGS_MASK;
+
+    if val & 0x5F == 63 {
+      Some((val >> 7) as u64)
+    } else {
+      None
     }
   }
 
   pub(super) fn index(&self) -> u8 {
-    use x86Reg::*;
-    match self {
+    debug_assert!(self.is_register());
+    match *self {
       R8 | RAX | XMM1 => 0x00,
       R9 | RCX | XMM2 => 0x01,
       R10 | RDX | XMM3 => 0x02,
@@ -144,26 +120,46 @@ impl x86Reg {
       R13 | RBP | XMM6 => 0x05,
       R14 | RSI | XMM7 => 0x06,
       R15 | RDI | XMM8 => 0x07,
-      Self::RSP_REL(..) => Self::SIB_RM, // uses SIB byte
-      Self::RIP_REL(..) => 0x5,          // uses SIB byte
+      RIP_REL => 0x5,    // uses SIB byte
+      _ => Self::SIB_RM, // uses SIB byte
       _ => 0xFF,
     }
   }
 
   pub(super) fn is_general_purpose(&self) -> bool {
-    use x86Reg::*;
-    match self {
+    debug_assert!(self.is_register());
+    match *self {
       R8 | RAX | R9 | RCX | R10 | RDX | R11 | RBX | R12 | RSP | R13 | RBP | R14 | RSI | R15
       | RDI => true,
       _ => false,
     }
   }
+
   /// The register is one of R8-R15
   pub(super) fn is_64_extended(&self) -> bool {
-    use x86Reg::*;
-    match self {
+    debug_assert!(self.is_register());
+    match *self {
       R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 => true,
       _ => false,
+    }
+  }
+
+  pub fn into_addr_op(&self, ctx: &SSAFunction) -> Arg {
+    if self.is_register() {
+      Arg::Mem(*self)
+    } else {
+      self.into_op(ctx)
+    }
+  }
+
+  pub fn into_op(&self, ctx: &SSAFunction) -> Arg {
+    if self.is_register() {
+      Arg::Reg(*self)
+    } else if self.is_const() {
+      let value = ctx.constants[*self];
+      Arg::Imm_Int(value.convert(TypeInfo::Integer | TypeInfo::b64).load().unwrap())
+    } else {
+      Arg::None
     }
   }
 }
@@ -178,8 +174,9 @@ pub(super) enum OperandType {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Arg {
-  Reg(x86Reg),
-  Mem(x86Reg),
+  Reg(GraphId),
+  Mem(GraphId),
+  RSP_REL(u64),
   Imm_Int(u64),
   OpExt(u8),
   None,
@@ -191,6 +188,7 @@ impl Arg {
       Arg::Imm_Int(..) => OperandType::IMM_INT,
       Arg::Reg(..) => OperandType::REG,
       Arg::Mem(..) => OperandType::MEM,
+      Arg::RSP_REL(..) => OperandType::MEM,
       _ => OperandType::NONE,
     }
   }

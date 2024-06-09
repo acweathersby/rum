@@ -1,6 +1,5 @@
 pub(crate) mod compiler;
 pub(crate) mod encoder;
-pub(crate) mod register;
 pub(crate) mod types;
 
 pub use compiler::compile_from_ssa_fn;
@@ -29,15 +28,12 @@ mod test {
 
   use super::compile_from_ssa_fn;
   use crate::{
-    compiler::{
-      interpreter::{
-        error::RumResult,
-        ll::{
-          ssa_block_compiler::compile_function_blocks,
-          ssa_block_optimizer::optimize_function_blocks,
-        },
+    compiler::interpreter::{
+      error::RumResult,
+      ll::{
+        ssa_block_compiler::compile_function_blocks,
+        ssa_block_optimizer::optimize_function_blocks,
       },
-      parser::parse_ll,
     },
     utils::get_source_file,
   };

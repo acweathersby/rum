@@ -1,66 +1,299 @@
-use super::{
-  ssa_optimizer_induction::{InductionMatrix, InductionVal},
-  types::*,
-};
-use crate::compiler::{
-  interpreter::ll::{
-    bitfield,
-    ssa_optimizer_induction::{
-      build_induction_expression,
-      calculate_init,
-      calculate_rate,
-      IEOp,
-      InductionI,
-      RegionVar,
-    },
-  },
-  optimizer_parser::{operand_match_constraint_Value, Optimizer, Sub},
+use super::{ssa_optimizer_induction::InductionVal, types::*};
+use crate::compiler::interpreter::ll::{
+  bitfield,
+  ssa_optimizer_induction as induction,
+  ssa_optimizer_induction::IEOp,
+  ssa_register_allocator::{RegisterAllocator, RegisterEntry},
 };
 use rum_container::ArrayVec;
+use rum_logger::todo_note;
 use std::{
-  collections::{BTreeMap, VecDeque},
-  fmt::{format, Debug, Display},
+  collections::{BTreeMap, HashMap, VecDeque},
+  fmt::Debug,
   ops::Range,
 };
 use TypeInfo;
 
 pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
   // remove any blocks that are empty.
-
   let mut funct = funct.clone();
 
   remove_passive_blocks(&mut funct);
 
-  collect_predecessors(&mut funct);
-
-  let mut op_annotations = Vec::new();
-  op_annotations.extend((0..funct.graph.len()).map(|_| OpAnnotation::default()));
-  for op_id in 0..funct.graph.len() {
-    let annotation = &mut op_annotations[op_id];
-    let op = &mut funct.graph[op_id];
-
-    if op.op == SSAOp::CONSTANT {
-      annotation.init = funct.constants[op.operands[0]]
-    }
-  }
   let mut ctx = OptimizerContext {
     block_annotations: Default::default(),
-    op_annotations,
-    ops: &mut funct.graph,
-    constants: &mut funct.constants,
-    blocks: &mut funct.blocks,
+    graph:             &mut funct.graph,
+    constants:         &mut funct.constants,
+    blocks:            &mut funct.blocks,
+    stack_id:          funct.stack_id,
   };
 
   build_annotations(&mut ctx);
 
-  get_loop_regions(&mut ctx);
+  create_phi_ops(&mut ctx);
 
-  // Define registers and loads.
+  //optimize_loop_regions(&mut ctx);
+
+  //build_annotations(&mut ctx);
+
+  dead_code_elimination(&mut ctx);
+
+  // Alternative ... build stack values.
+
+  assign_registers(&mut ctx);
 
   funct
 }
 
-type ValAssign = LLVal;
+fn dead_code_elimination(ctx: &mut OptimizerContext) {
+  let mut alive = vec![false; ctx.graph.len()];
+  let mut alive_queue = VecDeque::new();
+
+  for block in ctx.blocks.iter_mut() {
+    for id in &block.ops {
+      let node = &ctx.graph[*id];
+      match node.op {
+        SSAOp::MEM_STORE | SSAOp::GE | SSAOp::GR | SSAOp::RETURN => {
+          alive_queue.push_back(*id);
+        }
+        _ => {}
+      }
+    }
+  }
+
+  while let Some(id) = alive_queue.pop_front() {
+    if id.is_invalid() || id.is_const() {
+      continue;
+    }
+
+    let old_val = alive[id];
+    if !old_val {
+      let node = &ctx.graph[id];
+      alive_queue.extend(node.operands);
+      alive[id] = true;
+    }
+  }
+
+  for block in ctx.blocks.iter_mut() {
+    block.ops = block.ops.iter().filter(|id| alive[**id]).cloned().collect();
+  }
+}
+
+fn apply_three_addressing(
+  ctx: &mut OptimizerContext,
+  id: GraphId,
+  address: GraphId,
+  v_lu: &mut Vec<GraphId>,
+) {
+  if id.is_const() || id.is_invalid() {
+    return;
+  }
+
+  match ctx.graph[id].op {
+    SSAOp::ADD | SSAOp::SUB | SSAOp::MUL | SSAOp::DIV => {
+      ctx.graph[id].operands[2] = address;
+      v_lu[id] = address;
+      apply_three_addressing(ctx, ctx.graph[id].operands[0], address, v_lu);
+      apply_three_addressing(ctx, ctx.graph[id].operands[1], address, v_lu);
+    }
+    _ => {}
+  }
+}
+
+fn assign_registers(ctx: &mut OptimizerContext) {
+  // Adds loads and/or removes stores and replaces SSA graph ids with register
+  // names.
+
+  // need to propagate register assignments
+
+  let mut var_lookup = vec![GraphId::default(); ctx.graph.len()];
+
+  // Assign variable names to operators.
+  loop {
+    let mut should_continue = false;
+    for i in 0..ctx.graph.len() {
+      if var_lookup[i].is_invalid()
+        || !matches!(ctx.graph[i].op, SSAOp::SINK | SSAOp::MALLOC | SSAOp::PHI | SSAOp::MEM_STORE)
+      {
+        let node = &mut ctx.graph[i];
+
+        match node.op {
+          SSAOp::MEM_STORE => {
+            let stack_id = 99 as u32;
+            let var = GraphId(stack_id).as_var();
+            let ptr = node.operands[0];
+            node.operands[0] = var;
+            apply_three_addressing(ctx, ptr, var, &mut var_lookup);
+            var_lookup[i] = var;
+            should_continue = true;
+          }
+          SSAOp::SINK | SSAOp::MALLOC | SSAOp::PHI => {
+            let stack_id = node.output.stack_id().unwrap() as u32;
+            let var = GraphId(stack_id).as_var();
+
+            if node.op == SSAOp::PHI {
+              for op in &mut node.operands {
+                *op = var;
+              }
+            } else if node.op == SSAOp::SINK {
+              node.operands[0] = var;
+              let id = node.operands[1];
+              apply_three_addressing(ctx, id, var, &mut var_lookup)
+            } else if node.op == SSAOp::MALLOC {
+              node.operands[0] = var;
+              let id = node.operands[1];
+              apply_three_addressing(ctx, id, var, &mut var_lookup)
+            }
+
+            var_lookup[i] = var;
+
+            should_continue = true;
+          }
+          _ => {
+            for op in &mut node.operands {
+              if op.is_ssa_id() {
+                let val = var_lookup[*op];
+                if !val.is_invalid() {
+                  *op = val;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if !should_continue {
+      break;
+    }
+  }
+
+  dbg!(&ctx);
+  let OptimizerContext { block_annotations, graph, constants, blocks, stack_id } = ctx;
+
+  // create our block ordering.
+
+  // First inner blocks, then outer blocks, then finally general blocks,
+  // ascending.
+  let mut block_ordering = ArrayVec::<64, bool>::new();
+  for block in 0..graph.len() {
+    block_ordering.push(false)
+  }
+
+  let mut queue = ArrayVec::<64, _>::new();
+
+  // First loops
+  for i in (0..blocks.len()).rev() {
+    let block = &block_annotations[i];
+    if block.is_loop_head {
+      for loop_comp in block.loop_components.as_slice().iter().rev() {
+        if !block_ordering[*loop_comp] {
+          block_ordering[*loop_comp] = true;
+          queue.push(*loop_comp)
+        }
+      }
+    }
+  }
+
+  // Then the reset
+  for i in (0..blocks.len()).rev() {
+    if !block_ordering[i] {
+      block_ordering[i] = true;
+      queue.push(BlockId(i as u32))
+    }
+  }
+
+  let mut register_allocators = vec![RegisterAllocator::new(); graph.len()];
+
+  for block_id in queue.iter().cloned() {
+    let block = &blocks[block_id];
+    // Build a profile from each "parent" block. Placing appropriate
+    // intermediate blocks between parents as needed.
+
+    for other_block in iter_branch_indices(block) {
+      let allocator = &register_allocators[other_block];
+      for assignment in allocator.get_assignements().iter() {
+        register_allocators[block_id].push_allocation(*assignment);
+      }
+    }
+
+    let register_allocator = &mut register_allocators[block_id];
+
+    for op_id in &block.ops {
+      let node = &mut graph[*op_id];
+      println!("{node:?}");
+      for operand in &mut node.operands {
+        if operand.is_var() {
+          let var_id = *operand;
+          println!("{var_id}");
+          if let Some(RegisterEntry { var, reg }) = register_allocator.get_register(var_id) {
+            println!("reg: {reg}");
+            *operand = reg;
+          } else if let Some(RegisterEntry { var, reg }) =
+            register_allocator.allocate_register(var_id)
+          {
+            println!("reg: {reg}");
+            *operand = reg;
+          }
+        }
+      }
+    }
+  }
+
+  for block_id in queue.as_slice().iter().rev().cloned() {
+    // remove redundant stores.
+  }
+}
+
+fn create_phi_ops(ctx: &mut OptimizerContext) {
+  let mut phi_lookup = HashMap::<_, GraphId>::new();
+
+  for block_id in 0..ctx.blocks.len() {
+    let annotation = &ctx.block_annotations[block_id];
+
+    let mut stack_lookup = HashMap::<TypeInfo, Vec<_>>::new();
+
+    for in_id in &annotation.ins {
+      let entry = stack_lookup.entry(in_id.output).or_default();
+      entry.push(in_id.id);
+    }
+
+    for (stack_id, mut entries) in stack_lookup {
+      if entries.len() > 1 {
+        // Candidate for phi node creation
+        entries.sort();
+
+        let id = match phi_lookup.entry(entries.clone()) {
+          std::collections::hash_map::Entry::Occupied(val) => val.get().clone(),
+          std::collections::hash_map::Entry::Vacant(entry) => {
+            let left = entry.key()[0];
+            let right = entry.key()[1];
+
+            if entry.key().len() > 2 {
+              panic!("Unsupported: PHI nodes with more than two operands")
+            }
+
+            let id =
+              ctx.push_binary_op(SSAOp::PHI, stack_id, left, right, BlockId(block_id as u32));
+
+            entry.insert(id);
+
+            id
+          }
+        };
+
+        for op in ctx.blocks[block_id].ops.clone() {
+          let node = &mut ctx.graph[op];
+
+          for old_id in &mut node.operands {
+            if entries.binary_search(old_id).is_ok() {
+              *old_id = id
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
 enum CacheInformation {
   UNDEFINED,
@@ -91,82 +324,46 @@ struct LoopVar {
   loop_change:   LoopChange,
 }
 
-const OPTIMIZATIONS_SRC: &'static str = r###"
-/*
-when mul $const ( 1 const ) $var ( 0 loop_intrinsic ) {
-  if var.annotation.intrinsic {
-    annotation.intrinsic.rate = const.val
-    annotation.intrinsic.loop_intrinsic = true
-  }
+#[derive(Clone, Copy, Default, Debug)]
+enum IndVal {
+  #[default]
+  UNDEFINED,
+  NAI,
+  Const(ConstVal),
+  Node(GraphId),
 }
-*/
 
-
-
-
-
-"###;
-
-
-fn get_loop_regions(ctx: &mut OptimizerContext) {
-  let ti_i64: TypeInfo = TypeInfo::Integer | TypeInfo::b64;
-
+fn optimize_loop_regions(ctx: &mut OptimizerContext) {
   // build constant annotations
-
-  let mut opti_maps = BTreeMap::<SSAOp, Vec<Box<Optimizer>>>::new();
-
-  let induction_size = ctx.op_annotations.len();
-
-  let mut matrix = InductionMatrix::new(induction_size);
-
-  //let mut variables = BTreeMap::new();
 
   for head_block in ctx.blocks_id_range() {
     let annotation = &ctx.block_annotations[head_block];
 
-    if ctx[head_block].predecessors.iter().any(|i| BlockId(*i as u32) >= head_block) {
+    if annotation.is_loop_head {
+      println!("---------------------------------------------------------");
+
       // This block is a loop head.
 
       // Gather initialized values and assign them to our input variables
 
-      let mut loop_blocks = vec![head_block];
-      loop_blocks.extend(annotation.indirects.iter().filter(|i| i.0 >= head_block.0));
+      let r_blocks = annotation.loop_components.clone();
 
-      for var in &annotation.ins {
-        if !loop_blocks.contains(&var.block_id) {
-          let annotation = ctx.op_annotations[var.operands[1]];
-          if annotation.init.is_lit() {
-            ctx.op_annotations[var.operands[0]].init = annotation.init;
-          }
-        }
-      }
       // We can now preform some analysis and optimization on this region
       {
         let mut loop_var_info: BTreeMap<usize, LoopVar> = Default::default();
 
-        // collect entry information
+        // Create a parallel table for induction calculation results
+        let mut parallel_table = Vec::from_iter(ctx.graph.iter().map(|_| ()));
 
-        let head_annotation = &ctx.block_annotations[loop_blocks[0]];
+        let mut i_ctx = induction::InductionCTX::default();
+        i_ctx.region_blocks = ArrayVec::from_iter(r_blocks.iter().cloned());
 
-        for inn in &head_annotation.ins {
-          if head_annotation.dominators.contains(&inn.block_id) {
-            let stack_id = inn.output.stack_id().expect("All ins should be stack values");
-            loop_var_info.insert(stack_id, LoopVar {
-              stack_id,
-              ty: inn.output,
-              initial_value: ctx.get_const(inn.operands[1]),
-              loop_change: Default::default(),
-            });
-          }
-        }
+        let target_block = BlockId(0);
 
-        // Discover Region Variables
-        let mut region_vars = Vec::new();
-        // collect loop variables
-        for block_id in loop_blocks[0..].iter().copied() {
+        for block_id in r_blocks.iter().copied() {
           for i in 0..ctx[block_id].ops.len() {
             let root_op_id = ctx[block_id].ops[i];
-            let op = ctx.ops[root_op_id];
+            let op = ctx.graph[root_op_id];
 
             // Store and MEM_STORE identify or define variables.
             // there are two types of variables:
@@ -174,179 +371,98 @@ fn get_loop_regions(ctx: &mut OptimizerContext) {
             // Through MEM_STORE are temporary variables based on offsets derived from
             // STACK_DEFINEd pointers.
             match op.op {
-              SSAOp::GE => {
-                let l_expr = build_induction_expression(op.id, op.operands[0], ctx);
-                let r_expr = build_induction_expression(op.id, op.operands[1], ctx);
-
-                region_vars.push(RegionVar::Branch { id: op.id, left: l_expr, right: r_expr });
-              }
-              SSAOp::STORE => {
-                let root_id = op.operands[0];
-                let anno = ctx.op_annotations[root_id];
-
-                let rate_expr = build_induction_expression(root_id, op.operands[1], ctx);
-
-                region_vars.push(RegionVar::Var {
-                  id:   root_id,
-                  rate: rate_expr
-                    .into_iter()
-                    .map(|i| {
-                      if i.1 == IEOp::VAR && unsafe { i.0.graph_id == root_id } {
-                        return InductionVal::constant(0.0);
-                      }
-                      i
-                    })
-                    .collect(),
-                  init: if anno.init.is_lit() {
-                    vec![InductionVal::constant(anno.init.to_f32().unwrap())]
-                  } else {
-                    vec![InductionVal::graph_id(root_id)]
-                  },
-                });
+              SSAOp::SINK => {
+                // If induction variable then  ignore. Otherwise, attempt to
+                // replace with region variable.
               }
               SSAOp::MEM_STORE => {
-                let root_id_old = op.operands[0];
-                let val = ctx.ops[root_id_old].output;
-                let root_id = ctx.push_stack_val(val);
+                // Can be directly updated.
+                let root_node = op.operands[0];
+                if let Some(expression) =
+                  induction::process_expression(op.operands[0], ctx, &mut i_ctx)
+                {
+                  let existing = ctx.graph[op.operands[0]];
+                  dbg!(&i_ctx);
+                  // Create an expression that can be used for the initialization of this variable
+                  let init =
+                    induction::calculate_init(expression.clone().to_vec(), root_node, ctx, &i_ctx);
 
-                let rate_expr = build_induction_expression(root_id, op.operands[0], ctx);
+                  let ty = existing.output;
+                  let c_ty = TypeInfo::b64 | TypeInfo::Integer;
 
-                region_vars.push(RegionVar::Ptr {
-                  id:   root_id,
-                  rate: rate_expr.clone(),
-                  init: rate_expr, /*        .clone()
-                                   .into_iter()
-                                   .map(|i| {
-                                     if i.1 == IEOp::VAR
-                                       && unsafe { ctx.op_annotations[i.0.graph_id].init.is_lit() }
-                                     {
-                                       return unsafe {
-                                         InductionVal::constant(
-                                           ctx.op_annotations[i.0.graph_id].init.to_f32().unwrap(),
-                                         )
-                                       };
-                                     }
-                                     i
-                                   })
-                                   .collect(), */
-                });
+                  // generate the induction variable and place in the nearest dominator block.
+                  let ssa = induction::generate_ssa(&init, ctx, &i_ctx, target_block, c_ty);
+                  let stack_val = ctx.push_stack_val(ty);
+                  let output_val = ctx.graph[stack_val].output;
+
+                  let target =
+                    ctx.push_binary_op(SSAOp::SINK, output_val, stack_val, ssa, target_block);
+
+                  let ty = ctx.graph[target].output;
+
+                  ctx.blocks[target_block].ops.push(target);
+
+                  // create a store location for this value.
+
+                  println!("init {init:?} {ssa:?}");
+
+                  // Create an expression that can be used for the increment of this variable.
+                  // Place immediately after The last address of the induction
+                  // variable in its block.
+
+                  let mut inc_id: GraphId = GraphId::default();
+                  // calculate the location of the new code.
+                  for item in expression.as_slice() {
+                    if item.1 == IEOp::VAR {
+                      let graph_id = item.get_graph_id().unwrap();
+                      if let Some(var) = i_ctx.induction_vars.get_mut(&graph_id) {
+                        inc_id = var.inc_loc;
+                      }
+                    }
+                  }
+
+                  if !inc_id.is_invalid() {
+                    let inc_node = &ctx.graph[inc_id];
+                    let block_id = inc_node.block_id;
+
+                    if let Some((mut i, _)) =
+                      ctx.blocks[block_id].ops.iter().enumerate().find(|i| *i.1 == inc_id)
+                    {
+                      let rate = induction::calculate_rate(
+                        expression.clone().to_vec(),
+                        root_node,
+                        ctx,
+                        &i_ctx,
+                      );
+                      let ssa = induction::generate_ssa(&rate, ctx, &i_ctx, block_id, c_ty);
+
+                      let result = ctx.push_binary_op(SSAOp::ADD, ty, target, ssa, block_id);
+
+                      i += 1;
+                      ctx.blocks[block_id].ops.insert(i, result);
+
+                      let result =
+                        ctx.push_binary_op(SSAOp::SINK, output_val, stack_val, result, block_id);
+
+                      i += 1;
+                      ctx.blocks[block_id].ops.insert(i, result);
+
+                      ctx.graph[root_op_id].operands[0] = result;
+                      ctx.graph[root_op_id].output = output_val.deref();
+
+                      println!("rate {rate:?} {ssa}");
+                      dbg!(&ctx);
+                    }
+                  }
+                  // Replace this op with the induction expression.
+                }
               }
               _ => {}
             }
           }
         }
 
-        dbg!(&region_vars);
-
-        for (index) in 0..region_vars.len() {
-          let a = &region_vars[index];
-          match a {
-            RegionVar::Branch { left, right, .. } => {
-              if left.len() == 1 {
-                if left[0].1 == IEOp::VAR {
-                  for var in &region_vars {
-                    match var {
-                      RegionVar::Ptr { id, init, rate, .. } => {
-                        let id = *id;
-                        let a = left[0].clone();
-                        let ddd = unsafe { a.0.graph_id };
-                        if init.contains(&a) {
-                          let init = init.clone();
-                          let right = right.clone();
-                          if let RegionVar::Branch { left, right: r, .. } = &mut region_vars[index]
-                          {
-                            left[0] = InductionVal::graph_id(id);
-
-                            let d = init
-                              .iter()
-                              .flat_map(|i| {
-                                if let Some(id) = i.get_graph_id() {
-                                  if id == ddd {
-                                    right.clone()
-                                  } else {
-                                    vec![*i]
-                                  }
-                                } else {
-                                  vec![*i]
-                                }
-                              })
-                              .collect::<Vec<_>>();
-
-                            *r = d;
-                          }
-
-                          break;
-                        }
-                      }
-                      _ => {}
-                    }
-                  }
-                }
-              }
-            }
-
-            _ => {}
-          }
-        }
-        dbg!(&region_vars);
-
-        for (index) in 0..region_vars.len() {
-          // handle refs, initials and rate
-
-          match &region_vars[index] {
-            RegionVar::Var { id, rate, .. } | RegionVar::Ptr { id, rate, .. } => {
-              let rate = rate.clone();
-              let r = calculate_rate(rate, *id, ctx, &region_vars);
-
-              if let RegionVar::Var { rate, .. } | RegionVar::Ptr { rate, .. } =
-                &mut region_vars[index]
-              {
-                *rate = r
-              }
-            }
-            _ => {}
-          }
-
-          match &region_vars[index] {
-            RegionVar::Var { id, init, .. } | RegionVar::Ptr { id, init, .. } => {
-              let init = init.clone();
-              let r = calculate_init(init, *id, ctx, &region_vars);
-
-              if let RegionVar::Var { init, .. } | RegionVar::Ptr { init, .. } =
-                &mut region_vars[index]
-              {
-                *init = r
-              }
-            }
-            _ => {}
-          }
-
-          //let init = calculate_rate(r_var.init.clone(), *root_id, ctx);
-          //r_var.init = init;
-        }
-
-        for (index) in 0..region_vars.len() {
-          // handle refs, initials and rate
-
-          match &region_vars[index] {
-            RegionVar::Branch { id, left, right, .. } => {
-              let r = calculate_init(left.clone(), *id, ctx, &region_vars);
-              let l = calculate_init(right.clone(), *id, ctx, &region_vars);
-
-              if let RegionVar::Branch { id, left, right, .. } = &mut region_vars[index] {
-                *left = l;
-                *right = r;
-              }
-            }
-            _ => {}
-          }
-
-          //let init = calculate_rate(r_var.init.clone(), *root_id, ctx);
-          //r_var.init = init;
-        }
-
-        dbg!(region_vars);
-        panic!("AA");
+        todo_note!("Handle branch expressions");
       }
     }
   }
@@ -394,46 +510,6 @@ fn get_const(mut stack: Vec<InductionVal>, ctx: &mut OptimizerContext) -> Vec<In
   stack
 }
 
-fn build_op_annotation(
-  operation: SSAGraphNode,
-  loop_var_info: &BTreeMap<usize, LoopVar>,
-  ctx: &mut OptimizerContext<'_>,
-) {
-  match operation.op {
-    SSAOp::STACK_DEFINE => {
-      let stack_id = operation.output.stack_id().expect("Should be a stack var");
-      if let Some(loop_var) = loop_var_info.get(&stack_id) {
-        ctx.op_annotations[operation.id].processed = true;
-        if let Some(const_val) = loop_var.initial_value {
-          ctx.op_annotations[operation.id].init = const_val;
-        }
-      }
-      // Analyze
-    }
-    _ => {}
-  }
-}
-
-fn get_constant(
-  left: &SSAGraphNode,
-  right: &SSAGraphNode,
-  graph: &[SSAGraphNode],
-  constants: &[ConstVal],
-) -> Option<ConstVal> {
-  // todo(anthony): Perform full graph analysis to resolve constant derived from
-  // a sequence of operations.
-
-  let mut constant = None;
-
-  if left.op == SSAOp::CONSTANT {
-    constant = Some(constants[left.operands[0]])
-  } else if right.op == SSAOp::CONSTANT {
-    constant = Some(constants[right.operands[0]])
-  }
-
-  constant
-}
-
 fn print_block_with_annotations(
   block_id: usize,
   funct: &SSAFunction,
@@ -445,9 +521,9 @@ fn print_block_with_annotations(
   println!(
     "{block:?}
   dominators: [{}]
-  indirects:  [{}]
+  predecessors:  [{}]
   
-  decls: [
+  decls: [&mut 
     {}
   ]
 
@@ -460,48 +536,36 @@ fn print_block_with_annotations(
   ]
 ",
     annotation.dominators.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
-    annotation.indirects.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
+    annotation.predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
     annotation.decls.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join("\n    "),
     annotation.ins.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join("\n    "),
     annotation.outs.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join("\n    "),
   )
 }
 
-fn load_insertion(funct: &mut SSAFunction) {}
-
-fn register_assignment(funct: &mut SSAFunction) {}
-
-fn dead_code_elimination(funct: &mut SSAFunction) {}
-
-fn assign_registers(funct: &mut SSAFunction) {}
-
-fn lower_powers(funct: &mut SSAFunction, annotations: &Vec<BlockAnnotation>) {}
-
 fn build_annotations(ctx: &mut OptimizerContext) {
   let mut annotations = vec![];
-
-  let mut dominators: ArrayVec<32, u64> = Default::default();
-  let mut indirect_successors: ArrayVec<32, u64> = Default::default();
 
   let mut value_stores = BTreeMap::new();
   //let mut values = Vec::new();
 
   for _ in 0..ctx.blocks.len() {
     annotations.push(BlockAnnotation {
-      indirects:  Default::default(),
-      dominators: Default::default(),
-      ins:        Default::default(),
-      outs:       Default::default(),
-      decls:      Default::default(),
+      predecessors:       Default::default(),
+      direct_predecessor: Default::default(),
+      dominators:         Default::default(),
+      ins:                Default::default(),
+      outs:               Default::default(),
+      decls:              Default::default(),
+      is_loop_head:       Default::default(),
+      loop_components:    Default::default(),
     });
-    dominators.push(0);
-    indirect_successors.push(0);
   }
 
   let mut stores = Vec::new();
-  for op in ctx.ops.as_slice() {
+  for op in ctx.graph.as_slice() {
     match op.op {
-      SSAOp::STORE => {
+      SSAOp::SINK => {
         let stack_id = op.output.stack_id().expect("All STORE ops should be to stack locations");
         let data: &mut Vec<_> = value_stores.entry(stack_id).or_default();
         data.push(stores.len());
@@ -511,15 +575,20 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     }
   }
 
-  let mut bitfield = bitfield::BitFieldArena::new(ctx.blocks.len() * 4 + 1, stores.len());
+  let row_size = stores.len().max(ctx.blocks.len());
+  let mut bitfield = bitfield::BitFieldArena::new(ctx.blocks.len() * 8 + 1, row_size);
 
-  let def_rows_offset = ctx.blocks.len() * 0;
-  let in_rows_offset = ctx.blocks.len() * 1;
-  let out_rows_offset = ctx.blocks.len() * 2;
-  let block_kill_row = ctx.blocks.len() * 3;
-  let working_index = ctx.blocks.len() * 4;
+  let def_rows_offset = row_size * 0;
+  let in_rows_offset = row_size * 1;
+  let out_rows_offset = row_size * 2;
+  let block_kill_row = row_size * 3;
+  let d_pred_offset = row_size * 4;
+  let i_pred_offset = row_size * 5;
+  let dominator_offset = row_size * 6;
+  let loop_comp_offset = row_size * 7;
+  let working_index = row_size * 8;
 
-  for block_id in 0..ctx.blocks.len() {
+  for block_id in 0..row_size {
     bitfield.not(block_id + block_kill_row)
   }
 
@@ -540,12 +609,47 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     bitfield.set_bit(block_def_row, store_id);
   }
 
+  // Dominators --------------------
   loop_until(0..ctx.blocks.len(), |block_id, should_continue| {
-    /* stack type */
+    bitfield.mov(working_index, block_id + dominator_offset);
+    bitfield.set_bit(working_index, block_id);
+
+    for successor in iter_branch_indices(&ctx.blocks[block_id]) {
+      let successor_i = successor.usize() + dominator_offset;
+
+      if bitfield.is_empty(successor_i) {
+        *should_continue = bitfield.mov(successor_i, working_index);
+      } else {
+        *should_continue = bitfield.and(successor_i, working_index);
+      }
+    }
+  });
+
+  // Predecessors --------------------
+  loop_until(0..ctx.blocks.len(), |block_id, should_continue| {
+    let block_i = block_id + i_pred_offset;
+
+    for pred_indice in iter_branch_indices(&ctx.blocks[block_id]) {
+      let successor_i = pred_indice.usize() + i_pred_offset;
+      let successor_d = pred_indice.usize() + d_pred_offset;
+
+      bitfield.mov(working_index, successor_i);
+      bitfield.or(working_index, block_i);
+      bitfield.set_bit(working_index, block_id);
+
+      *should_continue |= bitfield.mov(successor_i, working_index);
+
+      bitfield.set_bit(successor_d, block_id);
+      bitfield.mov(pred_indice.usize() + loop_comp_offset, successor_i);
+    }
+  });
+
+  //
+  loop_until((0..ctx.blocks.len()).rev(), |block_id, should_continue| {
     bitfield.mov(working_index, block_id + in_rows_offset);
 
-    for predecessor in ctx.blocks[block_id].predecessors.as_slice() {
-      bitfield.or(working_index, (*predecessor as usize) + out_rows_offset);
+    for predecessor in bitfield.iter_row_set_indices(block_id + d_pred_offset).collect::<Vec<_>>() {
+      bitfield.or(working_index, predecessor + out_rows_offset);
     }
 
     *should_continue |= bitfield.mov(block_id + in_rows_offset, working_index);
@@ -555,56 +659,17 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     bitfield.mov(block_id + out_rows_offset, working_index);
   });
 
-  loop_until(0..ctx.blocks.len(), |block_id, should_continue| {
-    let domis = dominators[block_id];
-    let new_in = domis | (1u64 << block_id);
-
-    for successor in iter_branch_indices(&ctx.blocks[block_id]) {
-      let pred_domis = dominators[successor];
-
-      if pred_domis != new_in {
-        if pred_domis == 0 {
-          dominators[successor] = new_in
-        } else {
-          dominators[successor] &= new_in;
-        }
-
-        *should_continue |= dominators[successor] != pred_domis;
-      }
-    }
-  });
-
-  loop_until(0..ctx.blocks.len(), |block_id, should_continue| {
-    let mut indirects = indirect_successors[block_id];
-
-    for predecessor in ctx.blocks[block_id].predecessors.iter() {
-      indirects |= indirect_successors[(*predecessor) as usize];
-    }
-
-    *should_continue |= indirect_successors[block_id] != indirects;
-
-    indirect_successors[block_id] = indirects | (1 << block_id as u64);
-  });
-
   for block_id in 0..ctx.blocks.len() {
-    let dominator_bits = dominators[block_id];
+    annotations[block_id].dominators = bitfield
+      .iter_row_set_indices(block_id + dominator_offset)
+      .map(|i| BlockId(i as u32))
+      .collect();
 
-    for i in 0..64 {
-      let mask = 1u64 << i;
-      if mask & dominator_bits > 0 {
-        annotations[block_id].dominators.push(BlockId(i as u32))
-      }
-    }
+    annotations[block_id].predecessors =
+      bitfield.iter_row_set_indices(block_id + i_pred_offset).map(|i| BlockId(i as u32)).collect();
 
-    let indirect_successsor_bits =
-      indirect_successors[block_id] & !(1u64 << block_id) & !dominator_bits;
-
-    for i in 0..64 {
-      let mask = 1u64 << i;
-      if mask & indirect_successsor_bits > 0 {
-        annotations[block_id].indirects.push(BlockId(i as u32))
-      }
-    }
+    annotations[block_id].direct_predecessor =
+      bitfield.iter_row_set_indices(block_id + d_pred_offset).map(|i| BlockId(i as u32)).collect();
 
     annotations[block_id].ins =
       bitfield.iter_row_set_indices(block_id + in_rows_offset).map(|i| stores[i].clone()).collect();
@@ -618,6 +683,47 @@ fn build_annotations(ctx: &mut OptimizerContext) {
       .iter_row_set_indices(block_id + def_rows_offset)
       .map(|i| stores[i].clone())
       .collect();
+
+    annotations[block_id].is_loop_head =
+      annotations[block_id].direct_predecessor.iter().any(|i| i.usize() >= block_id);
+  }
+
+  // Loop Components --------------------
+  loop_until(0..ctx.blocks.len(), |block_id, _| {
+    if annotations[block_id].is_loop_head {
+      bitfield.mov(working_index, block_id + dominator_offset);
+      bitfield.not(working_index);
+      bitfield.and(block_id + loop_comp_offset, working_index);
+    }
+  });
+
+  loop_until(0..ctx.blocks.len(), |block_id, _| {
+    if annotations[block_id].is_loop_head {
+      bitfield.mov(working_index, block_id + loop_comp_offset);
+
+      for successor in
+        bitfield.iter_row_set_indices(working_index).collect::<ArrayVec<16, _>>().iter()
+      {
+        if *successor != block_id && annotations[*successor].is_loop_head {
+          bitfield.not(successor + loop_comp_offset);
+          bitfield.and(working_index, successor + loop_comp_offset);
+          bitfield.not(successor + loop_comp_offset);
+          bitfield.set_bit(working_index, *successor);
+        }
+      }
+
+      /* *should_continue = */
+      bitfield.mov(block_id + loop_comp_offset, working_index);
+    }
+  });
+
+  for block_id in 0..ctx.blocks.len() {
+    if annotations[block_id].is_loop_head {
+      annotations[block_id].loop_components = bitfield
+        .iter_row_set_indices(block_id + loop_comp_offset)
+        .map(|i| BlockId(i as u32))
+        .collect();
+    }
   }
 
   ctx.block_annotations = annotations
@@ -631,54 +737,20 @@ fn get_branch_indices(block: &SSABlock) -> [Option<BlockId>; 3] {
   [block.branch_succeed, block.branch_fail, block.branch_unconditional]
 }
 
-fn collect_predecessors(funct: &mut SSAFunction) {
-  let upper_bound = funct.blocks.len() - 1;
-  let mut successors = ArrayVec::<2, _>::new();
-
-  for predecessor in 0..=upper_bound {
-    successors.clear();
-
-    if !has_branch(&funct.blocks[predecessor]) {
-      // the following block is a natural successor of this block.
-      if predecessor < upper_bound {
-        funct.blocks[predecessor].branch_unconditional = Some(BlockId((predecessor + 1) as u32));
-      }
-    }
-
-    let block = &funct.blocks[predecessor];
-
-    if let Some(id) = &block.branch_fail {
-      successors.push(*id);
-    }
-
-    if let Some(id) = &block.branch_succeed {
-      successors.push(*id);
-    }
-
-    if let Some(id) = &block.branch_unconditional {
-      successors.push(*id);
-    }
-
-    for id in successors.iter() {
-      funct.blocks[*id].predecessors.push_unique(predecessor as u16).expect("Should be ordered");
-    }
-  }
-}
-
-fn remove_passive_blocks(funct: &mut SSAFunction) {
+fn remove_passive_blocks(ctx: &mut SSAFunction) {
   'outer: loop {
-    let mut block_remaps = (0..funct.blocks.len() as u32).map(|i| BlockId(i)).collect::<Vec<_>>();
-    for empty_block in 0..funct.blocks.len() {
-      let block = &funct.blocks[empty_block];
+    let mut block_remaps = (0..ctx.blocks.len() as u32).map(|i| BlockId(i)).collect::<Vec<_>>();
+    for empty_block in 0..ctx.blocks.len() {
+      let block = &ctx.blocks[empty_block];
 
       if block_is_empty(block) {
         if let Some(target) = &block.branch_unconditional {
           block_remaps[empty_block] = *target;
         }
 
-        funct.blocks.remove(empty_block);
+        ctx.blocks.remove(empty_block);
 
-        funct.blocks[empty_block..].iter_mut().for_each(|b| {
+        ctx.blocks[empty_block..].iter_mut().for_each(|b| {
           b.id.0 -= 1;
         });
 
@@ -686,13 +758,13 @@ fn remove_passive_blocks(funct: &mut SSAFunction) {
           i.0 -= 1;
         });
 
-        for block in &mut funct.blocks {
+        for block in &mut ctx.blocks {
           update_branch(&mut block.branch_succeed, &block_remaps);
           update_branch(&mut block.branch_fail, &block_remaps);
           update_branch(&mut block.branch_unconditional, &block_remaps);
         }
 
-        for op in &mut funct.graph {
+        for op in &mut ctx.graph {
           op.block_id = block_remaps[op.block_id]
         }
 
@@ -700,6 +772,13 @@ fn remove_passive_blocks(funct: &mut SSAFunction) {
       }
     }
     break;
+  }
+
+  for i in 0..(ctx.blocks.len() - 1) {
+    let block = &mut ctx.blocks[i];
+    if !has_branch(block) {
+      block.branch_unconditional = Some(BlockId(block.id.0 + 1));
+    }
   }
 }
 
@@ -722,7 +801,10 @@ fn has_branch(block: &SSABlock) -> bool {
 }
 
 #[inline]
-pub fn loop_until<T: FnMut(usize, &mut bool)>(range: Range<usize>, mut funct: T) {
+pub fn loop_until<I: Iterator<Item = usize> + Clone, T: FnMut(usize, &mut bool)>(
+  range: I,
+  mut funct: T,
+) {
   loop {
     let mut should_continue = false;
 
@@ -737,23 +819,39 @@ pub fn loop_until<T: FnMut(usize, &mut bool)>(range: Range<usize>, mut funct: T)
 }
 
 struct BlockAnnotation {
-  dominators: ArrayVec<32, BlockId>,
-  indirects:  ArrayVec<32, BlockId>,
-  ins:        Vec<SSAGraphNode>,
-  outs:       Vec<SSAGraphNode>,
-  decls:      Vec<SSAGraphNode>,
+  dominators:         ArrayVec<8, BlockId>,
+  predecessors:       ArrayVec<8, BlockId>,
+  direct_predecessor: ArrayVec<8, BlockId>,
+  loop_components:    ArrayVec<8, BlockId>,
+  ins:                Vec<SSAGraphNode>,
+  outs:               Vec<SSAGraphNode>,
+  decls:              Vec<SSAGraphNode>,
+  is_loop_head:       bool,
 }
 
 impl Debug for BlockAnnotation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if self.is_loop_head {
+      f.write_str("  LOOP_HEAD\n")?;
+      f.write_fmt(format_args!(
+        "  loop_components: {} \n",
+        self.loop_components.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+      ))?;
+    }
+
     f.write_fmt(format_args!(
       "  dominators: {} \n",
       self.dominators.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
     ))?;
 
     f.write_fmt(format_args!(
-      "  indirects: {} \n",
-      self.indirects.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+      "  predecessors: {} \n",
+      self.predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+    ))?;
+
+    f.write_fmt(format_args!(
+      "  direct predecessors: {} \n",
+      self.direct_predecessor.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
     ))?;
 
     f.write_fmt(format_args!(
@@ -777,10 +875,10 @@ impl Debug for BlockAnnotation {
 
 pub(super) struct OptimizerContext<'funct> {
   pub(super) block_annotations: Vec<BlockAnnotation>,
-  pub(super) op_annotations:    Vec<OpAnnotation>,
-  pub(super) ops:               &'funct mut Vec<SSAGraphNode>,
+  pub(super) graph:             &'funct mut Vec<SSAGraphNode>,
   pub(super) constants:         &'funct mut Vec<ConstVal>,
   pub(super) blocks:            &'funct mut Vec<Box<SSABlock>>,
+  stack_id:                     usize,
 }
 
 impl<'funct> Debug for OptimizerContext<'funct> {
@@ -793,16 +891,12 @@ impl<'funct> Debug for OptimizerContext<'funct> {
       }
 
       for op_id in &block.ops {
-        if (op_id.0 as usize) < self.ops.len() {
-          let op = self.ops[*op_id];
+        if (op_id.0 as usize) < self.graph.len() {
+          let op = self.graph[*op_id];
           f.write_str("  ")?;
 
           op.fmt(f)?;
 
-          if (op_id.0 as usize) < self.op_annotations.len() {
-            f.write_str("\n    ")?;
-            self.op_annotations[*op_id].fmt(f)?;
-          }
           f.write_str("\n")?;
         } else {
           f.write_str("\n  Unknown\n")?;
@@ -828,7 +922,7 @@ impl<'funct> Debug for OptimizerContext<'funct> {
 
     self.constants.fmt(f)?;
 
-    self.ops.iter().zip(self.op_annotations.iter()).collect::<Vec<_>>().fmt(f)?;
+    self.graph.iter().collect::<Vec<_>>().fmt(f)?;
 
     Ok(())
   }
@@ -843,11 +937,10 @@ impl<'funct> OptimizerContext<'funct> {
 
   // add annotation - iter rate - iter initial val - iter inc stack id const val
 
-  pub fn push_graph_node(&mut self, mut node: SSAGraphNode) -> GraphNodeId {
-    let id: GraphNodeId = self.ops.len().into();
+  pub fn push_graph_node(&mut self, mut node: SSAGraphNode) -> GraphId {
+    let id: GraphId = self.graph.len().into();
     node.id = id;
-    self.ops.push(node);
-    self.op_annotations.push(Default::default());
+    self.graph.push(node);
     id
   }
 
@@ -855,14 +948,14 @@ impl<'funct> OptimizerContext<'funct> {
     &mut self,
     op: SSAOp,
     output: TypeInfo,
-    left: GraphNodeId,
-    right: GraphNodeId,
+    left: GraphId,
+    right: GraphId,
     block_id: BlockId,
-  ) -> GraphNodeId {
+  ) -> GraphId {
     self.push_graph_node(SSAGraphNode {
       block_id,
       op,
-      id: GraphNodeId::Invalid,
+      id: GraphId::INVALID,
       output,
       operands: [left, right, Default::default()],
     })
@@ -872,34 +965,36 @@ impl<'funct> OptimizerContext<'funct> {
     &mut self,
     op: SSAOp,
     output: TypeInfo,
-    left: GraphNodeId,
+    left: GraphId,
     block_id: BlockId,
-  ) -> GraphNodeId {
+  ) -> GraphId {
     self.push_graph_node(SSAGraphNode {
       block_id,
       op,
-      id: GraphNodeId::Invalid,
+      id: GraphId::INVALID,
       output,
       operands: [left, Default::default(), Default::default()],
     })
   }
 
-  pub fn push_zero_op(&mut self, op: SSAOp, output: TypeInfo, block_id: BlockId) -> GraphNodeId {
+  pub fn push_zero_op(&mut self, op: SSAOp, output: TypeInfo, block_id: BlockId) -> GraphId {
     self.push_graph_node(SSAGraphNode {
       block_id,
       op,
-      id: GraphNodeId::Invalid,
+      id: GraphId::INVALID,
       output,
       operands: Default::default(),
     })
   }
 
-  pub fn push_stack_val(&mut self, ty: TypeInfo) -> GraphNodeId {
-    let stack_id_ty = TypeInfo::at_stack_id(66) | ty.mask_out_stack_id();
+  pub fn push_stack_val(&mut self, ty: TypeInfo) -> GraphId {
+    let stack_id = self.stack_id + 1;
+    self.stack_id = stack_id;
+    let stack_id_ty = TypeInfo::at_stack_id(stack_id as u16) | ty.mask_out_stack_id();
     self.push_zero_op(SSAOp::STACK_DEFINE, stack_id_ty, BlockId(0))
   }
 
-  pub fn push_constant(&mut self, output: ConstVal) -> GraphNodeId {
+  pub fn push_constant(&mut self, output: ConstVal) -> GraphId {
     let const_index = if let Some((index, val)) =
       self.constants.iter().enumerate().find(|v| v.1.clone() == output)
     {
@@ -910,26 +1005,18 @@ impl<'funct> OptimizerContext<'funct> {
       val
     };
 
-    self.push_graph_node(SSAGraphNode {
-      block_id: BlockId(0),
-      op:       SSAOp::CONSTANT,
-      id:       GraphNodeId::Invalid,
-      output:   output.ty,
-      operands: [GraphNodeId(const_index as u32), Default::default(), Default::default()],
-    })
+    GraphId(const_index as u32).as_const()
   }
 
-  fn get_const(&self, node: GraphNodeId) -> Option<ConstVal> {
+  fn get_const(&self, node: GraphId) -> Option<ConstVal> {
     // todo(anthony): Perform full graph analysis to resolve constant derived from
     // a sequence of operations.
-    let node: SSAGraphNode = self[node];
-    let mut constant = None;
 
-    if node.op == SSAOp::CONSTANT {
-      constant = Some(self.constants[node.operands[0]])
+    if node.is_const() {
+      Some(self.constants[node])
+    } else {
+      None
     }
-
-    constant
   }
 
   pub fn blocks_range(&self) -> Range<usize> {
@@ -941,20 +1028,20 @@ impl<'funct> OptimizerContext<'funct> {
   }
 
   pub fn ops_range(&self) -> Range<usize> {
-    0..self.ops.len()
+    0..self.graph.len()
   }
 }
 
-impl<'funct> std::ops::Index<GraphNodeId> for OptimizerContext<'funct> {
+impl<'funct> std::ops::Index<GraphId> for OptimizerContext<'funct> {
   type Output = SSAGraphNode;
-  fn index(&self, index: GraphNodeId) -> &Self::Output {
-    &self.ops[index]
+  fn index(&self, index: GraphId) -> &Self::Output {
+    &self.graph[index]
   }
 }
 
-impl<'funct> std::ops::IndexMut<GraphNodeId> for OptimizerContext<'funct> {
-  fn index_mut(&mut self, index: GraphNodeId) -> &mut Self::Output {
-    &mut self.ops[index]
+impl<'funct> std::ops::IndexMut<GraphId> for OptimizerContext<'funct> {
+  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
+    &mut self.graph[index]
   }
 }
 
@@ -985,7 +1072,6 @@ impl Debug for IStruct {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct OpAnnotation {
-  pub(super) init:           ConstVal,
   pub(super) invalid:        bool,
   pub(super) loop_intrinsic: bool,
   pub(super) processed:      bool,

@@ -11,7 +11,7 @@ pub fn allocates_on_stack_only() {
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4]);
 
-  assert!(vec.data_is_bounded());
+  assert!(!vec.data_is_vectorized());
 
   assert_eq!(vec.pop(), Some(4));
   assert_eq!(vec.pop(), Some(3));
@@ -31,7 +31,7 @@ pub fn over_allocates_are_moved_into_vector() {
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4]);
 
-  assert!(!vec.data_is_bounded());
+  assert!(vec.data_is_vectorized());
 
   assert_eq!(vec.pop(), Some(4));
   assert_eq!(vec.pop(), Some(3));
@@ -44,28 +44,28 @@ pub fn over_allocates_are_moved_into_vector() {
 pub fn sorted_insert() {
   let mut vec = ArrayVec::<11, u32>::new();
 
-  vec.push_ordered(9);
-  vec.push_ordered(5);
-  vec.push_ordered(2);
-  vec.push_ordered(7);
-  vec.push_ordered(1);
-  vec.push_ordered(6);
-  vec.push_ordered(10);
-  vec.push_ordered(3);
-  vec.push_ordered(4);
-  vec.push_ordered(8);
+  vec.insert_ordered(9);
+  vec.insert_ordered(5);
+  vec.insert_ordered(2);
+  vec.insert_ordered(7);
+  vec.insert_ordered(1);
+  vec.insert_ordered(6);
+  vec.insert_ordered(10);
+  vec.insert_ordered(3);
+  vec.insert_ordered(4);
+  vec.insert_ordered(8);
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
-  assert!(vec.data_is_bounded());
+  assert!(!vec.data_is_vectorized());
   assert!(vec.data_is_ordered());
 
-  vec.push_ordered(29);
-  vec.push_ordered(23);
+  vec.insert_ordered(29);
+  vec.insert_ordered(23);
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 23, 29]);
 
-  assert!(!vec.data_is_bounded());
+  assert!(vec.data_is_vectorized());
   assert!(vec.data_is_ordered());
 }
 
@@ -80,7 +80,7 @@ pub fn over_allocates_are_moved_into_vector_large_stack_allocation() {
 
   assert_eq!(vec.as_slice(), [1, 2, 3, 4]);
 
-  assert!(vec.data_is_bounded());
+  assert!(!vec.data_is_vectorized());
 
   assert_eq!(vec.pop(), Some(4));
   assert_eq!(vec.pop(), Some(3));
@@ -109,7 +109,7 @@ pub fn data_with_drop_trait_is_properly_handle_from_vec() {
   vec.push(Data(3));
   vec.push(Data(4));
 
-  assert!(!vec.data_is_bounded());
+  assert!(vec.data_is_vectorized());
 
   assert_eq!(vec.pop(), Some(Data(4)));
   assert_eq!(vec.pop(), Some(Data(3)));
@@ -141,7 +141,7 @@ pub fn data_with_drop_trait_is_properly_handled_on_stack() {
   vec.push(Data(3));
   vec.push(Data(4));
 
-  assert!(vec.data_is_bounded());
+  assert!(!vec.data_is_vectorized());
 
   assert_eq!(vec.pop(), Some(Data(4)));
   assert_eq!(vec.pop(), Some(Data(3)));
