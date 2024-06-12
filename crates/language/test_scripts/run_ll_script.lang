@@ -4,17 +4,15 @@
   table_33:*32 <-<test>
 
   i:i32 
-  i = 64
+  i = 63
 
   loop {
     match i >= 0 {
       true {
-        [table_22 + i] = f32(0)
+        [table_22 + i] = f32(212)
         i = i-1
         
-        match i >= 0 {
-          true { continue }
-        }
+        continue
       }
     }
   }

@@ -1,4 +1,4 @@
-use crate::compiler::interpreter::ll::types::{GraphId, SSAFunction, TypeInfo};
+use crate::compiler::interpreter::ll::ir_types::{GraphId, SSAFunction, TypeInfo};
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub(super) enum OpEncoding {
@@ -85,16 +85,72 @@ pub const R13: GraphId = GraphId(13).as_register();
 pub const R14: GraphId = GraphId(14).as_register();
 pub const R15: GraphId = GraphId(15).as_register();
 
-pub const XMM1: GraphId = GraphId(16).as_register();
-pub const XMM2: GraphId = GraphId(17).as_register();
-pub const XMM3: GraphId = GraphId(18).as_register();
-pub const XMM4: GraphId = GraphId(19).as_register();
-pub const XMM5: GraphId = GraphId(20).as_register();
-pub const XMM6: GraphId = GraphId(21).as_register();
-pub const XMM7: GraphId = GraphId(22).as_register();
-pub const XMM8: GraphId = GraphId(23).as_register();
+pub const XMM0: GraphId = GraphId(16).as_register();
+pub const XMM1: GraphId = GraphId(17).as_register();
+pub const XMM2: GraphId = GraphId(18).as_register();
+pub const XMM3: GraphId = GraphId(19).as_register();
+pub const XMM4: GraphId = GraphId(20).as_register();
+pub const XMM5: GraphId = GraphId(21).as_register();
+pub const XMM6: GraphId = GraphId(22).as_register();
+pub const XMM7: GraphId = GraphId(23).as_register();
+pub const XMM8: GraphId = GraphId(24).as_register();
+pub const XMM9: GraphId = GraphId(25).as_register();
+pub const XMM10: GraphId = GraphId(26).as_register();
+pub const XMM11: GraphId = GraphId(27).as_register();
+pub const XMM12: GraphId = GraphId(28).as_register();
+pub const XMM13: GraphId = GraphId(29).as_register();
+pub const XMM14: GraphId = GraphId(30).as_register();
+pub const XMM15: GraphId = GraphId(31).as_register();
 
-pub const RIP_REL: GraphId = GraphId(62).as_register();
+pub const YMM0: GraphId = GraphId(16).as_register();
+pub const YMM1: GraphId = GraphId(17).as_register();
+pub const YMM2: GraphId = GraphId(18).as_register();
+pub const YMM3: GraphId = GraphId(19).as_register();
+pub const YMM4: GraphId = GraphId(20).as_register();
+pub const YMM5: GraphId = GraphId(21).as_register();
+pub const YMM6: GraphId = GraphId(22).as_register();
+pub const YMM7: GraphId = GraphId(23).as_register();
+pub const YMM8: GraphId = GraphId(24).as_register();
+pub const YMM9: GraphId = GraphId(25).as_register();
+pub const YMM10: GraphId = GraphId(26).as_register();
+pub const YMM11: GraphId = GraphId(27).as_register();
+pub const YMM12: GraphId = GraphId(28).as_register();
+pub const YMM13: GraphId = GraphId(29).as_register();
+pub const YMM14: GraphId = GraphId(30).as_register();
+pub const YMM15: GraphId = GraphId(31).as_register();
+
+pub const ZMM0: GraphId = GraphId(16).as_register();
+pub const ZMM1: GraphId = GraphId(17).as_register();
+pub const ZMM2: GraphId = GraphId(18).as_register();
+pub const ZMM3: GraphId = GraphId(19).as_register();
+pub const ZMM4: GraphId = GraphId(20).as_register();
+pub const ZMM5: GraphId = GraphId(21).as_register();
+pub const ZMM6: GraphId = GraphId(22).as_register();
+pub const ZMM7: GraphId = GraphId(23).as_register();
+pub const ZMM8: GraphId = GraphId(24).as_register();
+pub const ZMM9: GraphId = GraphId(25).as_register();
+pub const ZMM10: GraphId = GraphId(26).as_register();
+pub const ZMM11: GraphId = GraphId(27).as_register();
+pub const ZMM12: GraphId = GraphId(28).as_register();
+pub const ZMM13: GraphId = GraphId(29).as_register();
+pub const ZMM14: GraphId = GraphId(30).as_register();
+pub const ZMM15: GraphId = GraphId(31).as_register();
+pub const ZMM16: GraphId = GraphId(16).as_register();
+pub const ZMM17: GraphId = GraphId(17).as_register();
+pub const ZMM18: GraphId = GraphId(18).as_register();
+pub const ZMM19: GraphId = GraphId(19).as_register();
+pub const ZMM20: GraphId = GraphId(20).as_register();
+pub const ZMM21: GraphId = GraphId(21).as_register();
+pub const ZMM22: GraphId = GraphId(22).as_register();
+pub const ZMM23: GraphId = GraphId(23).as_register();
+pub const ZMM24: GraphId = GraphId(24).as_register();
+pub const ZMM25: GraphId = GraphId(25).as_register();
+pub const ZMM26: GraphId = GraphId(26).as_register();
+pub const ZMM27: GraphId = GraphId(27).as_register();
+pub const ZMM28: GraphId = GraphId(28).as_register();
+pub const ZMM29: GraphId = GraphId(29).as_register();
+pub const ZMM30: GraphId = GraphId(30).as_register();
+pub const ZMM31: GraphId = GraphId(31).as_register();
 
 impl GraphId {
   const SIB_RM: u8 = 0b100;
@@ -112,17 +168,15 @@ impl GraphId {
   pub(super) fn index(&self) -> u8 {
     debug_assert!(self.is_register());
     match *self {
-      R8 | RAX | XMM1 => 0x00,
-      R9 | RCX | XMM2 => 0x01,
-      R10 | RDX | XMM3 => 0x02,
-      R11 | RBX | XMM4 => 0x03,
-      R12 | RSP | XMM5 => 0x04,
-      R13 | RBP | XMM6 => 0x05,
-      R14 | RSI | XMM7 => 0x06,
-      R15 | RDI | XMM8 => 0x07,
-      RIP_REL => 0x5,    // uses SIB byte
+      R8 | RAX | XMM0 => 0x00,
+      R9 | RCX | XMM1 => 0x01,
+      R10 | RDX | XMM2 => 0x02,
+      R11 | RBX | XMM3 => 0x03,
+      R12 | RSP | XMM4 => 0x04,
+      R13 | RBP | XMM5 => 0x05,
+      R14 | RSI | XMM6 => 0x06,
+      R15 | RDI | XMM7 => 0x07,
       _ => Self::SIB_RM, // uses SIB byte
-      _ => 0xFF,
     }
   }
 
@@ -144,20 +198,22 @@ impl GraphId {
     }
   }
 
-  pub fn into_addr_op(&self, ctx: &SSAFunction) -> Arg {
+  pub fn into_addr_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
     if self.is_register() {
       Arg::Mem(*self)
     } else {
-      self.into_op(ctx)
+      self.into_op(ctx, stack_offsets)
     }
   }
 
-  pub fn into_op(&self, ctx: &SSAFunction) -> Arg {
+  pub fn into_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
     if self.is_register() {
       Arg::Reg(*self)
     } else if self.is_const() {
       let value = ctx.constants[*self];
       Arg::Imm_Int(value.convert(TypeInfo::Integer | TypeInfo::b64).load().unwrap())
+    } else if self.is_var() {
+      Arg::RSP_REL(stack_offsets[*self])
     } else {
       Arg::None
     }
@@ -177,6 +233,7 @@ pub(super) enum Arg {
   Reg(GraphId),
   Mem(GraphId),
   RSP_REL(u64),
+  RIP_REL(u64),
   Imm_Int(u64),
   OpExt(u8),
   None,
@@ -189,6 +246,7 @@ impl Arg {
       Arg::Reg(..) => OperandType::REG,
       Arg::Mem(..) => OperandType::MEM,
       Arg::RSP_REL(..) => OperandType::MEM,
+      Arg::RIP_REL(..) => OperandType::MEM,
       _ => OperandType::NONE,
     }
   }
@@ -209,8 +267,11 @@ impl Arg {
 
   pub(super) fn reg_index(&self) -> u8 {
     match self {
+      Arg::RIP_REL(_) => 0x5,
+      Arg::RSP_REL(_) => 0x4,
       Arg::Reg(reg) | Arg::Mem(reg) => reg.index(),
       Self::OpExt(index) => *index,
+
       arg => unreachable!("{arg:?}"),
     }
   }

@@ -68,12 +68,12 @@ pub(crate) fn create_queues(
   job_pool_size: usize,
   free_name: &'static str,
   job_name: &'static str,
-) -> (JobBuffer, Box<LLQueueAtomic>, Box<LLQueueAtomic>, MTLLFIFOQueue16<Job>, MTLLFIFOQueue16<Job>)
+) -> (JobBuffer, Box<RawQueueAtomic>, Box<RawQueueAtomic>, MTLLFIFOQueue16<Job>, MTLLFIFOQueue16<Job>)
 {
   let jobs = create_queue(job_pool_size);
 
-  let mut free_queue_ptr = Box::new(LLQueueAtomic::new(0, job_pool_size as u16 - 1));
-  let mut job_queue_ptr = Box::new(LLQueueAtomic::new_empty());
+  let mut free_queue_ptr = Box::new(RawQueueAtomic::new(0, job_pool_size as u16 - 1));
+  let mut job_queue_ptr = Box::new(RawQueueAtomic::new_empty());
   let free_queue = MTLLFIFOQueue16 {
     nodes: get_job_queue_ptr(jobs),
     list: &mut *free_queue_ptr,
@@ -111,21 +111,21 @@ pub trait MTLLNode16 {
   }
 }
 
-/// Store head and tail info for a LLQueue
+/// Store head and tail info for a RawQueue
 ///
 /// Tries to maintain an exclusive cache line.
 #[derive(Debug)]
 #[cfg_attr(target_arch = "x86_64", repr(align(64)))]
-pub struct LLQueueAtomic {
+pub struct RawQueueAtomic {
   info:    AtomicU32,
   #[allow(unused)]
   #[cfg(debug_assertions)]
   counter: AtomicU32,
 }
 
-impl LLQueueAtomic {
+impl RawQueueAtomic {
   pub fn new_empty() -> Self {
-    LLQueueAtomic {
+    RawQueueAtomic {
       info: AtomicU32::new(u32::MAX),
       #[cfg(debug_assertions)]
       counter: AtomicU32::new(0),
@@ -133,7 +133,7 @@ impl LLQueueAtomic {
   }
 
   pub fn new(head: u16, tail: u16) -> Self {
-    LLQueueAtomic {
+    RawQueueAtomic {
       info: AtomicU32::new((tail as u32) | ((head as u32) << 16)),
       #[cfg(debug_assertions)]
       counter: AtomicU32::new((tail - head + 1) as u32),
@@ -144,7 +144,7 @@ impl LLQueueAtomic {
 /// Multi-threaded Linked-List FIFO  Queue
 #[derive(Debug)]
 pub struct MTLLFIFOQueue16<Node: MTLLNode16> {
-  pub(crate) list:  *mut LLQueueAtomic,
+  pub(crate) list:  *mut RawQueueAtomic,
   pub(crate) nodes: *mut Node,
   #[cfg(debug_assertions)]
   pub(crate) name:  &'static str,
@@ -181,7 +181,7 @@ const QUEUE_EMPTY: u32 = 0xFFFF_FFFF;
 const QUEUE_ELEMENT_MASK: u32 = 0xFFFF;
 
 impl<Node: MTLLNode16> MTLLFIFOQueue16<Node> {
-  pub fn new(list: *mut LLQueueAtomic, nodes: *mut Node, name: &'static str) -> Self {
+  pub fn new(list: *mut RawQueueAtomic, nodes: *mut Node, name: &'static str) -> Self {
     Self {
       list,
       nodes,

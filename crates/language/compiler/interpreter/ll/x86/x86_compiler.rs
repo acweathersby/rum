@@ -1,9 +1,9 @@
-use super::types::*;
+use super::x86_types::*;
 use crate::compiler::interpreter::{
   error::RumResult,
   ll::{
-    types::{BitSize, BlockId, SSABlock, SSAFunction, SSAGraphNode, SSAOp},
-    x86::{encoder::*, push_bytes},
+    ir_types::{BitSize, BlockId, IRBlock, IRGraphNode, IROp, SSAFunction},
+    x86::{push_bytes, x86_encoder::*},
   },
 };
 use rum_logger::todo_note;
@@ -31,14 +31,14 @@ impl JumpResolution {
   }
 }
 
-pub struct LowLevelFunction {
+pub struct x86Function {
   binary:       *const u8,
   binary_size:  usize,
   entry_offset: usize,
 }
 
-impl LowLevelFunction {
-  pub fn new(binary: &[u8], entry_offset: usize) -> LowLevelFunction {
+impl x86Function {
+  pub fn new(binary: &[u8], entry_offset: usize) -> x86Function {
     let allocation_size = binary.len();
 
     let prot = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
@@ -64,21 +64,21 @@ impl LowLevelFunction {
 
       dbg!(ptr);
 
-      dbg!(std::slice::from_raw_parts::<f32>(ptr, 100));
+      dbg!(std::slice::from_raw_parts::<f32>(ptr, 67));
 
       panic!("That's all she wrote!");
     }
   }
 }
 
-impl Drop for LowLevelFunction {
+impl Drop for x86Function {
   fn drop(&mut self) {
     let result = unsafe { libc::munmap(self.binary as *mut _, self.binary_size) };
     debug_assert_eq!(result, 0);
   }
 }
 
-pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<LowLevelFunction> {
+pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
   const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
   const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
 
@@ -102,12 +102,28 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<LowLevelFunction> {
 
   // Create area on the stack for local declarations
 
-  let mut offsets = Vec::with_capacity(funct.stack_id);
-  offsets.resize_with(funct.stack_id, || 0);
+  let mut offsets = Vec::with_capacity(20);
+  offsets.resize_with(20, || 0);
+  let mut rsp_offset = 0;
 
-  for block in &funct.blocks {}
+  for node in &ctx.ctx.graph {
+    if node.op == IROp::MEM_STORE {
+      continue;
+    }
+    if let Some(id) = node.output.stack_id() {
+      offsets[id] = node.output.total_byte_size().unwrap() as u64;
+    }
+  }
 
-  funct_preamble(&mut ctx);
+  for node in &mut offsets {
+    let val = *node;
+    *node = rsp_offset;
+    rsp_offset += val;
+  }
+
+  rsp_offset = rum_container::get_aligned_value(rsp_offset, 16);
+
+  funct_preamble(&mut ctx, rsp_offset);
 
   for block in &funct.blocks {
     ctx.jmp_resolver.block_offset.push(ctx.binary.len());
@@ -118,15 +134,20 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<LowLevelFunction> {
       println!("{node:?}");
 
       let old_offset = ctx.binary.len();
-      compile_op(&node, &block, &mut ctx, &offsets);
+      compile_op(&node, &block, &mut ctx, &offsets, rsp_offset);
       offset = print_instructions(&ctx.binary[old_offset..], offset);
       println!("\n")
     }
 
-    if SSAOp::RETURN == ctx.ctx.graph[block.ops[block.ops.len() - 1]].op {
-      todo_note!("Handle return statement");
-      //println!("RETURN {:?} \n\n", convert_ssa_to_reg(return_value, &mut
-      // ctx.registers))
+    if let Some(block_id) = block.branch_unconditional {
+      use Arg::*;
+      use BitSize::*;
+      if block_id != BlockId(block.id.0 + 1) {
+        let CompileContext { stack_size, jmp_resolver, binary: bin, ctx } = &mut ctx;
+        encode(bin, &jmp, b32, Imm_Int(block_id.0 as u64), None, None);
+        jmp_resolver.add_jump(bin, block_id.0 as usize);
+        println!("JL BLOCK({block_id})");
+      }
     }
   }
 
@@ -140,10 +161,10 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<LowLevelFunction> {
 
   print_instructions(&ctx.binary[16..], offset);
 
-  Ok(LowLevelFunction::new(&ctx.binary, 16))
+  Ok(x86Function::new(&ctx.binary, 16))
 }
 
-fn funct_preamble(ctx: &mut CompileContext) {
+fn funct_preamble(ctx: &mut CompileContext, rsp_offset: u64) {
   let bin = &mut ctx.binary;
   encode_unary(bin, &push, BitSize::b64, Arg::Reg(RBX));
   encode_unary(bin, &push, BitSize::b64, Arg::Reg(RBP));
@@ -152,16 +173,16 @@ fn funct_preamble(ctx: &mut CompileContext) {
   encode_unary(bin, &push, BitSize::b64, Arg::Reg(R14));
   encode_unary(bin, &push, BitSize::b64, Arg::Reg(R15));
 
-  if ctx.stack_size > 0 {
+  if rsp_offset > 0 {
     // Move RSP to allow for enough stack space for our variables -
-    encode_binary(bin, &sub, BitSize::b64, Arg::Reg(RSP), Arg::Imm_Int(ctx.stack_size));
+    encode_binary(bin, &sub, BitSize::b64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset));
   }
 }
 
-fn funct_postamble(ctx: &mut CompileContext) {
+fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
   let bin = &mut ctx.binary;
-  if ctx.stack_size > 0 {
-    encode_binary(bin, &add, BitSize::b64, Arg::Reg(RSP), Arg::Imm_Int(ctx.stack_size));
+  if rsp_offset > 0 {
+    encode_binary(bin, &add, BitSize::b64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset));
   }
   encode_unary(bin, &pop, BitSize::b64, Arg::Reg(R15));
   encode_unary(bin, &pop, BitSize::b64, Arg::Reg(R14));
@@ -171,13 +192,36 @@ fn funct_postamble(ctx: &mut CompileContext) {
   encode_unary(bin, &pop, BitSize::b64, Arg::Reg(RBX));
 }
 
-pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContext, so: &[usize]) {
+pub fn compile_op(
+  node: &IRGraphNode,
+  block: &IRBlock,
+  ctx: &mut CompileContext,
+  so: &[u64],
+  rsp_offset: u64,
+) {
   use Arg::*;
   use BitSize::*;
   match node.op {
-    SSAOp::PHI => {}
-    SSAOp::SINK => {}
-    SSAOp::ADD => {
+    IROp::PHI => {}
+    IROp::STORE => {
+      let CompileContext { ctx, binary: bin, .. } = ctx;
+      let op1 = node.operands[0];
+      let op2 = node.operands[1];
+      let bit_size = node.output.into();
+
+      if op2.is_const() {
+        encode(bin, &mov, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
+      }
+    }
+    IROp::MOVE => {
+      let CompileContext { ctx, binary: bin, .. } = ctx;
+      let op1 = node.operands[0];
+      let op2 = node.operands[1];
+      let bit_size = node.output.into();
+
+      encode(bin, &mov, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
+    }
+    IROp::ADD => {
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let mut op1 = node.operands[0];
       let mut op2 = node.operands[1];
@@ -191,14 +235,14 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
           op2 = op1;
           op1 = op3;
         } else {
-          encode(bin, &mov, bit_size, op3.into_op(ctx), op1.into_op(ctx), None);
+          encode(bin, &mov, bit_size, op3.into_op(ctx, so), op1.into_op(ctx, so), None);
           op1 = op3;
         }
       }
 
-      encode(bin, &add, bit_size, op1.into_op(ctx), op2.into_op(ctx), None);
+      encode(bin, &add, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
     }
-    SSAOp::SUB => {
+    IROp::SUB => {
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let mut op1 = node.operands[0];
       let op2 = node.operands[1];
@@ -208,13 +252,13 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
       debug_assert!(op1.is_register() && op3.is_register());
 
       if op1 != op3 {
-        encode(bin, &mov, bit_size, op3.into_op(ctx), op1.into_op(ctx), None);
+        encode(bin, &mov, bit_size, op3.into_op(ctx, so), op1.into_op(ctx, so), None);
         op1 = op3;
       }
 
-      encode(bin, &sub, bit_size, op1.into_op(ctx), op2.into_op(ctx), None);
+      encode(bin, &sub, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
     }
-    SSAOp::MUL => {
+    IROp::MUL => {
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let mut op1 = node.operands[0];
       let op2 = node.operands[1];
@@ -224,18 +268,20 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
       debug_assert!(op1.is_register() && op3.is_register());
 
       if op1 != op3 {
-        encode(bin, &mov, bit_size, op3.into_op(ctx), op1.into_op(ctx), None);
+        encode(bin, &mov, bit_size, op3.into_op(ctx, so), op1.into_op(ctx, so), None);
         op1 = op3;
       }
 
-      encode(bin, &mul, bit_size, op1.into_op(ctx), op2.into_op(ctx), None);
+      let op1 = op1.into_op(ctx, so);
+      let op2 = op2.into_op(ctx, so);
+      encode(bin, &imul, bit_size, op1, op1, op2);
     }
-    SSAOp::DIV => todo!("TODO: {node:?}"),
-    SSAOp::LOG => todo!("TODO: {node:?}"),
-    SSAOp::POW => todo!("TODO: {node:?}"),
-    SSAOp::GR => todo!("SSAOp::GR"),
-    SSAOp::LS => todo!("SSAOp::LS"),
-    SSAOp::LE => {
+    IROp::DIV => todo!("TODO: {node:?}"),
+    IROp::LOG => todo!("TODO: {node:?}"),
+    IROp::POW => todo!("TODO: {node:?}"),
+    IROp::GR => todo!("IROp::GR"),
+    IROp::LS => todo!("IROp::LS"),
+    IROp::LE => {
       /*       let CompileContext { stack_size, jmp_resolver, binary: bin } = ctx;
       if let SSAExpr::BinaryOp(_, _, op1, op2) = node {
         let bit_size = op1.ll_val().info.into();
@@ -262,7 +308,7 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
         panic!()
       } */
     }
-    SSAOp::GE => {
+    IROp::GE => {
       let CompileContext { stack_size, jmp_resolver, binary: bin, ctx } = ctx;
 
       let op1 = node.operands[0];
@@ -270,10 +316,10 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
       let bit_size = node.output.into();
 
       if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_fail) {
-        encode(bin, &cmp, bit_size, op1.into_op(ctx), op2.into_op(ctx), None);
+        encode(bin, &cmp, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
         let next_block = BlockId(block.id.0 + 1);
         if pass == next_block {
-          encode(bin, &jl, b32, Imm_Int(fail.0 as u64), None, None);
+          encode(bin, &js, b32, Imm_Int(fail.0 as u64), None, None);
           jmp_resolver.add_jump(bin, fail.0 as usize);
           println!("JL BLOCK({fail})");
         } else if fail == next_block {
@@ -290,17 +336,11 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
         }
       }
     }
-    SSAOp::OR => todo!("SSAOp::OR"),
-    SSAOp::XOR => todo!("SSAOp::XOR"),
-    SSAOp::AND => todo!("SSAOp::AND"),
-    SSAOp::NOT => todo!("SSAOp::NOT"),
-    SSAOp::CALL => todo!("SSAOp::CALL"),
-    SSAOp::CONVERT => {
-      todo_note!("TODO: {node:?}");
-    }
-    SSAOp::CALL_BLOCK => todo!("TODO: {node:?}"),
-    SSAOp::EXIT_BLOCK => todo!("TODO: {node:?}"),
-    SSAOp::JUMP => {
+    IROp::OR => todo!("IROp::OR"),
+    IROp::XOR => todo!("IROp::XOR"),
+    IROp::AND => todo!("IROp::AND"),
+    IROp::NOT => todo!("IROp::NOT"),
+    IROp::JUMP => {
       /*       let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
       if let SSAExpr::UnaryOp(..) = node {
         // Requires RAX to be set to int_val;
@@ -312,18 +352,17 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
         panic!()
       } */
     }
-    SSAOp::JUMP_ZE => todo!("TODO: {node:?}"),
-    SSAOp::NE => todo!("TODO: {node:?}"),
-    SSAOp::EQ => todo!("TODO: {node:?}"),
-    SSAOp::DEREF => todo!("TODO: {node:?}"),
-    SSAOp::MEM_STORE => {
+    IROp::NE => todo!("TODO: {node:?}"),
+    IROp::EQ => todo!("TODO: {node:?}"),
+    IROp::DEREF => todo!("TODO: {node:?}"),
+    IROp::MEM_STORE => {
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let op1 = node.operands[0];
       let op2 = node.operands[1];
       let bit_size = node.output.into();
-      encode(bin, &mov, bit_size, op1.into_addr_op(ctx), op2.into_op(ctx), None);
+      encode(bin, &mov, bit_size, op1.into_addr_op(ctx, so), op2.into_op(ctx, so), None);
     }
-    /*     SSAOp::LOAD => {
+    /*     IROp::LOAD => {
           let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
           if let SSAExpr::UnaryOp(op, val, op1) = op_expr {
             debug_assert!(op1.ll_val().info.stack_id().is_some());
@@ -344,7 +383,7 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
             panic!()
           }
         } */
-    /*     SSAOp::STORE => {
+    /*     IROp::STORE => {
           let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
           if let SSAExpr::BinaryOp(op, val, op1, op2) = node {
             debug_assert!(op1.ll_val().info.stack_id().is_some());
@@ -363,39 +402,34 @@ pub fn compile_op(node: &SSAGraphNode, block: &SSABlock, ctx: &mut CompileContex
             panic!()
           }
         } */
-    SSAOp::MALLOC => {
-      /*       let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
-      if let SSAExpr::BinaryOp(op, val, op1, op2) = node {
-        debug_assert!(op1.ll_val().info.is_ptr());
+    IROp::CALL => {
+      dbg!(&node);
+      // Match the calling name to an offset
+      let CompileContext { ctx, binary: bin, .. } = ctx;
+      let op1 = node.operands[0];
+      let ir_call = &ctx.calls[op1];
 
-        match op1.ll_val().info.location() {
-          crate::compiler::interpreter::ll::types::DataLocation::Heap => {
-            // todo: Preserve and restore RAX & RDI if it they have been allocated. Ideally,
-            // RAX and RDI are reserved for duties such as calls, and other
-            // registers are used for more general operations.
+      debug_assert!(
+        ir_call.args.iter().all(|i| { i.is_register() }),
+        "Expected registers arguments {:?}",
+        ir_call.args
+      );
 
-            // Also preserve active caller registers
-
-            // Location of the allocate function address.
-
-            encode(bin, &mov, b64, Reg(RDI), op2.arg(so), None);
-            encode(bin, &call, b64, Mem(RIP_REL(0)), None, None).displace_too(0);
-            encode(bin, &mov, b64, op1.arg(so).to_mem(), Reg(RAX), None);
-
-            todo_note!("Handle errors if pointer is 0");
-          }
-          _ => {}
+      match ir_call.name.to_str().as_str() {
+        "malloc" => {
+          encode_unary(bin, &call, b64, RIP_REL(0)).displace_too(0);
         }
-      } else {
-        panic!()
-      } */
+        _ => {}
+      }
+
+      //todo!("Handle {ir_call:?} expression");
     }
 
-    SSAOp::RETURN => {
-      funct_postamble(ctx);
+    IROp::RETURN => {
+      funct_postamble(ctx, rsp_offset);
       encode(&mut ctx.binary, &ret, b64, None, None, None);
     }
-    SSAOp::NOOP => {}
+    IROp::NOOP => {}
     op => todo!("Handle {op:?}"),
   }
 }

@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use super::types::{SSABlock, SSAFunction, SSAGraphNode};
+use super::ir_types::{IRBlock, IRGraphNode, SSAFunction};
 pub(crate) enum RegisterProperty {
   IntegerArithmwetic,
   FloatingPointArithmetic,
@@ -15,7 +15,7 @@ pub(crate) enum RegisterProperty {
 pub(crate) trait RegisterAllocator {
   type RegisterType: RegisterIdentifier;
   fn new() -> Self;
-  fn map_register(&mut self, node: &SSAGraphNode) -> RegisterExp<Self::RegisterType>;
+  fn map_register(&mut self, node: &IRGraphNode) -> RegisterExp<Self::RegisterType>;
 }
 
 pub(crate) trait RegisterIdentifier: Debug {}
@@ -27,7 +27,7 @@ pub(crate) struct RegisterExp<R: RegisterIdentifier> {
 
 #[derive(Debug, Clone)]
 pub struct CompilerFunction<R: RegisterIdentifier> {
-  pub(crate) blocks: Vec<Box<SSABlock>>,
+  pub(crate) blocks: Vec<Box<IRBlock>>,
   pub(crate) graph:  Vec<RegisterExp<R>>,
 }
 

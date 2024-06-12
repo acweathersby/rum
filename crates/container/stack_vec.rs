@@ -301,6 +301,29 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
     }
   }
 
+  pub fn remove(&mut self, index: usize) -> Option<T> {
+    if index < self.len() {
+      if self.data_is_vectorized() {
+        unsafe { Some((*self.inner.vec).remove(index)) }
+      } else {
+        unsafe {
+          let (len, array) = &mut self.inner.array;
+
+          let mut t = std::mem::MaybeUninit::uninit().assume_init();
+          std::mem::swap(&mut t, &mut array[index]);
+
+          std::ptr::copy(&mut array[index + 1], &mut array[index], *len - (index + 1));
+
+          *len -= 1;
+
+          Some(t)
+        }
+      }
+    } else {
+      None
+    }
+  }
+
   pub fn len(&self) -> usize {
     if self.data_is_vectorized() {
       unsafe { self.inner.vec.len() }

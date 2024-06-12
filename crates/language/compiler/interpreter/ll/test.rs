@@ -6,8 +6,8 @@ use crate::{
 };
 
 use super::{
-  ssa_block_compiler::compile_function_blocks,
-  ssa_block_optimizer::optimize_function_blocks,
+  ir_block_optimizer::optimize_function_blocks,
+  ir_block_compiler::compile_function_blocks,
 };
 
 #[test]
@@ -18,11 +18,12 @@ fn construct_function_blocks() -> RumResult<()> {
 
   let blocks = compile_function_blocks(&funct)?;
 
-  //dbg!(&blocks);
-
   let optimized_blocks = optimize_function_blocks(blocks);
 
-  super::x86::compiler::compile_from_ssa_fn(&optimized_blocks);
+  let x86_fn = super::x86::x86_compiler::compile_from_ssa_fn(&optimized_blocks)?;
+
+  x86_fn.call();
+
   // let funct = compile_from_ssa_fn(&blocks)?;
   //
   // funct.call();

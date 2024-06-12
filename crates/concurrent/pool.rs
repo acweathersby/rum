@@ -9,7 +9,7 @@ use rum_logger::dbg_println;
 use crate::{containers::get_job_queue_ptr, error::RumResult, BroadcastIterator, ThreadId};
 
 use super::{
-  containers::{create_queues, free_queue, JobBuffer, LLQueueAtomic, MTLLFIFOQueue16},
+  containers::{create_queues, free_queue, JobBuffer, MTLLFIFOQueue16, RawQueueAtomic},
   job::{Job, RumFuture, Task},
   specialists::{SpecializationTable, ThreadSpecializationTable},
   sync::Fence,
@@ -24,7 +24,7 @@ fn create_worker(
   thread_comm: Sender<ThreadSays>,
   specialization_lut: *mut dyn SpecializationTable,
   id: usize,
-) -> (JobBuffer, Box<LLQueueAtomic>, Box<LLQueueAtomic>, Thread) {
+) -> (JobBuffer, Box<RawQueueAtomic>, Box<RawQueueAtomic>, Thread) {
   let (local_jobs, local_free_queue_ptr, local_job_queue_ptr, local_free_queue, local_job_queue) =
     create_queues(job_pool_size, "Local Free", "Local Job");
 
@@ -44,8 +44,8 @@ fn create_worker(
 pub(super) struct ThreadRef {
   handle:     JoinHandle<()>,
   job_buffer: JobBuffer,
-  free_box:   Box<LLQueueAtomic>,
-  job_box:    Box<LLQueueAtomic>,
+  free_box:   Box<RawQueueAtomic>,
+  job_box:    Box<RawQueueAtomic>,
   free_queue: MTLLFIFOQueue16<Job>,
   job_queue:  MTLLFIFOQueue16<Job>,
 }
@@ -55,10 +55,10 @@ pub struct AppThreadPool {
   pub(super) num_of_threads:        usize,
   pub(super) c_signal:              Receiver<ThreadSays>,
   pub(super) job_store:             JobBuffer,
-  pub(super) global_free_queue_ptr: Box<LLQueueAtomic>,
-  pub(super) global_job_queue_ptr:  Box<LLQueueAtomic>,
+  pub(super) global_free_queue_ptr: Box<RawQueueAtomic>,
+  pub(super) global_job_queue_ptr:  Box<RawQueueAtomic>,
   pub(super) threads:               Vec<ThreadRef>,
-  pub(super) local_thread:          (Thread, JobBuffer, Box<LLQueueAtomic>, Box<LLQueueAtomic>),
+  pub(super) local_thread:          (Thread, JobBuffer, Box<RawQueueAtomic>, Box<RawQueueAtomic>),
   pub(super) threads_started:       usize,
   pub(super) specialty_lut:         Box<dyn SpecializationTable>,
 }

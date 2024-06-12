@@ -1,22 +1,26 @@
 #![allow(unused)]
 
-use super::types::{
-  BitSize,
-  BlockId,
-  ConstVal,
-  DataLocation,
-  GraphId,
-  SSABlock,
-  SSAFunction,
-  SSAGraphNode,
-  SSAOp,
-  SymbolBinding,
+use super::{
+  ir_const_val::ConstVal,
+  ir_types::{
+    graph_actions,
+    BitSize,
+    BlockId,
+    DataLocation,
+    GraphId,
+    IRBlock,
+    IRCall,
+    IRGraphNode,
+    IROp,
+    SSAFunction,
+    SymbolBinding,
+  },
 };
 use crate::compiler::{
   self,
   interpreter::{
     error::RumResult,
-    ll::types::{LLType, LLVal, TypeInfo},
+    ll::ir_types::{RawType, RawVal, TypeInfo},
   },
   script_parser::{
     arithmetic_Value,
@@ -34,12 +38,12 @@ use crate::compiler::{
     table_type_Value,
     type_Value,
     Id,
-    LLAssign,
-    LLBlock,
-    LLFunction,
-    LLMemLocation,
-    LLParamBinding,
-    LLPointerCast,
+    RawAssign,
+    RawBlock,
+    RawFunction,
+    RawMemLocation,
+    RawParamBinding,
+    RawPointerCast,
     Type_128BitPointer,
     Type_16BitPointer,
     Type_32BitPointer,
@@ -68,8 +72,8 @@ use std::{
   fmt::{Debug, Write},
 };
 
-pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFunction> {
-  let mut ctx = SSAContextBuilder::default();
+pub fn compile_function_blocks(funct: &RawFunction<Token>) -> RumResult<SSAFunction> {
+  let mut ctx = IRContextBuilder::default();
   let root_block = ctx.push_block(None);
 
   if let Err(err) = process_params(&funct.params, root_block) {
@@ -85,7 +89,7 @@ pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFuncti
 
   match &funct.block.ret.expression {
     arithmetic_Value::None => {
-      active_block.push_zero_op(SSAOp::RETURN, Default::default());
+      active_block.push_zero_op(IROp::RETURN, Default::default());
     }
     expr => {
       let block = active_block.create_successor();
@@ -93,7 +97,7 @@ pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFuncti
       let val = process_arithmetic_expression(&expr, block, ty, true)?;
 
       // replace ssa with SSA_RETURN
-      block.push_unary_op(SSAOp::RETURN, Default::default(), val);
+      block.push_unary_op(IROp::RETURN, ty, val);
     }
   }
 
@@ -111,6 +115,7 @@ pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFuncti
     graph:     ctx.graph,
     constants: ctx.constants,
     stack_id:  ctx.stack_ids as usize,
+    calls:     ctx.calls,
   };
 
   dbg!(&funct);
@@ -119,8 +124,8 @@ pub fn compile_function_blocks(funct: &LLFunction<Token>) -> RumResult<SSAFuncti
 }
 
 fn process_params(
-  params: &Vec<Box<LLParamBinding<Token>>>,
-  block: &mut SSABlockConstructor,
+  params: &Vec<Box<RawParamBinding<Token>>>,
+  block: &mut IRBlockConstructor,
 ) -> RumResult<()> {
   for (index, param) in params.iter().enumerate() {
     process_binding(&param.id, &param.ty, &param.tok, block)?;
@@ -130,10 +135,10 @@ fn process_params(
 }
 
 fn process_block<'a>(
-  ast_block: &LLBlock<Token>,
-  block: &'a mut SSABlockConstructor,
+  ast_block: &RawBlock<Token>,
+  block: &'a mut IRBlockConstructor,
   scope_block: BlockId,
-) -> RumResult<&'a mut SSABlockConstructor> {
+) -> RumResult<&'a mut IRBlockConstructor> {
   let mut block = block;
   for stmt in &ast_block.statements {
     block = process_statements(stmt, block, scope_block)?;
@@ -143,17 +148,17 @@ fn process_block<'a>(
 
 fn process_statements<'a>(
   statement: &block_list_Value<Token>,
-  block: &'a mut SSABlockConstructor,
+  block: &'a mut IRBlockConstructor,
   scope_block: BlockId,
-) -> RumResult<&'a mut SSABlockConstructor> {
-  use SSAOp::*;
+) -> RumResult<&'a mut IRBlockConstructor> {
+  use IROp::*;
 
   match statement {
-    block_list_Value::LLContinue(t) => {
+    block_list_Value::RawContinue(t) => {
       block.inner.branch_unconditional = Some(scope_block);
       return Ok(block);
     }
-    block_list_Value::LLPtrDeclaration(ptr_decl) => {
+    block_list_Value::RawPtrDeclaration(ptr_decl) => {
       process_binding(&ptr_decl.id, &(ptr_decl.ty.clone().into()), &ptr_decl.tok, block)?;
       let target = &ptr_decl.id;
       let target_name = target.id.to_token();
@@ -165,7 +170,7 @@ fn process_statements<'a>(
         &ptr_decl.expression.byte_count,
       );
     }
-    block_list_Value::LLPrimitiveDeclaration(prim_decl) => {
+    block_list_Value::RawPrimitiveDeclaration(prim_decl) => {
       process_binding(&prim_decl.id, &(prim_decl.ty.clone().into()), &prim_decl.tok, block)?;
       let target = &prim_decl.id;
       let target_name = target.id.to_token();
@@ -179,15 +184,15 @@ fn process_statements<'a>(
       }
     }
     /// Binds a variable to a type.
-    block_list_Value::LLAssign(assign) => {
+    block_list_Value::RawAssign(assign) => {
       process_assignment(block, &assign.location, &assign.expression, &assign.tok)?;
     }
-    block_list_Value::LLLoop(loop_) => {
+    block_list_Value::RawLoop(loop_) => {
       let predecessor = block.create_successor();
       let id = predecessor.inner.id;
       return Ok(process_block(&loop_.block, predecessor, id)?);
     }
-    block_list_Value::LLMatch(m) => {
+    block_list_Value::RawMatch(m) => {
       match process_match_expression(&m.expression, block, Default::default())? {
         LogicalExprType::Arithmatic(op_arg, _) => {
           todo!("Arithmetic based matching")
@@ -198,26 +203,26 @@ fn process_statements<'a>(
 
           for match_block in &m.statements {
             match match_block {
-              match_list_1_Value::LLBlock(block) => {
+              match_list_1_Value::RawBlock(block) => {
                 let start_block = bool_block.create_successor();
                 let start_block_id = start_block.inner.id;
                 let end_block = process_block(&block, start_block, scope_block)?;
                 default_case = Some((start_block_id, end_block));
               }
 
-              match_list_1_Value::LLMatchCase(case) => {
+              match_list_1_Value::RawMatchCase(case) => {
                 let start_block = bool_block.create_successor();
                 let start_block_id = start_block.inner.id;
                 let end_block = process_block(&case.block, start_block, scope_block)?;
 
                 match &case.val {
-                  compiler::script_parser::match_case_Value::LLFalse(_) => {
+                  compiler::script_parser::match_case_Value::RawFalse(_) => {
                     default_case = Some((start_block_id, end_block));
                   }
-                  compiler::script_parser::match_case_Value::LLTrue(_) => {
+                  compiler::script_parser::match_case_Value::RawTrue(_) => {
                     bool_success_case = Some((start_block_id, end_block));
                   }
-                  compiler::script_parser::match_case_Value::LLNum(val) => {
+                  compiler::script_parser::match_case_Value::RawNum(val) => {
                     panic!("Incorrect expression for logical type");
                   }
                   _ => unreachable!(),
@@ -264,7 +269,7 @@ fn process_statements<'a>(
 }
 
 fn process_assignment(
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
   location: &assignment_Value<Token>,
   expression: &arithmetic_Value<Token>,
   tok: &Token,
@@ -285,7 +290,7 @@ fn process_assignment(
       }
     }
 
-    assignment_Value::LLMemLocation(location) => {
+    assignment_Value::RawMemLocation(location) => {
       let base_ptr = resolve_base_ptr(&location.base_ptr, block);
       let offset = resolve_mem_offset(&location.expression, block);
 
@@ -306,13 +311,13 @@ fn process_assignment(
         .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store(element_byte_size));
 
       let offset =
-        block.push_binary_op(SSAOp::MUL, TypeInfo::Integer | TypeInfo::b64, offset, multiple);
+        block.push_binary_op(IROp::MUL, TypeInfo::Integer | TypeInfo::b64, offset, multiple);
 
-      let ptr_location = block.push_binary_op(SSAOp::ADD, ty, base_ptr, offset);
+      let ptr_location = block.push_binary_op(IROp::ADD, ty, base_ptr, offset);
 
       block.debug_op(tok.clone());
 
-      Ok(block.push_binary_op(SSAOp::MEM_STORE, base_type, ptr_location, expression))
+      Ok(block.push_binary_op(IROp::MEM_STORE, base_type, ptr_location, expression))
     }
     _ => unreachable!(),
   }
@@ -320,7 +325,7 @@ fn process_assignment(
 
 fn resolve_base_ptr(
   base_ptr: &pointer_offset_group_Value<Token>,
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
 ) -> GraphId {
   match base_ptr {
     pointer_offset_group_Value::Id(id) => {
@@ -330,12 +335,12 @@ fn resolve_base_ptr(
         panic!("Couldn't find base pointer");
       }
     }
-    pointer_offset_group_Value::LLPointerCast(cast) => todo!(),
+    pointer_offset_group_Value::RawPointerCast(cast) => todo!(),
     pointer_offset_group_Value::None => unreachable!(),
   }
 }
 
-fn resolve_mem_offset(expr: &mem_expr_Value<Token>, block: &mut SSABlockConstructor) -> GraphId {
+fn resolve_mem_offset(expr: &mem_expr_Value<Token>, block: &mut IRBlockConstructor) -> GraphId {
   match expr {
     mem_expr_Value::Id(id) => {
       if let Some((val, _)) = block.get_binding(id.id.to_token(), true) {
@@ -346,20 +351,20 @@ fn resolve_mem_offset(expr: &mem_expr_Value<Token>, block: &mut SSABlockConstruc
         panic!()
       }
     }
-    mem_expr_Value::LLInt(int) => block
+    mem_expr_Value::RawInt(int) => block
       .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store::<u64>(int.val as u64)),
-    mem_expr_Value::LLMemAdd(add) => {
+    mem_expr_Value::RawMemAdd(add) => {
       let left = resolve_mem_offset(&add.left, block);
       let right = resolve_mem_offset(&add.right, block);
 
       block.debug_op(add.tok.clone());
-      block.push_binary_op(SSAOp::ADD, TypeInfo::Integer | TypeInfo::b64, left, right)
+      block.push_binary_op(IROp::ADD, TypeInfo::Integer | TypeInfo::b64, left, right)
     }
-    mem_expr_Value::LLMemMul(mul) => {
+    mem_expr_Value::RawMemMul(mul) => {
       let left = resolve_mem_offset(&mul.left, block);
       let right = resolve_mem_offset(&mul.right, block);
       block.debug_op(mul.tok.clone());
-      block.push_binary_op(SSAOp::MUL, TypeInfo::Integer | TypeInfo::b64, left, right)
+      block.push_binary_op(IROp::MUL, TypeInfo::Integer | TypeInfo::b64, left, right)
     }
     mem_expr_Value::None => GraphId::INVALID,
     ast => unreachable!("{ast:?}"),
@@ -368,14 +373,14 @@ fn resolve_mem_offset(expr: &mem_expr_Value<Token>, block: &mut SSABlockConstruc
 
 enum LogicalExprType<'a> {
   /// Index of the boolean expression block.
-  Boolean(&'a mut SSABlockConstructor),
-  Arithmatic(GraphId, &'a mut SSABlockConstructor),
+  Boolean(&'a mut IRBlockConstructor),
+  Arithmatic(GraphId, &'a mut IRBlockConstructor),
 }
 
 impl<'a> LogicalExprType<'a> {
   pub fn map_arith_result(
     result: RumResult<GraphId>,
-    block: &'a mut SSABlockConstructor,
+    block: &'a mut IRBlockConstructor,
   ) -> RumResult<Self> {
     match result {
       Err(err) => Err(err),
@@ -386,7 +391,7 @@ impl<'a> LogicalExprType<'a> {
 
 fn process_match_expression<'b, 'a: 'b>(
   expression: &match_group_Value<Token>,
-  block: &'a mut SSABlockConstructor,
+  block: &'a mut IRBlockConstructor,
   e_val: TypeInfo,
 ) -> RumResult<LogicalExprType<'a>> {
   use LogicalExprType as LET;
@@ -402,23 +407,23 @@ fn process_match_expression<'b, 'a: 'b>(
     //match_group_Value::OR(val) => handle_or(val, block),
     //match_group_Value::XOR(val) => handle_xor(val, block),
     //match_group_Value::NOT(val) => handle_not(val, block),
-    //match_group_Value::LLMember(mem) => {
+    //match_group_Value::RawMember(mem) => {
     //  LET::map_arith_result(handle_member(mem, block), block)
     //}
-    //match_group_Value::LLSelfMember(mem) => {
+    //match_group_Value::RawSelfMember(mem) => {
     //  LET::map_arith_result(handle_self_member(mem, block), block)
     //}
-    //match_group_Value::LLMemLocation(mem) => {
+    //match_group_Value::RawMemLocation(mem) => {
     //  LET::map_arith_result(handle_mem_location(mem, block), block)
     //}
-    //match_group_Value::LLCall(val) => {
+    //match_group_Value::RawCall(val) => {
     //  LET::map_arith_result(handle_call(val, block), block)
     //}
-    //match_group_Value::LLPrimitiveCast(prim) => {
+    //match_group_Value::RawPrimitiveCast(prim) => {
     //  LET::map_arith_result(handle_primitive_cast(prim, block), block)
     //}
-    //match_group_Value::LLStr(..) => todo!(),
-    //match_group_Value::LLNum(val) => LET::map_arith_result(handle_num(val, e_val), block),
+    //match_group_Value::RawStr(..) => todo!(),
+    //match_group_Value::RawNum(val) => LET::map_arith_result(handle_num(val, e_val), block),
     match_group_Value::Add(val) => {
       LET::map_arith_result(handle_add(val, block, Default::default(), false), block)
     }
@@ -442,20 +447,20 @@ fn process_match_expression<'b, 'a: 'b>(
 
 fn process_arithmetic_expression(
   expression: &arithmetic_Value<Token>,
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
   expected_ty: TypeInfo,
   ret_val: bool,
 ) -> RumResult<GraphId> {
   match expression {
-    arithmetic_Value::LLMember(mem) => handle_member(mem, block, ret_val),
-    //arithmetic_Value::LLSelfMember(mem) => handle_self_member(mem, block),
-    //arithmetic_Value::LLMemLocation(mem) => handle_mem_location(mem, block),
-    //arithmetic_Value::LLCall(val) => handle_call(val, block),
-    arithmetic_Value::LLPrimitiveCast(prim) => {
+    arithmetic_Value::RawMember(mem) => handle_member(mem, block, ret_val),
+    //arithmetic_Value::RawSelfMember(mem) => handle_self_member(mem, block),
+    //arithmetic_Value::RawMemLocation(mem) => handle_mem_location(mem, block),
+    //arithmetic_Value::RawCall(val) => handle_call(val, block),
+    arithmetic_Value::RawPrimitiveCast(prim) => {
       handle_primitive_cast(prim, block, expected_ty, ret_val)
     }
-    //arithmetic_Value::LLStr(..) => todo!(),
-    arithmetic_Value::LLNum(val) => handle_num(val, block, expected_ty),
+    //arithmetic_Value::RawStr(..) => todo!(),
+    arithmetic_Value::RawNum(val) => handle_num(val, block, expected_ty),
     arithmetic_Value::Add(val) => handle_add(val, block, expected_ty, ret_val),
     arithmetic_Value::Div(val) => handle_div(val, block, expected_ty, ret_val),
     //arithmetic_Value::Log(val) => handle_log(val, block),
@@ -469,8 +474,8 @@ fn process_arithmetic_expression(
 }
 
 fn handle_primitive_cast(
-  val: &compiler::script_parser::LLPrimitiveCast<Token>,
-  block: &mut SSABlockConstructor,
+  val: &compiler::script_parser::RawPrimitiveCast<Token>,
+  block: &mut IRBlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
 ) -> RumResult<GraphId> {
@@ -479,7 +484,7 @@ fn handle_primitive_cast(
 
 fn handle_sub(
   sub: &compiler::script_parser::Sub<Token>,
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
 ) -> RumResult<GraphId> {
@@ -491,12 +496,12 @@ fn handle_sub(
   let r_val = block.get_type(right);
 
   block.debug_op(sub.tok.clone());
-  Ok(block.push_binary_op(SSAOp::SUB, l_val, left, right))
+  Ok(block.push_binary_op(IROp::SUB, l_val, left, right))
 }
 
 fn handle_add(
   add: &compiler::script_parser::Add<Token>,
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
 ) -> RumResult<GraphId> {
@@ -508,12 +513,12 @@ fn handle_add(
   let r_val = block.get_type(right);
 
   block.debug_op(add.tok.clone());
-  Ok(block.push_binary_op(SSAOp::ADD, l_val, left, right))
+  Ok(block.push_binary_op(IROp::ADD, l_val, left, right))
 }
 
 fn handle_div(
   div: &compiler::script_parser::Div<Token>,
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
 ) -> RumResult<GraphId> {
@@ -525,12 +530,12 @@ fn handle_div(
   let r_val = block.get_type(right);
 
   block.debug_op(div.tok.clone());
-  Ok(block.push_binary_op(SSAOp::DIV, l_val, left, right))
+  Ok(block.push_binary_op(IROp::DIV, l_val, left, right))
 }
 
 fn handle_mul(
   mul: &compiler::script_parser::Mul<Token>,
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
   e_val: TypeInfo,
   ret_val: bool,
 ) -> RumResult<GraphId> {
@@ -542,12 +547,12 @@ fn handle_mul(
   let r_val = block.get_type(right);
 
   block.debug_op(mul.tok.clone());
-  Ok(block.push_binary_op(SSAOp::MUL, l_val, left, right))
+  Ok(block.push_binary_op(IROp::MUL, l_val, left, right))
 }
 
 fn handle_ge<'a>(
   val: &compiler::script_parser::GE<Token>,
-  block: &'a mut SSABlockConstructor,
+  block: &'a mut IRBlockConstructor,
   e_val: TypeInfo,
 ) -> RumResult<LogicalExprType<'a>> {
   let left = process_arithmetic_expression(&val.left, block, e_val, false)?;
@@ -557,21 +562,21 @@ fn handle_ge<'a>(
   let r_val = block.get_type(right);
 
   block.debug_op(val.tok.clone());
-  block.push_binary_op(SSAOp::GE, TypeInfo::Integer | TypeInfo::b8, left, right);
+  block.push_binary_op(IROp::GE, l_val, left, right);
 
   Ok(LogicalExprType::Boolean(block))
 }
 
 fn handle_num(
-  num: &compiler::script_parser::LLNum<Token>,
-  block: &mut SSABlockConstructor,
+  num: &compiler::script_parser::RawNum<Token>,
+  block: &mut IRBlockConstructor,
   expected_val: TypeInfo,
 ) -> RumResult<GraphId> {
   let val = num.val;
   let bit_size: BitSize = expected_val.into();
 
   let constant = match expected_val.ty() {
-    LLType::Integer => match bit_size {
+    RawType::Integer => match bit_size {
       BitSize::b8 => ConstVal::new(TypeInfo::Integer | TypeInfo::b8).store(val as i8),
       BitSize::b16 => ConstVal::new(TypeInfo::Integer | TypeInfo::b16).store(val as i16),
       BitSize::b32 => ConstVal::new(TypeInfo::Integer | TypeInfo::b32).store(val as i32),
@@ -579,7 +584,7 @@ fn handle_num(
       BitSize::b128 => ConstVal::new(TypeInfo::Integer | TypeInfo::b128).store(val as i128),
       _ => ConstVal::new(TypeInfo::Integer | TypeInfo::b128).store(val as i128),
     },
-    LLType::Unsigned => match bit_size {
+    RawType::Unsigned => match bit_size {
       BitSize::b8 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b8).store(val as u8),
       BitSize::b16 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b16).store(val as u16),
       BitSize::b32 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b32).store(val as u32),
@@ -587,7 +592,7 @@ fn handle_num(
       BitSize::b128 => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b128).store(val as u128),
       _ => ConstVal::new(TypeInfo::Unsigned | TypeInfo::b128).store(val as u128),
     },
-    LLType::Float | _ => match bit_size {
+    RawType::Float | _ => match bit_size {
       BitSize::b32 => ConstVal::new(TypeInfo::Float | TypeInfo::b32).store(val as f32),
       _ | BitSize::b64 => ConstVal::new(TypeInfo::Float | TypeInfo::b64).store(val as f64),
     },
@@ -597,8 +602,8 @@ fn handle_num(
 }
 
 fn handle_member(
-  val: &compiler::script_parser::LLMember<Token>,
-  block: &mut SSABlockConstructor,
+  val: &compiler::script_parser::RawMember<Token>,
+  block: &mut IRBlockConstructor,
   ret_val: bool,
 ) -> RumResult<GraphId> {
   if val.branches.len() > 0 {
@@ -620,19 +625,19 @@ fn handle_member(
 }
 
 fn create_allocation(
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
   target_name: IString,
   is_heap: bool,
   byte_count: &mem_binding_group_Value<Token>,
 ) {
   match block.get_binding(target_name, true) {
-    Some(((target, mut ty))) => {
-      if ty.location() != DataLocation::Undefined {
+    Some(((target, mut base_ty))) => {
+      if base_ty.location() != DataLocation::Undefined {
         // panic!("Already allocated! {}", decl.tok.blame(1, 1, "", None))
         panic!("");
       }
 
-      if !ty.is_ptr() {
+      if !base_ty.is_ptr() {
         panic!("");
         /*       panic!(
           "Variable is not bound to a ptr type! {} \n {}",
@@ -645,39 +650,45 @@ fn create_allocation(
       } else {
         block.refine_binding(
           target_name,
-          TypeInfo::to_location(DataLocation::SsaStack(ty.stack_id().unwrap())),
+          TypeInfo::to_location(DataLocation::SsaStack(base_ty.stack_id().unwrap())),
         );
       }
 
       match byte_count {
-        mem_binding_group_Value::LLUint(int) => {
-          let val = int.val;
-          let num_of_bytes = (64 - int.val.leading_zeros()).div_ceil(8);
+        mem_binding_group_Value::RawUint(int) => {
+          let val = int.val * base_ty.deref().ele_byte_size() as i64;
 
-          let constant = ConstVal::new(TypeInfo::Unsigned | TypeInfo::bytes(num_of_bytes as u16))
-            .store(val as i64);
+          let constant = if (64 - val.leading_zeros()).div_ceil(8) <= 4 {
+            ConstVal::new(TypeInfo::Unsigned | TypeInfo::b32).store(val as i64)
+          } else {
+            ConstVal::new(TypeInfo::Unsigned | TypeInfo::b64).store(val as i64)
+          };
 
           if val < u16::MAX as i64 {
-            ty |= TypeInfo::elements(val as u16);
+            base_ty |= TypeInfo::elements(val as u16);
           } else {
-            ty |= TypeInfo::unknown_ele_count();
+            base_ty |= TypeInfo::unknown_ele_count();
           }
 
           if is_heap {
             let arg = block.push_constant(constant);
             //block.push_binary_op(SSAOp::MALLOC, ty, target, arg);
-            block.push_malloc(ty, target, arg);
+
+            let id = block.push_call(base_ty, "malloc".intern(), ArrayVec::from_iter([arg]));
+            let name = block.binding_name(base_ty.stack_id().unwrap()).unwrap();
+            block.scope_ssa.insert(name, (id, base_ty));
           }
         }
 
         mem_binding_group_Value::Id(id) => {
-          ty |= TypeInfo::unknown_ele_count();
+          base_ty |= TypeInfo::unknown_ele_count();
           let decl = target.clone();
           if let Some(((ptr_id, ptr_ty))) = block.get_binding(id.id.to_token(), true) {
             if is_heap {
               block.debug_op(id.tok.clone());
-              //block.push_binary_op(SSAOp::MALLOC, ptr_ty, target, ptr_id);
-              block.push_malloc(ptr_ty, target, ptr_id);
+              let id = block.push_call(ptr_ty, "malloc".intern(), ArrayVec::from_iter([ptr_id]));
+              let name = block.binding_name(ptr_ty.stack_id().unwrap()).unwrap();
+              block.scope_ssa.insert(name, (id, base_ty));
             }
           } else {
             panic!()
@@ -697,7 +708,7 @@ fn process_binding(
   id: &Id<Token>,
   ty: &type_Value,
   tok: &Token,
-  block: &mut SSABlockConstructor,
+  block: &mut IRBlockConstructor,
 ) -> Result<(), compiler::interpreter::error::RumScriptError> {
   let ty = ast_ty_to_ssa_ty(&ty);
   let name = id.id.intern();
@@ -734,17 +745,18 @@ fn ast_ty_to_ssa_ty(val: &type_Value) -> TypeInfo {
 }
 
 #[derive(Debug)]
-pub struct SSAContextBuilder {
-  pub(super) blocks:      Vec<*mut SSABlockConstructor>,
+pub struct IRContextBuilder {
+  pub(super) blocks:      Vec<*mut IRBlockConstructor>,
   pub(super) ssa_index:   isize,
   pub(super) stack_ids:   isize,
   pub(super) block_top:   BlockId,
-  pub(super) active_type: Vec<LLVal>,
-  pub(super) graph:       Vec<SSAGraphNode>,
+  pub(super) active_type: Vec<RawVal>,
+  pub(super) graph:       Vec<IRGraphNode>,
   pub(super) constants:   Vec<ConstVal>,
+  pub(super) calls:       Vec<IRCall>,
 }
 
-impl Default for SSAContextBuilder {
+impl Default for IRContextBuilder {
   fn default() -> Self {
     Self {
       blocks:      Default::default(),
@@ -754,15 +766,16 @@ impl Default for SSAContextBuilder {
       active_type: Default::default(),
       graph:       Default::default(),
       constants:   Default::default(),
+      calls:       Default::default(),
     }
   }
 }
 
-impl SSAContextBuilder {
-  pub fn push_block<'a>(&mut self, predecessor: Option<u32>) -> &'a mut SSABlockConstructor {
+impl IRContextBuilder {
+  pub fn push_block<'a>(&mut self, predecessor: Option<u32>) -> &'a mut IRBlockConstructor {
     self.block_top = BlockId(self.blocks.len() as u32);
 
-    let mut block = Box::new(SSABlockConstructor::default());
+    let mut block = Box::new(IRBlockConstructor::default());
 
     block.inner.id = self.block_top;
     block.ctx = self;
@@ -796,39 +809,32 @@ impl SSAContextBuilder {
     (self.block_top.0 + 1) as usize
   }
 
-  pub fn get_block_mut(&mut self, block_id: usize) -> Option<&mut SSABlockConstructor> {
+  pub fn get_block_mut(&mut self, block_id: usize) -> Option<&mut IRBlockConstructor> {
     self.blocks.get_mut(block_id).map(|b| unsafe { &mut **b })
   }
 
-  pub fn get_head_block(&mut self) -> &mut SSABlockConstructor {
+  pub fn get_head_block(&mut self) -> &mut IRBlockConstructor {
     self.get_block_mut(self.block_top.0 as usize).unwrap()
-  }
-
-  pub fn push_graph_node(&mut self, mut node: SSAGraphNode) -> GraphId {
-    let id: GraphId = self.graph.len().into();
-    node.id = id;
-    self.graph.push(node);
-    id
   }
 }
 
 #[derive(Debug)]
-pub struct SSABlockConstructor {
-  inner:            Box<SSABlock>,
-  pub scope_parent: Option<*mut SSABlockConstructor>,
+pub struct IRBlockConstructor {
+  inner:            Box<IRBlock>,
+  pub scope_parent: Option<*mut IRBlockConstructor>,
   pub decls:        Vec<SymbolBinding>,
   pub scope_ssa:    HashMap<IString, (GraphId, TypeInfo)>,
-  pub ctx:          *mut SSAContextBuilder,
+  pub ctx:          *mut IRContextBuilder,
 }
 
-impl Default for SSABlockConstructor {
+impl Default for IRBlockConstructor {
   fn default() -> Self {
     Self {
       ctx:          std::ptr::null_mut(),
       decls:        Default::default(),
       scope_parent: Default::default(),
       scope_ssa:    Default::default(),
-      inner:        Box::new(SSABlock {
+      inner:        Box::new(IRBlock {
         id:                   Default::default(),
         ops:                  Default::default(),
         branch_succeed:       Default::default(),
@@ -839,79 +845,50 @@ impl Default for SSABlockConstructor {
   }
 }
 
-impl Into<Box<SSABlock>> for SSABlockConstructor {
-  fn into(self) -> Box<SSABlock> {
+impl Into<Box<IRBlock>> for IRBlockConstructor {
+  fn into(self) -> Box<IRBlock> {
     self.inner
   }
 }
 
-impl SSABlockConstructor {
-  pub fn push_binary_op(
-    &mut self,
-    op: SSAOp,
-    output: TypeInfo,
-    left: GraphId,
-    right: GraphId,
-  ) -> GraphId {
-    let id = self.ctx().push_graph_node(SSAGraphNode {
-      block_id: self.inner.id,
-      op,
-      id: GraphId::INVALID,
-      output,
-      operands: [left, right, Default::default()],
-    });
-    self.inner.ops.push(id);
-    id
+impl IRBlockConstructor {
+  pub fn push_binary_op(&mut self, op: IROp, output: TypeInfo, l: GraphId, r: GraphId) -> GraphId {
+    let graph = &mut self.ctx().graph;
+    let insert_point = self.inner.ops.len();
+    graph_actions::push_binary_op(graph, insert_point, &mut self.inner, op, output, l, r)
   }
 
-  pub fn push_malloc(&mut self, output: TypeInfo, left: GraphId, right: GraphId) -> GraphId {
-    let graph_id = self.push_binary_op(SSAOp::MALLOC, output, left, right);
-
-    let name = self.binding_name(output.stack_id().unwrap()).unwrap();
-
-    dbg!((name, (graph_id, output)));
-    self.scope_ssa.insert(name, (graph_id, output));
-
-    let mut scope_par = Some(self as *mut SSABlockConstructor);
-
+  pub fn push_call(
+    &mut self,
+    output: TypeInfo,
+    fn_name: IString,
+    args: ArrayVec<7, GraphId>,
+  ) -> GraphId {
+    let call_id = GraphId((self.ctx().calls.len()) as u32).as_call();
+    let graph_id = self.push_unary_op(IROp::CALL, output, call_id);
+    self.ctx().calls.push(IRCall { name: fn_name, args, ret: graph_id });
     graph_id
   }
 
   pub fn push_store(&mut self, output: TypeInfo, left: GraphId, right: GraphId) -> GraphId {
-    let graph_id = self.push_binary_op(SSAOp::SINK, output, left, right);
+    let graph_id = self.push_binary_op(IROp::STORE, output, left, right);
 
     let name = self.binding_name(output.stack_id().unwrap()).unwrap();
-
-    dbg!((name, (graph_id, output)));
     self.scope_ssa.insert(name, (graph_id, output));
-
-    let mut scope_par = Some(self as *mut SSABlockConstructor);
 
     graph_id
   }
 
-  pub fn push_unary_op(&mut self, op: SSAOp, output: TypeInfo, left: GraphId) -> GraphId {
-    let id = self.ctx().push_graph_node(SSAGraphNode {
-      block_id: self.inner.id,
-      op,
-      id: GraphId::INVALID,
-      output,
-      operands: [left, Default::default(), Default::default()],
-    });
-    self.inner.ops.push(id);
-    id
+  pub fn push_unary_op(&mut self, op: IROp, output: TypeInfo, left: GraphId) -> GraphId {
+    let graph = &mut self.ctx().graph;
+    let insert_point = self.inner.ops.len();
+    graph_actions::push_unary_op(graph, insert_point, &mut self.inner, op, output, left)
   }
 
-  pub fn push_zero_op(&mut self, op: SSAOp, output: TypeInfo) -> GraphId {
-    let id = self.ctx().push_graph_node(SSAGraphNode {
-      block_id: self.inner.id,
-      op,
-      id: GraphId::INVALID,
-      output,
-      operands: Default::default(),
-    });
-    self.inner.ops.push(id);
-    id
+  pub fn push_zero_op(&mut self, op: IROp, output: TypeInfo) -> GraphId {
+    let graph = &mut self.ctx().graph;
+    let insert_point = self.inner.ops.len();
+    graph_actions::push_zero_op(graph, insert_point, &mut self.inner, op, output)
   }
 
   pub fn push_constant(&mut self, output: ConstVal) -> GraphId {
@@ -932,7 +909,7 @@ impl SSABlockConstructor {
     //self.ops.push(SSAExpr::Debug(tok));
   }
 
-  pub(super) fn ctx<'a>(&self) -> &'a mut SSAContextBuilder {
+  pub(super) fn ctx<'a>(&self) -> &'a mut IRContextBuilder {
     unsafe { &mut *self.ctx }
   }
 
@@ -1001,9 +978,9 @@ impl SSABlockConstructor {
 
         ty |= TypeInfo::at_stack_id(stack_id as u16);
 
-        let id = ctx.push_graph_node(SSAGraphNode {
+        let id = graph_actions::push_graph_node(&mut ctx.graph, IRGraphNode {
           id:       GraphId::INVALID,
-          op:       SSAOp::STACK_DEFINE,
+          op:       IROp::STACK_DEFINE,
           output:   ty,
           operands: Default::default(),
           block_id: self.inner.id,
@@ -1027,9 +1004,9 @@ impl SSABlockConstructor {
 
     ty |= TypeInfo::at_stack_id(stack_id as u16);
 
-    let id = ctx.push_graph_node(SSAGraphNode {
+    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode {
       id:       GraphId::INVALID,
-      op:       SSAOp::STACK_DEFINE,
+      op:       IROp::STACK_DEFINE,
       output:   ty,
       operands: Default::default(),
       block_id: self.inner.id,
@@ -1049,7 +1026,7 @@ impl SSABlockConstructor {
     self.ctx().graph[id].output
   }
 
-  pub(super) fn create_successor<'a>(&self) -> &'a mut SSABlockConstructor {
+  pub(super) fn create_successor<'a>(&self) -> &'a mut IRBlockConstructor {
     let id = self.ctx().push_block(Some(self.inner.id.0)).inner.id;
     unsafe { &mut *self.ctx().blocks[id] }
   }

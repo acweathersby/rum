@@ -3,8 +3,9 @@ use std::{collections::HashMap, fmt::Debug};
 use rum_container::ArrayVec;
 
 use super::{
-  ssa_block_optimizer::OptimizerContext,
-  types::{BlockId, ConstVal, GraphId, SSAOp, TypeInfo},
+  ir_block_optimizer::OptimizerContext,
+  ir_const_val::ConstVal,
+  ir_types::{BlockId, GraphId, IROp, TypeInfo},
 };
 #[derive(Debug, Default)]
 pub struct InductionCTX {
@@ -55,7 +56,7 @@ fn is_induction_variable<'a>(
 
       let node = ctx.graph[id];
 
-      if node.op != SSAOp::PHI {
+      if node.op != IROp::PHI {
         return false;
       }
 
@@ -118,7 +119,7 @@ fn process_induction_variable<const SIZE: usize>(
   } else {
     let node = ctx.graph[id];
     match node.op {
-      SSAOp::PHI => {
+      IROp::PHI => {
         if phi_ids.contains(&id) {
           if is_init {
             false
@@ -132,12 +133,12 @@ fn process_induction_variable<const SIZE: usize>(
         }
       }
 
-      SSAOp::SINK => {
+      IROp::STORE => {
         process_induction_variable(node.operands[1], ctx, expr, phi_ids, is_init);
         true
       }
 
-      SSAOp::SUB => {
+      IROp::SUB => {
         let left = process_induction_variable(node.operands[0], ctx, expr, phi_ids, is_init);
         let right = process_induction_variable(node.operands[1], ctx, expr, phi_ids, is_init);
 
@@ -149,7 +150,7 @@ fn process_induction_variable<const SIZE: usize>(
         }
       }
 
-      SSAOp::ADD => {
+      IROp::ADD => {
         let left = process_induction_variable(node.operands[0], ctx, expr, phi_ids, is_init);
         let right = process_induction_variable(node.operands[1], ctx, expr, phi_ids, is_init);
 
@@ -178,7 +179,7 @@ fn process_expression_inner(
   } else {
     let node = ctx.graph[id];
     match node.op {
-      SSAOp::PHI => {
+      IROp::PHI => {
         if is_induction_variable(id, ctx, i_ctx) {
           expr.push(InductionVal::graph_id(id));
           true
@@ -187,7 +188,7 @@ fn process_expression_inner(
         }
       }
 
-      SSAOp::SINK | SSAOp::MALLOC => {
+      IROp::STORE | IROp::CALL => {
         if !i_ctx.region_blocks.contains(&node.block_id) {
           expr.push(InductionVal::graph_id(id));
           true
@@ -196,12 +197,12 @@ fn process_expression_inner(
         }
       }
 
-      SSAOp::STACK_DEFINE => {
+      IROp::STACK_DEFINE => {
         expr.push(InductionVal::graph_id(id));
         true
       }
 
-      SSAOp::MUL => {
+      IROp::MUL => {
         let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
         let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
 
@@ -212,7 +213,7 @@ fn process_expression_inner(
           false
         }
       }
-      SSAOp::DIV => {
+      IROp::DIV => {
         let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
         let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
 
@@ -223,7 +224,7 @@ fn process_expression_inner(
           false
         }
       }
-      SSAOp::SUB => {
+      IROp::SUB => {
         let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
         let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
 
@@ -235,7 +236,7 @@ fn process_expression_inner(
         }
       }
 
-      SSAOp::ADD => {
+      IROp::ADD => {
         let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
         let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
 
@@ -536,9 +537,9 @@ pub fn generate_ssa(
           panic!("Cannot deal with this right now.");
         } else {
           let id = if val.0.inverse {
-            ctx.push_binary_op(SSAOp::DIV, ty, left, right, target_block)
+            ctx.push_binary_op(IROp::DIV, ty, left, right, target_block)
           } else {
-            ctx.push_binary_op(SSAOp::MUL, ty, left, right, target_block)
+            ctx.push_binary_op(IROp::MUL, ty, left, right, target_block)
           };
 
           id_stack.push(id);
@@ -555,9 +556,9 @@ pub fn generate_ssa(
           panic!("Cannot deal with this right now.");
         } else {
           let id = if val.0.inverse {
-            ctx.push_binary_op(SSAOp::SUB, ty, left, right, target_block)
+            ctx.push_binary_op(IROp::SUB, ty, left, right, target_block)
           } else {
-            ctx.push_binary_op(SSAOp::ADD, ty, left, right, target_block)
+            ctx.push_binary_op(IROp::ADD, ty, left, right, target_block)
           };
 
           id_stack.push(id);

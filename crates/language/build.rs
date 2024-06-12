@@ -7,7 +7,6 @@ use radlr_build::RadlrResult;
 
 const GRAMMAR_PATH: &'static str = "./grammar/";
 const RUM_SCRIPT_ROOT: &'static str = "rum_lang.radlr";
-const OPTI_ROOT: &'static str = "op_optimize.radlr";
 const BUILD_OUTPUT_PATH: &'static str = "./compiler/parser/";
 
 fn main() -> RadlrResult<()> {
@@ -26,28 +25,16 @@ fn main() -> RadlrResult<()> {
     .expect("Could not find output dir")
     .join(BUILD_OUTPUT_PATH);
 
-  //let mut process_a = build_rum_script(&grammar_root_dir, &out_dir);
-  let process_b = build_opti_script(&grammar_root_dir, &out_dir);
+  let mut process_a = build_rum_script(&grammar_root_dir, &out_dir);
 
-  let output = process_b.wait_with_output().expect("Lost connection to opti_script build process");
-
+  let output = process_a.wait_with_output().expect("Lost connection to rum_script build process");
   if !output.status.success() {
-    //  let _ = process_a.kill();
     panic!(
       "{} {}",
       String::from_utf8(output.stderr).unwrap(),
       String::from_utf8(output.stdout).unwrap()
     );
   }
-
-  /* let output = process_a.wait_with_output().expect("Lost connection to rum_script build process");
-  if !output.status.success() {
-    panic!(
-      "{} {}",
-      String::from_utf8(output.stderr).unwrap(),
-      String::from_utf8(output.stdout).unwrap()
-    );
-  } */
 
   Ok(())
 }
@@ -69,24 +56,4 @@ fn build_rum_script(grammar_root_dir: &Path, out_dir: &Path) -> std::process::Ch
   ]);
 
   radlr.spawn().expect("Could not spawn rum_script build job")
-}
-
-fn build_opti_script(grammar_root_dir: &Path, out_dir: &Path) -> std::process::Child {
-  let mut radlr = Command::new("radlr");
-
-  if radlr.get_program().is_empty() {
-    panic!("Could not find radlr executable, is this in PATH?");
-  }
-
-  radlr.args([
-    "build",
-    "-o",
-    out_dir.as_os_str().to_str().unwrap(),
-    "-n",
-    "opti_script",
-    "-a",
-    grammar_root_dir.join(OPTI_ROOT).as_os_str().to_str().unwrap(),
-  ]);
-
-  radlr.spawn().expect("Could not spawn opti_script build job")
 }

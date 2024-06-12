@@ -1,13 +1,14 @@
 mod bitfield;
-pub(crate) mod ssa_block_compiler;
-pub(crate) mod ssa_block_optimizer;
-pub(crate) mod ssa_optimizer_induction;
-pub(crate) mod ssa_register_allocator;
-pub(crate) mod ssa_to_register_machine;
+pub(crate) mod ir_block_optimizer;
+pub(crate) mod ir_const_val;
+pub(crate) mod ir_optimizer_induction;
+pub(crate) mod ir_register_allocator;
+pub(crate) mod ir_to_register_machine;
+pub(crate) mod ir_block_compiler;
 
-mod types;
+mod ir_types;
 pub(crate) mod x86;
 
-use types::*;
+use ir_types::*;
 #[cfg(test)]
 mod test;

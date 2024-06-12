@@ -90,6 +90,29 @@ pub fn over_allocates_are_moved_into_vector_large_stack_allocation() {
 }
 
 #[test]
+pub fn remove_elements_from_array() {
+  let mut vec = ArrayVec::<4, _>::new();
+
+  vec.push(1);
+  vec.push(2);
+  vec.push(3);
+  vec.push(4);
+
+  vec.remove(1);
+  assert_eq!(vec.as_slice(), [1, 3, 4]);
+
+  let mut vec = ArrayVec::<1, _>::new();
+
+  vec.push(1);
+  vec.push(2);
+  vec.push(3);
+  vec.push(4);
+
+  vec.remove(1);
+  assert_eq!(vec.as_slice(), [1, 3, 4]);
+}
+
+#[test]
 pub fn data_with_drop_trait_is_properly_handle_from_vec() {
   static mut DROPPED: isize = 0;
 

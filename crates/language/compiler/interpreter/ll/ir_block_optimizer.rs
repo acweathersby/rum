@@ -1,16 +1,17 @@
-use super::{ssa_optimizer_induction::InductionVal, types::*};
+use super::{ir_const_val::ConstVal, ir_optimizer_induction::InductionVal, ir_types::*};
 use crate::compiler::interpreter::ll::{
   bitfield,
-  ssa_optimizer_induction as induction,
-  ssa_optimizer_induction::IEOp,
-  ssa_register_allocator::{RegisterAllocator, RegisterEntry},
+  ir_optimizer_induction as induction,
+  ir_optimizer_induction::IEOp,
+  ir_register_allocator::{RegisterAllocator, RegisterEntry},
+  ir_types::graph_actions::{create_binary_op, push_binary_op, push_graph_node_to_block},
 };
 use rum_container::ArrayVec;
 use rum_logger::todo_note;
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
   fmt::Debug,
-  ops::Range,
+  ops::{Index, Range},
 };
 use TypeInfo;
 
@@ -25,6 +26,7 @@ pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
     graph:             &mut funct.graph,
     constants:         &mut funct.constants,
     blocks:            &mut funct.blocks,
+    calls:             &mut funct.calls,
     stack_id:          funct.stack_id,
   };
 
@@ -32,7 +34,7 @@ pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
 
   create_phi_ops(&mut ctx);
 
-  //optimize_loop_regions(&mut ctx);
+  optimize_loop_regions(&mut ctx);
 
   //build_annotations(&mut ctx);
 
@@ -41,6 +43,8 @@ pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
   // Alternative ... build stack values.
 
   assign_registers(&mut ctx);
+
+  dbg!(&ctx);
 
   funct
 }
@@ -53,7 +57,7 @@ fn dead_code_elimination(ctx: &mut OptimizerContext) {
     for id in &block.ops {
       let node = &ctx.graph[*id];
       match node.op {
-        SSAOp::MEM_STORE | SSAOp::GE | SSAOp::GR | SSAOp::RETURN => {
+        IROp::MEM_STORE | IROp::GE | IROp::GR | IROp::RETURN => {
           alive_queue.push_back(*id);
         }
         _ => {}
@@ -90,7 +94,11 @@ fn apply_three_addressing(
   }
 
   match ctx.graph[id].op {
-    SSAOp::ADD | SSAOp::SUB | SSAOp::MUL | SSAOp::DIV => {
+    /*   IROp::CALL => {
+      ctx.graph[id].operands[1] = address;
+      v_lu[id] = address;
+    } */
+    IROp::ADD | IROp::SUB | IROp::MUL | IROp::DIV => {
       ctx.graph[id].operands[2] = address;
       v_lu[id] = address;
       apply_three_addressing(ctx, ctx.graph[id].operands[0], address, v_lu);
@@ -101,6 +109,7 @@ fn apply_three_addressing(
 }
 
 fn assign_registers(ctx: &mut OptimizerContext) {
+  dbg!(&ctx);
   // Adds loads and/or removes stores and replaces SSA graph ids with register
   // names.
 
@@ -108,38 +117,41 @@ fn assign_registers(ctx: &mut OptimizerContext) {
 
   let mut var_lookup = vec![GraphId::default(); ctx.graph.len()];
 
-  // Assign variable names to operators.
+  // Assign variable names to invariant nodes.
   loop {
     let mut should_continue = false;
     for i in 0..ctx.graph.len() {
       if var_lookup[i].is_invalid()
-        || !matches!(ctx.graph[i].op, SSAOp::SINK | SSAOp::MALLOC | SSAOp::PHI | SSAOp::MEM_STORE)
+        || !matches!(ctx.graph[i].op, IROp::STORE | IROp::PHI | IROp::MEM_STORE)
       {
         let node = &mut ctx.graph[i];
 
         match node.op {
-          SSAOp::MEM_STORE => {
-            let stack_id = 99 as u32;
+          IROp::CALL => {
+            let stack_id = node.output.stack_id().unwrap() as u32;
+            let var = GraphId(stack_id).as_var();
+            node.operands[1] = var;
+            var_lookup[i] = var;
+          }
+          IROp::MEM_STORE => {
+            let stack_id = node.output.stack_id().unwrap() as u32;
+            //let stack_id = 99;
             let var = GraphId(stack_id).as_var();
             let ptr = node.operands[0];
             node.operands[0] = var;
             apply_three_addressing(ctx, ptr, var, &mut var_lookup);
             var_lookup[i] = var;
-            should_continue = true;
+            // should_continue = true;
           }
-          SSAOp::SINK | SSAOp::MALLOC | SSAOp::PHI => {
+          IROp::STORE | IROp::PHI => {
             let stack_id = node.output.stack_id().unwrap() as u32;
             let var = GraphId(stack_id).as_var();
 
-            if node.op == SSAOp::PHI {
+            if node.op == IROp::PHI {
               for op in &mut node.operands {
                 *op = var;
               }
-            } else if node.op == SSAOp::SINK {
-              node.operands[0] = var;
-              let id = node.operands[1];
-              apply_three_addressing(ctx, id, var, &mut var_lookup)
-            } else if node.op == SSAOp::MALLOC {
+            } else if node.op == IROp::STORE {
               node.operands[0] = var;
               let id = node.operands[1];
               apply_three_addressing(ctx, id, var, &mut var_lookup)
@@ -167,15 +179,14 @@ fn assign_registers(ctx: &mut OptimizerContext) {
     }
   }
 
-  dbg!(&ctx);
-  let OptimizerContext { block_annotations, graph, constants, blocks, stack_id } = ctx;
+  let OptimizerContext { block_annotations, graph, constants, blocks, stack_id, .. } = ctx;
 
   // create our block ordering.
 
   // First inner blocks, then outer blocks, then finally general blocks,
   // ascending.
   let mut block_ordering = ArrayVec::<64, bool>::new();
-  for block in 0..graph.len() {
+  for _ in 0..graph.len() {
     block_ordering.push(false)
   }
 
@@ -205,35 +216,155 @@ fn assign_registers(ctx: &mut OptimizerContext) {
   let mut register_allocators = vec![RegisterAllocator::new(); graph.len()];
 
   for block_id in queue.iter().cloned() {
-    let block = &blocks[block_id];
+    let annotation = &block_annotations[block_id];
+    let block = &mut blocks[block_id];
     // Build a profile from each "parent" block. Placing appropriate
     // intermediate blocks between parents as needed.
 
+    // Define "native`" allocations for variables.
     for other_block in iter_branch_indices(block) {
       let allocator = &register_allocators[other_block];
+      for assignment in allocator.get_assignements().iter() {
+        match register_allocators[block_id].set_preferred_register(assignment) {
+          crate::compiler::interpreter::ll::ir_register_allocator::SetPreferredResult::Conflict => {
+            panic!("AA")
+          }
+          _ => {}
+        }
+      }
+    }
+
+    for i in annotation.direct_predecessors.as_slice() {
+      let allocator = &register_allocators[*i];
       for assignment in allocator.get_assignements().iter() {
         register_allocators[block_id].push_allocation(*assignment);
       }
     }
 
+    // Define existing allocations.
     let register_allocator = &mut register_allocators[block_id];
 
-    for op_id in &block.ops {
-      let node = &mut graph[*op_id];
-      println!("{node:?}");
-      for operand in &mut node.operands {
-        if operand.is_var() {
-          let var_id = *operand;
-          println!("{var_id}");
-          if let Some(RegisterEntry { var, reg }) = register_allocator.get_register(var_id) {
-            println!("reg: {reg}");
-            *operand = reg;
-          } else if let Some(RegisterEntry { var, reg }) =
-            register_allocator.allocate_register(var_id)
-          {
-            println!("reg: {reg}");
-            *operand = reg;
+    let mut block_ops_indices = VecDeque::from_iter(block.ops.iter().cloned());
+
+    while let Some(node_id) = block_ops_indices.pop_front() {
+      // let node = &mut graph[op_id];
+      let mut fore = ArrayVec::<4, IRGraphNode>::new();
+      let mut aft = ArrayVec::<4, IRGraphNode>::new();
+
+      if graph[node_id].op == IROp::RETURN {
+        let ret_val = graph[node_id].operands[0];
+        let output = graph[node_id].output;
+
+        if !ret_val.is_invalid() {
+          let ret_reg = register_allocator.get_register_for_var(ret_val);
+
+          if let Some(prev) = ret_reg.get_previous() {
+            if prev.var != ret_val {
+              todo!("Handle eviction. If the evicted type is used in successor blocks then store to stack.");
+            }
           }
+
+          let ret_reg = ret_reg.set_current(ret_val, output, block.id).unwrap();
+
+          fore.push(create_binary_op(IROp::MOVE, output, GraphId(0).as_register(), ret_reg.reg));
+        }
+      } else if graph[node_id].op == IROp::CALL {
+        // Each argument needs to be loaded in specific registers. This is
+        // dependent on the architecture, so trait based code should be
+        // considered in this block. For know, linux abi is used for
+        // function arguments.
+
+        let call_id = graph[node_id].operands[0];
+        let ret_id = graph[node_id].operands[1];
+
+        debug_assert!(call_id.is_call(), "{call_id} {:?}", graph[node_id]);
+        debug_assert!(ret_id.is_var(), "{ret_id} {:?}", graph[node_id]);
+
+        let call_arg_register_ordering = [7, 6, 2, 1, 8, 9];
+        let call = &mut ctx.calls[call_id];
+        let out_ty = graph[node_id].output;
+
+        for (g_id, reg_id) in call.args.iter_mut().zip(&call_arg_register_ordering) {
+          if g_id.is_const() {
+            let allocation = register_allocator.allocate_register(*reg_id);
+
+            if let Some(prev_registration) = allocation.get_previous() {
+              fore.push(create_binary_op(
+                IROp::STORE,
+                prev_registration.ty,
+                prev_registration.reg,
+                prev_registration.var,
+              ));
+            }
+
+            let output = constants[*g_id].ty;
+            let r = allocation.set_current(GraphId(22).as_var(), output, block.id).unwrap();
+
+            fore.push(create_binary_op(IROp::STORE, output, r.reg, *g_id));
+
+            *g_id = r.reg;
+
+            // create load here
+            todo_note!("Create load for for {r:?}");
+          } else {
+            todo!("Handle call var args");
+          }
+        }
+
+        let ret_reg = register_allocator.get_register_for_var(ret_id);
+
+        if let Some(prev) = ret_reg.get_previous() {
+          if prev.var != ret_id {
+            todo!("Handle eviction. If the evicted type is used in successor blocks then store to stack.");
+          }
+        }
+
+        let ret_reg = ret_reg.set_current(ret_id, out_ty, block.id).unwrap();
+
+        if ret_reg.reg.as_index() != 0 {
+          let rax = register_allocator.allocate_register(0);
+
+          if let Some(prev) = rax.get_previous() {
+            if prev.var != ret_id {
+              todo!("Handle eviction. If the evicted type is used in successor blocks then spill to stack.");
+            }
+          }
+
+          let rax = rax.set_current(ret_id, out_ty, block.id).unwrap();
+
+          graph[node_id].operands[2] = rax.reg;
+          call.ret = rax.reg;
+
+          aft.push(create_binary_op(IROp::MOVE, graph[node_id].output, ret_reg.reg, rax.reg));
+        } else {
+          graph[node_id].operands[2] = ret_reg.reg;
+          call.ret = ret_reg.reg;
+        }
+      } else {
+        for operand in &mut graph[node_id].operands {
+          if operand.is_var() {
+            let var_id = *operand;
+
+            let register = register_allocator.get_register_for_var(var_id);
+
+            if let Some(prev) = register.get_previous() {
+              if prev.var != var_id {
+                todo_note!("Handle eviction. If the evicted type is used in successor blocks then spill to stack.");
+              }
+            }
+            *operand = register.set_current(var_id, Default::default(), block.id).unwrap().reg;
+          }
+        }
+      }
+
+      if !aft.is_empty() || !fore.is_empty() {
+        let i = block.ops.iter().enumerate().find(|i| *i.1 == node_id).unwrap().0;
+        for aft_op in aft.as_slice().iter().rev() {
+          push_graph_node_to_block(i + 1, block, graph, *aft_op);
+        }
+
+        for for_op in fore.iter() {
+          push_graph_node_to_block(i, block, graph, *for_op);
         }
       }
     }
@@ -272,8 +403,7 @@ fn create_phi_ops(ctx: &mut OptimizerContext) {
               panic!("Unsupported: PHI nodes with more than two operands")
             }
 
-            let id =
-              ctx.push_binary_op(SSAOp::PHI, stack_id, left, right, BlockId(block_id as u32));
+            let id = ctx.push_binary_op(IROp::PHI, stack_id, left, right, BlockId(block_id as u32));
 
             entry.insert(id);
 
@@ -298,7 +428,7 @@ fn create_phi_ops(ctx: &mut OptimizerContext) {
 enum CacheInformation {
   UNDEFINED,
   NOT_APPLICABLE,
-  CONST(LLVal),
+  CONST(RawVal),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -350,11 +480,6 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
 
       // We can now preform some analysis and optimization on this region
       {
-        let mut loop_var_info: BTreeMap<usize, LoopVar> = Default::default();
-
-        // Create a parallel table for induction calculation results
-        let mut parallel_table = Vec::from_iter(ctx.graph.iter().map(|_| ()));
-
         let mut i_ctx = induction::InductionCTX::default();
         i_ctx.region_blocks = ArrayVec::from_iter(r_blocks.iter().cloned());
 
@@ -371,18 +496,18 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
             // Through MEM_STORE are temporary variables based on offsets derived from
             // STACK_DEFINEd pointers.
             match op.op {
-              SSAOp::SINK => {
+              IROp::STORE => {
                 // If induction variable then  ignore. Otherwise, attempt to
                 // replace with region variable.
               }
-              SSAOp::MEM_STORE => {
+              IROp::MEM_STORE => {
                 // Can be directly updated.
                 let root_node = op.operands[0];
                 if let Some(expression) =
                   induction::process_expression(op.operands[0], ctx, &mut i_ctx)
                 {
                   let existing = ctx.graph[op.operands[0]];
-                  dbg!(&i_ctx);
+
                   // Create an expression that can be used for the initialization of this variable
                   let init =
                     induction::calculate_init(expression.clone().to_vec(), root_node, ctx, &i_ctx);
@@ -396,7 +521,7 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
                   let output_val = ctx.graph[stack_val].output;
 
                   let target =
-                    ctx.push_binary_op(SSAOp::SINK, output_val, stack_val, ssa, target_block);
+                    ctx.push_binary_op(IROp::STORE, output_val, stack_val, ssa, target_block);
 
                   let ty = ctx.graph[target].output;
 
@@ -436,13 +561,18 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
                       );
                       let ssa = induction::generate_ssa(&rate, ctx, &i_ctx, block_id, c_ty);
 
-                      let result = ctx.push_binary_op(SSAOp::ADD, ty, target, ssa, block_id);
+                      let result = if ssa.is_const() && ctx.constants[ssa].is_negative() {
+                        let ssa = ctx.push_constant(ctx.constants[ssa].invert());
+                        ctx.push_binary_op(IROp::SUB, ty, target, ssa, block_id)
+                      } else {
+                        ctx.push_binary_op(IROp::ADD, ty, target, ssa, block_id)
+                      };
 
                       i += 1;
                       ctx.blocks[block_id].ops.insert(i, result);
 
                       let result =
-                        ctx.push_binary_op(SSAOp::SINK, output_val, stack_val, result, block_id);
+                        ctx.push_binary_op(IROp::STORE, output_val, stack_val, result, block_id);
 
                       i += 1;
                       ctx.blocks[block_id].ops.insert(i, result);
@@ -551,21 +681,21 @@ fn build_annotations(ctx: &mut OptimizerContext) {
 
   for _ in 0..ctx.blocks.len() {
     annotations.push(BlockAnnotation {
-      predecessors:       Default::default(),
-      direct_predecessor: Default::default(),
-      dominators:         Default::default(),
-      ins:                Default::default(),
-      outs:               Default::default(),
-      decls:              Default::default(),
-      is_loop_head:       Default::default(),
-      loop_components:    Default::default(),
+      predecessors:        Default::default(),
+      direct_predecessors: Default::default(),
+      dominators:          Default::default(),
+      ins:                 Default::default(),
+      outs:                Default::default(),
+      decls:               Default::default(),
+      is_loop_head:        Default::default(),
+      loop_components:     Default::default(),
     });
   }
 
   let mut stores = Vec::new();
   for op in ctx.graph.as_slice() {
     match op.op {
-      SSAOp::SINK => {
+      IROp::STORE => {
         let stack_id = op.output.stack_id().expect("All STORE ops should be to stack locations");
         let data: &mut Vec<_> = value_stores.entry(stack_id).or_default();
         data.push(stores.len());
@@ -668,7 +798,7 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     annotations[block_id].predecessors =
       bitfield.iter_row_set_indices(block_id + i_pred_offset).map(|i| BlockId(i as u32)).collect();
 
-    annotations[block_id].direct_predecessor =
+    annotations[block_id].direct_predecessors =
       bitfield.iter_row_set_indices(block_id + d_pred_offset).map(|i| BlockId(i as u32)).collect();
 
     annotations[block_id].ins =
@@ -685,7 +815,7 @@ fn build_annotations(ctx: &mut OptimizerContext) {
       .collect();
 
     annotations[block_id].is_loop_head =
-      annotations[block_id].direct_predecessor.iter().any(|i| i.usize() >= block_id);
+      annotations[block_id].direct_predecessors.iter().any(|i| i.usize() >= block_id);
   }
 
   // Loop Components --------------------
@@ -729,11 +859,11 @@ fn build_annotations(ctx: &mut OptimizerContext) {
   ctx.block_annotations = annotations
 }
 
-fn iter_branch_indices(block: &SSABlock) -> impl Iterator<Item = BlockId> {
+fn iter_branch_indices(block: &IRBlock) -> impl Iterator<Item = BlockId> {
   get_branch_indices(block).into_iter().filter_map(|d| d)
 }
 
-fn get_branch_indices(block: &SSABlock) -> [Option<BlockId>; 3] {
+fn get_branch_indices(block: &IRBlock) -> [Option<BlockId>; 3] {
   [block.branch_succeed, block.branch_fail, block.branch_unconditional]
 }
 
@@ -788,15 +918,15 @@ fn update_branch(patch: &mut Option<BlockId>, block_remaps: &Vec<BlockId>) {
   }
 }
 
-fn block_is_empty(block: &SSABlock) -> bool {
+fn block_is_empty(block: &IRBlock) -> bool {
   block.ops.is_empty() && !has_choice_branch(block)
 }
 
-fn has_choice_branch(block: &SSABlock) -> bool {
+fn has_choice_branch(block: &IRBlock) -> bool {
   block.branch_fail.is_some() || block.branch_succeed.is_some()
 }
 
-fn has_branch(block: &SSABlock) -> bool {
+fn has_branch(block: &IRBlock) -> bool {
   has_choice_branch(block) || !block.branch_unconditional.is_none()
 }
 
@@ -819,14 +949,14 @@ pub fn loop_until<I: Iterator<Item = usize> + Clone, T: FnMut(usize, &mut bool)>
 }
 
 struct BlockAnnotation {
-  dominators:         ArrayVec<8, BlockId>,
-  predecessors:       ArrayVec<8, BlockId>,
-  direct_predecessor: ArrayVec<8, BlockId>,
-  loop_components:    ArrayVec<8, BlockId>,
-  ins:                Vec<SSAGraphNode>,
-  outs:               Vec<SSAGraphNode>,
-  decls:              Vec<SSAGraphNode>,
-  is_loop_head:       bool,
+  dominators:          ArrayVec<8, BlockId>,
+  predecessors:        ArrayVec<8, BlockId>,
+  direct_predecessors: ArrayVec<8, BlockId>,
+  loop_components:     ArrayVec<8, BlockId>,
+  ins:                 Vec<IRGraphNode>,
+  outs:                Vec<IRGraphNode>,
+  decls:               Vec<IRGraphNode>,
+  is_loop_head:        bool,
 }
 
 impl Debug for BlockAnnotation {
@@ -851,7 +981,7 @@ impl Debug for BlockAnnotation {
 
     f.write_fmt(format_args!(
       "  direct predecessors: {} \n",
-      self.direct_predecessor.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+      self.direct_predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
     ))?;
 
     f.write_fmt(format_args!(
@@ -875,9 +1005,10 @@ impl Debug for BlockAnnotation {
 
 pub(super) struct OptimizerContext<'funct> {
   pub(super) block_annotations: Vec<BlockAnnotation>,
-  pub(super) graph:             &'funct mut Vec<SSAGraphNode>,
+  pub(super) graph:             &'funct mut Vec<IRGraphNode>,
   pub(super) constants:         &'funct mut Vec<ConstVal>,
-  pub(super) blocks:            &'funct mut Vec<Box<SSABlock>>,
+  pub(super) calls:             &'funct mut Vec<IRCall>,
+  pub(super) blocks:            &'funct mut Vec<Box<IRBlock>>,
   stack_id:                     usize,
 }
 
@@ -920,6 +1051,8 @@ impl<'funct> Debug for OptimizerContext<'funct> {
       f.write_str("\n")?;
     }
 
+    self.calls.fmt(f)?;
+
     self.constants.fmt(f)?;
 
     self.graph.iter().collect::<Vec<_>>().fmt(f)?;
@@ -937,7 +1070,7 @@ impl<'funct> OptimizerContext<'funct> {
 
   // add annotation - iter rate - iter initial val - iter inc stack id const val
 
-  pub fn push_graph_node(&mut self, mut node: SSAGraphNode) -> GraphId {
+  pub fn push_graph_node(&mut self, mut node: IRGraphNode) -> GraphId {
     let id: GraphId = self.graph.len().into();
     node.id = id;
     self.graph.push(node);
@@ -946,13 +1079,13 @@ impl<'funct> OptimizerContext<'funct> {
 
   pub fn push_binary_op(
     &mut self,
-    op: SSAOp,
+    op: IROp,
     output: TypeInfo,
     left: GraphId,
     right: GraphId,
     block_id: BlockId,
   ) -> GraphId {
-    self.push_graph_node(SSAGraphNode {
+    self.push_graph_node(IRGraphNode {
       block_id,
       op,
       id: GraphId::INVALID,
@@ -963,12 +1096,12 @@ impl<'funct> OptimizerContext<'funct> {
 
   pub fn push_unary_op(
     &mut self,
-    op: SSAOp,
+    op: IROp,
     output: TypeInfo,
     left: GraphId,
     block_id: BlockId,
   ) -> GraphId {
-    self.push_graph_node(SSAGraphNode {
+    self.push_graph_node(IRGraphNode {
       block_id,
       op,
       id: GraphId::INVALID,
@@ -977,8 +1110,8 @@ impl<'funct> OptimizerContext<'funct> {
     })
   }
 
-  pub fn push_zero_op(&mut self, op: SSAOp, output: TypeInfo, block_id: BlockId) -> GraphId {
-    self.push_graph_node(SSAGraphNode {
+  pub fn push_zero_op(&mut self, op: IROp, output: TypeInfo, block_id: BlockId) -> GraphId {
+    self.push_graph_node(IRGraphNode {
       block_id,
       op,
       id: GraphId::INVALID,
@@ -991,7 +1124,7 @@ impl<'funct> OptimizerContext<'funct> {
     let stack_id = self.stack_id + 1;
     self.stack_id = stack_id;
     let stack_id_ty = TypeInfo::at_stack_id(stack_id as u16) | ty.mask_out_stack_id();
-    self.push_zero_op(SSAOp::STACK_DEFINE, stack_id_ty, BlockId(0))
+    self.push_zero_op(IROp::STACK_DEFINE, stack_id_ty, BlockId(0))
   }
 
   pub fn push_constant(&mut self, output: ConstVal) -> GraphId {
@@ -1033,7 +1166,7 @@ impl<'funct> OptimizerContext<'funct> {
 }
 
 impl<'funct> std::ops::Index<GraphId> for OptimizerContext<'funct> {
-  type Output = SSAGraphNode;
+  type Output = IRGraphNode;
   fn index(&self, index: GraphId) -> &Self::Output {
     &self.graph[index]
   }
@@ -1046,7 +1179,7 @@ impl<'funct> std::ops::IndexMut<GraphId> for OptimizerContext<'funct> {
 }
 
 impl<'funct> std::ops::Index<BlockId> for OptimizerContext<'funct> {
-  type Output = SSABlock;
+  type Output = IRBlock;
   fn index(&self, index: BlockId) -> &Self::Output {
     &self.blocks[index]
   }

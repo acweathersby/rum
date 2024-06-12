@@ -7,8 +7,7 @@ use std::{
   slice::SliceIndex,
 };
 
-mod const_val;
-pub use const_val::*;
+use super::ir_const_val::ConstVal;
 
 /// Operations that a register can perform.
 
@@ -47,7 +46,7 @@ impl BitSize {
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[allow(unused, non_camel_case_types, non_upper_case_globals)]
-pub enum LLType {
+pub enum RawType {
   Undefined = 0,
   Unsigned  = 1,
   Integer   = 2,
@@ -94,6 +93,11 @@ impl From<TypeInfo> for BitSize {
 
 impl TypeInfo {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
+
+  pub const i64: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b64.0);
+  pub const i32: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b32.0);
+  pub const i16: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b16.0);
+  pub const i8: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b8.0);
 
   pub fn is_undefined(&self) -> bool {
     self.0 == 0
@@ -150,13 +154,13 @@ impl TypeInfo {
     self.0 & Self::SIZE_MASK
   }
 
-  pub fn ty(&self) -> LLType {
+  pub fn ty(&self) -> RawType {
     match self.ty_val() {
-      1 => LLType::Unsigned,
-      2 => LLType::Integer,
-      3 => LLType::Float,
-      4 => LLType::Custom,
-      _ => LLType::Undefined,
+      1 => RawType::Unsigned,
+      2 => RawType::Integer,
+      3 => RawType::Float,
+      4 => RawType::Custom,
+      _ => RawType::Undefined,
     }
   }
 
@@ -276,11 +280,11 @@ fn display_type_prop() {
 
   assert!(T::Ptr.is_ptr());
 
-  assert_eq!(LLType::Undefined, T::default().ty());
-  assert_eq!(LLType::Unsigned, T::Unsigned.ty());
-  assert_eq!(LLType::Integer, T::Integer.ty());
-  assert_eq!(LLType::Float, T::Float.ty());
-  assert_eq!(LLType::Custom, T::Generic.ty());
+  assert_eq!(RawType::Undefined, T::default().ty());
+  assert_eq!(RawType::Unsigned, T::Unsigned.ty());
+  assert_eq!(RawType::Integer, T::Integer.ty());
+  assert_eq!(RawType::Float, T::Float.ty());
+  assert_eq!(RawType::Custom, T::Generic.ty());
 
   assert_eq!(Vectorized::Scalar, T::default().vec());
   assert_eq!(Vectorized::Vector2, T::v2.vec());
@@ -523,19 +527,19 @@ impl Debug for TypeInfo {
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Default)]
-pub struct LLVal {
+pub struct RawVal {
   pub info: TypeInfo,
   ssa_id:   usize,
   val:      Option<[u8; 16]>,
 }
 
-impl Display for LLVal {
+impl Display for RawVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.ssa_id > 0 {
       f.write_fmt(format_args!("<{:03}> ", self.ssa_id))?;
     }
     fn fmt_val<T: Display + Default>(
-      val: &LLVal,
+      val: &RawVal,
       f: &mut std::fmt::Formatter<'_>,
     ) -> Result<(), std::fmt::Error> {
       if val.val.is_some() {
@@ -546,12 +550,12 @@ impl Display for LLVal {
     }
 
     match self.info.ty() {
-      LLType::Float => match self.info.bit_count() {
+      RawType::Float => match self.info.bit_count() {
         32 => fmt_val::<f32>(self, f),
         64 => fmt_val::<f64>(self, f),
         _ => fmt_val::<u8>(self, f),
       },
-      LLType::Integer => match self.info.bit_count() {
+      RawType::Integer => match self.info.bit_count() {
         8 => fmt_val::<i8>(self, f),
         16 => fmt_val::<i16>(self, f),
         32 => fmt_val::<i32>(self, f),
@@ -559,44 +563,44 @@ impl Display for LLVal {
         128 => fmt_val::<i128>(self, f),
         _ => fmt_val::<i128>(self, f),
       },
-      LLType::Unsigned => match self.info.bit_count() {
+      RawType::Unsigned => match self.info.bit_count() {
         8 => fmt_val::<u8>(self, f),
         16 => fmt_val::<u16>(self, f),
         32 => fmt_val::<u32>(self, f),
         64 => fmt_val::<u64>(self, f),
         _ => fmt_val::<u8>(self, f),
       },
-      LLType::Custom | _ => fmt_val::<u64>(self, f),
+      RawType::Custom | _ => fmt_val::<u64>(self, f),
     }
   }
 }
 
-impl Debug for LLVal {
+impl Debug for RawVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(self, f)
   }
 }
 
-impl LLVal {
+impl RawVal {
   pub fn drop_val(mut self) -> Self {
     self.val = None;
     self
   }
 
   pub fn new(info: TypeInfo) -> Self {
-    LLVal { info, val: None, ssa_id: 0 }
+    RawVal { info, val: None, ssa_id: 0 }
   }
 
-  pub fn derefed(&self) -> LLVal {
-    LLVal {
+  pub fn derefed(&self) -> RawVal {
+    RawVal {
       info:   self.info.deref().mask_out_location(),
       val:    self.val,
       ssa_id: self.ssa_id,
     }
   }
 
-  pub fn unstacked(&self) -> LLVal {
-    LLVal { info: self.info.unstacked(), val: self.val, ssa_id: self.ssa_id }
+  pub fn unstacked(&self) -> RawVal {
+    RawVal { info: self.info.unstacked(), val: self.val, ssa_id: self.ssa_id }
   }
 
   pub fn load<T>(&self) -> Option<T> {
@@ -652,16 +656,36 @@ impl Debug for DataLocation {
   }
 }
 
+#[derive(Clone)]
+pub struct IRCall {
+  pub(super) name: IString,
+  pub(super) args: ArrayVec<7, GraphId>,
+  pub(super) ret:  GraphId,
+}
+
+impl Debug for IRCall {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!(
+      "{} <- {}({})",
+      self.ret,
+      self.name.to_str().as_str(),
+      self.args.join(" ")
+    ))
+  }
+}
+
+impl IRCall {}
+
 #[derive(Clone, Copy)]
-pub struct SSAGraphNode {
+pub struct IRGraphNode {
+  pub(super) op:       IROp,
   pub(super) id:       GraphId,
   pub(super) block_id: BlockId,
-  pub(super) op:       SSAOp,
   pub(super) output:   TypeInfo,
   pub(super) operands: [GraphId; 3],
 }
 
-impl Debug for SSAGraphNode {
+impl Debug for IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_fmt(format_args!(
       "{}@{:03}: {:28} = {:15} {}",
@@ -681,7 +705,7 @@ impl Debug for SSAGraphNode {
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SSAOp {
+pub enum IROp {
   STACK_DEFINE,
   NOOP,
   ADD,
@@ -698,25 +722,24 @@ pub enum SSAOp {
   XOR,
   AND,
   NOT,
-  //LOAD,
+  /// Move from workspace scratch memory to working memory
+  LOAD,
   DEREF,
   /// Indicates the preservation of sequence of operations.
-  SINK,
-  /// Performs a memory dereference on a pointer and stores the given value at
-  /// that memory location
+  /// Move from working memory to scratch memory
+  STORE,
+  /// Store working memory (op2) into global memory addressed by the first
+  /// operand (op1)
   MEM_STORE,
   CALL,
-  CONVERT,
-  /// Allocate heap memory and return pointer.
-  MALLOC,
   RETURN,
-  CALL_BLOCK,
-  EXIT_BLOCK,
   JUMP,
-  JUMP_ZE,
   NE,
   EQ,
   PHI,
+  // Deliberate movement of data from one location to another
+  MOVE,
+  MOVE_STORE,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -771,9 +794,11 @@ impl<T, const SIZE: usize> std::ops::IndexMut<GraphId> for ArrayVec<SIZE, T> {
 impl GraphId {
   pub const INVALID: GraphId = GraphId(u32::MAX);
   pub const CONST_MASK: u32 = 0x8000_0000;
+  pub const CALL_MASK: u32 = 0x1000_0000;
   pub const REGISTER_MASK: u32 = 0x4000_0000;
   pub const VAR_MASK: u32 = 0x2000_0000;
-  pub const FLAGS_MASK: u32 = Self::CONST_MASK | Self::REGISTER_MASK | Self::VAR_MASK;
+  pub const FLAGS_MASK: u32 =
+    Self::CONST_MASK | Self::REGISTER_MASK | Self::VAR_MASK | Self::CALL_MASK;
 
   pub const fn is_invalid(&self) -> bool {
     self.0 == Self::INVALID.0
@@ -791,8 +816,16 @@ impl GraphId {
     !self.is_invalid() && (self.0 & Self::VAR_MASK) > 0
   }
 
+  pub fn is_call(&self) -> bool {
+    !self.is_invalid() && (self.0 & Self::CALL_MASK) > 0
+  }
+
   pub fn is_ssa_id(&self) -> bool {
     !self.is_invalid() && (self.0 & Self::FLAGS_MASK) == 0
+  }
+
+  pub fn as_index(&self) -> u32 {
+    self.0 & !Self::FLAGS_MASK
   }
 
   pub const fn as_register(&self) -> Self {
@@ -823,6 +856,14 @@ impl GraphId {
       Self(self.0 | Self::CONST_MASK)
     }
   }
+
+  pub fn as_call(&self) -> Self {
+    if self.is_invalid() {
+      *self
+    } else {
+      Self(self.0 | Self::CALL_MASK)
+    }
+  }
 }
 
 impl Display for GraphId {
@@ -835,6 +876,8 @@ impl Display for GraphId {
       f.write_fmt(format_args!("R{:03}", self.raw_val()))
     } else if self.is_const() {
       f.write_fmt(format_args!("€{:03}", self.raw_val()))
+    } else if self.is_call() {
+      f.write_fmt(format_args!("C{:03}", self.raw_val()))
     } else {
       f.write_fmt(format_args!("xxxx"))
     }
@@ -860,7 +903,7 @@ impl From<usize> for GraphId {
 }
 
 // ---------------------------------------------------------------------
-// LLBlock
+// RawBlock
 
 #[derive(Clone)]
 pub struct SymbolBinding {
@@ -882,7 +925,7 @@ impl Debug for SymbolBinding {
 }
 
 #[derive(Clone)]
-pub struct SSABlock {
+pub struct IRBlock {
   pub id:                   BlockId,
   pub ops:                  Vec<GraphId>,
   pub branch_unconditional: Option<BlockId>,
@@ -890,7 +933,7 @@ pub struct SSABlock {
   pub branch_fail:          Option<BlockId>,
 }
 
-impl Debug for SSABlock {
+impl Debug for IRBlock {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let id = self.id;
     let ops = self
@@ -923,11 +966,13 @@ Block-{id:03} {{
 
 #[derive(Debug, Clone)]
 pub struct SSAFunction {
-  pub(crate) blocks: Vec<Box<SSABlock>>,
+  pub(crate) blocks: Vec<Box<IRBlock>>,
 
-  pub(crate) graph: Vec<SSAGraphNode>,
+  pub(crate) graph: Vec<IRGraphNode>,
 
-  pub(crate) constants: Vec<const_val::ConstVal>,
+  pub(crate) constants: Vec<ConstVal>,
+
+  pub(crate) calls: Vec<IRCall>,
 
   pub stack_id: usize,
 }
@@ -977,5 +1022,111 @@ impl<T, const SIZE: usize> std::ops::Index<BlockId> for ArrayVec<SIZE, T> {
 impl<T, const SIZE: usize> std::ops::IndexMut<BlockId> for ArrayVec<SIZE, T> {
   fn index_mut(&mut self, index: BlockId) -> &mut Self::Output {
     &mut self[index.0 as usize]
+  }
+}
+
+pub mod graph_actions {
+  use super::{GraphId, IRBlock, IRGraphNode, IROp, TypeInfo};
+
+  pub fn push_graph_node_to_block(
+    insert_point: usize,
+    block: &mut IRBlock,
+    graph: &mut Vec<IRGraphNode>,
+    mut node: IRGraphNode,
+  ) -> GraphId {
+    let id: GraphId = graph.len().into();
+    node.id = id;
+    node.block_id = block.id;
+    graph.push(node);
+    block.ops.insert(insert_point, id);
+    id
+  }
+
+  pub fn push_graph_node(graph: &mut Vec<IRGraphNode>, mut node: IRGraphNode) -> GraphId {
+    let id: GraphId = graph.len().into();
+    node.id = id;
+    graph.push(node);
+    id
+  }
+
+  pub fn push_op(
+    graph: &mut Vec<IRGraphNode>,
+    insert_point: usize,
+    block: &mut IRBlock,
+    op: IROp,
+    output: TypeInfo,
+    op1: GraphId,
+    op2: GraphId,
+    op3: GraphId,
+  ) -> GraphId {
+    push_graph_node_to_block(insert_point, block, graph, IRGraphNode {
+      block_id: block.id,
+      op,
+      id: GraphId::INVALID,
+      output,
+      operands: [op1, op2, op3],
+    })
+  }
+
+  pub fn create_binary_op(op: IROp, output: TypeInfo, op1: GraphId, op2: GraphId) -> IRGraphNode {
+    IRGraphNode {
+      block_id: Default::default(),
+      op,
+      id: GraphId::INVALID,
+      output,
+      operands: [op1, op2, Default::default()],
+    }
+  }
+
+  pub fn create_unary_op(op: IROp, output: TypeInfo, op1: GraphId) -> IRGraphNode {
+    IRGraphNode {
+      block_id: Default::default(),
+      op,
+      id: GraphId::INVALID,
+      output,
+      operands: [op1, Default::default(), Default::default()],
+    }
+  }
+
+  pub fn push_binary_op(
+    graph: &mut Vec<IRGraphNode>,
+    insert_point: usize,
+    block: &mut IRBlock,
+    op: IROp,
+    output: TypeInfo,
+    op1: GraphId,
+    op2: GraphId,
+  ) -> GraphId {
+    push_op(graph, insert_point, block, op, output, op1, op2, Default::default())
+  }
+
+  pub fn push_unary_op(
+    graph: &mut Vec<IRGraphNode>,
+    insert_point: usize,
+    block: &mut IRBlock,
+    op: IROp,
+    output: TypeInfo,
+    op1: GraphId,
+  ) -> GraphId {
+    push_op(graph, insert_point, block, op, output, op1, Default::default(), Default::default())
+  }
+
+  pub fn push_zero_op(
+    graph: &mut Vec<IRGraphNode>,
+    insert_point: usize,
+    block: &mut IRBlock,
+    op: IROp,
+    output: TypeInfo,
+  ) -> GraphId {
+    push_op(
+      graph,
+      insert_point,
+      block,
+      op,
+      output,
+      Default::default(),
+      Default::default(),
+      Default::default(),
+    )
   }
 }

@@ -1,6 +1,6 @@
 use num_traits::{Num, NumCast};
 
-use super::{BitSize, LLType, TypeInfo as TI};
+use super::{BitSize, RawType, TypeInfo as TI};
 use std::fmt::Debug;
 
 use std;
@@ -29,12 +29,12 @@ impl Display for ConstVal {
     }
 
     match self.ty.ty() {
-      LLType::Float => match self.ty.bit_count() {
+      RawType::Float => match self.ty.bit_count() {
         32 => fmt_val::<f32>(self, f),
         64 => fmt_val::<f64>(self, f),
         _ => fmt_val::<u8>(self, f),
       },
-      LLType::Integer => match self.ty.bit_count() {
+      RawType::Integer => match self.ty.bit_count() {
         8 => fmt_val::<i8>(self, f),
         16 => fmt_val::<i16>(self, f),
         32 => fmt_val::<i32>(self, f),
@@ -42,14 +42,14 @@ impl Display for ConstVal {
         128 => fmt_val::<i128>(self, f),
         _ => fmt_val::<i128>(self, f),
       },
-      LLType::Unsigned => match self.ty.bit_count() {
+      RawType::Unsigned => match self.ty.bit_count() {
         8 => fmt_val::<u8>(self, f),
         16 => fmt_val::<u16>(self, f),
         32 => fmt_val::<u32>(self, f),
         64 => fmt_val::<u64>(self, f),
         _ => fmt_val::<u8>(self, f),
       },
-      LLType::Custom | _ => fmt_val::<u64>(self, f),
+      RawType::Custom | _ => fmt_val::<u64>(self, f),
     }
   }
 }
@@ -113,39 +113,73 @@ impl ConstVal {
     self
   }
 
+  pub fn invert(&self) -> ConstVal {
+    if self.is_lit() {
+      match (self.ty.ty(), self.ty.bit_count()) {
+        (RawType::Float, 64) => self.clone().store(-self.load::<f64>().unwrap()),
+        (RawType::Float, 32) => self.clone().store(-self.load::<f32>().unwrap()),
+        (RawType::Integer, 128) => self.clone().store(-self.load::<i128>().unwrap()),
+        (RawType::Integer, 64) => self.clone().store(-self.load::<i64>().unwrap()),
+        (RawType::Integer, 32) => self.clone().store(-self.load::<i32>().unwrap()),
+        (RawType::Integer, 16) => self.clone().store(-self.load::<i16>().unwrap()),
+        (RawType::Integer, 8) => self.clone().store(-self.load::<i8>().unwrap()),
+        _ => *self,
+      }
+    } else {
+      *self
+    }
+  }
+
+  pub fn is_negative(&self) -> bool {
+    if self.is_lit() {
+      match (self.ty.ty(), self.ty.bit_count()) {
+        (RawType::Float, 64) => self.load::<f64>().unwrap() < 0.0,
+        (RawType::Float, 32) => self.load::<f32>().unwrap() < 0.0,
+        (RawType::Integer, 128) => self.load::<i128>().unwrap() < 0,
+        (RawType::Integer, 64) => self.load::<i64>().unwrap() < 0,
+        (RawType::Integer, 32) => self.load::<i32>().unwrap() < 0,
+        (RawType::Integer, 16) => self.load::<i16>().unwrap() < 0,
+        (RawType::Integer, 8) => self.load::<i8>().unwrap() < 0,
+        _ => false,
+      }
+    } else {
+      false
+    }
+  }
+
   pub fn convert(&self, to_info: TI) -> ConstVal {
     let from_info = self.ty;
 
     match (to_info.ty(), from_info.ty()) {
-      (LLType::Float, LLType::Float) => {
+      (RawType::Float, RawType::Float) => {
         if to_info.bit_count() != from_info.bit_count() {
           to_flt(ConstVal::new(to_info), from_flt(*self))
         } else {
           *self
         }
       }
-      (LLType::Float, LLType::Unsigned) => to_flt(ConstVal::new(to_info), from_uint(*self)),
-      (LLType::Float, LLType::Integer) => to_flt(ConstVal::new(to_info), from_int(*self)),
+      (RawType::Float, RawType::Unsigned) => to_flt(ConstVal::new(to_info), from_uint(*self)),
+      (RawType::Float, RawType::Integer) => to_flt(ConstVal::new(to_info), from_int(*self)),
 
-      (LLType::Unsigned, LLType::Unsigned) => {
+      (RawType::Unsigned, RawType::Unsigned) => {
         if from_info.bit_count() != to_info.bit_count() {
           to_uint(ConstVal::new(to_info), from_uint(*self))
         } else {
           *self
         }
       }
-      (LLType::Unsigned, LLType::Float) => to_uint(ConstVal::new(to_info), from_flt(*self)),
-      (LLType::Unsigned, LLType::Integer) => to_uint(ConstVal::new(to_info), from_int(*self)),
+      (RawType::Unsigned, RawType::Float) => to_uint(ConstVal::new(to_info), from_flt(*self)),
+      (RawType::Unsigned, RawType::Integer) => to_uint(ConstVal::new(to_info), from_int(*self)),
 
-      (LLType::Integer, LLType::Integer) => {
+      (RawType::Integer, RawType::Integer) => {
         if to_info.bit_count() != from_info.bit_count() {
           to_int(ConstVal::new(to_info), from_int(*self))
         } else {
           *self
         }
       }
-      (LLType::Integer, LLType::Float) => to_int(ConstVal::new(to_info), from_flt(*self)),
-      (LLType::Integer, LLType::Unsigned) => to_int(ConstVal::new(to_info), from_uint(*self)),
+      (RawType::Integer, RawType::Float) => to_int(ConstVal::new(to_info), from_flt(*self)),
+      (RawType::Integer, RawType::Unsigned) => to_int(ConstVal::new(to_info), from_uint(*self)),
       _ => *self,
     }
   }
@@ -171,7 +205,7 @@ impl ConstVal {
   pub fn neg(&self) -> ConstVal {
     let l = self;
     match l.ty.ty() {
-      LLType::Unsigned => match l.ty.into() {
+      RawType::Unsigned => match l.ty.into() {
         BitSize::b64 => {
           ConstVal::new(TI::Integer | TI::b64).store(-(l.load::<u64>().unwrap() as i64))
         }
@@ -184,14 +218,14 @@ impl ConstVal {
         BitSize::b8 => ConstVal::new(TI::Integer | TI::b8).store(-(l.load::<u8>().unwrap() as i8)),
         _ => panic!(),
       },
-      LLType::Integer => match l.ty.into() {
+      RawType::Integer => match l.ty.into() {
         BitSize::b64 => ConstVal::new(l.ty).store(-l.load::<i64>().unwrap()),
         BitSize::b32 => ConstVal::new(l.ty).store(-l.load::<i32>().unwrap()),
         BitSize::b16 => ConstVal::new(l.ty).store(-l.load::<i16>().unwrap()),
         BitSize::b8 => ConstVal::new(l.ty).store(-l.load::<i8>().unwrap()),
         _ => panic!(),
       },
-      LLType::Float => match l.ty.into() {
+      RawType::Float => match l.ty.into() {
         BitSize::b64 => ConstVal::new(l.ty).store(-l.load::<f64>().unwrap()),
         BitSize::b32 => ConstVal::new(l.ty).store(-l.load::<f32>().unwrap()),
         _ => panic!(),
@@ -216,7 +250,7 @@ macro_rules! op_expr {
 
 
         match l.ty.ty() {
-          LLType::Unsigned => match l.ty.into() {
+          RawType::Unsigned => match l.ty.into() {
             BitSize::b64 =>
               ConstVal::new(l.ty).store(l.load::<u64>().unwrap() $op r.load::<u64>().unwrap()),
             BitSize::b32 =>
@@ -227,7 +261,7 @@ macro_rules! op_expr {
               ConstVal::new(l.ty).store(l.load::<u8>().unwrap() $op r.load::<u8>().unwrap()),
             _ => panic!(),
           },
-          LLType::Integer => match l.ty.into() {
+          RawType::Integer => match l.ty.into() {
             BitSize::b64 =>
               ConstVal::new(l.ty).store(l.load::<i64>().unwrap() $op r.load::<i64>().unwrap()),
             BitSize::b32 =>
@@ -238,7 +272,7 @@ macro_rules! op_expr {
               ConstVal::new(l.ty).store(l.load::<i8>().unwrap() $op r.load::<i8>().unwrap()),
             _ => panic!(),
           },
-          LLType::Float => match l.ty.into() {
+          RawType::Float => match l.ty.into() {
             BitSize::b64 =>
               ConstVal::new(l.ty).store(l.load::<f64>().unwrap() $op r.load::<f64>().unwrap()),
             BitSize::b32 =>
@@ -265,7 +299,7 @@ impl Debug for ConstVal {
 
 pub fn from_uint(val: ConstVal) -> u64 {
   let info = val.ty;
-  debug_assert!(info.ty() == LLType::Unsigned);
+  debug_assert!(info.ty() == RawType::Unsigned);
   match info.bit_count() {
     8 => val.load::<u8>().unwrap() as u64,
     16 => val.load::<u16>().unwrap() as u64,
@@ -277,7 +311,7 @@ pub fn from_uint(val: ConstVal) -> u64 {
 
 pub fn from_int(val: ConstVal) -> i64 {
   let info = val.ty;
-  debug_assert!(info.ty() == LLType::Integer, "{:?} {}", info.ty(), info);
+  debug_assert!(info.ty() == RawType::Integer, "{:?} {}", info.ty(), info);
   match info.bit_count() {
     8 => val.load::<i8>().unwrap() as i64,
     16 => val.load::<i16>().unwrap() as i64,
@@ -289,7 +323,7 @@ pub fn from_int(val: ConstVal) -> i64 {
 
 pub fn from_flt(val: ConstVal) -> f64 {
   let info = val.ty;
-  debug_assert!(info.ty() == LLType::Float);
+  debug_assert!(info.ty() == RawType::Float);
   match info.bit_count() {
     32 => val.load::<f32>().unwrap() as f64,
     64 => val.load::<f64>().unwrap() as f64,
@@ -298,7 +332,7 @@ pub fn from_flt(val: ConstVal) -> f64 {
 }
 
 fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
-  debug_assert!(l_val.ty.ty() == LLType::Float);
+  debug_assert!(l_val.ty.ty() == RawType::Float);
   match (l_val.ty.bit_count()) {
     32 => l_val.store(val.to_f32().unwrap()),
     64 => l_val.store(val.to_f64().unwrap()),
@@ -307,7 +341,7 @@ fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
 }
 
 fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
-  debug_assert!(l_val.ty.ty() == LLType::Integer);
+  debug_assert!(l_val.ty.ty() == RawType::Integer);
   match (l_val.ty.bit_count()) {
     8 => l_val.store(val.to_i8().unwrap()),
     16 => l_val.store(val.to_i16().unwrap()),
@@ -318,7 +352,7 @@ fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
 }
 
 fn to_uint<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
-  debug_assert!(l_val.ty.ty() == LLType::Unsigned);
+  debug_assert!(l_val.ty.ty() == RawType::Unsigned);
   match (l_val.ty.bit_count()) {
     8 => l_val.store(val.to_u8().unwrap()),
     16 => l_val.store(val.to_u16().unwrap()),

@@ -8,14 +8,14 @@ IMPORT expression as expr
 
   > ( type "<-" :ast $1 )?^return_type tk:( id "\(" )  param_binding(+)^params ")" block
 
-    :ast { t_LLFunction, params, return_type, block  }
+    :ast { t_RawFunction, params, return_type, block  }
 
 
 <> param_binding 
   
   > id ":" type^ty
 
-    :ast { t_LLParamBinding, id, ty, tok }
+    :ast { t_RawParamBinding, id, ty, tok }
 
 
 <> statements 
@@ -33,64 +33,64 @@ IMPORT expression as expr
   
   > id ":" primitive_ptr_type^ty mem_binding?^expression ";"? 
 
-    :ast { t_LLPtrDeclaration, id, ty, expression, tok  }
+    :ast { t_RawPtrDeclaration, id, ty, expression, tok  }
 
   | id ":" primitive_type^ty ("=" expression)?^expression ";"?
 
-    :ast { t_LLPrimitiveDeclaration, id, ty, expression, tok }
+    :ast { t_RawPrimitiveDeclaration, id, ty, expression, tok }
 
 
 <> block 
 
   > "{" statements(+)^statements return?^ret "}"
 
-    :ast { t_LLBlock, statements, ret  }
+    :ast { t_RawBlock, statements, ret  }
 
 
 <> return 
   
   > "<-"  expression
 
-    :ast { t_LLReturn, expression }
+    :ast { t_RawReturn, expression }
   
 
 <> assignment 
 
   > (id | memory_location ) "=" expression ";"?
 
-    :ast { t_LLAssign, location: $1, expression, tok  }
+    :ast { t_RawAssign, location: $1, expression, tok  }
 
   | id mem_binding^expression ";"?
 
-    :ast { t_LLPtrAssign, id: $1, expression, tok  }
+    :ast { t_RawPtrAssign, id: $1, expression, tok  }
 
 
 <> drop
 
   > "drop(" id ")" ";"?
 
-    :ast { t_LLDrop, id  }
+    :ast { t_RawDrop, id  }
 
 
 <> continue 
   
   > "continue" ";"?
     
-    :ast { t_LLContinue, tok }
+    :ast { t_RawContinue, tok }
 
 
 <> loop 
   
   > "loop" block
 
-    :ast { t_LLLoop, block, tok  }
+    :ast { t_RawLoop, block, tok  }
 
 
 <> match 
 
   > "match" ( boolean | arithmetic )^expression  "{" match_statement(+)^statements "}"
 
-    :ast { t_LLMatch, expression, statements, tok  }
+    :ast { t_RawMatch, expression, statements, tok  }
   
 
 <> match_statement 
@@ -104,7 +104,7 @@ IMPORT expression as expr
   
   > ( primitive_bool | primitive_number ) block
 
-    :ast { t_LLMatchCase, val:$1, block, tok  }
+    :ast { t_RawMatchCase, val:$1, block, tok  }
 
 
 <> mem_binding 
@@ -122,11 +122,11 @@ IMPORT expression as expr
 
   > mem_expr^left "+"{1} mem_expr{1}^right
 
-    :ast { t_LLMemAdd, left, right, tok }
+    :ast { t_RawMemAdd, left, right, tok }
 
   | mem_expr^left "*"{2} mem_expr{2}^right
 
-    :ast { t_LLMemMul, left, right, tok }
+    :ast { t_RawMemMul, left, right, tok }
 
   | id
 
@@ -264,19 +264,19 @@ IMPORT expression as expr
 
 <> call > id "(" expression(+",") ")"
 
-  :ast { t_LLCall, id  }
+  :ast { t_RawCall, id  }
 
 
 <> member > id^root ("." id )(*)^branches
 
-  :ast { t_LLMember, root, branches }
+  :ast { t_RawMember, root, branches }
 
 
 <> self 
 
   > tk:( "self." ) id
 
-    :ast { t_LLSelfMember, id }
+    :ast { t_RawSelfMember, id }
 
 <> id 
   
@@ -297,11 +297,11 @@ IMPORT expression as expr
 
   > prim::true
 
-    :ast { t_LLTrue }
+    :ast { t_RawTrue }
 
   | prim::false
 
-    :ast { t_LLFalse }
+    :ast { t_RawFalse }
 
 <> primitive_value
 
@@ -309,28 +309,28 @@ IMPORT expression as expr
 
   | prim::string^val
 
-    :ast { t_LLStr, val:str($val)  }
+    :ast { t_RawStr, val:str($val)  }
 
 
 <> primitive_number 
 
   > prim::sci_num
 
-    :ast { t_LLNum, val:f64($1), tok }
+    :ast { t_RawNum, val:f64($1), tok }
 
 
 <> primitive_unsigned_integer 
 
   > prim::uint
 
-    :ast { t_LLUint, val:i64($1) }
+    :ast { t_RawUint, val:i64($1) }
 
 
 <> primitive_integer 
 
   > prim::int
 
-    :ast { t_LLInt, val:i64($1) }
+    :ast { t_RawInt, val:i64($1) }
 
 
 <> table_type
@@ -382,7 +382,7 @@ IMPORT expression as expr
 
   > (pointer_cast | id)^base_ptr ( "+" mem_expr )?^expression
 
-    :ast { t_LLMemLocation, base_ptr, expression, tok }
+    :ast { t_RawMemLocation, base_ptr, expression, tok }
 
 
 
@@ -391,11 +391,11 @@ IMPORT expression as expr
 
   > primitive_type^ty "(" expression ")"
 
-    :ast { t_LLPrimitiveCast, ty, expression, tok }
+    :ast { t_RawPrimitiveCast, ty, expression, tok }
 
 
 <> pointer_cast 
 
   > primitive_ptr_type^ty "(" id ")"
 
-    :ast { t_LLPointerCast, ty, id, tok }
+    :ast { t_RawPointerCast, ty, id, tok }

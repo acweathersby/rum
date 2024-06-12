@@ -1,8 +1,28 @@
-pub(crate) mod compiler;
-pub(crate) mod encoder;
-pub(crate) mod types;
+//! # x86 Registers
+//!
+//!
+//! ## Caller / Callee saved registers
+//!
+//! - Linux:
+//!
+//! |                | RAX | RCX | RDX | RBX | RSP | RBP | RSI | RDI | R08 | R09 | R10 | R11 | R12 | R13 | R14 | R15 |
+//! |                | 000 | 001 | 002 | 003 | 004 | 005 | 006 | 007 | 008 | 009 | 010 | 011 | 012 | 013 | 014 | 015 |
+//! | :---------     | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+//! | Callee_Saved   |     |     |     |  X  |  X  |  X  |     |     |     |     |     |     |  X  |  X  |  X  |  X  |    
+//! | Caller_Saved   |  X  |  X  |  X  |     |     |     |  X  |  X  |  X  |  X  |  X  |  X  |     |     |     |     |
+//! | C Calling Arg  |     |  4  |  3  |     |     |     |  2  |  1  |  5  |  6  |     |     |     |     |     |     |
+//! | C Return Arg   |  1  |     |     |     |     |     |     |     |     |     |     |     |     |     |     |     |
+//! | Syscall Args   |     |     |  3  |     |     |     |  2  |  1  |  5  |  6  |  4  |     |     |     |     |     |
+//! | Syscall Return |  1  |     |  2  |     |     |     |     |     |     |     |     |     |     |     |     |     |
+//!
+//!
+//! - Window:
 
-pub use compiler::compile_from_ssa_fn;
+pub(crate) mod x86_compiler;
+pub(crate) mod x86_encoder;
+pub(crate) mod x86_types;
+
+pub use x86_compiler::compile_from_ssa_fn;
 
 #[inline]
 /// Pushes an arbitrary number of bytes to into a binary buffer.
@@ -31,8 +51,8 @@ mod test {
     compiler::interpreter::{
       error::RumResult,
       ll::{
-        ssa_block_compiler::compile_function_blocks,
-        ssa_block_optimizer::optimize_function_blocks,
+        ir_block_compiler::compile_function_blocks,
+        ir_block_optimizer::optimize_function_blocks,
       },
     },
     utils::get_source_file,

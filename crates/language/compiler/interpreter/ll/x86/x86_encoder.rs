@@ -1,7 +1,7 @@
 #![allow(unused, non_upper_case_globals)]
 
-use super::{push_bytes, set_bytes, types::*};
-use crate::compiler::interpreter::ll::types::BitSize;
+use super::{push_bytes, set_bytes, x86_types::*};
+use crate::compiler::interpreter::ll::ir_types::BitSize;
 use std::collections::HashMap;
 use OperandType as OT;
 
@@ -141,31 +141,31 @@ op_table!(jbe [
 ]);
 
 /// https://www.felixcloutier.com/x86/jcc
-op_table!(js [
+op_table!(ja [
 ((08, OT::IMM_INT, OT::NONE, OT::NONE), (0x0077, 0x00, OpEncoding::D, gen_unary_op)),
 ((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x0F87, 0x00, OpEncoding::D, gen_unary_op)),
 ]);
 
 /// https://www.felixcloutier.com/x86/jcc
-op_table!(jpos [
+op_table!(js [
 ((08, OT::IMM_INT, OT::NONE, OT::NONE), (0x0078, 0x00, OpEncoding::D, gen_unary_op)),
 ((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x0F88, 0x00, OpEncoding::D, gen_unary_op)),
 ]);
 
 /// https://www.felixcloutier.com/x86/jcc
-op_table!(jneg [
+op_table!(jns [
 ((08, OT::IMM_INT, OT::NONE, OT::NONE), (0x0079, 0x00, OpEncoding::D, gen_unary_op)),
 ((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x0F89, 0x00, OpEncoding::D, gen_unary_op)),
 ]);
 
 /// https://www.felixcloutier.com/x86/jcc
-op_table!(jpar [
+op_table!(jpe [
 ((08, OT::IMM_INT, OT::NONE, OT::NONE), (0x007A, 0x00, OpEncoding::D, gen_unary_op)),
 ((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x0F8A, 0x00, OpEncoding::D, gen_unary_op)),
 ]);
 
 /// https://www.felixcloutier.com/x86/jcc
-op_table!(jnpar [
+op_table!(jpo [
 ((08, OT::IMM_INT, OT::NONE, OT::NONE), (0x007B, 0x00, OpEncoding::D, gen_unary_op)),
 ((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x0F8B, 0x00, OpEncoding::D, gen_unary_op)),
 ]);
@@ -298,14 +298,22 @@ op_table!(sub [
 
 /// https://www.felixcloutier.com/x86/mul
 op_table!(mul [  //
-  ((08, OT::REG, OT::IMM_INT, OT::NONE), (0x00F6, 0x04, OpEncoding::MI, gen_bin_op)),
-  ((16, OT::REG, OT::IMM_INT, OT::NONE), (0x00F7, 0x04, OpEncoding::MI, gen_bin_op)),
-  ((32, OT::REG, OT::IMM_INT, OT::NONE), (0x00F7, 0x04, OpEncoding::MI, gen_bin_op)),
-  ((64, OT::REG, OT::IMM_INT, OT::NONE), (0x00F7, 0x04, OpEncoding::MI, gen_bin_op)),
+  ((08, OT::REG, OT::NONE, OT::NONE), (0x00F6, 0x04, OpEncoding::M, gen_bin_op)),
+  ((16, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_bin_op)),
+  ((32, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_bin_op)),
+  ((64, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_bin_op)),
+  ((08, OT::MEM, OT::NONE, OT::NONE), (0x00F6, 0x04, OpEncoding::M, gen_bin_op)),
+  ((16, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_bin_op)),
+  ((32, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_bin_op)),
+  ((64, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_bin_op)),
 ]);
 
 /// https://www.felixcloutier.com/x86/imul
 op_table!(imul [  //
+  ((16, OT::REG, OT::REG, OT::NONE), (0x00AF, 0x00, OpEncoding::RM, gen_tri_op)),
+  ((32, OT::REG, OT::REG, OT::NONE), (0x00AF, 0x00, OpEncoding::RM, gen_tri_op)),
+  ((64, OT::REG, OT::REG, OT::NONE), (0x00AF, 0x00, OpEncoding::RM, gen_tri_op)),
+
   ((08, OT::REG, OT::REG, OT::IMM_INT), (0x0068, 0x00, OpEncoding::RMI, gen_tri_op)),
   ((16, OT::REG, OT::REG, OT::IMM_INT), (0x0069, 0x00, OpEncoding::RMI, gen_tri_op)),
   ((32, OT::REG, OT::REG, OT::IMM_INT), (0x0069, 0x00, OpEncoding::RMI, gen_tri_op)),
@@ -437,7 +445,7 @@ fn push_mod_rm_reg_op(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
       arg => unreachable!("{arg:?}"),
     },
     5 => match r_m {
-      Arg::RSP_REL(val) => {
+      Arg::RIP_REL(val) => {
         displace_val = val;
         0
       }
@@ -452,7 +460,7 @@ fn push_mod_rm_reg_op(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
   };
 
   let mod_bits = match r_m {
-    Arg::Mem(_) => mem_encoding,
+    Arg::RSP_REL(_) | Arg::RIP_REL(_) | Arg::Mem(_) => mem_encoding,
     Arg::Reg(_) => 0b11,
     op => panic!("Invalid r_m operand {op:?}"),
   };
@@ -601,7 +609,7 @@ pub(super) fn gen_bin_op(
           BitSize::b8 => push_bytes(props.bin, imm as u8),
           BitSize::b32 => push_bytes(props.bin, imm as u32),
           BitSize::b64 => push_bytes(props.bin, imm as u64),
-          size => panic!("Invalid immediate size {size:?} for OI encoding"),
+          size => panic!("Invalid immediate size of {size:?} for OI encoding"),
         }
       }
       imm => panic!("Invalid immediate arg op2 of {imm:?} for MI encoding"),
@@ -613,7 +621,7 @@ pub(super) fn gen_bin_op(
         match bit_size {
           BitSize::b8 => push_bytes(props.bin, imm as u8),
           BitSize::b64 | BitSize::b32 => push_bytes(props.bin, 3 as u32),
-          size => panic!("Invalid immediate size {size:?} for OI encoding"),
+          size => panic!("Invalid immediate size of {size:?} for OI encoding"),
         }
       }
       imm => panic!("Invalid immediate arg op2 of {imm:?} for MI encoding"),
