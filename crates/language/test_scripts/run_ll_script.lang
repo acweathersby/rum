@@ -9,7 +9,7 @@
   loop {
     match i >= 0 {
       true {
-        [table_22 + i] = f32(212)
+        [table_22 + i] = f32(1130823691)
         i = i-1
         
         continue

@@ -133,7 +133,7 @@ fn process_induction_variable<const SIZE: usize>(
         }
       }
 
-      IROp::STORE => {
+      IROp::V_DEF => {
         process_induction_variable(node.operands[1], ctx, expr, phi_ids, is_init);
         true
       }
@@ -188,7 +188,7 @@ fn process_expression_inner(
         }
       }
 
-      IROp::STORE | IROp::CALL => {
+      IROp::V_DEF | IROp::CALL => {
         if !i_ctx.region_blocks.contains(&node.block_id) {
           expr.push(InductionVal::graph_id(id));
           true
@@ -197,7 +197,7 @@ fn process_expression_inner(
         }
       }
 
-      IROp::STACK_DEFINE => {
+      IROp::V_DECL => {
         expr.push(InductionVal::graph_id(id));
         true
       }

@@ -112,13 +112,11 @@ pub fn compile_function_blocks(funct: &RawFunction<Token>) -> RumResult<SSAFunct
         }
       })
       .collect(),
+    variables: ctx.variables,
     graph:     ctx.graph,
     constants: ctx.constants,
-    stack_id:  ctx.stack_ids as usize,
     calls:     ctx.calls,
   };
-
-  dbg!(&funct);
 
   Ok(funct)
 }
@@ -128,7 +126,7 @@ fn process_params(
   block: &mut IRBlockConstructor,
 ) -> RumResult<()> {
   for (index, param) in params.iter().enumerate() {
-    process_binding(&param.id, &param.ty, &param.tok, block)?;
+    create_binding(&param.id, &param.ty, &param.tok, block)?;
   }
 
   Ok(())
@@ -159,7 +157,7 @@ fn process_statements<'a>(
       return Ok(block);
     }
     block_list_Value::RawPtrDeclaration(ptr_decl) => {
-      process_binding(&ptr_decl.id, &(ptr_decl.ty.clone().into()), &ptr_decl.tok, block)?;
+      create_binding(&ptr_decl.id, &(ptr_decl.ty.clone().into()), &ptr_decl.tok, block)?;
       let target = &ptr_decl.id;
       let target_name = target.id.to_token();
 
@@ -171,7 +169,7 @@ fn process_statements<'a>(
       );
     }
     block_list_Value::RawPrimitiveDeclaration(prim_decl) => {
-      process_binding(&prim_decl.id, &(prim_decl.ty.clone().into()), &prim_decl.tok, block)?;
+      create_binding(&prim_decl.id, &(prim_decl.ty.clone().into()), &prim_decl.tok, block)?;
       let target = &prim_decl.id;
       let target_name = target.id.to_token();
       let location = (prim_decl.id.clone().into());
@@ -294,8 +292,8 @@ fn process_assignment(
       let base_ptr = resolve_base_ptr(&location.base_ptr, block);
       let offset = resolve_mem_offset(&location.expression, block);
 
-      let mut ty = block.get_type(base_ptr);
-      let base_type = ty.deref();
+      let mut mem_ptr_ty = block.get_type(base_ptr);
+      let base_type = mem_ptr_ty.deref();
       let element_byte_size = base_type.ele_byte_size() as u32;
 
       let expression = process_arithmetic_expression(
@@ -305,7 +303,10 @@ fn process_assignment(
         false,
       )?;
 
-      ty = ty.mask_out_elements() | TypeInfo::unknown_ele_count();
+      mem_ptr_ty = mem_ptr_ty.mask_out_elements() | TypeInfo::unknown_ele_count();
+
+      let (temp_ptr, temp_ty) = block.create_anonymous_binding(mem_ptr_ty, tok.clone())?;
+      let temp_ptr = block.push_binary_op(IROp::V_DEF, temp_ty, temp_ptr, base_ptr);
 
       let multiple = block
         .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store(element_byte_size));
@@ -313,11 +314,16 @@ fn process_assignment(
       let offset =
         block.push_binary_op(IROp::MUL, TypeInfo::Integer | TypeInfo::b64, offset, multiple);
 
-      let ptr_location = block.push_binary_op(IROp::ADD, ty, base_ptr, offset);
+      let temp_ptr = block.push_binary_op(IROp::ADD, temp_ty.mask_out_var_id(), temp_ptr, offset);
 
       block.debug_op(tok.clone());
 
-      Ok(block.push_binary_op(IROp::MEM_STORE, base_type, ptr_location, expression))
+      Ok(block.push_binary_op(
+        IROp::MEM_STORE,
+        temp_ty.mask_out_var_id().deref(),
+        temp_ptr,
+        expression,
+      ))
     }
     _ => unreachable!(),
   }
@@ -650,7 +656,7 @@ fn create_allocation(
       } else {
         block.refine_binding(
           target_name,
-          TypeInfo::to_location(DataLocation::SsaStack(base_ty.stack_id().unwrap())),
+          TypeInfo::to_location(DataLocation::SsaStack(base_ty.var_id().unwrap())),
         );
       }
 
@@ -675,7 +681,7 @@ fn create_allocation(
             //block.push_binary_op(SSAOp::MALLOC, ty, target, arg);
 
             let id = block.push_call(base_ty, "malloc".intern(), ArrayVec::from_iter([arg]));
-            let name = block.binding_name(base_ty.stack_id().unwrap()).unwrap();
+            let name = block.binding_name(base_ty.var_id().unwrap()).unwrap();
             block.scope_ssa.insert(name, (id, base_ty));
           }
         }
@@ -687,7 +693,7 @@ fn create_allocation(
             if is_heap {
               block.debug_op(id.tok.clone());
               let id = block.push_call(ptr_ty, "malloc".intern(), ArrayVec::from_iter([ptr_id]));
-              let name = block.binding_name(ptr_ty.stack_id().unwrap()).unwrap();
+              let name = block.binding_name(ptr_ty.var_id().unwrap()).unwrap();
               block.scope_ssa.insert(name, (id, base_ty));
             }
           } else {
@@ -704,7 +710,7 @@ fn create_allocation(
   }
 }
 
-fn process_binding(
+fn create_binding(
   id: &Id<Token>,
   ty: &type_Value,
   tok: &Token,
@@ -748,11 +754,11 @@ fn ast_ty_to_ssa_ty(val: &type_Value) -> TypeInfo {
 pub struct IRContextBuilder {
   pub(super) blocks:      Vec<*mut IRBlockConstructor>,
   pub(super) ssa_index:   isize,
-  pub(super) stack_ids:   isize,
   pub(super) block_top:   BlockId,
   pub(super) active_type: Vec<RawVal>,
   pub(super) graph:       Vec<IRGraphNode>,
   pub(super) constants:   Vec<ConstVal>,
+  pub(super) variables:   Vec<TypeInfo>,
   pub(super) calls:       Vec<IRCall>,
 }
 
@@ -761,12 +767,12 @@ impl Default for IRContextBuilder {
     Self {
       blocks:      Default::default(),
       ssa_index:   0,
-      stack_ids:   -1,
       block_top:   Default::default(),
       active_type: Default::default(),
       graph:       Default::default(),
       constants:   Default::default(),
       calls:       Default::default(),
+      variables:   Default::default(),
     }
   }
 }
@@ -797,12 +803,6 @@ impl IRContextBuilder {
     let ssa = &mut self.ssa_index;
     (*ssa) += 1;
     (*ssa) as usize
-  }
-
-  pub fn push_stack_element(&mut self) -> usize {
-    let so = &mut self.stack_ids;
-    (*so) += 1;
-    (*so) as usize
   }
 
   pub fn next_block_id(&self) -> usize {
@@ -871,9 +871,9 @@ impl IRBlockConstructor {
   }
 
   pub fn push_store(&mut self, output: TypeInfo, left: GraphId, right: GraphId) -> GraphId {
-    let graph_id = self.push_binary_op(IROp::STORE, output, left, right);
+    let graph_id = self.push_binary_op(IROp::V_DEF, output, left, right);
 
-    let name = self.binding_name(output.stack_id().unwrap()).unwrap();
+    let name = self.binding_name(output.var_id().unwrap()).unwrap();
     self.scope_ssa.insert(name, (graph_id, output));
 
     graph_id
@@ -936,7 +936,7 @@ impl IRBlockConstructor {
   fn binding_name(&mut self, stack_id: usize) -> Option<IString> {
     let ctx = self.ctx();
     for binding in &mut self.decls {
-      if binding.stack_id == stack_id {
+      if binding.var_id == stack_id {
         return Some(binding.name);
       }
     }
@@ -953,7 +953,7 @@ impl IRBlockConstructor {
     for binding in &mut self.decls {
       if binding.name == name {
         let id = binding.ssa_id;
-        ctx.graph[id].output |= ty;
+        ctx.graph[id].out_ty |= ty;
         binding.ty |= ty;
         return;
       }
@@ -969,69 +969,61 @@ impl IRBlockConstructor {
     name: IString,
     mut ty: TypeInfo,
     tok: Token,
-  ) -> RumResult<()> {
+  ) -> RumResult<GraphId> {
     let ctx = self.ctx();
-    for binding in &mut self.decls {
-      if binding.name == name {
-        let stack_id = (ctx.stack_ids + 1) as usize;
-        ctx.stack_ids += 1;
 
-        ty |= TypeInfo::at_stack_id(stack_id as u16);
+    let var_id = (ctx.variables.len()) as usize;
 
-        let id = graph_actions::push_graph_node(&mut ctx.graph, IRGraphNode {
-          id:       GraphId::INVALID,
-          op:       IROp::STACK_DEFINE,
-          output:   ty,
-          operands: Default::default(),
-          block_id: self.inner.id,
-        });
-
-        ctx.ssa_index += 1;
-
-        binding.ty = ty;
-        binding.tok = tok;
-        binding.ssa_id = id;
-        binding.stack_id = stack_id;
-
-        self.scope_ssa.insert(name, (id, ty));
-
-        return Ok(());
-      }
-    }
-
-    let stack_id = (ctx.stack_ids + 1) as usize;
-    ctx.stack_ids += 1;
-
-    ty |= TypeInfo::at_stack_id(stack_id as u16);
+    let ty = ty.mask_out_var_id() | TypeInfo::at_var_id(var_id as u16);
 
     let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode {
-      id:       GraphId::INVALID,
-      op:       IROp::STACK_DEFINE,
-      output:   ty,
+      out_id:   GraphId::INVALID,
+      op:       IROp::V_DECL,
+      out_ty:   ty,
       operands: Default::default(),
       block_id: self.inner.id,
     });
 
-    ctx.ssa_index += 1;
+    ctx.variables.push(ty);
 
     self.scope_ssa.insert(name, (id, ty));
 
-    self.decls.push(SymbolBinding { name, ty, ssa_id: id, tok, stack_id });
+    self.decls.push(SymbolBinding { name, ty, ssa_id: id, tok, var_id });
 
-    Ok(())
+    Ok(id)
+  }
+
+  pub(super) fn create_anonymous_binding(
+    &mut self,
+    mut ty: TypeInfo,
+    tok: Token,
+  ) -> RumResult<(GraphId, TypeInfo)> {
+    let ctx = self.ctx();
+
+    let var_id = (ctx.variables.len()) as usize;
+
+    let ty = ty.mask_out_var_id() | TypeInfo::at_var_id(var_id as u16);
+
+    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode {
+      out_id:   GraphId::INVALID,
+      op:       IROp::V_DECL,
+      out_ty:   ty,
+      operands: Default::default(),
+      block_id: self.inner.id,
+    });
+
+    ctx.variables.push(ty);
+
+    Ok((id, ty))
   }
 
   pub(super) fn get_type(&self, id: GraphId) -> TypeInfo {
     debug_assert!(!id.is_invalid());
-    self.ctx().graph[id].output
+    self.ctx().graph[id].out_ty
   }
 
   pub(super) fn create_successor<'a>(&self) -> &'a mut IRBlockConstructor {
     let id = self.ctx().push_block(Some(self.inner.id.0)).inner.id;
     unsafe { &mut *self.ctx().blocks[id] }
-  }
-  /// Pushs a new monotonic stack offset value and returns it.
-  pub fn push_stack_offset(&mut self) -> usize {
-    self.ctx().push_stack_element()
   }
 }

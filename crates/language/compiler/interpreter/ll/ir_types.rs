@@ -184,7 +184,7 @@ impl TypeInfo {
     ((self.0 & TypeInfo::VECT_MASK) >> TypeInfo::VECT_OFF).max(1)
   }
 
-  pub fn stack_id(&self) -> Option<usize> {
+  pub fn var_id(&self) -> Option<usize> {
     let val = ((self.0 & TypeInfo::STACK_ID_MASK) >> TypeInfo::STACK_ID_OFF);
     if val > 0 {
       Some(val as usize - 1)
@@ -196,8 +196,8 @@ impl TypeInfo {
   pub fn location(&self) -> DataLocation {
     let location_val = (self.0 & Self::LOCATION_MASK) >> Self::LOCATION_OFFSET;
     match location_val {
-      1 => DataLocation::StackOff(self.stack_id().unwrap_or_default()),
-      2 => DataLocation::SsaStack(self.stack_id().unwrap_or_default()),
+      1 => DataLocation::StackOff(self.var_id().unwrap_or_default()),
+      2 => DataLocation::SsaStack(self.var_id().unwrap_or_default()),
       3 => DataLocation::Heap,
       _ => DataLocation::Undefined,
     }
@@ -225,7 +225,7 @@ impl TypeInfo {
     Self(self.0 & !Self::SIZE_MASK)
   }
 
-  pub fn mask_out_stack_id(self) -> TypeInfo {
+  pub fn mask_out_var_id(self) -> TypeInfo {
     Self(self.0 & !Self::STACK_ID_MASK)
   }
 
@@ -292,17 +292,17 @@ fn display_type_prop() {
   assert_eq!(Vectorized::Vector8, T::v8.vec());
   assert_eq!(Vectorized::Vector16, T::v16.vec());
 
-  assert_eq!(None, T::default().stack_id());
-  assert_eq!(Some(0), T::at_stack_id(0).stack_id());
-  assert_eq!(Some(1), T::at_stack_id(1).stack_id());
-  assert_eq!(Some(4093), T::at_stack_id(4093).stack_id());
+  assert_eq!(None, T::default().var_id());
+  assert_eq!(Some(0), T::at_var_id(0).var_id());
+  assert_eq!(Some(1), T::at_var_id(1).var_id());
+  assert_eq!(Some(4093), T::at_var_id(4093).var_id());
 
   assert_eq!(DataLocation::Heap, T::to_location(DataLocation::Heap).location());
 }
 
 impl TypeInfo {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
-  pub fn at_stack_id(id: u16) -> TypeInfo {
+  pub fn at_var_id(id: u16) -> TypeInfo {
     Self(((id as u64 + 1) << Self::STACK_ID_OFF) & Self::STACK_ID_MASK)
   }
 
@@ -427,8 +427,8 @@ impl std::ops::BitOr for TypeInfo {
         )
       }
 
-      let a_id = self.stack_id();
-      let b_id = rhs.stack_id();
+      let a_id = self.var_id();
+      let b_id = rhs.var_id();
 
       if a_id != b_id && a_id.is_some() && b_id.is_some() {
         panic!(
@@ -494,8 +494,8 @@ impl Display for TypeInfo {
       "[?]".to_string()
     };
 
-    let stack_id =
-      if let Some(id) = self.stack_id() { format!("stk<{:03}> ", id) } else { Default::default() };
+    let var_id =
+      if let Some(id) = self.var_id() { format!("stk<{:03}> ", id) } else { Default::default() };
 
     let ty_val = (val & TypeInfo::TYPE_MASK) >> (TypeInfo::TYPE_OFF - 1);
     let ty = TYPE_NAMES[ty_val.checked_ilog2().unwrap_or_default() as usize];
@@ -516,7 +516,7 @@ impl Display for TypeInfo {
       }
     };
 
-    f.write_fmt(format_args!("{}{}{}{}{}{}{}", stack_id, ptr, loc, ty, bits, vecs, num_of_eles))
+    f.write_fmt(format_args!("{}{}{}{}{}{}{}", var_id, ptr, loc, ty, bits, vecs, num_of_eles))
   }
 }
 
@@ -679,9 +679,9 @@ impl IRCall {}
 #[derive(Clone, Copy)]
 pub struct IRGraphNode {
   pub(super) op:       IROp,
-  pub(super) id:       GraphId,
+  pub(super) out_id:   GraphId,
   pub(super) block_id: BlockId,
-  pub(super) output:   TypeInfo,
+  pub(super) out_ty:   TypeInfo,
   pub(super) operands: [GraphId; 3],
 }
 
@@ -689,9 +689,9 @@ impl Debug for IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_fmt(format_args!(
       "{}@{:03}: {:28} = {:15} {}",
-      self.id,
+      self.out_id,
       self.block_id,
-      format!("{}", self.output),
+      format!("{}", self.out_ty),
       format!("{:?}", self.op),
       self
         .operands
@@ -706,7 +706,11 @@ impl Debug for IRGraphNode {
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IROp {
-  STACK_DEFINE,
+  /// Defines a variable name
+  V_DECL,
+  /// Defines the value of a variable
+  V_DEF,
+  PHI,
   NOOP,
   ADD,
   SUB,
@@ -725,21 +729,17 @@ pub enum IROp {
   /// Move from workspace scratch memory to working memory
   LOAD,
   DEREF,
-  /// Indicates the preservation of sequence of operations.
-  /// Move from working memory to scratch memory
-  STORE,
   /// Store working memory (op2) into global memory addressed by the first
   /// operand (op1)
   MEM_STORE,
+  MEM_LOAD,
   CALL,
   RETURN,
   JUMP,
   NE,
   EQ,
-  PHI,
   // Deliberate movement of data from one location to another
   MOVE,
-  MOVE_STORE,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -907,15 +907,15 @@ impl From<usize> for GraphId {
 
 #[derive(Clone)]
 pub struct SymbolBinding {
-  pub name:     IString,
+  pub name:   IString,
   /// If the type is a pointer, then this represents the location where the data
   /// of the type the pointer points to. For non-pointer types this is
   /// Unallocated.
-  pub ty:       TypeInfo,
+  pub ty:     TypeInfo,
   /// A function unique id for the declaration.
-  pub ssa_id:   GraphId,
-  pub tok:      Token,
-  pub stack_id: usize,
+  pub ssa_id: GraphId,
+  pub tok:    Token,
+  pub var_id: usize,
 }
 
 impl Debug for SymbolBinding {
@@ -972,9 +972,9 @@ pub struct SSAFunction {
 
   pub(crate) constants: Vec<ConstVal>,
 
-  pub(crate) calls: Vec<IRCall>,
+  pub(super) variables: Vec<TypeInfo>,
 
-  pub stack_id: usize,
+  pub(crate) calls: Vec<IRCall>,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default)]
@@ -1035,7 +1035,7 @@ pub mod graph_actions {
     mut node: IRGraphNode,
   ) -> GraphId {
     let id: GraphId = graph.len().into();
-    node.id = id;
+    node.out_id = id;
     node.block_id = block.id;
     graph.push(node);
     block.ops.insert(insert_point, id);
@@ -1044,7 +1044,7 @@ pub mod graph_actions {
 
   pub fn push_graph_node(graph: &mut Vec<IRGraphNode>, mut node: IRGraphNode) -> GraphId {
     let id: GraphId = graph.len().into();
-    node.id = id;
+    node.out_id = id;
     graph.push(node);
     id
   }
@@ -1062,8 +1062,8 @@ pub mod graph_actions {
     push_graph_node_to_block(insert_point, block, graph, IRGraphNode {
       block_id: block.id,
       op,
-      id: GraphId::INVALID,
-      output,
+      out_id: GraphId::INVALID,
+      out_ty: output,
       operands: [op1, op2, op3],
     })
   }
@@ -1072,8 +1072,8 @@ pub mod graph_actions {
     IRGraphNode {
       block_id: Default::default(),
       op,
-      id: GraphId::INVALID,
-      output,
+      out_id: GraphId::INVALID,
+      out_ty: output,
       operands: [op1, op2, Default::default()],
     }
   }
@@ -1082,8 +1082,8 @@ pub mod graph_actions {
     IRGraphNode {
       block_id: Default::default(),
       op,
-      id: GraphId::INVALID,
-      output,
+      out_id: GraphId::INVALID,
+      out_ty: output,
       operands: [op1, Default::default(), Default::default()],
     }
   }

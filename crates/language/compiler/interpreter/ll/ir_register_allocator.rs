@@ -1,7 +1,10 @@
 use rum_container::ArrayVec;
 use rum_logger::todo_note;
 
-use super::ir_types::{BlockId, GraphId, TypeInfo};
+use super::{
+  ir_types::{BlockId, GraphId, TypeInfo},
+  x86::x86_types::{RBP, RDI, RSI, RSP},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RegisterEntry {
@@ -52,7 +55,7 @@ impl RegisterAllocator {
   pub fn new() -> Self {
     Self {
       mappings:        Default::default(),
-      register_index:  Default::default(),
+      register_index:  0 | 1 << RSP.as_index() | 1 << RBP.as_index(),
       preferred:       Default::default(),
       preferred_index: Default::default(),
     }

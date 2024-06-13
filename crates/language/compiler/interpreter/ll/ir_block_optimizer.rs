@@ -3,15 +3,15 @@ use crate::compiler::interpreter::ll::{
   bitfield,
   ir_optimizer_induction as induction,
   ir_optimizer_induction::IEOp,
-  ir_register_allocator::{RegisterAllocator, RegisterEntry},
-  ir_types::graph_actions::{create_binary_op, push_binary_op, push_graph_node_to_block},
+  ir_register_allocator::RegisterAllocator,
+  ir_types::graph_actions::{create_binary_op, push_graph_node_to_block},
 };
 use rum_container::ArrayVec;
 use rum_logger::todo_note;
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
   fmt::Debug,
-  ops::{Index, Range},
+  ops::Range,
 };
 use TypeInfo;
 
@@ -25,26 +25,26 @@ pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
     block_annotations: Default::default(),
     graph:             &mut funct.graph,
     constants:         &mut funct.constants,
+    variables:         &mut funct.variables,
     blocks:            &mut funct.blocks,
     calls:             &mut funct.calls,
-    stack_id:          funct.stack_id,
   };
 
   build_annotations(&mut ctx);
 
   create_phi_ops(&mut ctx);
 
+  move_stores_outside_loops(&mut ctx);
+
   optimize_loop_regions(&mut ctx);
 
-  //build_annotations(&mut ctx);
+  build_annotations(&mut ctx);
 
   dead_code_elimination(&mut ctx);
 
   // Alternative ... build stack values.
 
   assign_registers(&mut ctx);
-
-  dbg!(&ctx);
 
   funct
 }
@@ -94,10 +94,6 @@ fn apply_three_addressing(
   }
 
   match ctx.graph[id].op {
-    /*   IROp::CALL => {
-      ctx.graph[id].operands[1] = address;
-      v_lu[id] = address;
-    } */
     IROp::ADD | IROp::SUB | IROp::MUL | IROp::DIV => {
       ctx.graph[id].operands[2] = address;
       v_lu[id] = address;
@@ -109,79 +105,50 @@ fn apply_three_addressing(
 }
 
 fn assign_registers(ctx: &mut OptimizerContext) {
-  dbg!(&ctx);
-  // Adds loads and/or removes stores and replaces SSA graph ids with register
-  // names.
+  let OptimizerContext { block_annotations, graph, constants, blocks, calls, variables, .. } = ctx;
 
-  // need to propagate register assignments
+  // Assign graph ids to active nodes
 
-  let mut var_lookup = vec![GraphId::default(); ctx.graph.len()];
+  for node in graph.iter_mut() {
+    if let Some(id) = node.out_ty.var_id() {
+      node.out_id = GraphId(id as u32).as_var();
+    } else {
+      node.out_id = GraphId(variables.len() as u32).as_var();
+      variables.push(node.out_ty);
+    }
+  }
 
-  // Assign variable names to invariant nodes.
-  loop {
-    let mut should_continue = false;
-    for i in 0..ctx.graph.len() {
-      if var_lookup[i].is_invalid()
-        || !matches!(ctx.graph[i].op, IROp::STORE | IROp::PHI | IROp::MEM_STORE)
-      {
-        let node = &mut ctx.graph[i];
+  for node_id in 0..graph.len() {
+    for op_id in 0..graph[node_id].operands.len() {
+      let op = graph[node_id].operands[op_id];
+      if op.is_ssa_id() {
+        let val = graph[op].out_id;
 
-        match node.op {
-          IROp::CALL => {
-            let stack_id = node.output.stack_id().unwrap() as u32;
-            let var = GraphId(stack_id).as_var();
-            node.operands[1] = var;
-            var_lookup[i] = var;
-          }
-          IROp::MEM_STORE => {
-            let stack_id = node.output.stack_id().unwrap() as u32;
-            //let stack_id = 99;
-            let var = GraphId(stack_id).as_var();
-            let ptr = node.operands[0];
-            node.operands[0] = var;
-            apply_three_addressing(ctx, ptr, var, &mut var_lookup);
-            var_lookup[i] = var;
-            // should_continue = true;
-          }
-          IROp::STORE | IROp::PHI => {
-            let stack_id = node.output.stack_id().unwrap() as u32;
-            let var = GraphId(stack_id).as_var();
+        if !val.is_invalid() {
+          graph[node_id].operands[op_id] = val;
+        }
+      }
+    }
 
-            if node.op == IROp::PHI {
-              for op in &mut node.operands {
-                *op = var;
-              }
-            } else if node.op == IROp::STORE {
-              node.operands[0] = var;
-              let id = node.operands[1];
-              apply_three_addressing(ctx, id, var, &mut var_lookup)
-            }
+    if graph[node_id].op == IROp::CALL {
+      let call_id = graph[node_id].operands[0];
+      let call = &mut calls[call_id];
 
-            var_lookup[i] = var;
+      for call_op in call.args.iter_mut() {
+        if call_op.is_ssa_id() {
+          let val = graph[*call_op].out_id;
 
-            should_continue = true;
-          }
-          _ => {
-            for op in &mut node.operands {
-              if op.is_ssa_id() {
-                let val = var_lookup[*op];
-                if !val.is_invalid() {
-                  *op = val;
-                }
-              }
-            }
+          if !val.is_invalid() {
+            *call_op = val;
           }
         }
       }
     }
-    if !should_continue {
-      break;
-    }
   }
 
-  let OptimizerContext { block_annotations, graph, constants, blocks, stack_id, .. } = ctx;
-
   // create our block ordering.
+
+  let OptimizerContext { block_annotations, graph, constants, blocks, calls, variables, .. } = ctx;
 
   // First inner blocks, then outer blocks, then finally general blocks,
   // ascending.
@@ -222,8 +189,13 @@ fn assign_registers(ctx: &mut OptimizerContext) {
     // intermediate blocks between parents as needed.
 
     // Define "native`" allocations for variables.
-    for other_block in iter_branch_indices(block) {
+    for other_block in annotation.successors.iter().cloned() {
+      if other_block == block_id {
+        continue;
+      }
+
       let allocator = &register_allocators[other_block];
+
       for assignment in allocator.get_assignements().iter() {
         match register_allocators[block_id].set_preferred_register(assignment) {
           crate::compiler::interpreter::ll::ir_register_allocator::SetPreferredResult::Conflict => {
@@ -253,7 +225,7 @@ fn assign_registers(ctx: &mut OptimizerContext) {
 
       if graph[node_id].op == IROp::RETURN {
         let ret_val = graph[node_id].operands[0];
-        let output = graph[node_id].output;
+        let output = graph[node_id].out_ty;
 
         if !ret_val.is_invalid() {
           let ret_reg = register_allocator.get_register_for_var(ret_val);
@@ -267,6 +239,8 @@ fn assign_registers(ctx: &mut OptimizerContext) {
           let ret_reg = ret_reg.set_current(ret_val, output, block.id).unwrap();
 
           fore.push(create_binary_op(IROp::MOVE, output, GraphId(0).as_register(), ret_reg.reg));
+
+          graph[node_id].out_id = GraphId(0).as_register();
         }
       } else if graph[node_id].op == IROp::CALL {
         // Each argument needs to be loaded in specific registers. This is
@@ -275,14 +249,14 @@ fn assign_registers(ctx: &mut OptimizerContext) {
         // function arguments.
 
         let call_id = graph[node_id].operands[0];
-        let ret_id = graph[node_id].operands[1];
+        let ret_id = graph[node_id].out_id;
 
         debug_assert!(call_id.is_call(), "{call_id} {:?}", graph[node_id]);
         debug_assert!(ret_id.is_var(), "{ret_id} {:?}", graph[node_id]);
 
         let call_arg_register_ordering = [7, 6, 2, 1, 8, 9];
         let call = &mut ctx.calls[call_id];
-        let out_ty = graph[node_id].output;
+        let out_ty = graph[node_id].out_ty;
 
         for (g_id, reg_id) in call.args.iter_mut().zip(&call_arg_register_ordering) {
           if g_id.is_const() {
@@ -290,7 +264,7 @@ fn assign_registers(ctx: &mut OptimizerContext) {
 
             if let Some(prev_registration) = allocation.get_previous() {
               fore.push(create_binary_op(
-                IROp::STORE,
+                IROp::V_DEF,
                 prev_registration.ty,
                 prev_registration.reg,
                 prev_registration.var,
@@ -300,7 +274,7 @@ fn assign_registers(ctx: &mut OptimizerContext) {
             let output = constants[*g_id].ty;
             let r = allocation.set_current(GraphId(22).as_var(), output, block.id).unwrap();
 
-            fore.push(create_binary_op(IROp::STORE, output, r.reg, *g_id));
+            fore.push(create_binary_op(IROp::V_DEF, output, r.reg, *g_id));
 
             *g_id = r.reg;
 
@@ -314,8 +288,8 @@ fn assign_registers(ctx: &mut OptimizerContext) {
         let ret_reg = register_allocator.get_register_for_var(ret_id);
 
         if let Some(prev) = ret_reg.get_previous() {
-          if prev.var != ret_id {
-            todo!("Handle eviction. If the evicted type is used in successor blocks then store to stack.");
+          if prev.ty.var_id().is_some() && prev.var != ret_id {
+            todo!("Handle eviction. If the evicted type is used in successor blocks then store to stack. {prev:?}");
           }
         }
 
@@ -332,12 +306,12 @@ fn assign_registers(ctx: &mut OptimizerContext) {
 
           let rax = rax.set_current(ret_id, out_ty, block.id).unwrap();
 
-          graph[node_id].operands[2] = rax.reg;
+          graph[node_id].out_id = rax.reg;
           call.ret = rax.reg;
 
-          aft.push(create_binary_op(IROp::MOVE, graph[node_id].output, ret_reg.reg, rax.reg));
+          aft.push(create_binary_op(IROp::MOVE, graph[node_id].out_ty, ret_reg.reg, rax.reg));
         } else {
-          graph[node_id].operands[2] = ret_reg.reg;
+          graph[node_id].out_id = ret_reg.reg;
           call.ret = ret_reg.reg;
         }
       } else {
@@ -352,9 +326,26 @@ fn assign_registers(ctx: &mut OptimizerContext) {
                 todo_note!("Handle eviction. If the evicted type is used in successor blocks then spill to stack.");
               }
             }
-            *operand = register.set_current(var_id, Default::default(), block.id).unwrap().reg;
+
+            *operand = register.set_current(var_id, ctx.variables[var_id], block.id).unwrap().reg;
           }
         }
+
+        let node_id = &mut graph[node_id].out_id;
+
+        debug_assert!(node_id.is_var());
+
+        let var_id = *node_id;
+
+        let register = register_allocator.get_register_for_var(var_id);
+
+        if let Some(prev) = register.get_previous() {
+          if prev.var != var_id {
+            todo_note!("Handle eviction. If the evicted type is used in successor blocks then spill to stack.");
+          }
+        }
+
+        *node_id = register.set_current(var_id, ctx.variables[var_id], block.id).unwrap().reg;
       }
 
       if !aft.is_empty() || !fore.is_empty() {
@@ -369,10 +360,6 @@ fn assign_registers(ctx: &mut OptimizerContext) {
       }
     }
   }
-
-  for block_id in queue.as_slice().iter().rev().cloned() {
-    // remove redundant stores.
-  }
 }
 
 fn create_phi_ops(ctx: &mut OptimizerContext) {
@@ -383,9 +370,9 @@ fn create_phi_ops(ctx: &mut OptimizerContext) {
 
     let mut stack_lookup = HashMap::<TypeInfo, Vec<_>>::new();
 
-    for in_id in &annotation.ins {
-      let entry = stack_lookup.entry(in_id.output).or_default();
-      entry.push(in_id.id);
+    for in_id in annotation.ins.iter().cloned() {
+      let entry = stack_lookup.entry(ctx.graph[in_id].out_ty).or_default();
+      entry.push(in_id);
     }
 
     for (stack_id, mut entries) in stack_lookup {
@@ -463,6 +450,68 @@ enum IndVal {
   Node(GraphId),
 }
 
+fn move_stores_outside_loops(ctx: &mut OptimizerContext) {
+  for head_block in ctx.blocks_id_range() {
+    let annotation = &ctx.block_annotations[head_block];
+    if annotation.is_loop_head {
+      let r_blocks = annotation.loop_components.clone();
+      for block_id in r_blocks.iter().copied() {
+        let annotation = &ctx.block_annotations[block_id];
+
+        for (i, decl_id) in annotation.decls.iter().cloned().enumerate() {
+          let decl = &ctx.graph[decl_id];
+          let decl_var_id = decl.out_ty.var_id();
+          let count: u32 = annotation
+            .ins
+            .iter()
+            .map(|a| (ctx.graph[*a].out_ty.var_id() == decl_var_id) as u32)
+            .sum();
+
+          if count == 1 {
+            let op2_id = decl.operands[1];
+            let op2 = ctx.graph[op2_id];
+
+            if !r_blocks.contains(&op2.block_id) {
+              let decl = decl_id.clone();
+
+              let to_block = &mut ctx.blocks[op2.block_id];
+
+              for i in 0..to_block.ops.len() {
+                if to_block.ops[i] == op2_id {
+                  to_block.ops.insert(i + 1, decl_id);
+                  break;
+                }
+              }
+
+              let to_block_anno = &mut ctx.block_annotations[op2.block_id];
+              to_block_anno.outs.push(decl.clone());
+              to_block_anno.decls.push(decl.clone());
+
+              let from_block = &mut ctx.blocks[block_id];
+
+              for i in 0..from_block.ops.len() {
+                if from_block.ops[i] == decl_id {
+                  from_block.ops.remove(i);
+                  break;
+                }
+              }
+
+              let from_block_anno = &mut ctx.block_annotations[block_id];
+              from_block_anno.decls.remove(i);
+
+              ctx.graph[decl_id].block_id = op2.block_id;
+
+              println!("Candidate for code motion {decl:?}");
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+  panic!("");
+}
+
 fn optimize_loop_regions(ctx: &mut OptimizerContext) {
   // build constant annotations
 
@@ -470,8 +519,6 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
     let annotation = &ctx.block_annotations[head_block];
 
     if annotation.is_loop_head {
-      println!("---------------------------------------------------------");
-
       // This block is a loop head.
 
       // Gather initialized values and assign them to our input variables
@@ -496,7 +543,7 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
             // Through MEM_STORE are temporary variables based on offsets derived from
             // STACK_DEFINEd pointers.
             match op.op {
-              IROp::STORE => {
+              IROp::V_DEF => {
                 // If induction variable then  ignore. Otherwise, attempt to
                 // replace with region variable.
               }
@@ -512,24 +559,22 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
                   let init =
                     induction::calculate_init(expression.clone().to_vec(), root_node, ctx, &i_ctx);
 
-                  let ty = existing.output;
+                  let ty = existing.out_ty;
                   let c_ty = TypeInfo::b64 | TypeInfo::Integer;
 
                   // generate the induction variable and place in the nearest dominator block.
                   let ssa = induction::generate_ssa(&init, ctx, &i_ctx, target_block, c_ty);
                   let stack_val = ctx.push_stack_val(ty);
-                  let output_val = ctx.graph[stack_val].output;
+                  let output_val = ctx.graph[stack_val].out_ty;
 
                   let target =
-                    ctx.push_binary_op(IROp::STORE, output_val, stack_val, ssa, target_block);
+                    ctx.push_binary_op(IROp::V_DEF, output_val, stack_val, ssa, target_block);
 
-                  let ty = ctx.graph[target].output;
+                  let ty = ctx.graph[target].out_ty;
 
                   ctx.blocks[target_block].ops.push(target);
 
                   // create a store location for this value.
-
-                  println!("init {init:?} {ssa:?}");
 
                   // Create an expression that can be used for the increment of this variable.
                   // Place immediately after The last address of the induction
@@ -572,16 +617,13 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
                       ctx.blocks[block_id].ops.insert(i, result);
 
                       let result =
-                        ctx.push_binary_op(IROp::STORE, output_val, stack_val, result, block_id);
+                        ctx.push_binary_op(IROp::V_DEF, output_val, stack_val, result, block_id);
 
                       i += 1;
                       ctx.blocks[block_id].ops.insert(i, result);
 
                       ctx.graph[root_op_id].operands[0] = result;
-                      ctx.graph[root_op_id].output = output_val.deref();
-
-                      println!("rate {rate:?} {ssa}");
-                      dbg!(&ctx);
+                      ctx.graph[root_op_id].out_ty = output_val.deref();
                     }
                   }
                   // Replace this op with the induction expression.
@@ -689,14 +731,16 @@ fn build_annotations(ctx: &mut OptimizerContext) {
       decls:               Default::default(),
       is_loop_head:        Default::default(),
       loop_components:     Default::default(),
+      alive:               Default::default(),
+      successors:          Default::default(),
     });
   }
 
   let mut stores = Vec::new();
   for op in ctx.graph.as_slice() {
     match op.op {
-      IROp::STORE => {
-        let stack_id = op.output.stack_id().expect("All STORE ops should be to stack locations");
+      IROp::V_DEF => {
+        let stack_id = op.out_ty.var_id().expect("All STORE ops should be to stack locations");
         let data: &mut Vec<_> = value_stores.entry(stack_id).or_default();
         data.push(stores.len());
         stores.push(op);
@@ -705,30 +749,34 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     }
   }
 
-  let row_size = stores.len().max(ctx.blocks.len());
-  let mut bitfield = bitfield::BitFieldArena::new(ctx.blocks.len() * 8 + 1, row_size);
+  let group_size = ctx.blocks.len();
+  let row_size = ctx.variables.len().max(stores.len().max(group_size));
+  let mut bitfield = bitfield::BitFieldArena::new(group_size * 10 + 1, row_size);
 
-  let def_rows_offset = row_size * 0;
-  let in_rows_offset = row_size * 1;
-  let out_rows_offset = row_size * 2;
-  let block_kill_row = row_size * 3;
-  let d_pred_offset = row_size * 4;
-  let i_pred_offset = row_size * 5;
-  let dominator_offset = row_size * 6;
-  let loop_comp_offset = row_size * 7;
-  let working_index = row_size * 8;
+  let def_rows_offset = group_size * 0;
+  let in_rows_offset = group_size * 1;
+  let out_rows_offset = group_size * 2;
+  let block_kill_row = group_size * 3;
+  let d_pred_offset = group_size * 4;
+  let i_pred_offset = group_size * 5;
+  let dominator_offset = group_size * 6;
+  let loop_comp_offset = group_size * 7;
+  let alive_offset = group_size * 8;
+  let successors_offset = group_size * 9;
+  let working_index = group_size * 10;
 
-  for block_id in 0..row_size {
-    bitfield.not(block_id + block_kill_row)
+  for block_id in 0..group_size {
+    bitfield.not(block_id + block_kill_row);
   }
 
   for (store_id, store) in stores.iter().enumerate() {
     let block = store.block_id;
 
+    let block_alive_row = block.usize() + alive_offset;
     let block_def_row = block.usize() + def_rows_offset;
     let block_kill_row = block.usize() + block_kill_row;
 
-    let stack_id = store.output.stack_id().expect("All STORE ops should be to stack locations");
+    let stack_id = store.out_ty.var_id().expect("All STORE ops should be to stack locations");
 
     if let Some(stores_indices) = value_stores.get(&stack_id) {
       for indice in stores_indices {
@@ -737,6 +785,7 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     }
 
     bitfield.set_bit(block_def_row, store_id);
+    bitfield.set_bit(block_alive_row, store.out_ty.var_id().unwrap());
   }
 
   // Dominators --------------------
@@ -774,7 +823,7 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     }
   });
 
-  //
+  // In Declarations --------------------
   loop_until((0..ctx.blocks.len()).rev(), |block_id, should_continue| {
     bitfield.mov(working_index, block_id + in_rows_offset);
 
@@ -787,6 +836,31 @@ fn build_annotations(ctx: &mut OptimizerContext) {
     bitfield.and(working_index, block_id + block_kill_row);
     bitfield.or(working_index, block_id + def_rows_offset);
     bitfield.mov(block_id + out_rows_offset, working_index);
+  });
+
+  // Alive
+  loop_until((0..ctx.blocks.len()).rev(), |block_id, should_continue| {
+    bitfield.mov(working_index, block_id + alive_offset);
+
+    for successor in iter_branch_indices(&ctx.blocks[block_id]) {
+      let successor_i = successor.usize() + alive_offset;
+      bitfield.or(working_index, successor_i);
+    }
+
+    *should_continue |= bitfield.mov(block_id + alive_offset, working_index);
+  });
+
+  // successors
+  loop_until((0..ctx.blocks.len()).rev(), |block_id, should_continue| {
+    bitfield.mov(working_index, block_id + successors_offset);
+
+    for successor in iter_branch_indices(&ctx.blocks[block_id]) {
+      let successor_i = successor.usize() + successors_offset;
+      bitfield.set_bit(working_index, successor.usize());
+      bitfield.or(working_index, successor_i);
+    }
+
+    *should_continue |= bitfield.mov(block_id + successors_offset, working_index);
   });
 
   for block_id in 0..ctx.blocks.len() {
@@ -802,16 +876,22 @@ fn build_annotations(ctx: &mut OptimizerContext) {
       bitfield.iter_row_set_indices(block_id + d_pred_offset).map(|i| BlockId(i as u32)).collect();
 
     annotations[block_id].ins =
-      bitfield.iter_row_set_indices(block_id + in_rows_offset).map(|i| stores[i].clone()).collect();
+      bitfield.iter_row_set_indices(block_id + in_rows_offset).map(|i| stores[i].out_id).collect();
 
-    annotations[block_id].outs = bitfield
-      .iter_row_set_indices(block_id + out_rows_offset)
-      .map(|i| stores[i].clone())
+    annotations[block_id].outs =
+      bitfield.iter_row_set_indices(block_id + out_rows_offset).map(|i| stores[i].out_id).collect();
+
+    annotations[block_id].decls =
+      bitfield.iter_row_set_indices(block_id + def_rows_offset).map(|i| stores[i].out_id).collect();
+
+    annotations[block_id].successors = bitfield
+      .iter_row_set_indices(block_id + successors_offset)
+      .map(|i| BlockId(i as u32))
       .collect();
 
-    annotations[block_id].decls = bitfield
-      .iter_row_set_indices(block_id + def_rows_offset)
-      .map(|i| stores[i].clone())
+    annotations[block_id].alive = bitfield
+      .iter_row_set_indices(block_id + alive_offset)
+      .map(|i| GraphId(i as u32).as_var())
       .collect();
 
     annotations[block_id].is_loop_head =
@@ -951,11 +1031,13 @@ pub fn loop_until<I: Iterator<Item = usize> + Clone, T: FnMut(usize, &mut bool)>
 struct BlockAnnotation {
   dominators:          ArrayVec<8, BlockId>,
   predecessors:        ArrayVec<8, BlockId>,
+  successors:          ArrayVec<8, BlockId>,
   direct_predecessors: ArrayVec<8, BlockId>,
   loop_components:     ArrayVec<8, BlockId>,
-  ins:                 Vec<IRGraphNode>,
-  outs:                Vec<IRGraphNode>,
-  decls:               Vec<IRGraphNode>,
+  ins:                 Vec<GraphId>,
+  outs:                Vec<GraphId>,
+  decls:               Vec<GraphId>,
+  alive:               Vec<GraphId>,
   is_loop_head:        bool,
 }
 
@@ -980,23 +1062,33 @@ impl Debug for BlockAnnotation {
     ))?;
 
     f.write_fmt(format_args!(
+      "  successors: {} \n",
+      self.successors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+    ))?;
+
+    f.write_fmt(format_args!(
       "  direct predecessors: {} \n",
       self.direct_predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
     ))?;
 
     f.write_fmt(format_args!(
-      "\n  ins:\n    {}\n",
-      self.ins.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join("\n    ")
+      "\n  ins: {}\n",
+      self.ins.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
     ))?;
 
     f.write_fmt(format_args!(
-      "\n  outs:\n    {}\n",
-      self.outs.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join("\n    ")
+      "\n  outs: {}\n",
+      self.outs.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
     ))?;
 
     f.write_fmt(format_args!(
-      "\n  decls:\n    {}\n",
-      self.decls.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join("\n    ")
+      "\n  decls: {}\n",
+      self.decls.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
+    ))?;
+
+    f.write_fmt(format_args!(
+      "\n  alive: {}\n",
+      self.alive.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
     ))?;
 
     Ok(())
@@ -1007,9 +1099,9 @@ pub(super) struct OptimizerContext<'funct> {
   pub(super) block_annotations: Vec<BlockAnnotation>,
   pub(super) graph:             &'funct mut Vec<IRGraphNode>,
   pub(super) constants:         &'funct mut Vec<ConstVal>,
+  pub(super) variables:         &'funct mut Vec<TypeInfo>,
   pub(super) calls:             &'funct mut Vec<IRCall>,
   pub(super) blocks:            &'funct mut Vec<Box<IRBlock>>,
-  stack_id:                     usize,
 }
 
 impl<'funct> Debug for OptimizerContext<'funct> {
@@ -1051,10 +1143,16 @@ impl<'funct> Debug for OptimizerContext<'funct> {
       f.write_str("\n")?;
     }
 
+    f.write_str("\ncalls\n")?;
     self.calls.fmt(f)?;
 
+    f.write_str("\nconstants\n")?;
     self.constants.fmt(f)?;
 
+    f.write_str("\nvariables\n")?;
+    self.variables.fmt(f)?;
+
+    f.write_str("\ngraph\n")?;
     self.graph.iter().collect::<Vec<_>>().fmt(f)?;
 
     Ok(())
@@ -1072,7 +1170,7 @@ impl<'funct> OptimizerContext<'funct> {
 
   pub fn push_graph_node(&mut self, mut node: IRGraphNode) -> GraphId {
     let id: GraphId = self.graph.len().into();
-    node.id = id;
+    node.out_id = id;
     self.graph.push(node);
     id
   }
@@ -1088,8 +1186,8 @@ impl<'funct> OptimizerContext<'funct> {
     self.push_graph_node(IRGraphNode {
       block_id,
       op,
-      id: GraphId::INVALID,
-      output,
+      out_id: GraphId::INVALID,
+      out_ty: output,
       operands: [left, right, Default::default()],
     })
   }
@@ -1104,8 +1202,8 @@ impl<'funct> OptimizerContext<'funct> {
     self.push_graph_node(IRGraphNode {
       block_id,
       op,
-      id: GraphId::INVALID,
-      output,
+      out_id: GraphId::INVALID,
+      out_ty: output,
       operands: [left, Default::default(), Default::default()],
     })
   }
@@ -1114,17 +1212,20 @@ impl<'funct> OptimizerContext<'funct> {
     self.push_graph_node(IRGraphNode {
       block_id,
       op,
-      id: GraphId::INVALID,
-      output,
+      out_id: GraphId::INVALID,
+      out_ty: output,
       operands: Default::default(),
     })
   }
 
   pub fn push_stack_val(&mut self, ty: TypeInfo) -> GraphId {
-    let stack_id = self.stack_id + 1;
-    self.stack_id = stack_id;
-    let stack_id_ty = TypeInfo::at_stack_id(stack_id as u16) | ty.mask_out_stack_id();
-    self.push_zero_op(IROp::STACK_DEFINE, stack_id_ty, BlockId(0))
+    let var_id = self.variables.len();
+
+    let stack_id_ty = TypeInfo::at_var_id(var_id as u16) | ty.mask_out_var_id();
+
+    self.variables.push(stack_id_ty);
+
+    self.push_zero_op(IROp::V_DECL, stack_id_ty, BlockId(0))
   }
 
   pub fn push_constant(&mut self, output: ConstVal) -> GraphId {

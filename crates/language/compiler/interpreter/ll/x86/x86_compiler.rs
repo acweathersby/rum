@@ -110,8 +110,8 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
     if node.op == IROp::MEM_STORE {
       continue;
     }
-    if let Some(id) = node.output.stack_id() {
-      offsets[id] = node.output.total_byte_size().unwrap() as u64;
+    if let Some(id) = node.out_ty.var_id() {
+      offsets[id] = node.out_ty.total_byte_size().unwrap() as u64;
     }
   }
 
@@ -203,13 +203,13 @@ pub fn compile_op(
   use BitSize::*;
   match node.op {
     IROp::PHI => {}
-    IROp::STORE => {
+    IROp::V_DEF => {
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let op1 = node.operands[0];
       let op2 = node.operands[1];
-      let bit_size = node.output.into();
+      let bit_size = node.out_ty.into();
 
-      if op2.is_const() {
+      if op1 != op2 {
         encode(bin, &mov, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
       }
     }
@@ -217,7 +217,7 @@ pub fn compile_op(
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let op1 = node.operands[0];
       let op2 = node.operands[1];
-      let bit_size = node.output.into();
+      let bit_size = node.out_ty.into();
 
       encode(bin, &mov, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
     }
@@ -225,18 +225,18 @@ pub fn compile_op(
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let mut op1 = node.operands[0];
       let mut op2 = node.operands[1];
-      let op3 = node.operands[2];
-      let bit_size = node.output.into();
+      let t_reg = node.out_id;
+      let bit_size = node.out_ty.into();
 
-      debug_assert!(op1.is_register() && op3.is_register());
+      debug_assert!(op1.is_register() && t_reg.is_register());
 
-      if op1 != op3 {
-        if op3 == op2 {
+      if op1 != t_reg {
+        if t_reg == op2 {
           op2 = op1;
-          op1 = op3;
+          op1 = t_reg;
         } else {
-          encode(bin, &mov, bit_size, op3.into_op(ctx, so), op1.into_op(ctx, so), None);
-          op1 = op3;
+          encode(bin, &mov, bit_size, t_reg.into_op(ctx, so), op1.into_op(ctx, so), None);
+          op1 = t_reg;
         }
       }
 
@@ -246,14 +246,14 @@ pub fn compile_op(
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let mut op1 = node.operands[0];
       let op2 = node.operands[1];
-      let op3 = node.operands[2];
-      let bit_size = node.output.into();
+      let t_reg = node.out_id;
+      let bit_size = node.out_ty.into();
 
-      debug_assert!(op1.is_register() && op3.is_register());
+      debug_assert!(op1.is_register() && t_reg.is_register());
 
-      if op1 != op3 {
-        encode(bin, &mov, bit_size, op3.into_op(ctx, so), op1.into_op(ctx, so), None);
-        op1 = op3;
+      if op1 != t_reg {
+        encode(bin, &mov, bit_size, t_reg.into_op(ctx, so), op1.into_op(ctx, so), None);
+        op1 = t_reg;
       }
 
       encode(bin, &sub, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
@@ -262,14 +262,14 @@ pub fn compile_op(
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let mut op1 = node.operands[0];
       let op2 = node.operands[1];
-      let op3 = node.operands[2];
-      let bit_size = node.output.into();
+      let t_reg = node.out_id;
+      let bit_size = node.out_ty.into();
 
-      debug_assert!(op1.is_register() && op3.is_register());
+      debug_assert!(op1.is_register() && t_reg.is_register());
 
-      if op1 != op3 {
-        encode(bin, &mov, bit_size, op3.into_op(ctx, so), op1.into_op(ctx, so), None);
-        op1 = op3;
+      if op1 != t_reg {
+        encode(bin, &mov, bit_size, t_reg.into_op(ctx, so), op1.into_op(ctx, so), None);
+        op1 = t_reg;
       }
 
       let op1 = op1.into_op(ctx, so);
@@ -313,7 +313,7 @@ pub fn compile_op(
 
       let op1 = node.operands[0];
       let op2 = node.operands[1];
-      let bit_size = node.output.into();
+      let bit_size = node.out_ty.into();
 
       if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_fail) {
         encode(bin, &cmp, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
@@ -359,7 +359,7 @@ pub fn compile_op(
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let op1 = node.operands[0];
       let op2 = node.operands[1];
-      let bit_size = node.output.into();
+      let bit_size = node.out_ty.into();
       encode(bin, &mov, bit_size, op1.into_addr_op(ctx, so), op2.into_op(ctx, so), None);
     }
     /*     IROp::LOAD => {
