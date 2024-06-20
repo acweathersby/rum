@@ -20,7 +20,7 @@ use crate::compiler::{
   self,
   interpreter::{
     error::RumResult,
-    ll::ir_types::{RawType, RawVal, TypeInfo},
+    raw::ir::ir_types::{RawType, RawVal, TypeInfo},
   },
   script_parser::{
     arithmetic_Value,

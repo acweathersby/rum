@@ -1,10 +1,12 @@
 use super::{ir_const_val::ConstVal, ir_optimizer_induction::InductionVal, ir_types::*};
-use crate::compiler::interpreter::ll::{
+use crate::compiler::interpreter::raw::{
   bitfield,
-  ir_optimizer_induction as induction,
-  ir_optimizer_induction::IEOp,
-  ir_register_allocator::RegisterAllocator,
-  ir_types::graph_actions::{create_binary_op, push_graph_node_to_block},
+  ir::{
+    ir_optimizer_induction as induction,
+    ir_optimizer_induction::IEOp,
+    ir_register_allocator::RegisterAllocator,
+    ir_types::graph_actions::{create_binary_op, push_graph_node_to_block},
+  },
 };
 use rum_container::ArrayVec;
 use rum_logger::todo_note;
@@ -41,8 +43,6 @@ pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
   build_annotations(&mut ctx);
 
   dead_code_elimination(&mut ctx);
-
-  // Alternative ... build stack values.
 
   assign_registers(&mut ctx);
 
@@ -198,7 +198,7 @@ fn assign_registers(ctx: &mut OptimizerContext) {
 
       for assignment in allocator.get_assignements().iter() {
         match register_allocators[block_id].set_preferred_register(assignment) {
-          crate::compiler::interpreter::ll::ir_register_allocator::SetPreferredResult::Conflict => {
+          crate::compiler::interpreter::raw::ir::ir_register_allocator::SetPreferredResult::Conflict => {
             panic!("AA")
           }
           _ => {}

@@ -1,7 +1,7 @@
 #![allow(unused, non_upper_case_globals)]
 
 use super::{push_bytes, set_bytes, x86_types::*};
-use crate::compiler::interpreter::ll::ir_types::BitSize;
+use crate::compiler::interpreter::raw::ir::ir_types::BitSize;
 use std::collections::HashMap;
 use OperandType as OT;
 

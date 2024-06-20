@@ -658,9 +658,9 @@ impl Debug for DataLocation {
 
 #[derive(Clone)]
 pub struct IRCall {
-  pub(super) name: IString,
-  pub(super) args: ArrayVec<7, GraphId>,
-  pub(super) ret:  GraphId,
+  pub name: IString,
+  pub args: ArrayVec<7, GraphId>,
+  pub ret:  GraphId,
 }
 
 impl Debug for IRCall {
@@ -678,11 +678,11 @@ impl IRCall {}
 
 #[derive(Clone, Copy)]
 pub struct IRGraphNode {
-  pub(super) op:       IROp,
-  pub(super) out_id:   GraphId,
-  pub(super) block_id: BlockId,
-  pub(super) out_ty:   TypeInfo,
-  pub(super) operands: [GraphId; 3],
+  pub op:       IROp,
+  pub out_id:   GraphId,
+  pub block_id: BlockId,
+  pub out_ty:   TypeInfo,
+  pub operands: [GraphId; 3],
 }
 
 impl Debug for IRGraphNode {

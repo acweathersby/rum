@@ -1,4 +1,4 @@
-use crate::compiler::interpreter::ll::ir_types::{GraphId, SSAFunction, TypeInfo};
+use crate::compiler::interpreter::raw::ir::ir_types::{GraphId, SSAFunction, TypeInfo};
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub(super) enum OpEncoding {

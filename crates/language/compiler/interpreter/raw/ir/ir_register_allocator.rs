@@ -2,8 +2,8 @@ use rum_container::ArrayVec;
 use rum_logger::todo_note;
 
 use super::{
+  super::x86::x86_types::{RBP, RDI, RSI, RSP},
   ir_types::{BlockId, GraphId, TypeInfo},
-  x86::x86_types::{RBP, RDI, RSI, RSP},
 };
 
 #[derive(Debug, Clone, Copy)]

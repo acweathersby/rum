@@ -50,7 +50,7 @@ mod test {
   use crate::{
     compiler::interpreter::{
       error::RumResult,
-      ll::{
+      raw::ir::{
         ir_block_compiler::compile_function_blocks,
         ir_block_optimizer::optimize_function_blocks,
       },

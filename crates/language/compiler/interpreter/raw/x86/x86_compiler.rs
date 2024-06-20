@@ -1,8 +1,8 @@
 use super::x86_types::*;
 use crate::compiler::interpreter::{
   error::RumResult,
-  ll::{
-    ir_types::{BitSize, BlockId, IRBlock, IRGraphNode, IROp, SSAFunction},
+  raw::{
+    ir::ir_types::{BitSize, BlockId, IRBlock, IRGraphNode, IROp, SSAFunction},
     x86::{push_bytes, x86_encoder::*},
   },
 };
