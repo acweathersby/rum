@@ -136,7 +136,7 @@ IMPORT expression as expr
 
 <> expression 
 
-  > arithmetic
+  > bitwise
 
 
 <> boolean 
@@ -162,27 +162,27 @@ IMPORT expression as expr
 
 <> logical 
 
-  > arithmetic^left "=="{3}  arithmetic{3}^right
+  > bitwise^left "=="{3}  bitwise{3}^right
     
     :ast { t_EQ, left, right, tok } 
 
-  | arithmetic^left "!="{3}  arithmetic{3}^right
+  | bitwise^left "!="{3}  bitwise{3}^right
     
     :ast { t_NE, left, right, tok } 
 
-  | arithmetic^left ">="{3}  arithmetic{3}^right
+  | bitwise^left ">="{3}  bitwise{3}^right
     
     :ast { t_GE, left, right, tok } 
 
-  | arithmetic^left "<="{3}  arithmetic{3}^right
+  | bitwise^left "<="{3}  bitwise{3}^right
     
     :ast { t_LE, left, right, tok } 
 
-  | arithmetic^left  ">"{3}  arithmetic{3}^right
+  | bitwise^left  ">"{3}  bitwise{3}^right
     
     :ast { t_GR, left, right, tok } 
 
-  | arithmetic^left  "<"{3}  arithmetic{3}^right
+  | bitwise^left  "<"{3}  bitwise{3}^right
     
     :ast { t_LS, left, right, tok } 
 
@@ -193,25 +193,25 @@ IMPORT expression as expr
 
 <> bitwise 
 
-  > bitwise^left  ">>"{0}  bitwise{0}^right
+  > bitwise^left  ">>"{3}  bitwise{3}^right
     
-    :ast { t_BIT_SHIFT_RIGHT, left, right } 
+    :ast { t_BIT_SR, left, right } 
 
-  | bitwise^left  "<<"{0}  bitwise{0}^right
+  | bitwise^left  "<<"{3}  bitwise{3}^right
     
-    :ast { t_BIT_SHIFT_LEFT, left, right } 
+    :ast { t_BIT_SL, left, right } 
 
-  | bitwise^left "&"{0}  bitwise{0}^right
+  | bitwise^left "&"{2}  bitwise{2}^right
     
     :ast { t_BIT_AND, left, right } 
 
-  | bitwise^left "|"{0}  bitwise{0}^right
+  | bitwise^left "|"{2}  bitwise{2}^right
     
     :ast { t_BIT_OR, left, right } 
 
-  | bitwise^left "~|"{0}  bitwise{0}^right
+  | bitwise^left "~|"{2}  bitwise{2}^right
     
-    :ast { t_BIT_EXC_OR, left, right } 
+    :ast { t_BIT_XOR, left, right } 
 
   | arithmetic
 
@@ -252,7 +252,7 @@ IMPORT expression as expr
 
   | Term
 
-  | "(" arithmetic ")" 
+  | "(" bitwise ")" 
     
     :ast $2
 

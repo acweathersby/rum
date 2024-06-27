@@ -54,7 +54,7 @@ fn is_induction_variable<'a>(
         init_expr: Default::default(),
       };
 
-      let node = ctx.graph[id];
+      let node = ctx.graph[id.graph_id()];
 
       if node.op != IROp::PHI {
         return false;
@@ -68,7 +68,7 @@ fn is_induction_variable<'a>(
         if id.is_invalid() {
           break;
         }
-        let node = &ctx.graph[id];
+        let node = &ctx.graph[id.graph_id()];
 
         if i_ctx.region_blocks.contains(&node.block_id) {
           let invalid_inc =
@@ -112,12 +112,12 @@ fn process_induction_variable<const SIZE: usize>(
   phi_ids: &mut ArrayVec<8, GraphId>,
   is_init: bool,
 ) -> bool {
-  if id.is_const() {
-    let const_val = ctx.constants[id.as_const()];
+  if id.is(super::GraphIdType::CONST) {
+    let const_val = ctx.constants[id.var_value()];
     expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
     true
   } else {
-    let node = ctx.graph[id];
+    let node = ctx.graph[id.graph_id()];
     match node.op {
       IROp::PHI => {
         if phi_ids.contains(&id) {
@@ -134,7 +134,7 @@ fn process_induction_variable<const SIZE: usize>(
       }
 
       IROp::V_DEF => {
-        process_induction_variable(node.operands[1], ctx, expr, phi_ids, is_init);
+        process_induction_variable(node.operands[0], ctx, expr, phi_ids, is_init);
         true
       }
 
@@ -172,12 +172,12 @@ fn process_expression_inner(
   expr: &mut ArrayVec<12, InductionVal>,
   i_ctx: &mut InductionCTX,
 ) -> bool {
-  if id.is_const() {
-    let const_val = ctx.constants[id.as_const()];
+  if id.is(super::GraphIdType::CONST) {
+    let const_val = ctx.constants[id.var_value()];
     expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
     true
   } else {
-    let node = ctx.graph[id];
+    let node = ctx.graph[id.graph_id()];
     match node.op {
       IROp::PHI => {
         if is_induction_variable(id, ctx, i_ctx) {
@@ -291,7 +291,7 @@ impl Eq for InductionVal {}
 impl PartialEq for InductionVal {
   fn eq(&self, other: &Self) -> bool {
     unsafe {
-      std::mem::transmute::<_, u64>(*self).cmp(&std::mem::transmute::<_, u64>(*other)).is_eq()
+      std::mem::transmute::<_, u128>(*self).cmp(&std::mem::transmute::<_, u128>(*other)).is_eq()
     }
   }
 }
@@ -533,7 +533,7 @@ pub fn generate_ssa(
 
         let val = stack[i];
 
-        if left.is_const() && right.is_const() {
+        if left.is(super::GraphIdType::CONST) && right.is(super::GraphIdType::CONST) {
           panic!("Cannot deal with this right now.");
         } else {
           let id = if val.0.inverse {
@@ -552,7 +552,7 @@ pub fn generate_ssa(
 
         let val = stack[i];
 
-        if left.is_const() && right.is_const() {
+        if left.is(super::GraphIdType::CONST) && right.is(super::GraphIdType::CONST) {
           panic!("Cannot deal with this right now.");
         } else {
           let id = if val.0.inverse {

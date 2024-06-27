@@ -81,7 +81,9 @@ pub(super) struct TableDefinition {
 impl From<&super::super::script_parser::TableDefinition<radlr_rust_runtime::types::Token>>
   for TableDefinition
 {
-  fn from(value: &super::super::script_parser::TableDefinition<radlr_rust_runtime::types::Token>) -> Self {
+  fn from(
+    value: &super::super::script_parser::TableDefinition<radlr_rust_runtime::types::Token>,
+  ) -> Self {
     let (column_types, is_uniform) = match &value.types {
       table_row_types_Value::RowTypeDeclaration(rows) => {
         (rows.types.iter().map(|r| r.as_ref().clone()).collect::<Vec<_>>(), None)

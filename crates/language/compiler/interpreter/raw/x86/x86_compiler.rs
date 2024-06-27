@@ -2,7 +2,10 @@ use super::x86_types::*;
 use crate::compiler::interpreter::{
   error::RumResult,
   raw::{
-    ir::ir_types::{BitSize, BlockId, IRBlock, IRGraphNode, IROp, SSAFunction},
+    ir::{
+      ir_types::{BitSize, BlockId, IRBlock, IRGraphNode, IROp, SSAFunction},
+      GraphIdType,
+    },
     x86::{push_bytes, x86_encoder::*},
   },
 };
@@ -54,19 +57,10 @@ impl x86Function {
     Self { binary: ptr, binary_size: allocation_size, entry_offset }
   }
 
-  pub fn call(&self) {
+  pub fn access_as_call<'a, F>(&'a self) -> &'a F {
     unsafe {
-      let entry_point = self.binary.offset(self.entry_offset as isize);
-
-      let funct: fn() -> *mut f32 = std::mem::transmute(entry_point);
-
-      let ptr = funct();
-
-      dbg!(ptr);
-
-      dbg!(std::slice::from_raw_parts::<f32>(ptr, 67));
-
-      panic!("That's all she wrote!");
+      let entry_point = &self.binary.offset(self.entry_offset as isize);
+      std::mem::transmute(entry_point)
     }
   }
 }
@@ -129,7 +123,7 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
     ctx.jmp_resolver.block_offset.push(ctx.binary.len());
     println!("START_BLOCK {} ---------------- \n", block.id);
     for op_expr in &block.ops {
-      let node = &funct.graph[*op_expr];
+      let node = &funct.graph[op_expr.graph_id()];
 
       println!("{node:?}");
 
@@ -202,7 +196,6 @@ pub fn compile_op(
   use Arg::*;
   use BitSize::*;
   match node.op {
-    IROp::PHI => {}
     IROp::V_DEF => {
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let op1 = node.operands[0];
@@ -228,7 +221,7 @@ pub fn compile_op(
       let t_reg = node.out_id;
       let bit_size = node.out_ty.into();
 
-      debug_assert!(op1.is_register() && t_reg.is_register());
+      debug_assert!(op1.is(GraphIdType::REGISTER) && t_reg.is(GraphIdType::REGISTER));
 
       if op1 != t_reg {
         if t_reg == op2 {
@@ -249,7 +242,7 @@ pub fn compile_op(
       let t_reg = node.out_id;
       let bit_size = node.out_ty.into();
 
-      debug_assert!(op1.is_register() && t_reg.is_register());
+      debug_assert!(op1.is(GraphIdType::REGISTER) && t_reg.is(GraphIdType::REGISTER));
 
       if op1 != t_reg {
         encode(bin, &mov, bit_size, t_reg.into_op(ctx, so), op1.into_op(ctx, so), None);
@@ -265,7 +258,7 @@ pub fn compile_op(
       let t_reg = node.out_id;
       let bit_size = node.out_ty.into();
 
-      debug_assert!(op1.is_register() && t_reg.is_register());
+      debug_assert!(op1.is(GraphIdType::REGISTER) && t_reg.is(GraphIdType::REGISTER));
 
       if op1 != t_reg {
         encode(bin, &mov, bit_size, t_reg.into_op(ctx, so), op1.into_op(ctx, so), None);
@@ -279,7 +272,6 @@ pub fn compile_op(
     IROp::DIV => todo!("TODO: {node:?}"),
     IROp::LOG => todo!("TODO: {node:?}"),
     IROp::POW => todo!("TODO: {node:?}"),
-    IROp::GR => todo!("IROp::GR"),
     IROp::LS => todo!("IROp::LS"),
     IROp::LE => {
       /*       let CompileContext { stack_size, jmp_resolver, binary: bin } = ctx;
@@ -308,8 +300,36 @@ pub fn compile_op(
         panic!()
       } */
     }
+    IROp::GR => {
+      let CompileContext { jmp_resolver, binary: bin, ctx, .. } = ctx;
+
+      let op1 = node.operands[0];
+      let op2 = node.operands[1];
+      let bit_size = node.out_ty.into();
+
+      if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_fail) {
+        encode(bin, &cmp, bit_size, op1.into_op(ctx, so), op2.into_op(ctx, so), None);
+        let next_block = BlockId(block.id.0 + 1);
+        if pass == next_block {
+          encode(bin, &jle, b32, Imm_Int(fail.0 as u64), None, None);
+          jmp_resolver.add_jump(bin, fail.0 as usize);
+          println!("JL BLOCK({fail})");
+        } else if fail == next_block {
+          encode(bin, &jg, b32, Imm_Int(pass.0 as u64), None, None);
+          jmp_resolver.add_jump(bin, pass.0 as usize);
+          println!("JGE BLOCK({pass})");
+        } else {
+          encode(bin, &jg, b32, Imm_Int(pass.0 as u64), None, None);
+          jmp_resolver.add_jump(bin, pass.0 as usize);
+          encode(bin, &jmp, b32, Imm_Int(fail.0 as u64), None, None);
+          jmp_resolver.add_jump(bin, fail.0 as usize);
+          println!("JGE BLOCK({pass})");
+          println!("JMP BLOCK({fail})");
+        }
+      }
+    }
     IROp::GE => {
-      let CompileContext { stack_size, jmp_resolver, binary: bin, ctx } = ctx;
+      let CompileContext { jmp_resolver, binary: bin, ctx, .. } = ctx;
 
       let op1 = node.operands[0];
       let op2 = node.operands[1];
@@ -407,10 +427,10 @@ pub fn compile_op(
       // Match the calling name to an offset
       let CompileContext { ctx, binary: bin, .. } = ctx;
       let op1 = node.operands[0];
-      let ir_call = &ctx.calls[op1];
+      let ir_call = &ctx.calls[op1.var_value()];
 
       debug_assert!(
-        ir_call.args.iter().all(|i| { i.is_register() }),
+        ir_call.args.iter().all(|i| { i.is(GraphIdType::REGISTER) }),
         "Expected registers arguments {:?}",
         ir_call.args
       );
@@ -429,7 +449,7 @@ pub fn compile_op(
       funct_postamble(ctx, rsp_offset);
       encode(&mut ctx.binary, &ret, b64, None, None, None);
     }
-    IROp::NOOP => {}
+    IROp::NOOP | IROp::PHI => {}
     op => todo!("Handle {op:?}"),
   }
 }

@@ -1,65 +1,13 @@
 #![allow(unused)]
 
-use super::{
-  ir_const_val::ConstVal,
-  ir_types::{
-    graph_actions,
-    BitSize,
-    BlockId,
-    DataLocation,
-    GraphId,
-    IRBlock,
-    IRCall,
-    IRGraphNode,
-    IROp,
-    SSAFunction,
-    SymbolBinding,
-  },
-};
+use super::{ir_const_val::ConstVal, ir_types::*};
 use crate::compiler::{
   self,
   interpreter::{
     error::RumResult,
     raw::ir::ir_types::{RawType, RawVal, TypeInfo},
   },
-  script_parser::{
-    arithmetic_Value,
-    assignment_Value,
-    assignment_group_Value,
-    block_list_Value,
-    logical_Value,
-    match_group_Value,
-    match_list_1_Value,
-    mem_binding_group_Value,
-    mem_expr_Value,
-    pointer_offset_group_Value,
-    primitive_ptr_type_Value,
-    primitive_type_Value,
-    table_type_Value,
-    type_Value,
-    Id,
-    RawAssign,
-    RawBlock,
-    RawFunction,
-    RawMemLocation,
-    RawParamBinding,
-    RawPointerCast,
-    Type_128BitPointer,
-    Type_16BitPointer,
-    Type_32BitPointer,
-    Type_64BitPointer,
-    Type_8BitPointer,
-    Type_f32,
-    Type_f64,
-    Type_i16,
-    Type_i32,
-    Type_i64,
-    Type_i8,
-    Type_u16,
-    Type_u32,
-    Type_u64,
-    Type_u8,
-  },
+  script_parser::*,
 };
 use num_traits::{Num, NumCast};
 use radlr_rust_runtime::types::Token;
@@ -70,6 +18,7 @@ use std::{
   collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
   default,
   fmt::{Debug, Write},
+  process::Output,
 };
 
 pub fn compile_function_blocks(funct: &RawFunction<Token>) -> RumResult<SSAFunction> {
@@ -96,8 +45,10 @@ pub fn compile_function_blocks(funct: &RawFunction<Token>) -> RumResult<SSAFunct
       let ty = ast_ty_to_ssa_ty(&funct.return_type);
       let val = process_arithmetic_expression(&expr, block, ty, true)?;
 
+      let var = ctx.graph[val.graph_id()].out_ty;
+
       // replace ssa with SSA_RETURN
-      block.push_unary_op(IROp::RETURN, ty, val);
+      block.push_unary_op(IROp::RETURN, var, val);
     }
   }
 
@@ -306,7 +257,7 @@ fn process_assignment(
       mem_ptr_ty = mem_ptr_ty.mask_out_elements() | TypeInfo::unknown_ele_count();
 
       let (temp_ptr, temp_ty) = block.create_anonymous_binding(mem_ptr_ty, tok.clone())?;
-      let temp_ptr = block.push_binary_op(IROp::V_DEF, temp_ty, temp_ptr, base_ptr);
+      let temp_ptr = block.push_unary_op(IROp::V_DEF, temp_ty, base_ptr);
 
       let multiple = block
         .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store(element_byte_size));
@@ -395,6 +346,60 @@ impl<'a> LogicalExprType<'a> {
   }
 }
 
+macro_rules! boolean_op {
+  ($name: ident, $node_type:ty, $ir_op: expr) => {
+    fn $name<'a>(
+      val: &$node_type,
+      block: &'a mut IRBlockConstructor,
+      e_val: TypeInfo,
+    ) -> RumResult<LogicalExprType<'a>> {
+      let left = process_arithmetic_expression(&val.left, block, e_val, false)?;
+      let right = process_arithmetic_expression(&val.right, block, e_val, false)?;
+
+      let l_val = block.get_type(left);
+      let r_val = block.get_type(right);
+
+      block.debug_op(val.tok.clone());
+      block.push_binary_op($ir_op, l_val, left, right);
+
+      Ok(LogicalExprType::Boolean(block))
+    }
+  };
+}
+
+boolean_op!(handle_ge, compiler::script_parser::GE<Token>, IROp::GE);
+boolean_op!(handle_gr, compiler::script_parser::GR<Token>, IROp::GR);
+boolean_op!(handle_le, compiler::script_parser::LE<Token>, IROp::LE);
+boolean_op!(handle_ls, compiler::script_parser::LS<Token>, IROp::LS);
+boolean_op!(handle_eq, compiler::script_parser::EQ<Token>, IROp::EQ);
+boolean_op!(handle_ne, compiler::script_parser::NE<Token>, IROp::NE);
+
+macro_rules! arithmetic_op {
+  ($name: ident, $node_type:ty, $ir_op: expr) => {
+    fn $name<'a>(
+      node: &$node_type,
+      block: &mut IRBlockConstructor,
+      e_val: TypeInfo,
+      ret_val: bool,
+    ) -> RumResult<GraphId> {
+      let left = process_arithmetic_expression(&node.left, block, e_val, ret_val)?;
+      let right = process_arithmetic_expression(&node.right, block, e_val, ret_val)?;
+      //let right = convert_val(right, left.ll_val().info, block, ret_val);
+
+      let l_val = block.get_type(left);
+      let r_val = block.get_type(right);
+
+      block.debug_op(node.tok.clone());
+      Ok(block.push_binary_op($ir_op, l_val, left, right))
+    }
+  };
+}
+
+arithmetic_op!(handle_sub, compiler::script_parser::Sub<Token>, IROp::SUB);
+arithmetic_op!(handle_add, compiler::script_parser::Add<Token>, IROp::ADD);
+arithmetic_op!(handle_mul, compiler::script_parser::Mul<Token>, IROp::MUL);
+arithmetic_op!(handle_div, compiler::script_parser::Div<Token>, IROp::DIV);
+
 fn process_match_expression<'b, 'a: 'b>(
   expression: &match_group_Value<Token>,
   block: &'a mut IRBlockConstructor,
@@ -403,12 +408,12 @@ fn process_match_expression<'b, 'a: 'b>(
   use LogicalExprType as LET;
 
   match expression {
-    //match_group_Value::EQ(val) => handle_eq(val, block),
-    //match_group_Value::LE(val) => handle_le(val, block),
-    //match_group_Value::LS(val) => handle_ls(val, block),
-    //match_group_Value::GR(val) => handle_gr(val, block),
+    match_group_Value::EQ(val) => handle_eq(val, block, e_val),
+    match_group_Value::LE(val) => handle_le(val, block, e_val),
+    match_group_Value::LS(val) => handle_ls(val, block, e_val),
+    match_group_Value::GR(val) => handle_gr(val, block, e_val),
     match_group_Value::GE(val) => handle_ge(val, block, e_val),
-    //match_group_Value::NE(val) => handle_ne(val, block),
+    match_group_Value::NE(val) => handle_ne(val, block, e_val),
     //match_group_Value::AND(val) => handle_and(val, block),
     //match_group_Value::OR(val) => handle_or(val, block),
     //match_group_Value::XOR(val) => handle_xor(val, block),
@@ -486,91 +491,6 @@ fn handle_primitive_cast(
   ret_val: bool,
 ) -> RumResult<GraphId> {
   process_arithmetic_expression(&val.expression, block, e_val, ret_val)
-}
-
-fn handle_sub(
-  sub: &compiler::script_parser::Sub<Token>,
-  block: &mut IRBlockConstructor,
-  e_val: TypeInfo,
-  ret_val: bool,
-) -> RumResult<GraphId> {
-  let left = process_arithmetic_expression(&sub.left, block, e_val, ret_val)?;
-  let right = process_arithmetic_expression(&sub.right, block, e_val, ret_val)?;
-  //let right = convert_val(right, left.ll_val().info, block, ret_val);
-
-  let l_val = block.get_type(left);
-  let r_val = block.get_type(right);
-
-  block.debug_op(sub.tok.clone());
-  Ok(block.push_binary_op(IROp::SUB, l_val, left, right))
-}
-
-fn handle_add(
-  add: &compiler::script_parser::Add<Token>,
-  block: &mut IRBlockConstructor,
-  e_val: TypeInfo,
-  ret_val: bool,
-) -> RumResult<GraphId> {
-  let left = process_arithmetic_expression(&add.left, block, e_val, ret_val)?;
-  let right = process_arithmetic_expression(&add.right, block, e_val, ret_val)?;
-  //let right = convert_val(right, left.ll_val().info, block, ret_val);
-
-  let l_val = block.get_type(left);
-  let r_val = block.get_type(right);
-
-  block.debug_op(add.tok.clone());
-  Ok(block.push_binary_op(IROp::ADD, l_val, left, right))
-}
-
-fn handle_div(
-  div: &compiler::script_parser::Div<Token>,
-  block: &mut IRBlockConstructor,
-  e_val: TypeInfo,
-  ret_val: bool,
-) -> RumResult<GraphId> {
-  let left = process_arithmetic_expression(&div.left, block, e_val, ret_val)?;
-  let right = process_arithmetic_expression(&div.right, block, e_val, ret_val)?;
-  //let right = convert_val(right, left.ll_val().info, block, ret_val);
-
-  let l_val = block.get_type(left);
-  let r_val = block.get_type(right);
-
-  block.debug_op(div.tok.clone());
-  Ok(block.push_binary_op(IROp::DIV, l_val, left, right))
-}
-
-fn handle_mul(
-  mul: &compiler::script_parser::Mul<Token>,
-  block: &mut IRBlockConstructor,
-  e_val: TypeInfo,
-  ret_val: bool,
-) -> RumResult<GraphId> {
-  let left = process_arithmetic_expression(&mul.left, block, e_val, ret_val)?;
-  let right = process_arithmetic_expression(&mul.right, block, e_val, ret_val)?;
-  //let right = convert_val(right, left.ll_val().info, block, ret_val);
-
-  let l_val = block.get_type(left);
-  let r_val = block.get_type(right);
-
-  block.debug_op(mul.tok.clone());
-  Ok(block.push_binary_op(IROp::MUL, l_val, left, right))
-}
-
-fn handle_ge<'a>(
-  val: &compiler::script_parser::GE<Token>,
-  block: &'a mut IRBlockConstructor,
-  e_val: TypeInfo,
-) -> RumResult<LogicalExprType<'a>> {
-  let left = process_arithmetic_expression(&val.left, block, e_val, false)?;
-  let right = process_arithmetic_expression(&val.right, block, e_val, false)?;
-
-  let l_val = block.get_type(left);
-  let r_val = block.get_type(right);
-
-  block.debug_op(val.tok.clone());
-  block.push_binary_op(IROp::GE, l_val, left, right);
-
-  Ok(LogicalExprType::Boolean(block))
 }
 
 fn handle_num(
@@ -680,9 +600,14 @@ fn create_allocation(
             let arg = block.push_constant(constant);
             //block.push_binary_op(SSAOp::MALLOC, ty, target, arg);
 
-            let id = block.push_call(base_ty, "malloc".intern(), ArrayVec::from_iter([arg]));
+            let malloc =
+              block.push_call(base_ty.unstacked(), "malloc".intern(), ArrayVec::from_iter([arg]));
+
+            let def = block.push_unary_op(IROp::V_DEF, base_ty, malloc);
+
             let name = block.binding_name(base_ty.var_id().unwrap()).unwrap();
-            block.scope_ssa.insert(name, (id, base_ty));
+
+            block.scope_ssa.insert(name, (def, base_ty));
           }
         }
 
@@ -864,14 +789,25 @@ impl IRBlockConstructor {
     fn_name: IString,
     args: ArrayVec<7, GraphId>,
   ) -> GraphId {
-    let call_id = GraphId((self.ctx().calls.len()) as u32).as_call();
+    let call_id = GraphId::ssa(0).to_var_value((self.ctx().calls.len())).to_ty(GraphIdType::CALL);
+
+    for arg in args.iter() {
+      if arg.is(super::GraphIdType::CONST) {
+        let output = self.ctx().constants[arg.var_value()];
+        self.push_unary_op(IROp::CALL_ARG, output.ty, *arg);
+      } else {
+        let output = self.ctx().graph[arg.graph_id()].out_ty;
+        self.push_unary_op(IROp::CALL_ARG, output, *arg);
+      }
+    }
+
     let graph_id = self.push_unary_op(IROp::CALL, output, call_id);
     self.ctx().calls.push(IRCall { name: fn_name, args, ret: graph_id });
     graph_id
   }
 
   pub fn push_store(&mut self, output: TypeInfo, left: GraphId, right: GraphId) -> GraphId {
-    let graph_id = self.push_binary_op(IROp::V_DEF, output, left, right);
+    let graph_id = self.push_unary_op(IROp::V_DEF, output, right);
 
     let name = self.binding_name(output.var_id().unwrap()).unwrap();
     self.scope_ssa.insert(name, (graph_id, output));
@@ -902,7 +838,7 @@ impl IRBlockConstructor {
       val
     };
 
-    GraphId(const_index as u32).as_const()
+    GraphId::ssa(0).to_var_value(const_index).to_ty(GraphIdType::CONST)
   }
 
   pub fn debug_op(&mut self, tok: Token) {
@@ -953,7 +889,7 @@ impl IRBlockConstructor {
     for binding in &mut self.decls {
       if binding.name == name {
         let id = binding.ssa_id;
-        ctx.graph[id].out_ty |= ty;
+        ctx.graph[id.graph_id()].out_ty |= ty;
         binding.ty |= ty;
         return;
       }
@@ -1019,7 +955,7 @@ impl IRBlockConstructor {
 
   pub(super) fn get_type(&self, id: GraphId) -> TypeInfo {
     debug_assert!(!id.is_invalid());
-    self.ctx().graph[id].out_ty
+    self.ctx().graph[id.graph_id()].out_ty
   }
 
   pub(super) fn create_successor<'a>(&self) -> &'a mut IRBlockConstructor {

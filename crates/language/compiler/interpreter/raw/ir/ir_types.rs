@@ -734,16 +734,36 @@ pub enum IROp {
   MEM_STORE,
   MEM_LOAD,
   CALL,
+  CALL_ARG,
+  CALL_RET,
   RETURN,
   JUMP,
   NE,
   EQ,
   // Deliberate movement of data from one location to another
   MOVE,
+  /// Stores a register value to a stack position denoted by a variable id.
+  STACK_STORE,
+  /// Loads a stack value, denoted by a variable id, into a register
+  STACK_LOAD,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub struct GraphId(pub u32);
+pub struct GraphId(pub u64);
+// | type | meta_value | graph_index |
+
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub enum GraphIdType {
+  SSA,
+  CONST,
+  CALL,
+  STORED_REGISTER,
+  REGISTER,
+  VAR_LOAD,
+  VAR_STORE,
+  INVALID = 0xF,
+}
 
 impl Default for GraphId {
   fn default() -> Self {
@@ -751,135 +771,105 @@ impl Default for GraphId {
   }
 }
 
-impl<T> std::ops::Index<GraphId> for [T] {
-  type Output = T;
-  fn index(&self, index: GraphId) -> &Self::Output {
-    &self[(index.0 & !GraphId::FLAGS_MASK) as usize]
-  }
-}
-
-impl<T> std::ops::IndexMut<GraphId> for [T] {
-  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
-    &mut self[(index.0 & !GraphId::FLAGS_MASK) as usize]
-  }
-}
-
-impl<T> std::ops::Index<GraphId> for Vec<T> {
-  type Output = T;
-  fn index(&self, index: GraphId) -> &Self::Output {
-    &self[(index.0 & !GraphId::FLAGS_MASK) as usize]
-  }
-}
-
-impl<T> std::ops::IndexMut<GraphId> for Vec<T> {
-  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
-    &mut self[(index.0 & !GraphId::FLAGS_MASK) as usize]
-  }
-}
-
-impl<T, const SIZE: usize> std::ops::Index<GraphId> for ArrayVec<SIZE, T> {
-  type Output = T;
-
-  fn index(&self, index: GraphId) -> &Self::Output {
-    &self[(index.0 & !GraphId::FLAGS_MASK) as usize]
-  }
-}
-
-impl<T, const SIZE: usize> std::ops::IndexMut<GraphId> for ArrayVec<SIZE, T> {
-  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
-    &mut self[(index.0 & !0x8000_0000) as usize]
-  }
-}
-
 impl GraphId {
-  pub const INVALID: GraphId = GraphId(u32::MAX);
-  pub const CONST_MASK: u32 = 0x8000_0000;
-  pub const CALL_MASK: u32 = 0x1000_0000;
-  pub const REGISTER_MASK: u32 = 0x4000_0000;
-  pub const VAR_MASK: u32 = 0x2000_0000;
-  pub const FLAGS_MASK: u32 =
-    Self::CONST_MASK | Self::REGISTER_MASK | Self::VAR_MASK | Self::CALL_MASK;
+  pub const INVALID: GraphId = GraphId(u64::MAX);
+  pub const TY_MASK: u64 = 0xF000_0000_0000_0000;
+  pub const INDEX_MASK: u64 = 0x0000_0000_00FF_FFFF;
+  pub const VAR_MASK: u64 = 0x0000_FFFF_FF00_0000;
+  pub const REG_MASK: u64 = 0x0FFF_0000_0000_0000;
+  pub const META_VALUE_MASK: u64 = 0x0FFF_FFFF_0000_0000;
+
+  pub const fn to_pure_register(&self) -> Self {
+    self.to_var_value(0).to_graph_index(0).to_ty(GraphIdType::REGISTER)
+  }
+
+  pub const fn register(reg_index: usize) -> Self {
+    Self(0).to_reg_value(reg_index).to_ty(GraphIdType::REGISTER)
+  }
+
+  pub const fn ssa(index: usize) -> Self {
+    Self(0).to_graph_index(index).to_ty(GraphIdType::SSA)
+  }
+
+  pub const fn drop_idx(&self) -> Self {
+    self.to_graph_index(0)
+  }
+
+  pub const fn is(&self, ty: GraphIdType) -> bool {
+    self.ty() as u8 == ty as u8
+  }
+
+  pub const fn is_var(&self) -> bool {
+    self.is(GraphIdType::VAR_LOAD) || self.is(GraphIdType::VAR_STORE)
+  }
+
+  pub const fn ty(&self) -> GraphIdType {
+    let ty = (self.0 >> 60) as u8;
+    unsafe { std::mem::transmute(ty) }
+  }
+  pub const fn to_ty(self, ty: GraphIdType) -> Self {
+    let ty = ty as u64;
+    GraphId(self.0 & !Self::TY_MASK | ty << 60)
+  }
+
+  pub const fn graph_id(&self) -> usize {
+    (self.0 & Self::INDEX_MASK) as usize
+  }
+
+  pub const fn to_graph_index(self, index: usize) -> GraphId {
+    GraphId((self.0 & !Self::INDEX_MASK) | ((index as u64) & Self::INDEX_MASK))
+  }
+
+  pub const fn reg_value(&self) -> usize {
+    ((self.0 & Self::REG_MASK) >> 48) as usize
+  }
+
+  pub const fn to_reg_value(self, index: usize) -> GraphId {
+    GraphId((self.0 & !Self::REG_MASK) | (((index as u64) << 48) & Self::REG_MASK))
+  }
+
+  pub const fn var_value(&self) -> usize {
+    ((self.0 & Self::VAR_MASK) >> 24) as usize
+  }
+
+  pub const fn to_var_value(self, index: usize) -> GraphId {
+    GraphId((self.0 & !Self::VAR_MASK) | (((index as u64) << 24) & Self::VAR_MASK))
+  }
 
   pub const fn is_invalid(&self) -> bool {
     self.0 == Self::INVALID.0
-  }
-
-  pub fn is_const(&self) -> bool {
-    !self.is_invalid() && (self.0 & Self::CONST_MASK) > 0
-  }
-
-  pub fn is_register(&self) -> bool {
-    !self.is_invalid() && (self.0 & Self::REGISTER_MASK) > 0
-  }
-
-  pub fn is_var(&self) -> bool {
-    !self.is_invalid() && (self.0 & Self::VAR_MASK) > 0
-  }
-
-  pub fn is_call(&self) -> bool {
-    !self.is_invalid() && (self.0 & Self::CALL_MASK) > 0
-  }
-
-  pub fn is_ssa_id(&self) -> bool {
-    !self.is_invalid() && (self.0 & Self::FLAGS_MASK) == 0
-  }
-
-  pub fn as_index(&self) -> u32 {
-    self.0 & !Self::FLAGS_MASK
-  }
-
-  pub const fn as_register(&self) -> Self {
-    if self.is_invalid() {
-      *self
-    } else {
-      Self(self.0 | Self::REGISTER_MASK)
-    }
-  }
-
-  /// Return the value of the id with the flags masked out.
-  pub const fn raw_val(&self) -> u32 {
-    self.0 & !Self::FLAGS_MASK
-  }
-
-  pub fn as_var(&self) -> Self {
-    if self.is_invalid() {
-      *self
-    } else {
-      Self(self.0 | Self::VAR_MASK)
-    }
-  }
-
-  pub fn as_const(&self) -> Self {
-    if self.is_invalid() {
-      *self
-    } else {
-      Self(self.0 | Self::CONST_MASK)
-    }
-  }
-
-  pub fn as_call(&self) -> Self {
-    if self.is_invalid() {
-      *self
-    } else {
-      Self(self.0 | Self::CALL_MASK)
-    }
   }
 }
 
 impl Display for GraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    if self.is_ssa_id() {
-      f.write_fmt(format_args!("${:03}", self.0))
-    } else if self.is_var() {
-      f.write_fmt(format_args!("V{:03}", self.raw_val()))
-    } else if self.is_register() {
-      f.write_fmt(format_args!("R{:03}", self.raw_val()))
-    } else if self.is_const() {
-      f.write_fmt(format_args!("€{:03}", self.raw_val()))
-    } else if self.is_call() {
-      f.write_fmt(format_args!("C{:03}", self.raw_val()))
-    } else {
-      f.write_fmt(format_args!("xxxx"))
+    match self.ty() {
+      GraphIdType::SSA => f.write_fmt(format_args!("${:03}        ", self.graph_id())),
+      GraphIdType::CONST => {
+        f.write_fmt(format_args!("C{:03}[{}]    ", self.var_value(), self.graph_id()))
+      }
+      GraphIdType::CALL => {
+        f.write_fmt(format_args!("CALL{:03}[{}]    ", self.var_value(), self.graph_id()))
+      }
+      GraphIdType::STORED_REGISTER => f.write_fmt(format_args!(
+        "S{:03}:{:03}[{:03}] ",
+        self.reg_value(),
+        self.var_value(),
+        self.graph_id()
+      )),
+      GraphIdType::REGISTER => f.write_fmt(format_args!(
+        "R{:03}:{:03}[{:03}] ",
+        self.reg_value(),
+        self.var_value(),
+        self.graph_id()
+      )),
+      GraphIdType::VAR_STORE => {
+        f.write_fmt(format_args!("V{:03}[{:03}]<-   ", self.var_value(), self.graph_id()))
+      }
+      GraphIdType::VAR_LOAD => {
+        f.write_fmt(format_args!("V{:03}[{:03}]->   ", self.var_value(), self.graph_id()))
+      }
+      GraphIdType::INVALID => f.write_fmt(format_args!("xxxx")),
     }
   }
 }
@@ -893,12 +883,6 @@ impl Debug for GraphId {
 impl From<GraphId> for usize {
   fn from(value: GraphId) -> Self {
     value.0 as usize
-  }
-}
-
-impl From<usize> for GraphId {
-  fn from(value: usize) -> Self {
-    Self(value as u32)
   }
 }
 
@@ -1034,7 +1018,7 @@ pub mod graph_actions {
     graph: &mut Vec<IRGraphNode>,
     mut node: IRGraphNode,
   ) -> GraphId {
-    let id: GraphId = graph.len().into();
+    let id: GraphId = GraphId::ssa(graph.len());
     node.out_id = id;
     node.block_id = block.id;
     graph.push(node);
@@ -1043,7 +1027,7 @@ pub mod graph_actions {
   }
 
   pub fn push_graph_node(graph: &mut Vec<IRGraphNode>, mut node: IRGraphNode) -> GraphId {
-    let id: GraphId = graph.len().into();
+    let id: GraphId = GraphId::ssa(graph.len());
     node.out_id = id;
     graph.push(node);
     id

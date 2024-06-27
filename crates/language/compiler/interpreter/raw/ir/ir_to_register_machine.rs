@@ -40,7 +40,7 @@ pub(crate) fn convert_to_register_names<T: RegisterAllocator>(
 
   for block in funct.blocks {
     for op in block.ops {
-      let ssa = &funct.graph[op];
+      let ssa = &funct.graph[op.graph_id()];
       let action = allocator.map_register(ssa);
       out.graph.push(action);
     }

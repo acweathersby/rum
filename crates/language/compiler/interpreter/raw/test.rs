@@ -12,21 +12,54 @@ use super::ir::{
 
 #[test]
 fn construct_function_blocks() -> RumResult<()> {
-  let (input, _) = get_source_file("run_ll_script.lang")?;
+  let input = r##"
+  *32 <- table_row_added( test:f32 ) {
+  
+    table_22:*32 <-{ 5 }  // ptr(*32, #mem, 22)
+    table_33:*32 <-<test>
+  
+    i:i32 
+    i = 3
+  
+    loop {
+      match i >= 0 {
+        true {
+          [table_22 + i] = f32(1130823691)
+          i = i-1
+          continue
+        }
+      }
+    }
+    
+    [table_22 + 4] = 0;
+  
+    <- table_22
+  }"##;
 
+  /**
+  i = 3;
+  table_33 = table_22 + i * 4;
+  while table_33 > 0  {
+    [table_33] = 0
+    table_33 -= 4
+  }
+
+  **/
   let funct = parse_ll(&input)?;
 
   let blocks = compile_function_blocks(&funct)?;
 
-  dbg!(&blocks);
-
   let optimized_blocks = optimize_function_blocks(blocks);
-
-  dbg!(&optimized_blocks);
 
   let x86_fn = super::x86::x86_compiler::compile_from_ssa_fn(&optimized_blocks)?;
 
-  x86_fn.call();
+  let ptr = x86_fn.access_as_call::<fn() -> *mut f32>()();
+
+  unsafe {
+    assert_eq!(std::slice::from_raw_parts::<f32>(ptr, 4), [
+      231.00017, 231.00017, 231.00017, 231.00017
+    ])
+  }
 
   // let funct = compile_from_ssa_fn(&blocks)?;
   //

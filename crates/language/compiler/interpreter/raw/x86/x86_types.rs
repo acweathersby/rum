@@ -1,4 +1,7 @@
-use crate::compiler::interpreter::raw::ir::ir_types::{GraphId, SSAFunction, TypeInfo};
+use crate::compiler::interpreter::raw::ir::{
+  ir_types::{GraphId, SSAFunction, TypeInfo},
+  GraphIdType,
+};
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub(super) enum OpEncoding {
@@ -67,96 +70,96 @@ pub(super) enum OpEncoding {
   RMI,
 }
 
-pub const RAX: GraphId = GraphId(00).as_register();
-pub const RCX: GraphId = GraphId(01).as_register();
-pub const RDX: GraphId = GraphId(02).as_register();
-pub const RBX: GraphId = GraphId(03).as_register();
-pub const RSP: GraphId = GraphId(04).as_register();
-pub const RBP: GraphId = GraphId(05).as_register();
-pub const RSI: GraphId = GraphId(06).as_register();
-pub const RDI: GraphId = GraphId(07).as_register();
+pub const RAX: GraphId = GraphId::register(00);
+pub const RCX: GraphId = GraphId::register(01);
+pub const RDX: GraphId = GraphId::register(02);
+pub const RBX: GraphId = GraphId::register(03);
+pub const RSP: GraphId = GraphId::register(04);
+pub const RBP: GraphId = GraphId::register(05);
+pub const RSI: GraphId = GraphId::register(06);
+pub const RDI: GraphId = GraphId::register(07);
 
-pub const R8: GraphId = GraphId(08).as_register();
-pub const R9: GraphId = GraphId(09).as_register();
-pub const R10: GraphId = GraphId(10).as_register();
-pub const R11: GraphId = GraphId(11).as_register();
-pub const R12: GraphId = GraphId(12).as_register();
-pub const R13: GraphId = GraphId(13).as_register();
-pub const R14: GraphId = GraphId(14).as_register();
-pub const R15: GraphId = GraphId(15).as_register();
+pub const R8: GraphId = GraphId::register(08);
+pub const R9: GraphId = GraphId::register(09);
+pub const R10: GraphId = GraphId::register(10);
+pub const R11: GraphId = GraphId::register(11);
+pub const R12: GraphId = GraphId::register(12);
+pub const R13: GraphId = GraphId::register(13);
+pub const R14: GraphId = GraphId::register(14);
+pub const R15: GraphId = GraphId::register(15);
 
-pub const XMM0: GraphId = GraphId(16).as_register();
-pub const XMM1: GraphId = GraphId(17).as_register();
-pub const XMM2: GraphId = GraphId(18).as_register();
-pub const XMM3: GraphId = GraphId(19).as_register();
-pub const XMM4: GraphId = GraphId(20).as_register();
-pub const XMM5: GraphId = GraphId(21).as_register();
-pub const XMM6: GraphId = GraphId(22).as_register();
-pub const XMM7: GraphId = GraphId(23).as_register();
-pub const XMM8: GraphId = GraphId(24).as_register();
-pub const XMM9: GraphId = GraphId(25).as_register();
-pub const XMM10: GraphId = GraphId(26).as_register();
-pub const XMM11: GraphId = GraphId(27).as_register();
-pub const XMM12: GraphId = GraphId(28).as_register();
-pub const XMM13: GraphId = GraphId(29).as_register();
-pub const XMM14: GraphId = GraphId(30).as_register();
-pub const XMM15: GraphId = GraphId(31).as_register();
+pub const XMM0: GraphId = GraphId::register(16);
+pub const XMM1: GraphId = GraphId::register(17);
+pub const XMM2: GraphId = GraphId::register(18);
+pub const XMM3: GraphId = GraphId::register(19);
+pub const XMM4: GraphId = GraphId::register(20);
+pub const XMM5: GraphId = GraphId::register(21);
+pub const XMM6: GraphId = GraphId::register(22);
+pub const XMM7: GraphId = GraphId::register(23);
+pub const XMM8: GraphId = GraphId::register(24);
+pub const XMM9: GraphId = GraphId::register(25);
+pub const XMM10: GraphId = GraphId::register(26);
+pub const XMM11: GraphId = GraphId::register(27);
+pub const XMM12: GraphId = GraphId::register(28);
+pub const XMM13: GraphId = GraphId::register(29);
+pub const XMM14: GraphId = GraphId::register(30);
+pub const XMM15: GraphId = GraphId::register(31);
 
-pub const YMM0: GraphId = GraphId(16).as_register();
-pub const YMM1: GraphId = GraphId(17).as_register();
-pub const YMM2: GraphId = GraphId(18).as_register();
-pub const YMM3: GraphId = GraphId(19).as_register();
-pub const YMM4: GraphId = GraphId(20).as_register();
-pub const YMM5: GraphId = GraphId(21).as_register();
-pub const YMM6: GraphId = GraphId(22).as_register();
-pub const YMM7: GraphId = GraphId(23).as_register();
-pub const YMM8: GraphId = GraphId(24).as_register();
-pub const YMM9: GraphId = GraphId(25).as_register();
-pub const YMM10: GraphId = GraphId(26).as_register();
-pub const YMM11: GraphId = GraphId(27).as_register();
-pub const YMM12: GraphId = GraphId(28).as_register();
-pub const YMM13: GraphId = GraphId(29).as_register();
-pub const YMM14: GraphId = GraphId(30).as_register();
-pub const YMM15: GraphId = GraphId(31).as_register();
+pub const YMM0: GraphId = GraphId::register(16);
+pub const YMM1: GraphId = GraphId::register(17);
+pub const YMM2: GraphId = GraphId::register(18);
+pub const YMM3: GraphId = GraphId::register(19);
+pub const YMM4: GraphId = GraphId::register(20);
+pub const YMM5: GraphId = GraphId::register(21);
+pub const YMM6: GraphId = GraphId::register(22);
+pub const YMM7: GraphId = GraphId::register(23);
+pub const YMM8: GraphId = GraphId::register(24);
+pub const YMM9: GraphId = GraphId::register(25);
+pub const YMM10: GraphId = GraphId::register(26);
+pub const YMM11: GraphId = GraphId::register(27);
+pub const YMM12: GraphId = GraphId::register(28);
+pub const YMM13: GraphId = GraphId::register(29);
+pub const YMM14: GraphId = GraphId::register(30);
+pub const YMM15: GraphId = GraphId::register(31);
 
-pub const ZMM0: GraphId = GraphId(16).as_register();
-pub const ZMM1: GraphId = GraphId(17).as_register();
-pub const ZMM2: GraphId = GraphId(18).as_register();
-pub const ZMM3: GraphId = GraphId(19).as_register();
-pub const ZMM4: GraphId = GraphId(20).as_register();
-pub const ZMM5: GraphId = GraphId(21).as_register();
-pub const ZMM6: GraphId = GraphId(22).as_register();
-pub const ZMM7: GraphId = GraphId(23).as_register();
-pub const ZMM8: GraphId = GraphId(24).as_register();
-pub const ZMM9: GraphId = GraphId(25).as_register();
-pub const ZMM10: GraphId = GraphId(26).as_register();
-pub const ZMM11: GraphId = GraphId(27).as_register();
-pub const ZMM12: GraphId = GraphId(28).as_register();
-pub const ZMM13: GraphId = GraphId(29).as_register();
-pub const ZMM14: GraphId = GraphId(30).as_register();
-pub const ZMM15: GraphId = GraphId(31).as_register();
-pub const ZMM16: GraphId = GraphId(16).as_register();
-pub const ZMM17: GraphId = GraphId(17).as_register();
-pub const ZMM18: GraphId = GraphId(18).as_register();
-pub const ZMM19: GraphId = GraphId(19).as_register();
-pub const ZMM20: GraphId = GraphId(20).as_register();
-pub const ZMM21: GraphId = GraphId(21).as_register();
-pub const ZMM22: GraphId = GraphId(22).as_register();
-pub const ZMM23: GraphId = GraphId(23).as_register();
-pub const ZMM24: GraphId = GraphId(24).as_register();
-pub const ZMM25: GraphId = GraphId(25).as_register();
-pub const ZMM26: GraphId = GraphId(26).as_register();
-pub const ZMM27: GraphId = GraphId(27).as_register();
-pub const ZMM28: GraphId = GraphId(28).as_register();
-pub const ZMM29: GraphId = GraphId(29).as_register();
-pub const ZMM30: GraphId = GraphId(30).as_register();
-pub const ZMM31: GraphId = GraphId(31).as_register();
+pub const ZMM0: GraphId = GraphId::register(16);
+pub const ZMM1: GraphId = GraphId::register(17);
+pub const ZMM2: GraphId = GraphId::register(18);
+pub const ZMM3: GraphId = GraphId::register(19);
+pub const ZMM4: GraphId = GraphId::register(20);
+pub const ZMM5: GraphId = GraphId::register(21);
+pub const ZMM6: GraphId = GraphId::register(22);
+pub const ZMM7: GraphId = GraphId::register(23);
+pub const ZMM8: GraphId = GraphId::register(24);
+pub const ZMM9: GraphId = GraphId::register(25);
+pub const ZMM10: GraphId = GraphId::register(26);
+pub const ZMM11: GraphId = GraphId::register(27);
+pub const ZMM12: GraphId = GraphId::register(28);
+pub const ZMM13: GraphId = GraphId::register(29);
+pub const ZMM14: GraphId = GraphId::register(30);
+pub const ZMM15: GraphId = GraphId::register(31);
+pub const ZMM16: GraphId = GraphId::register(16);
+pub const ZMM17: GraphId = GraphId::register(17);
+pub const ZMM18: GraphId = GraphId::register(18);
+pub const ZMM19: GraphId = GraphId::register(19);
+pub const ZMM20: GraphId = GraphId::register(20);
+pub const ZMM21: GraphId = GraphId::register(21);
+pub const ZMM22: GraphId = GraphId::register(22);
+pub const ZMM23: GraphId = GraphId::register(23);
+pub const ZMM24: GraphId = GraphId::register(24);
+pub const ZMM25: GraphId = GraphId::register(25);
+pub const ZMM26: GraphId = GraphId::register(26);
+pub const ZMM27: GraphId = GraphId::register(27);
+pub const ZMM28: GraphId = GraphId::register(28);
+pub const ZMM29: GraphId = GraphId::register(29);
+pub const ZMM30: GraphId = GraphId::register(30);
+pub const ZMM31: GraphId = GraphId::register(31);
 
 impl GraphId {
   const SIB_RM: u8 = 0b100;
 
   pub(super) fn displacement(&self) -> Option<u64> {
-    let val = self.0 & !Self::FLAGS_MASK;
+    let val = self.0 & !Self::TY_MASK;
 
     if val & 0x5F == 63 {
       Some((val >> 7) as u64)
@@ -166,7 +169,7 @@ impl GraphId {
   }
 
   pub(super) fn index(&self) -> u8 {
-    debug_assert!(self.is_register());
+    debug_assert!(self.is(GraphIdType::REGISTER));
     match *self {
       R8 | RAX | XMM0 => 0x00,
       R9 | RCX | XMM1 => 0x01,
@@ -181,7 +184,7 @@ impl GraphId {
   }
 
   pub(super) fn is_general_purpose(&self) -> bool {
-    debug_assert!(self.is_register());
+    debug_assert!(self.is(GraphIdType::REGISTER));
     match *self {
       R8 | RAX | R9 | RCX | R10 | RDX | R11 | RBX | R12 | RSP | R13 | RBP | R14 | RSI | R15
       | RDI => true,
@@ -191,7 +194,7 @@ impl GraphId {
 
   /// The register is one of R8-R15
   pub(super) fn is_64_extended(&self) -> bool {
-    debug_assert!(self.is_register());
+    debug_assert!(self.is(GraphIdType::REGISTER));
     match *self {
       R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 => true,
       _ => false,
@@ -199,7 +202,7 @@ impl GraphId {
   }
 
   pub fn into_addr_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
-    if self.is_register() {
+    if self.is(GraphIdType::REGISTER) {
       Arg::Mem(*self)
     } else {
       self.into_op(ctx, stack_offsets)
@@ -207,13 +210,13 @@ impl GraphId {
   }
 
   pub fn into_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
-    if self.is_register() {
+    if self.is(GraphIdType::REGISTER) {
       Arg::Reg(*self)
-    } else if self.is_const() {
-      let value = ctx.constants[*self];
+    } else if self.is(GraphIdType::CONST) {
+      let value = ctx.constants[self.var_value()];
       Arg::Imm_Int(value.convert(TypeInfo::Integer | TypeInfo::b64).load().unwrap())
-    } else if self.is_var() {
-      Arg::RSP_REL(stack_offsets[*self])
+    } else if self.is(GraphIdType::VAR_LOAD) {
+      Arg::RSP_REL(stack_offsets[self.var_value()])
     } else {
       Arg::None
     }

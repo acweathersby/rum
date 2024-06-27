@@ -53,20 +53,28 @@ impl BitFieldArena {
     unsafe { std::slice::from_raw_parts_mut(self.bits, self.len) }
   }
 
-  pub fn set_bit(&mut self, row: usize, index: usize) {
-    let bit = index & 0x7F;
-    let col = index >> 7;
+  pub fn set_bit(&mut self, row: usize, bit: usize) {
+    let bit = bit & 0x7F;
+    let col = bit >> 7;
     let row_offset = row * self.row_ele_size;
     let offset = col + row_offset;
     self.slice_mut()[offset] |= 1 << bit;
   }
 
-  pub fn unset_bit(&mut self, row: usize, index: usize) {
-    let bit = index & 0x7F;
-    let col = index >> 7;
+  pub fn unset_bit(&mut self, row: usize, bit: usize) {
+    let bit = bit & 0x7F;
+    let col = bit >> 7;
     let row_offset = row * self.row_ele_size;
     let offset = col + row_offset;
     self.slice_mut()[offset] &= !(1 << bit);
+  }
+
+  pub fn is_bit_set(&self, row: usize, bit: usize) -> bool {
+    let bit = bit & 0x7F;
+    let col = bit >> 7;
+    let row_offset = row * self.row_ele_size;
+    let offset = col + row_offset;
+    (self.slice()[offset] & (1 << bit)) > 0
   }
 
   pub fn and(&mut self, left: usize, right: usize) -> bool {
