@@ -6,6 +6,26 @@ use crate::compiler::interpreter::raw::ir::{
 #[derive(Debug, Hash, Clone, Copy)]
 pub(super) enum OpEncoding {
   Zero,
+  VEX_MR,
+  VEX_RM,
+  EVEX_RM {
+    w: u8,
+  },
+  EVEX_MR {
+    w: u8,
+  },
+  /// ### Register to Memory/Register (SSE/AVX)
+  ///
+  /// | opcode     | operand1      | operand2      |
+  /// | ------     | ------        | ------        |
+  /// | op(0x66)   | mod:rm(w)     | mod:reg(r)    |
+  A,
+  /// ### Memory/Register to Register (SSE/AVX)
+  ///
+  /// | opcode     | operand1      | operand2      |
+  /// | ------     | ------        | ------        |
+  /// | op(0x66)   | mod:reg(w)    | mod:rm(r)     |
+  B,
   /// ### Register to Memory/Register
   ///
   /// | opcode      
@@ -70,90 +90,102 @@ pub(super) enum OpEncoding {
   RMI,
 }
 
-pub const RAX: GraphId = GraphId::register(00);
-pub const RCX: GraphId = GraphId::register(01);
-pub const RDX: GraphId = GraphId::register(02);
-pub const RBX: GraphId = GraphId::register(03);
-pub const RSP: GraphId = GraphId::register(04);
-pub const RBP: GraphId = GraphId::register(05);
-pub const RSI: GraphId = GraphId::register(06);
-pub const RDI: GraphId = GraphId::register(07);
+const GENERAL_REGISTER: usize = 0 << 7;
+const VECTOR_REGISTER: usize = 1 << 8;
+const MASK_REGISTER: usize = 1 << 9;
 
-pub const R8: GraphId = GraphId::register(08);
-pub const R9: GraphId = GraphId::register(09);
-pub const R10: GraphId = GraphId::register(10);
-pub const R11: GraphId = GraphId::register(11);
-pub const R12: GraphId = GraphId::register(12);
-pub const R13: GraphId = GraphId::register(13);
-pub const R14: GraphId = GraphId::register(14);
-pub const R15: GraphId = GraphId::register(15);
+pub const K0: GraphId = GraphId::register(00 | MASK_REGISTER);
+pub const K1: GraphId = GraphId::register(01 | MASK_REGISTER);
+pub const K2: GraphId = GraphId::register(02 | MASK_REGISTER);
+pub const K3: GraphId = GraphId::register(03 | MASK_REGISTER);
+pub const K4: GraphId = GraphId::register(04 | MASK_REGISTER);
+pub const K5: GraphId = GraphId::register(05 | MASK_REGISTER);
+pub const K6: GraphId = GraphId::register(06 | MASK_REGISTER);
+pub const K7: GraphId = GraphId::register(07 | MASK_REGISTER);
 
-pub const XMM0: GraphId = GraphId::register(16);
-pub const XMM1: GraphId = GraphId::register(17);
-pub const XMM2: GraphId = GraphId::register(18);
-pub const XMM3: GraphId = GraphId::register(19);
-pub const XMM4: GraphId = GraphId::register(20);
-pub const XMM5: GraphId = GraphId::register(21);
-pub const XMM6: GraphId = GraphId::register(22);
-pub const XMM7: GraphId = GraphId::register(23);
-pub const XMM8: GraphId = GraphId::register(24);
-pub const XMM9: GraphId = GraphId::register(25);
-pub const XMM10: GraphId = GraphId::register(26);
-pub const XMM11: GraphId = GraphId::register(27);
-pub const XMM12: GraphId = GraphId::register(28);
-pub const XMM13: GraphId = GraphId::register(29);
-pub const XMM14: GraphId = GraphId::register(30);
-pub const XMM15: GraphId = GraphId::register(31);
+pub const RAX: GraphId = GraphId::register(00 | GENERAL_REGISTER);
+pub const RCX: GraphId = GraphId::register(01 | GENERAL_REGISTER);
+pub const RDX: GraphId = GraphId::register(02 | GENERAL_REGISTER);
+pub const RBX: GraphId = GraphId::register(03 | GENERAL_REGISTER);
+pub const RSP: GraphId = GraphId::register(04 | GENERAL_REGISTER);
+pub const RBP: GraphId = GraphId::register(05 | GENERAL_REGISTER);
+pub const RSI: GraphId = GraphId::register(06 | GENERAL_REGISTER);
+pub const RDI: GraphId = GraphId::register(07 | GENERAL_REGISTER);
+pub const R8: GraphId = GraphId::register(08 | GENERAL_REGISTER);
+pub const R9: GraphId = GraphId::register(09 | GENERAL_REGISTER);
+pub const R10: GraphId = GraphId::register(10 | GENERAL_REGISTER);
+pub const R11: GraphId = GraphId::register(11 | GENERAL_REGISTER);
+pub const R12: GraphId = GraphId::register(12 | GENERAL_REGISTER);
+pub const R13: GraphId = GraphId::register(13 | GENERAL_REGISTER);
+pub const R14: GraphId = GraphId::register(14 | GENERAL_REGISTER);
+pub const R15: GraphId = GraphId::register(15 | GENERAL_REGISTER);
 
-pub const YMM0: GraphId = GraphId::register(16);
-pub const YMM1: GraphId = GraphId::register(17);
-pub const YMM2: GraphId = GraphId::register(18);
-pub const YMM3: GraphId = GraphId::register(19);
-pub const YMM4: GraphId = GraphId::register(20);
-pub const YMM5: GraphId = GraphId::register(21);
-pub const YMM6: GraphId = GraphId::register(22);
-pub const YMM7: GraphId = GraphId::register(23);
-pub const YMM8: GraphId = GraphId::register(24);
-pub const YMM9: GraphId = GraphId::register(25);
-pub const YMM10: GraphId = GraphId::register(26);
-pub const YMM11: GraphId = GraphId::register(27);
-pub const YMM12: GraphId = GraphId::register(28);
-pub const YMM13: GraphId = GraphId::register(29);
-pub const YMM14: GraphId = GraphId::register(30);
-pub const YMM15: GraphId = GraphId::register(31);
+pub const XMM0: GraphId = GraphId::register(00 | VECTOR_REGISTER);
+pub const XMM1: GraphId = GraphId::register(01 | VECTOR_REGISTER);
+pub const XMM2: GraphId = GraphId::register(02 | VECTOR_REGISTER);
+pub const XMM3: GraphId = GraphId::register(03 | VECTOR_REGISTER);
+pub const XMM4: GraphId = GraphId::register(04 | VECTOR_REGISTER);
+pub const XMM5: GraphId = GraphId::register(05 | VECTOR_REGISTER);
+pub const XMM6: GraphId = GraphId::register(06 | VECTOR_REGISTER);
+pub const XMM7: GraphId = GraphId::register(07 | VECTOR_REGISTER);
+pub const XMM8: GraphId = GraphId::register(08 | VECTOR_REGISTER);
+pub const XMM9: GraphId = GraphId::register(09 | VECTOR_REGISTER);
+pub const XMM10: GraphId = GraphId::register(10 | VECTOR_REGISTER);
+pub const XMM11: GraphId = GraphId::register(11 | VECTOR_REGISTER);
+pub const XMM12: GraphId = GraphId::register(12 | VECTOR_REGISTER);
+pub const XMM13: GraphId = GraphId::register(13 | VECTOR_REGISTER);
+pub const XMM14: GraphId = GraphId::register(14 | VECTOR_REGISTER);
+pub const XMM15: GraphId = GraphId::register(15 | VECTOR_REGISTER);
 
-pub const ZMM0: GraphId = GraphId::register(16);
-pub const ZMM1: GraphId = GraphId::register(17);
-pub const ZMM2: GraphId = GraphId::register(18);
-pub const ZMM3: GraphId = GraphId::register(19);
-pub const ZMM4: GraphId = GraphId::register(20);
-pub const ZMM5: GraphId = GraphId::register(21);
-pub const ZMM6: GraphId = GraphId::register(22);
-pub const ZMM7: GraphId = GraphId::register(23);
-pub const ZMM8: GraphId = GraphId::register(24);
-pub const ZMM9: GraphId = GraphId::register(25);
-pub const ZMM10: GraphId = GraphId::register(26);
-pub const ZMM11: GraphId = GraphId::register(27);
-pub const ZMM12: GraphId = GraphId::register(28);
-pub const ZMM13: GraphId = GraphId::register(29);
-pub const ZMM14: GraphId = GraphId::register(30);
-pub const ZMM15: GraphId = GraphId::register(31);
-pub const ZMM16: GraphId = GraphId::register(16);
-pub const ZMM17: GraphId = GraphId::register(17);
-pub const ZMM18: GraphId = GraphId::register(18);
-pub const ZMM19: GraphId = GraphId::register(19);
-pub const ZMM20: GraphId = GraphId::register(20);
-pub const ZMM21: GraphId = GraphId::register(21);
-pub const ZMM22: GraphId = GraphId::register(22);
-pub const ZMM23: GraphId = GraphId::register(23);
-pub const ZMM24: GraphId = GraphId::register(24);
-pub const ZMM25: GraphId = GraphId::register(25);
-pub const ZMM26: GraphId = GraphId::register(26);
-pub const ZMM27: GraphId = GraphId::register(27);
-pub const ZMM28: GraphId = GraphId::register(28);
-pub const ZMM29: GraphId = GraphId::register(29);
-pub const ZMM30: GraphId = GraphId::register(30);
-pub const ZMM31: GraphId = GraphId::register(31);
+pub const YMM0: GraphId = GraphId::register(00 | VECTOR_REGISTER);
+pub const YMM1: GraphId = GraphId::register(01 | VECTOR_REGISTER);
+pub const YMM2: GraphId = GraphId::register(02 | VECTOR_REGISTER);
+pub const YMM3: GraphId = GraphId::register(03 | VECTOR_REGISTER);
+pub const YMM4: GraphId = GraphId::register(04 | VECTOR_REGISTER);
+pub const YMM5: GraphId = GraphId::register(05 | VECTOR_REGISTER);
+pub const YMM6: GraphId = GraphId::register(06 | VECTOR_REGISTER);
+pub const YMM7: GraphId = GraphId::register(07 | VECTOR_REGISTER);
+pub const YMM8: GraphId = GraphId::register(08 | VECTOR_REGISTER);
+pub const YMM9: GraphId = GraphId::register(09 | VECTOR_REGISTER);
+pub const YMM10: GraphId = GraphId::register(10 | VECTOR_REGISTER);
+pub const YMM11: GraphId = GraphId::register(11 | VECTOR_REGISTER);
+pub const YMM12: GraphId = GraphId::register(12 | VECTOR_REGISTER);
+pub const YMM13: GraphId = GraphId::register(13 | VECTOR_REGISTER);
+pub const YMM14: GraphId = GraphId::register(14 | VECTOR_REGISTER);
+pub const YMM15: GraphId = GraphId::register(15 | VECTOR_REGISTER);
+
+pub const ZMM0: GraphId = GraphId::register(00 | VECTOR_REGISTER);
+pub const ZMM1: GraphId = GraphId::register(01 | VECTOR_REGISTER);
+pub const ZMM2: GraphId = GraphId::register(02 | VECTOR_REGISTER);
+pub const ZMM3: GraphId = GraphId::register(03 | VECTOR_REGISTER);
+pub const ZMM4: GraphId = GraphId::register(04 | VECTOR_REGISTER);
+pub const ZMM5: GraphId = GraphId::register(05 | VECTOR_REGISTER);
+pub const ZMM6: GraphId = GraphId::register(06 | VECTOR_REGISTER);
+pub const ZMM7: GraphId = GraphId::register(07 | VECTOR_REGISTER);
+pub const ZMM8: GraphId = GraphId::register(08 | VECTOR_REGISTER);
+pub const ZMM9: GraphId = GraphId::register(09 | VECTOR_REGISTER);
+pub const ZMM10: GraphId = GraphId::register(10 | VECTOR_REGISTER);
+pub const ZMM11: GraphId = GraphId::register(11 | VECTOR_REGISTER);
+pub const ZMM12: GraphId = GraphId::register(12 | VECTOR_REGISTER);
+pub const ZMM13: GraphId = GraphId::register(13 | VECTOR_REGISTER);
+pub const ZMM14: GraphId = GraphId::register(14 | VECTOR_REGISTER);
+pub const ZMM15: GraphId = GraphId::register(15 | VECTOR_REGISTER);
+pub const ZMM16: GraphId = GraphId::register(16 | VECTOR_REGISTER);
+pub const ZMM17: GraphId = GraphId::register(17 | VECTOR_REGISTER);
+pub const ZMM18: GraphId = GraphId::register(18 | VECTOR_REGISTER);
+pub const ZMM19: GraphId = GraphId::register(19 | VECTOR_REGISTER);
+pub const ZMM20: GraphId = GraphId::register(20 | VECTOR_REGISTER);
+pub const ZMM21: GraphId = GraphId::register(21 | VECTOR_REGISTER);
+pub const ZMM22: GraphId = GraphId::register(22 | VECTOR_REGISTER);
+pub const ZMM23: GraphId = GraphId::register(23 | VECTOR_REGISTER);
+pub const ZMM24: GraphId = GraphId::register(24 | VECTOR_REGISTER);
+pub const ZMM25: GraphId = GraphId::register(25 | VECTOR_REGISTER);
+pub const ZMM26: GraphId = GraphId::register(26 | VECTOR_REGISTER);
+pub const ZMM27: GraphId = GraphId::register(27 | VECTOR_REGISTER);
+pub const ZMM28: GraphId = GraphId::register(28 | VECTOR_REGISTER);
+pub const ZMM29: GraphId = GraphId::register(29 | VECTOR_REGISTER);
+pub const ZMM30: GraphId = GraphId::register(30 | VECTOR_REGISTER);
+pub const ZMM31: GraphId = GraphId::register(31 | VECTOR_REGISTER);
 
 impl GraphId {
   const SIB_RM: u8 = 0b100;
@@ -184,39 +216,62 @@ impl GraphId {
   }
 
   pub(super) fn is_general_purpose(&self) -> bool {
-    debug_assert!(self.is(GraphIdType::REGISTER));
-    match *self {
-      R8 | RAX | R9 | RCX | R10 | RDX | R11 | RBX | R12 | RSP | R13 | RBP | R14 | RSI | R15
-      | RDI => true,
-      _ => false,
-    }
+    (self.reg_id() & (VECTOR_REGISTER | MASK_REGISTER)) == 0
   }
 
   /// The register is one of R8-R15
-  pub(super) fn is_64_extended(&self) -> bool {
-    debug_assert!(self.is(GraphIdType::REGISTER));
-    match *self {
-      R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 => true,
-      _ => false,
-    }
+  pub(super) fn is_ext_8_reg(&self) -> bool {
+    debug_assert!(self.is_register());
+    (self.reg_id() & 0x8) > 0
   }
 
-  pub fn into_addr_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
-    if self.is(GraphIdType::REGISTER) {
-      Arg::Mem(*self)
+  pub(super) fn is_upper_16_reg(&self) -> bool {
+    debug_assert!(self.is_register());
+    (self.reg_id() & 0x1F) >= 16
+  }
+
+  pub fn as_addr_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
+    if self.is_register() {
+      Arg::Mem(self.to_pure_register())
     } else {
-      self.into_op(ctx, stack_offsets)
+      self.as_op(ctx, stack_offsets)
     }
   }
 
-  pub fn into_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
-    if self.is(GraphIdType::REGISTER) {
-      Arg::Reg(*self)
-    } else if self.is(GraphIdType::CONST) {
-      let value = ctx.constants[self.var_value()];
-      Arg::Imm_Int(value.convert(TypeInfo::Integer | TypeInfo::b64).load().unwrap())
+  /// Returns an Arg::Reg op for the given register. Panics if the Graphid is
+  /// not a register
+  pub fn as_reg_op(&self) -> Arg {
+    if self.is_register() {
+      Arg::Reg(self.to_pure_register())
+    } else {
+      panic!("GraphID node is not a register {self}");
+    }
+  }
+
+  /// Returns an Arg::Mem op for the given register. Panics if the Graphid is
+  /// not a register
+  pub fn as_mem_op(&self) -> Arg {
+    if self.is_register() {
+      Arg::Mem(self.to_pure_register())
+    } else {
+      panic!("GraphID node is not a register {self}");
+    }
+  }
+
+  pub fn as_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
+    if self.is_register() {
+      Arg::Reg(self.to_pure_register())
+    } else if ctx.graph[self.graph_id()].is_const() {
+      Arg::Imm_Int(
+        ctx.graph[self.graph_id()]
+          .constant()
+          .unwrap()
+          .convert(TypeInfo::Integer | TypeInfo::b64)
+          .load()
+          .unwrap(),
+      )
     } else if self.is(GraphIdType::VAR_LOAD) {
-      Arg::RSP_REL(stack_offsets[self.var_value()])
+      Arg::RSP_REL(stack_offsets[self.var_id()])
     } else {
       Arg::None
     }
@@ -237,7 +292,7 @@ pub(super) enum Arg {
   Mem(GraphId),
   RSP_REL(u64),
   RIP_REL(u64),
-  Imm_Int(u64),
+  Imm_Int(i64),
   OpExt(u8),
   None,
 }
@@ -272,16 +327,44 @@ impl Arg {
     match self {
       Arg::RIP_REL(_) => 0x5,
       Arg::RSP_REL(_) => 0x4,
-      Arg::Reg(reg) | Arg::Mem(reg) => reg.index(),
+      Arg::Reg(reg) | Arg::Mem(reg) => (reg.reg_id() & 7) as u8,
       Self::OpExt(index) => *index,
 
       arg => unreachable!("{arg:?}"),
     }
   }
 
-  pub(super) fn is_64_extended(&self) -> bool {
+  pub(super) fn is_mask_register(&self) -> bool {
     match self {
-      Arg::Reg(reg) | Arg::Mem(reg) => reg.is_64_extended(),
+      Arg::Reg(reg) => (reg.reg_id() & MASK_REGISTER) > 0,
+      _ => false,
+    }
+  }
+
+  pub(super) fn is_vector_register(&self) -> bool {
+    match self {
+      Arg::Reg(reg) => (reg.reg_id() & VECTOR_REGISTER) > 0,
+      _ => false,
+    }
+  }
+
+  pub(super) fn is_general_purpose(&self) -> bool {
+    match self {
+      Arg::Reg(reg) => (reg.reg_id() & (VECTOR_REGISTER | MASK_REGISTER)) == 0,
+      _ => false,
+    }
+  }
+
+  pub(super) fn is_upper_8_reg(&self) -> bool {
+    match self {
+      Arg::Reg(reg) | Arg::Mem(reg) => reg.is_ext_8_reg(),
+      _ => false,
+    }
+  }
+
+  pub(super) fn is_upper_16_reg(&self) -> bool {
+    match self {
+      Arg::Reg(reg) | Arg::Mem(reg) => reg.is_upper_16_reg(),
       _ => false,
     }
   }

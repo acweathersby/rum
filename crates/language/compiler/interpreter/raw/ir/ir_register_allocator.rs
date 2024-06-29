@@ -11,60 +11,100 @@ use crate::compiler::interpreter::raw::{
 use rum_container::ArrayVec;
 use rum_profile::profile_block;
 use std::collections::VecDeque;
+pub struct RegisterPack {
+  // Registers used for call arguments
+  pub call_registers: Vec<usize>,
+  // Register indices that can be used to process integer values
+  pub int_registers:  Vec<usize>,
+  // Maximum number of register indices
+  pub max_register:   usize,
+  // All allocatable registers
+  pub registers:      Vec<GraphId>,
+}
 
-pub fn assign_registers(ctx: &mut OptimizerContext) {
+pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) {
   profile_block!("assign_registers");
-  let fp_registers: u64 = 0;
-  let int_registers: u64 = 0;
-  let call_registers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15];
+  let call_registers = &reg_pack.call_registers;
 
   let OptimizerContext { graph, calls, variables, .. } = ctx;
 
-  // Assign variable graph ids to nodes.
+  // Assign variable ids to nodes.
   for node in graph.iter_mut() {
-    if matches!(node.op, IROp::GR | IROp::GE) {
-      // Ignore nodes that aren't variable producing
-      continue;
-    }
+    match node {
+      IRGraphNode::PHI { out_id, out_ty, .. } => {
+        if let Some(id) = out_ty.var_id() {
+          *out_id = out_id.to_ty(GraphIdType::VAR_STORE).to_var_id(id);
+        } else {
+          *out_id = out_id.to_ty(GraphIdType::VAR_STORE).to_var_id(variables.len());
+          variables.push(*out_ty);
+        }
+      }
+      IRGraphNode::SSA { op, out_id, out_ty, .. } => {
+        if matches!(op, IROp::GR | IROp::GE) {
+          // Ignore nodes that aren't variable producing
+          continue;
+        }
 
-    if let Some(id) = node.out_ty.var_id() {
-      node.out_id = node.out_id.to_ty(GraphIdType::VAR_STORE).to_var_value(id);
-    } else {
-      node.out_id = node.out_id.to_ty(GraphIdType::VAR_STORE).to_var_value(variables.len());
-      variables.push(node.out_ty);
+        if let Some(id) = out_ty.var_id() {
+          *out_id = out_id.to_ty(GraphIdType::VAR_STORE).to_var_id(id);
+        } else {
+          *out_id = out_id.to_ty(GraphIdType::VAR_STORE).to_var_id(variables.len());
+          variables.push(*out_ty);
+        }
+      }
+      _ => {}
     }
   }
 
+  let graph_index = graph.as_mut_ptr();
+
   for node_id in 0..graph.len() {
-    for op_id in 0..graph[node_id].operands.len() {
-      let op = graph[node_id].operands[op_id];
-
-      if op.is(GraphIdType::SSA) {
-        let val = graph[op.graph_id()].out_id;
-        if val.is_var() {
-          graph[node_id].operands[op_id] = val.to_ty(GraphIdType::VAR_LOAD);
-        }
-      }
-    }
-
-    if graph[node_id].op == IROp::CALL {
-      let call_id = graph[node_id].operands[0];
-      let call = &mut calls[call_id.var_value()];
-
-      for call_op in call.args.iter_mut() {
-        if call_op.is(GraphIdType::SSA) {
-          let val = graph[call_op.graph_id()].out_id;
-
-          if val.is_var() {
-            *call_op = val.to_ty(GraphIdType::VAR_LOAD);
+    match unsafe { graph_index.offset(node_id as isize).as_mut().unwrap() } {
+      IRGraphNode::PHI { operands, .. } => {
+        for op_id in 0..operands.len() {
+          let op = operands[op_id];
+          if !op.is_invalid() && !op.is_var() {
+            let node = &graph[op.graph_id()];
+            if node.is_ssa() {
+              if node.is_ssa() && node.id().is_var() {
+                operands[op_id] = node.id().to_ty(GraphIdType::VAR_LOAD);
+              }
+            }
           }
         }
       }
+      IRGraphNode::SSA { op, operands, .. } => {
+        for op_id in 0..2 {
+          let op = operands[op_id];
+          if !op.is_invalid() && !op.is_var() {
+            let node = &graph[op.graph_id()];
+            if node.is_ssa() && node.id().is_var() {
+              operands[op_id] = node.id().to_ty(GraphIdType::VAR_LOAD);
+            }
+          }
+        }
+
+        if *op == IROp::CALL {
+          let call_id = operands[0];
+          let call = &mut calls[call_id.var_id()];
+
+          for call_op in call.args.iter_mut() {
+            if call_op.is(GraphIdType::SSA) {
+              if let IRGraphNode::SSA { out_id, .. } = graph[call_op.graph_id()] {
+                if out_id.is_var() {
+                  *call_op = out_id.to_ty(GraphIdType::VAR_LOAD);
+                }
+              }
+            }
+          }
+        }
+      }
+      _ => {}
     }
   }
 
   // Create our block ordering.
-  let OptimizerContext { block_annotations, graph, constants, blocks, calls, variables, .. } = ctx;
+  let OptimizerContext { block_annotations, graph, blocks, calls, variables, .. } = ctx;
 
   // First inner blocks, then outer blocks, then finally general blocks,
   // ascending.
@@ -96,7 +136,7 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
     }
   }
 
-  const REGISTER_COUNT: usize = 16;
+  let REGISTER_COUNT: usize = reg_pack.registers.len();
   let num_of_blocks = blocks.len();
 
   // Create lookup tables for register -> var mappings and var -> register
@@ -107,7 +147,10 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
 
   let mut reg_lu =
     vec![
-      (vec![GraphId::default(); REGISTER_COUNT], vec![GraphId::default(); REGISTER_COUNT]);
+      (vec![GraphId::default(); reg_pack.registers.len()], vec![
+        GraphId::default();
+        reg_pack.registers.len()
+      ]);
       num_of_blocks
     ];
 
@@ -121,28 +164,29 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
     let working_offset = block.ops.len();
 
     for (index, op_id) in block.ops.iter().enumerate().rev() {
-      let node = graph[op_id.graph_id()];
-      let work_index = working_offset + index;
-      let decl_index = working_offset * 2 + index;
+      if let IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } = graph[op_id.graph_id()] {
+        let work_index = working_offset + index;
+        let decl_index = working_offset * 2 + index;
 
-      for op in &node.operands {
-        if op.is_var() {
-          var_lifetimes.set_bit(index, op.var_value() as usize);
+        for op in &operands {
+          if op.is_var() {
+            var_lifetimes.set_bit(index, op.var_id() as usize);
+          }
         }
-      }
 
-      if index < block.ops.len() - 1 {
-        var_lifetimes.or(index, work_index + 1);
-        var_lifetimes.or(work_index, index);
-      }
+        if index < block.ops.len() - 1 {
+          var_lifetimes.or(index, work_index + 1);
+          var_lifetimes.or(work_index, index);
+        }
 
-      if node.out_id.is_var() {
-        let var_id = node.out_id.var_value() as usize;
-        var_lifetimes.set_bit(index, var_id);
+        if out_id.is_var() {
+          let var_id = out_id.var_id() as usize;
+          var_lifetimes.set_bit(index, var_id);
 
-        if node.op == IROp::V_DEF {
-          var_lifetimes.unset_bit(work_index, var_id);
-          var_lifetimes.set_bit(decl_index, var_id);
+          if op == IROp::V_DEF {
+            var_lifetimes.unset_bit(work_index, var_id);
+            var_lifetimes.set_bit(decl_index, var_id);
+          }
         }
       }
     }
@@ -150,8 +194,8 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
     for predecessor_id in annotation.direct_predecessors.as_slice().iter().rev() {
       for reg_index in 0..REGISTER_COUNT {
         let var_id = reg_lu[predecessor_id.usize()].0[reg_index];
-        if !var_id.is_invalid() && preferred[var_id.var_value()] == 0xFFFF_FFFF {
-          preferred[var_id.var_value()] = reg_index;
+        if !var_id.is_invalid() && preferred[var_id.var_id()] == 0xFFFF_FFFF {
+          preferred[var_id.var_id()] = reg_index;
           reg_lu[block_id].0[reg_index] = var_id;
           reg_lu[block_id].1[reg_index] = var_id;
         }
@@ -161,8 +205,8 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
     for successor_id in annotation.successors.as_slice() {
       for reg_index in 0..REGISTER_COUNT {
         let var_id = reg_lu[successor_id.usize()].0[reg_index];
-        if !var_id.is_invalid() && preferred[var_id.var_value()] == 0xFFFF_FFFF {
-          preferred[var_id.var_value()] = reg_index;
+        if !var_id.is_invalid() && preferred[var_id.var_id()] == 0xFFFF_FFFF {
+          preferred[var_id.var_id()] = reg_index;
         }
       }
     }
@@ -171,74 +215,147 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
 
     let lookup_index = block_id.usize() * 2;
     let mut call_index = 0;
+    let graph_index = graph.as_mut_ptr();
 
     while let Some((_, node_id)) = block_ops_indices.pop_front() {
       let node_index = node_id.graph_id();
-      let graph_op = graph[node_index].op;
 
-      if graph_op == IROp::CALL {
-        call_index = 0;
-      }
+      match unsafe { graph_index.offset(node_index as isize).as_mut().unwrap() } {
+        IRGraphNode::PHI { out_id, operands, .. } => {
+          for op_index in 0..operands.len() {
+            let op = operands[op_index];
 
-      if graph_op == IROp::CALL_ARG {
-        let op = graph[node_index].operands[0];
-        if op.is_var() {
-          let reg_index =
-            get_register(block_id, &mut reg_lu, &preferred, op, &var_lifetimes, graph);
+            if op.is_var() {
+              let reg_index = get_register(
+                block_id,
+                &mut reg_lu,
+                &preferred,
+                op,
+                &var_lifetimes,
+                graph,
+                &reg_pack,
+              );
 
-          if reg_index.is_none() {
-            panic!("Could not resolve");
+              if reg_index.is_none() {
+                panic!("Could not resolve");
+              }
+              let reg = reg_index.unwrap();
+              operands[op_index] = op.to_reg_id(reg.reg_id()).to_ty(GraphIdType::REGISTER);
+            }
           }
 
-          let op = &mut graph[node_index].operands[0];
-          *op = op.to_var_value(reg_index.unwrap());
-        }
+          if out_id.is_var() {
+            let reg = get_register(
+              block_id,
+              &mut reg_lu,
+              &preferred,
+              *out_id,
+              &var_lifetimes,
+              graph,
+              &reg_pack,
+            );
 
-        let reg_index = call_registers[call_index];
-        call_index += 1;
-
-        let existing = reg_lu[lookup_index].0[reg_index];
-
-        apply_spill(graph, existing);
-
-        graph[node_index].out_id =
-          graph[node_index].out_id.to_reg_value(reg_index).to_ty(GraphIdType::REGISTER);
-      } else {
-        for op_index in 0..graph[node_index].operands.len() {
-          let op = graph[node_index].operands[op_index];
-
-          if op.is_var() {
-            let reg_index =
-              get_register(block_id, &mut reg_lu, &preferred, op, &var_lifetimes, graph);
-
-            if reg_index.is_none() {
+            if reg.is_none() {
               panic!("Could not resolve");
             }
-            let reg_index = reg_index.unwrap();
-            let reg = op.to_reg_value(reg_index).to_ty(GraphIdType::REGISTER);
 
-            let op = &mut graph[node_index].operands[op_index];
-            *op = reg;
+            let reg = reg.unwrap();
+
+            *out_id = out_id.to_reg_id(reg.reg_id()).to_ty(GraphIdType::REGISTER);
           }
         }
+        node @ IRGraphNode::SSA { .. } => {
+          let node = node.clone();
 
-        if graph[node_index].out_id.is_var() && graph_op != IROp::RETURN {
-          let var = graph[node_index].out_id;
+          let mut node = node.clone();
 
-          let reg_index =
-            get_register(block_id, &mut reg_lu, &preferred, var, &var_lifetimes, graph);
+          if let IRGraphNode::SSA { op, out_id, out_ty, operands, .. } = &mut node {
+            let graph_op =
+              if let IRGraphNode::SSA { op, .. } = graph[node_index] { op } else { IROp::NOOP };
 
-          if reg_index.is_none() {
-            panic!("Could not resolve");
+            if graph_op == IROp::CALL {
+              call_index = 0;
+              let reg_index = 0;
+              let existing = reg_lu[lookup_index].0[reg_index];
+              reg_lu[lookup_index].0[reg_index] = *out_id;
+              reg_lu[lookup_index].1[reg_index] = *out_id;
+              apply_spill(graph, existing);
+              *out_id = out_id
+                .to_reg_id(reg_pack.registers[reg_index].reg_id())
+                .to_ty(GraphIdType::REGISTER);
+            } else if graph_op == IROp::CALL_ARG {
+              let op = operands[0];
+              if op.is_var() {
+                let reg = get_register(
+                  block_id,
+                  &mut reg_lu,
+                  &preferred,
+                  op,
+                  &var_lifetimes,
+                  graph,
+                  &reg_pack,
+                );
+
+                if reg.is_none() {
+                  panic!("Could not resolve");
+                }
+
+                let op = &mut operands[0];
+                *op = op.to_reg_id(reg.unwrap().reg_id());
+              }
+
+              let reg_index = call_registers[call_index];
+              call_index += 1;
+
+              let existing = reg_lu[lookup_index].0[reg_index];
+
+              apply_spill(graph, existing);
+
+              *out_id = out_id
+                .to_reg_id(reg_pack.registers[reg_index].reg_id())
+                .to_ty(GraphIdType::REGISTER);
+            } else {
+              for op_index in 0..operands.len() {
+                let op = operands[op_index];
+
+                if op.is_var() {
+                  let reg = get_register(
+                    block_id,
+                    &mut reg_lu,
+                    &preferred,
+                    op,
+                    &var_lifetimes,
+                    graph,
+                    &reg_pack,
+                  );
+
+                  if reg.is_none() {
+                    panic!("Could not resolve");
+                  }
+                  let reg = reg.unwrap();
+                  operands[op_index] = op.to_reg_id(reg.reg_id()).to_ty(GraphIdType::REGISTER);
+                }
+              }
+
+              if out_id.is_var() && graph_op != IROp::RETURN {
+                let reg = get_register(
+                  block_id,
+                  &mut reg_lu,
+                  &preferred,
+                  *out_id,
+                  &var_lifetimes,
+                  graph,
+                  &reg_pack,
+                );
+
+                let reg = reg.expect("Could not resolve register");
+                *out_id = out_id.to_reg_id(reg.reg_id()).to_ty(GraphIdType::REGISTER);
+              }
+            }
           }
-
-          let reg_index = reg_index.unwrap();
-
-          let define_store =
-            graph[node_index].out_id.to_reg_value(reg_index).to_ty(GraphIdType::REGISTER);
-
-          graph[node_index].out_id = define_store;
+          graph[node_index] = node;
         }
+        _ => {}
       }
     }
   }
@@ -256,7 +373,7 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
         let own_val = reg_lu[block_id].0[reg_id];
         let pred_val = reg_lu[*predecessor_id].1[reg_id];
 
-        if own_val.is(GraphIdType::VAR_LOAD) && pred_val.var_value() != own_val.var_value() {
+        if own_val.is(GraphIdType::VAR_LOAD) && pred_val.var_id() != own_val.var_id() {
           // need to perform a store of pred_val - if alive in this block, and
           // load or move of own val, if used before declare.
 
@@ -269,20 +386,24 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
               reg_lu[*predecessor_id].1.iter().enumerate().find(|(reg_id, i)| {
                 (register_invalidation & 1 << reg_id) == 0
                   && i.is_var()
-                  && i.var_value() == own_val.var_value()
+                  && i.var_id() == own_val.var_id()
               })
             {
-              let node = &mut graph[own_val.graph_id()];
-              let load_node = IRGraphNode {
+              let out_ty = graph[own_val.graph_id()].ty();
+
+              let load_node = IRGraphNode::SSA {
                 block_id: new_block_id,
-                op:       IROp::MOVE,
-                out_id:   own_val.to_reg_value(reg_id).to_ty(GraphIdType::REGISTER),
+                op: IROp::MOVE,
+                out_id: own_val
+                  .to_reg_id(reg_pack.registers[reg_id].reg_id())
+                  .to_ty(GraphIdType::REGISTER),
                 operands: [
-                  own_val.to_reg_value(reg_id).to_ty(GraphIdType::REGISTER),
-                  pred_val.to_reg_value(pred_reg_id).to_ty(GraphIdType::REGISTER),
+                  pred_val
+                    .to_reg_id(reg_pack.registers[pred_reg_id].reg_id())
+                    .to_ty(GraphIdType::REGISTER),
                   Default::default(),
                 ],
-                out_ty:   node.out_ty,
+                out_ty,
               };
 
               let id = GraphId::ssa(graph.len());
@@ -292,20 +413,26 @@ pub fn assign_registers(ctx: &mut OptimizerContext) {
               // Perform a store/load operation.
 
               for out in &block_annotations[*predecessor_id].outs {
-                let node = &mut graph[out.graph_id()];
-                if node.op == IROp::V_DEF && node.out_id.var_value() == own_val.var_value() {
-                  node.out_id = node.out_id.to_ty(GraphIdType::STORED_REGISTER);
+                if matches!(&graph[out.graph_id()], IRGraphNode::PHI { .. }) {
+                  todo!("Handle PHI");
+                }
+
+                if let IRGraphNode::SSA { op, out_id, .. } = &mut graph[out.graph_id()] {
+                  if *op == IROp::V_DEF && out_id.var_id() == own_val.var_id() {
+                    *out_id = out_id.to_ty(GraphIdType::STORED_REGISTER);
+                  }
                 }
               }
 
-              let node = &mut graph[own_val.graph_id()];
-
-              let load_node = IRGraphNode {
+              let out_ty = graph[own_val.graph_id()].ty();
+              let load_node = IRGraphNode::SSA {
                 block_id: new_block_id,
-                op:       IROp::LOAD,
-                out_id:   own_val.to_reg_value(reg_id).to_ty(GraphIdType::REGISTER),
-                operands: [own_val, Default::default(), Default::default()],
-                out_ty:   node.out_ty,
+                op:       IROp::STACK_LOAD,
+                out_id:   own_val
+                  .to_reg_id(reg_pack.registers[reg_id].reg_id())
+                  .to_ty(GraphIdType::REGISTER),
+                operands: [own_val, Default::default()],
+                out_ty:   out_ty,
               };
 
               let id = GraphId::ssa(graph.len());
@@ -327,40 +454,39 @@ fn get_register(
   var: GraphId,
   var_lifetimes: &bitfield::BitFieldArena,
   graph: &mut Vec<super::IRGraphNode>,
-) -> Option<usize> {
+  register_pack: &RegisterPack,
+) -> Option<GraphId> {
   debug_assert!(var.is_var());
 
   let mut reg = None;
 
-  const REGISTER_COUNT: usize = 16;
-
   // Find existing entry.
-  for reg_index in 0..REGISTER_COUNT {
+  for reg_index in 0..register_pack.max_register {
     let existing_var = &mut register_lookup[block_id].1[reg_index];
-    if !existing_var.is_invalid() && existing_var.var_value() == var.var_value() {
+    if !existing_var.is_invalid() && existing_var.var_id() == var.var_id() {
       *existing_var = var;
-      reg = Some(reg_index);
+      reg = Some(register_pack.registers[reg_index]);
       break;
     }
   }
 
   if reg.is_none() {
     // Find best candidate for register.
-    let preferred_register = preferred_register_lu[var.var_value()];
+    let preferred_register = preferred_register_lu[var.var_id()];
 
-    if preferred_register < REGISTER_COUNT
+    if preferred_register < register_pack.max_register
       && register_lookup[block_id].0[preferred_register].is_invalid()
     {
-      reg = Some(preferred_register);
+      reg = Some(register_pack.registers[preferred_register]);
       register_lookup[block_id].0[preferred_register] = var;
       register_lookup[block_id].1[preferred_register] = var;
     } else {
-      for reg_index in 0..REGISTER_COUNT {
+      for reg_index in register_pack.int_registers.iter().cloned() {
         let existing_var = &mut register_lookup[block_id].1[reg_index];
         if existing_var.is_invalid() {
           *existing_var = var;
           register_lookup[block_id].0[reg_index] = var;
-          reg = Some(reg_index);
+          reg = Some(register_pack.registers[reg_index]);
           break;
         }
       }
@@ -369,15 +495,15 @@ fn get_register(
 
   if reg.is_none() {
     // Find register that should be evicted
-    for reg_index in 0..REGISTER_COUNT {
+    for reg_index in register_pack.int_registers.iter().cloned() {
       let existing_var = &mut register_lookup[block_id].1[reg_index];
-      let var_index = existing_var.var_value();
+      let var_index = existing_var.var_id();
 
       if !var_lifetimes.is_bit_set(block_id.usize(), var_index) {
         apply_spill(graph, *existing_var);
 
         *existing_var = var;
-        reg = Some(reg_index);
+        reg = Some(register_pack.registers[reg_index]);
         break;
       }
     }
@@ -387,18 +513,22 @@ fn get_register(
 
 fn apply_spill(graph: &mut Vec<super::IRGraphNode>, existing_var: GraphId) {
   if !existing_var.is_invalid() {
-    let node = &mut graph[existing_var.graph_id()];
-
-    if node.op == IROp::PHI {
-      for id in node.operands {
-        if !id.is_invalid() {
-          graph[id.graph_id()].out_id =
-            graph[id.graph_id()].out_id.to_ty(GraphIdType::STORED_REGISTER);
+    match &mut graph[existing_var.graph_id()] {
+      IRGraphNode::PHI { operands, .. } => {
+        for id in operands.clone().iter() {
+          if !id.is_invalid() {
+            if let IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } =
+              &mut graph[id.graph_id()]
+            {
+              *out_id = out_id.to_ty(GraphIdType::STORED_REGISTER);
+            }
+          }
         }
       }
-    } else {
-      graph[existing_var.graph_id()].out_id =
-        graph[existing_var.graph_id()].out_id.to_ty(GraphIdType::STORED_REGISTER);
+      IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } => {
+        *out_id = out_id.to_ty(GraphIdType::STORED_REGISTER);
+      }
+      _ => unreachable!(),
     }
   }
 }

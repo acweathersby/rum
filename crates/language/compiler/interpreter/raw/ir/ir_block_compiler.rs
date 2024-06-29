@@ -45,10 +45,12 @@ pub fn compile_function_blocks(funct: &RawFunction<Token>) -> RumResult<SSAFunct
       let ty = ast_ty_to_ssa_ty(&funct.return_type);
       let val = process_arithmetic_expression(&expr, block, ty, true)?;
 
-      let var = ctx.graph[val.graph_id()].out_ty;
-
-      // replace ssa with SSA_RETURN
-      block.push_unary_op(IROp::RETURN, var, val);
+      if let IRGraphNode::SSA { out_ty, .. } = ctx.graph[val.graph_id()] {
+        // replace ssa with SSA_RETURN
+        block.push_unary_op(IROp::RETURN, out_ty, val);
+      } else {
+        panic!("Invalid operation")
+      }
     }
   }
 
@@ -65,7 +67,6 @@ pub fn compile_function_blocks(funct: &RawFunction<Token>) -> RumResult<SSAFunct
       .collect(),
     variables: ctx.variables,
     graph:     ctx.graph,
-    constants: ctx.constants,
     calls:     ctx.calls,
   };
 
@@ -245,30 +246,27 @@ fn process_assignment(
 
       let mut mem_ptr_ty = block.get_type(base_ptr);
       let base_type = mem_ptr_ty.deref();
-      let element_byte_size = base_type.ele_byte_size() as u32;
+      let mem_ptr_ty = mem_ptr_ty.mask_out_elements() | TypeInfo::unknown_ele_count();
 
-      let expression = process_arithmetic_expression(
-        &expression,
-        block,
-        TypeInfo::Integer | TypeInfo::b64,
-        false,
-      )?;
+      let expression = process_arithmetic_expression(&expression, block, base_type, false)?;
 
-      mem_ptr_ty = mem_ptr_ty.mask_out_elements() | TypeInfo::unknown_ele_count();
+      let (temp_ptr, temp_ty) = if !offset.is_invalid() {
+        let element_byte_size = base_type.ele_byte_size() as u32;
+        let (temp_ptr, temp_ty) = block.create_anonymous_binding(mem_ptr_ty, tok.clone())?;
+        let temp_ptr = block.push_unary_op(IROp::V_DEF, temp_ty, base_ptr);
 
-      let (temp_ptr, temp_ty) = block.create_anonymous_binding(mem_ptr_ty, tok.clone())?;
-      let temp_ptr = block.push_unary_op(IROp::V_DEF, temp_ty, base_ptr);
+        let multiple = block
+          .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store(element_byte_size));
 
-      let multiple = block
-        .push_constant(ConstVal::new(TypeInfo::Integer | TypeInfo::b64).store(element_byte_size));
+        let offset =
+          block.push_binary_op(IROp::MUL, TypeInfo::Integer | TypeInfo::b64, offset, multiple);
 
-      let offset =
-        block.push_binary_op(IROp::MUL, TypeInfo::Integer | TypeInfo::b64, offset, multiple);
-
-      let temp_ptr = block.push_binary_op(IROp::ADD, temp_ty.mask_out_var_id(), temp_ptr, offset);
+        (block.push_binary_op(IROp::ADD, temp_ty.mask_out_var_id(), temp_ptr, offset), temp_ty)
+      } else {
+        (base_ptr, mem_ptr_ty)
+      };
 
       block.debug_op(tok.clone());
-
       Ok(block.push_binary_op(
         IROp::MEM_STORE,
         temp_ty.mask_out_var_id().deref(),
@@ -682,7 +680,6 @@ pub struct IRContextBuilder {
   pub(super) block_top:   BlockId,
   pub(super) active_type: Vec<RawVal>,
   pub(super) graph:       Vec<IRGraphNode>,
-  pub(super) constants:   Vec<ConstVal>,
   pub(super) variables:   Vec<TypeInfo>,
   pub(super) calls:       Vec<IRCall>,
 }
@@ -694,8 +691,7 @@ impl Default for IRContextBuilder {
       ssa_index:   0,
       block_top:   Default::default(),
       active_type: Default::default(),
-      graph:       Default::default(),
-      constants:   Default::default(),
+      graph:       Vec::with_capacity(4096),
       calls:       Default::default(),
       variables:   Default::default(),
     }
@@ -789,15 +785,22 @@ impl IRBlockConstructor {
     fn_name: IString,
     args: ArrayVec<7, GraphId>,
   ) -> GraphId {
-    let call_id = GraphId::ssa(0).to_var_value((self.ctx().calls.len())).to_ty(GraphIdType::CALL);
+    let call_id = GraphId::ssa(0).to_var_id((self.ctx().calls.len())).to_ty(GraphIdType::CALL);
 
     for arg in args.iter() {
-      if arg.is(super::GraphIdType::CONST) {
-        let output = self.ctx().constants[arg.var_value()];
-        self.push_unary_op(IROp::CALL_ARG, output.ty, *arg);
-      } else {
-        let output = self.ctx().graph[arg.graph_id()].out_ty;
-        self.push_unary_op(IROp::CALL_ARG, output, *arg);
+      if arg.is_invalid() {
+        panic!("Invalid argument")
+      }
+      match self.ctx().graph[arg.graph_id()] {
+        IRGraphNode::Const { val: constant, .. } => {
+          self.push_unary_op(IROp::CALL_ARG, constant.ty, *arg);
+        }
+        IRGraphNode::SSA { out_ty, .. } => {
+          self.push_unary_op(IROp::CALL_ARG, out_ty, *arg);
+        }
+        IRGraphNode::PHI { out_ty, .. } => {
+          self.push_unary_op(IROp::CALL_ARG, out_ty, *arg);
+        }
       }
     }
 
@@ -828,17 +831,12 @@ impl IRBlockConstructor {
   }
 
   pub fn push_constant(&mut self, output: ConstVal) -> GraphId {
-    let const_index = if let Some((index, val)) =
-      self.ctx().constants.iter().enumerate().find(|v| v.1.clone() == output)
-    {
-      index
-    } else {
-      let val = self.ctx().constants.len();
-      self.ctx().constants.push(output);
-      val
-    };
+    let graph = &mut self.ctx().graph;
+    let ssa_id = GraphId::ssa(graph.len());
 
-    GraphId::ssa(0).to_var_value(const_index).to_ty(GraphIdType::CONST)
+    graph.push(IRGraphNode::Const { ssa_id, val: output });
+
+    ssa_id
   }
 
   pub fn debug_op(&mut self, tok: Token) {
@@ -889,9 +887,14 @@ impl IRBlockConstructor {
     for binding in &mut self.decls {
       if binding.name == name {
         let id = binding.ssa_id;
-        ctx.graph[id.graph_id()].out_ty |= ty;
-        binding.ty |= ty;
-        return;
+
+        if let IRGraphNode::SSA { out_ty, .. } = &mut ctx.graph[id.graph_id()] {
+          *out_ty |= ty;
+          binding.ty |= ty;
+          return;
+        } else {
+          panic!("Invalid operation")
+        }
       }
     }
 
@@ -912,7 +915,7 @@ impl IRBlockConstructor {
 
     let ty = ty.mask_out_var_id() | TypeInfo::at_var_id(var_id as u16);
 
-    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode {
+    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode::SSA {
       out_id:   GraphId::INVALID,
       op:       IROp::V_DECL,
       out_ty:   ty,
@@ -940,7 +943,7 @@ impl IRBlockConstructor {
 
     let ty = ty.mask_out_var_id() | TypeInfo::at_var_id(var_id as u16);
 
-    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode {
+    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode::SSA {
       out_id:   GraphId::INVALID,
       op:       IROp::V_DECL,
       out_ty:   ty,
@@ -955,7 +958,7 @@ impl IRBlockConstructor {
 
   pub(super) fn get_type(&self, id: GraphId) -> TypeInfo {
     debug_assert!(!id.is_invalid());
-    self.ctx().graph[id.graph_id()].out_ty
+    self.ctx().graph[id.graph_id()].ty()
   }
 
   pub(super) fn create_successor<'a>(&self) -> &'a mut IRBlockConstructor {

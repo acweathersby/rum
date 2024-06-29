@@ -6,6 +6,7 @@ use super::{
   ir_block_optimizer::OptimizerContext,
   ir_const_val::ConstVal,
   ir_types::{BlockId, GraphId, IROp, TypeInfo},
+  IRGraphNode,
 };
 #[derive(Debug, Default)]
 pub struct InductionCTX {
@@ -41,67 +42,79 @@ fn is_induction_variable<'a>(
   ctx: &mut OptimizerContext,
   i_ctx: &'a mut InductionCTX,
 ) -> bool {
-  match i_ctx.induction_vars.entry(id) {
-    std::collections::hash_map::Entry::Occupied(entry) => true,
-    std::collections::hash_map::Entry::Vacant(entry) => {
-      let mut phi_ids = ArrayVec::new();
-      phi_ids.insert_ordered(id).unwrap();
+  if let IRGraphNode::PHI { operands, .. } = &ctx.graph[id.graph_id()] {
+    let operands = operands.clone();
 
-      let mut induction_var = InductionVar {
-        id,
-        inc_loc: GraphId::default(),
-        rate_expr: Default::default(),
-        init_expr: Default::default(),
-      };
+    match i_ctx.induction_vars.entry(id) {
+      std::collections::hash_map::Entry::Occupied(entry) => true,
+      std::collections::hash_map::Entry::Vacant(entry) => {
+        let mut phi_ids = ArrayVec::new();
+        phi_ids.insert_ordered(id).unwrap();
 
-      let node = ctx.graph[id.graph_id()];
+        let mut induction_var = InductionVar {
+          id,
+          inc_loc: GraphId::default(),
+          rate_expr: Default::default(),
+          init_expr: Default::default(),
+        };
 
-      if node.op != IROp::PHI {
-        return false;
-      }
+        phi_ids.extend(operands.iter().cloned());
 
-      phi_ids.extend(node.operands);
-      let mut have_inc = false;
-      let mut have_const = false;
+        let mut have_inc = false;
+        let mut have_const = false;
 
-      for id in node.operands {
-        if id.is_invalid() {
-          break;
-        }
-        let node = &ctx.graph[id.graph_id()];
-
-        if i_ctx.region_blocks.contains(&node.block_id) {
-          let invalid_inc =
-            !process_induction_variable(id, ctx, &mut induction_var.rate_expr, &mut phi_ids, false);
-
-          if have_inc || invalid_inc {
-            return false;
-          } else {
-            have_inc = true;
-            induction_var.inc_loc = id;
+        for id in operands.iter().cloned() {
+          if id.is_invalid() {
+            break;
           }
-        } else {
-          let invalid_const =
-            !process_induction_variable(id, ctx, &mut induction_var.init_expr, &mut phi_ids, true);
+          let node = &ctx.graph[id.graph_id()];
+          let block_id = node.block_id();
 
-          if have_const || invalid_const {
-            return false;
+          if i_ctx.region_blocks.contains(&block_id) {
+            let invalid_inc = !process_induction_variable(
+              id,
+              ctx,
+              &mut induction_var.rate_expr,
+              &mut phi_ids,
+              false,
+            );
+
+            if have_inc || invalid_inc {
+              return false;
+            } else {
+              have_inc = true;
+              induction_var.inc_loc = id;
+            }
           } else {
-            have_const = true
+            let invalid_const = !process_induction_variable(
+              id,
+              ctx,
+              &mut induction_var.init_expr,
+              &mut phi_ids,
+              true,
+            );
+
+            if have_const || invalid_const {
+              return false;
+            } else {
+              have_const = true
+            }
           }
         }
+
+        if !(have_const & have_inc) {
+          return false;
+        }
+
+        induction_var.rate_expr.reverse();
+        induction_var.init_expr.reverse();
+
+        entry.insert(induction_var);
+        true
       }
-
-      if !(have_const & have_inc) {
-        return false;
-      }
-
-      induction_var.rate_expr.reverse();
-      induction_var.init_expr.reverse();
-
-      entry.insert(induction_var);
-      true
     }
+  } else {
+    false
   }
 }
 
@@ -112,56 +125,57 @@ fn process_induction_variable<const SIZE: usize>(
   phi_ids: &mut ArrayVec<8, GraphId>,
   is_init: bool,
 ) -> bool {
-  if id.is(super::GraphIdType::CONST) {
-    let const_val = ctx.constants[id.var_value()];
-    expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
-    true
-  } else {
-    let node = ctx.graph[id.graph_id()];
-    match node.op {
-      IROp::PHI => {
-        if phi_ids.contains(&id) {
-          if is_init {
-            false
-          } else {
-            expr.push(InductionVal::constant(0.0));
-            true
-          }
+  match &ctx.graph[id.graph_id()] {
+    IRGraphNode::Const { val: const_val, .. } => {
+      expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
+      true
+    }
+    IRGraphNode::PHI { out_id, out_ty, operands } => {
+      if phi_ids.contains(&id) {
+        if is_init {
+          false
         } else {
-          expr.push(InductionVal::graph_id(id));
+          expr.push(InductionVal::constant(0.0));
           true
         }
-      }
-
-      IROp::V_DEF => {
-        process_induction_variable(node.operands[0], ctx, expr, phi_ids, is_init);
+      } else {
+        expr.push(InductionVal::graph_id(id));
         true
       }
-
-      IROp::SUB => {
-        let left = process_induction_variable(node.operands[0], ctx, expr, phi_ids, is_init);
-        let right = process_induction_variable(node.operands[1], ctx, expr, phi_ids, is_init);
-
-        if left && right {
-          expr.push(InductionVal::sum(true));
+    }
+    IRGraphNode::SSA { op, operands, .. } => {
+      let operands = *operands;
+      match op {
+        IROp::V_DEF => {
+          process_induction_variable(operands[0], ctx, expr, phi_ids, is_init);
           true
-        } else {
-          false
         }
-      }
 
-      IROp::ADD => {
-        let left = process_induction_variable(node.operands[0], ctx, expr, phi_ids, is_init);
-        let right = process_induction_variable(node.operands[1], ctx, expr, phi_ids, is_init);
+        IROp::SUB => {
+          let left = process_induction_variable(operands[0], ctx, expr, phi_ids, is_init);
+          let right = process_induction_variable(operands[1], ctx, expr, phi_ids, is_init);
 
-        if left && right {
-          expr.push(InductionVal::sum(false));
-          true
-        } else {
-          false
+          if left && right {
+            expr.push(InductionVal::sum(true));
+            true
+          } else {
+            false
+          }
         }
+
+        IROp::ADD => {
+          let left = process_induction_variable(operands[0], ctx, expr, phi_ids, is_init);
+          let right = process_induction_variable(operands[1], ctx, expr, phi_ids, is_init);
+
+          if left && right {
+            expr.push(InductionVal::sum(false));
+            true
+          } else {
+            false
+          }
+        }
+        _ => false,
       }
-      _ => false,
     }
   }
 }
@@ -172,82 +186,83 @@ fn process_expression_inner(
   expr: &mut ArrayVec<12, InductionVal>,
   i_ctx: &mut InductionCTX,
 ) -> bool {
-  if id.is(super::GraphIdType::CONST) {
-    let const_val = ctx.constants[id.var_value()];
-    expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
-    true
-  } else {
-    let node = ctx.graph[id.graph_id()];
-    match node.op {
-      IROp::PHI => {
-        if is_induction_variable(id, ctx, i_ctx) {
-          expr.push(InductionVal::graph_id(id));
-          true
-        } else {
-          false
-        }
-      }
-
-      IROp::V_DEF | IROp::CALL => {
-        if !i_ctx.region_blocks.contains(&node.block_id) {
-          expr.push(InductionVal::graph_id(id));
-          true
-        } else {
-          false
-        }
-      }
-
-      IROp::V_DECL => {
+  match &ctx.graph[id.graph_id()] {
+    IRGraphNode::Const { val: const_val, .. } => {
+      expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
+      true
+    }
+    IRGraphNode::PHI { out_id, out_ty, operands } => {
+      if is_induction_variable(id, ctx, i_ctx) {
         expr.push(InductionVal::graph_id(id));
         true
+      } else {
+        false
       }
-
-      IROp::MUL => {
-        let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
-        let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
-
-        if left && right {
-          expr.push(InductionVal::mul(false));
-          true
-        } else {
-          false
+    }
+    IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } => {
+      let operands = *operands;
+      match op {
+        IROp::V_DEF | IROp::CALL => {
+          if !i_ctx.region_blocks.contains(&block_id) {
+            expr.push(InductionVal::graph_id(id));
+            true
+          } else {
+            false
+          }
         }
-      }
-      IROp::DIV => {
-        let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
-        let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
 
-        if left && right {
-          expr.push(InductionVal::mul(true));
+        IROp::V_DECL => {
+          expr.push(InductionVal::graph_id(id));
           true
-        } else {
-          false
         }
-      }
-      IROp::SUB => {
-        let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
-        let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
 
-        if left && right {
-          expr.push(InductionVal::sum(true));
-          true
-        } else {
-          false
+        IROp::MUL => {
+          let left = process_expression_inner(operands[0], ctx, expr, i_ctx);
+          let right = process_expression_inner(operands[1], ctx, expr, i_ctx);
+
+          if left && right {
+            expr.push(InductionVal::mul(false));
+            true
+          } else {
+            false
+          }
         }
-      }
+        IROp::DIV => {
+          let left = process_expression_inner(operands[0], ctx, expr, i_ctx);
+          let right = process_expression_inner(operands[1], ctx, expr, i_ctx);
 
-      IROp::ADD => {
-        let left = process_expression_inner(node.operands[0], ctx, expr, i_ctx);
-        let right = process_expression_inner(node.operands[1], ctx, expr, i_ctx);
-
-        if left && right {
-          expr.push(InductionVal::sum(false));
-          true
-        } else {
-          false
+          if left && right {
+            expr.push(InductionVal::mul(true));
+            true
+          } else {
+            false
+          }
         }
+        IROp::SUB => {
+          let left = process_expression_inner(operands[0], ctx, expr, i_ctx);
+          let right = process_expression_inner(operands[1], ctx, expr, i_ctx);
+
+          if left && right {
+            expr.push(InductionVal::sum(true));
+            true
+          } else {
+            false
+          }
+        }
+
+        IROp::ADD => {
+          let left = process_expression_inner(operands[0], ctx, expr, i_ctx);
+          let right = process_expression_inner(operands[1], ctx, expr, i_ctx);
+
+          if left && right {
+            expr.push(InductionVal::sum(false));
+            true
+          } else {
+            false
+          }
+        }
+        _ => false,
       }
-      _ => false,
     }
   }
 }
@@ -522,9 +537,13 @@ pub fn generate_ssa(
     match &stack[i].1 {
       IEOp::CONST => unsafe {
         let left = stack[i].to_const_init(ctx);
-        id_stack.push(ctx.push_constant(
-          ConstVal::new(TypeInfo::Float | TypeInfo::b32).store(left.0.constant).convert(ty),
-        ));
+
+        let ssa = GraphId::ssa(ctx.graph.len());
+        ctx.graph.push(IRGraphNode::Const {
+          ssa_id: ssa,
+          val:    ConstVal::new(TypeInfo::Float | TypeInfo::b32).store(left.0.constant).convert(ty),
+        });
+        id_stack.push(ssa);
       },
       IEOp::VAR => id_stack.push(stack[i].get_graph_id().unwrap()),
       IEOp::MUL => unsafe {
@@ -533,7 +552,7 @@ pub fn generate_ssa(
 
         let val = stack[i];
 
-        if left.is(super::GraphIdType::CONST) && right.is(super::GraphIdType::CONST) {
+        if ctx.graph[left.graph_id()].is_const() && ctx.graph[right.graph_id()].is_const() {
           panic!("Cannot deal with this right now.");
         } else {
           let id = if val.0.inverse {
@@ -552,7 +571,7 @@ pub fn generate_ssa(
 
         let val = stack[i];
 
-        if left.is(super::GraphIdType::CONST) && right.is(super::GraphIdType::CONST) {
+        if ctx.graph[left.graph_id()].is_const() && ctx.graph[right.graph_id()].is_const() {
           panic!("Cannot deal with this right now.");
         } else {
           let id = if val.0.inverse {

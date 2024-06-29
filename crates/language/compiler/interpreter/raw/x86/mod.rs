@@ -58,3 +58,49 @@ mod test {
     utils::get_source_file,
   };
 }
+
+fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {
+  use iced_x86::{Decoder, DecoderOptions, Formatter, MasmFormatter};
+
+  let mut decoder = Decoder::with_ip(64, &binary, offset, DecoderOptions::NONE);
+  let mut formatter = MasmFormatter::new();
+
+  formatter.options_mut().set_digit_separator("_");
+  formatter.options_mut().set_number_base(iced_x86::NumberBase::Decimal);
+  formatter.options_mut().set_add_leading_zero_to_hex_numbers(true);
+  formatter.options_mut().set_first_operand_char_index(2);
+  formatter.options_mut().set_always_show_scale(true);
+  formatter.options_mut().set_rip_relative_addresses(true);
+
+  for instruction in decoder {
+    let mut output = String::default();
+    formatter.format(&instruction, &mut output);
+    print!("{:016} ", instruction.ip());
+    println!(" {}", output);
+
+    offset = instruction.ip() + instruction.len() as u64
+  }
+
+  offset
+}
+
+fn print_instruction(binary: &[u8]) -> String {
+  use iced_x86::{Decoder, DecoderOptions, Formatter, MasmFormatter};
+
+  let mut decoder = Decoder::with_ip(64, &binary, 0, DecoderOptions::NONE);
+  let mut formatter = MasmFormatter::new();
+
+  formatter.options_mut().set_digit_separator("_");
+  formatter.options_mut().set_number_base(iced_x86::NumberBase::Decimal);
+  formatter.options_mut().set_add_leading_zero_to_hex_numbers(true);
+  formatter.options_mut().set_first_operand_char_index(2);
+  formatter.options_mut().set_always_show_scale(true);
+  formatter.options_mut().set_rip_relative_addresses(true);
+
+  for instruction in decoder {
+    let mut output = String::default();
+    formatter.format(&instruction, &mut output);
+    return output;
+  }
+  Default::default()
+}

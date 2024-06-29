@@ -17,6 +17,9 @@ path = "../hash"
 [dependencies.rum_container]
 path = "../container"
 
+[dependencies.rum_profile]
+path = "../profile"
+
 [dependencies.rum_istring]
 path = "../istring"
 

@@ -675,31 +675,119 @@ impl Debug for IRCall {
 }
 
 impl IRCall {}
+#[derive(Clone)]
+#[repr(u8)]
+pub enum IRGraphNode {
+  Const {
+    ssa_id: GraphId,
+    val:    ConstVal,
+  },
+  PHI {
+    out_id:   GraphId,
+    out_ty:   TypeInfo,
+    operands: Vec<GraphId>,
+  },
+  SSA {
+    op:       IROp,
+    out_id:   GraphId,
+    block_id: BlockId,
+    out_ty:   TypeInfo,
+    operands: [GraphId; 2],
+  },
+}
 
-#[derive(Clone, Copy)]
-pub struct IRGraphNode {
-  pub op:       IROp,
-  pub out_id:   GraphId,
-  pub block_id: BlockId,
-  pub out_ty:   TypeInfo,
-  pub operands: [GraphId; 3],
+impl IRGraphNode {
+  pub fn is_const(&self) -> bool {
+    matches!(self, IRGraphNode::Const { .. })
+  }
+
+  pub fn is_ssa(&self) -> bool {
+    !self.is_const()
+  }
+
+  pub fn constant(&self) -> Option<ConstVal> {
+    match self {
+      IRGraphNode::Const { val: ty, .. } => Some(*ty),
+      _ => None,
+    }
+  }
+
+  pub fn ty(&self) -> TypeInfo {
+    match self {
+      IRGraphNode::Const { val: ty, .. } => ty.ty,
+      IRGraphNode::SSA { out_ty, .. } => *out_ty,
+      IRGraphNode::PHI { out_ty, .. } => *out_ty,
+    }
+  }
+
+  pub fn operand(&self, index: usize) -> GraphId {
+    if index > 1 {
+      GraphId::INVALID
+    } else {
+      match self {
+        IRGraphNode::Const { val: ty, .. } => GraphId::INVALID,
+        IRGraphNode::PHI { operands, .. } => operands[index],
+        IRGraphNode::SSA { operands, .. } => operands[index],
+      }
+    }
+  }
+
+  pub fn block_id(&self) -> BlockId {
+    match self {
+      IRGraphNode::SSA { block_id, .. } => *block_id,
+      _ => BlockId::default(),
+    }
+  }
+
+  pub fn set_block_id(&mut self, id: BlockId) {
+    match self {
+      IRGraphNode::SSA { block_id, .. } => *block_id = id,
+      _ => {}
+    }
+  }
+
+  pub fn id(&self) -> GraphId {
+    match self {
+      IRGraphNode::Const { val: ty, .. } => GraphId::INVALID,
+      IRGraphNode::SSA { out_id, .. } => *out_id,
+      IRGraphNode::PHI { out_id, .. } => *out_id,
+    }
+  }
 }
 
 impl Debug for IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!(
-      "{}@{:03}: {:28} = {:15} {}",
-      self.out_id,
-      self.block_id,
-      format!("{}", self.out_ty),
-      format!("{:?}", self.op),
-      self
-        .operands
-        .iter()
-        .filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) })
-        .collect::<Vec<_>>()
-        .join("  ") //--
-    ))
+    match self {
+      IRGraphNode::Const { ssa_id, val, .. } => {
+        f.write_fmt(format_args!("{} constant [ {} ]", ssa_id, val))
+      }
+      IRGraphNode::PHI { out_id, out_ty, operands, .. } => {
+        f.write_fmt(format_args!(
+          "{}: {:28} = PHI {}",
+          out_id,
+          format!("{}", out_ty),
+          operands
+            .iter()
+            .filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) })
+            .collect::<Vec<_>>()
+            .join("  ") //--
+        ))
+      }
+      IRGraphNode::SSA { out_id, block_id, out_ty, op, operands, .. } => {
+        f.write_fmt(format_args!(
+          "{}@{:03}: {:28} = {:15} {}",
+          out_id,
+          block_id,
+          format!("{}", out_ty),
+          format!("{:?}", op),
+          operands
+            .iter()
+            .filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) })
+            .collect::<Vec<_>>()
+            .join("  ") //--
+        ))
+      }
+    }
   }
 }
 
@@ -710,7 +798,6 @@ pub enum IROp {
   V_DECL,
   /// Defines the value of a variable
   V_DEF,
-  PHI,
   NOOP,
   ADD,
   SUB,
@@ -726,8 +813,8 @@ pub enum IROp {
   XOR,
   AND,
   NOT,
-  /// Move from workspace scratch memory to working memory
-  LOAD,
+  /// Move data from stack to register.
+  STACK_LOAD,
   DEREF,
   /// Store working memory (op2) into global memory addressed by the first
   /// operand (op1)
@@ -737,15 +824,12 @@ pub enum IROp {
   CALL_ARG,
   CALL_RET,
   RETURN,
-  JUMP,
   NE,
   EQ,
   // Deliberate movement of data from one location to another
   MOVE,
   /// Stores a register value to a stack position denoted by a variable id.
   STACK_STORE,
-  /// Loads a stack value, denoted by a variable id, into a register
-  STACK_LOAD,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -756,7 +840,6 @@ pub struct GraphId(pub u64);
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub enum GraphIdType {
   SSA,
-  CONST,
   CALL,
   STORED_REGISTER,
   REGISTER,
@@ -779,16 +862,16 @@ impl GraphId {
   pub const REG_MASK: u64 = 0x0FFF_0000_0000_0000;
   pub const META_VALUE_MASK: u64 = 0x0FFF_FFFF_0000_0000;
 
-  pub const fn to_pure_register(&self) -> Self {
-    self.to_var_value(0).to_graph_index(0).to_ty(GraphIdType::REGISTER)
-  }
-
   pub const fn register(reg_index: usize) -> Self {
-    Self(0).to_reg_value(reg_index).to_ty(GraphIdType::REGISTER)
+    Self(0).to_reg_id(reg_index).to_ty(GraphIdType::REGISTER)
   }
 
   pub const fn ssa(index: usize) -> Self {
     Self(0).to_graph_index(index).to_ty(GraphIdType::SSA)
+  }
+
+  pub const fn to_pure_register(&self) -> Self {
+    self.to_var_id(0).to_graph_index(0).to_ty(GraphIdType::REGISTER)
   }
 
   pub const fn drop_idx(&self) -> Self {
@@ -801,6 +884,10 @@ impl GraphId {
 
   pub const fn is_var(&self) -> bool {
     self.is(GraphIdType::VAR_LOAD) || self.is(GraphIdType::VAR_STORE)
+  }
+
+  pub const fn is_register(&self) -> bool {
+    self.is(GraphIdType::REGISTER) || self.is(GraphIdType::STORED_REGISTER)
   }
 
   pub const fn ty(&self) -> GraphIdType {
@@ -820,19 +907,19 @@ impl GraphId {
     GraphId((self.0 & !Self::INDEX_MASK) | ((index as u64) & Self::INDEX_MASK))
   }
 
-  pub const fn reg_value(&self) -> usize {
+  pub const fn reg_id(&self) -> usize {
     ((self.0 & Self::REG_MASK) >> 48) as usize
   }
 
-  pub const fn to_reg_value(self, index: usize) -> GraphId {
+  pub const fn to_reg_id(self, index: usize) -> GraphId {
     GraphId((self.0 & !Self::REG_MASK) | (((index as u64) << 48) & Self::REG_MASK))
   }
 
-  pub const fn var_value(&self) -> usize {
+  pub const fn var_id(&self) -> usize {
     ((self.0 & Self::VAR_MASK) >> 24) as usize
   }
 
-  pub const fn to_var_value(self, index: usize) -> GraphId {
+  pub const fn to_var_id(self, index: usize) -> GraphId {
     GraphId((self.0 & !Self::VAR_MASK) | (((index as u64) << 24) & Self::VAR_MASK))
   }
 
@@ -845,29 +932,26 @@ impl Display for GraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self.ty() {
       GraphIdType::SSA => f.write_fmt(format_args!("${:03}        ", self.graph_id())),
-      GraphIdType::CONST => {
-        f.write_fmt(format_args!("C{:03}[{}]    ", self.var_value(), self.graph_id()))
-      }
       GraphIdType::CALL => {
-        f.write_fmt(format_args!("CALL{:03}[{}]    ", self.var_value(), self.graph_id()))
+        f.write_fmt(format_args!("CALL{:03}[{}]    ", self.var_id(), self.graph_id()))
       }
       GraphIdType::STORED_REGISTER => f.write_fmt(format_args!(
         "S{:03}:{:03}[{:03}] ",
-        self.reg_value(),
-        self.var_value(),
+        self.reg_id(),
+        self.var_id(),
         self.graph_id()
       )),
       GraphIdType::REGISTER => f.write_fmt(format_args!(
         "R{:03}:{:03}[{:03}] ",
-        self.reg_value(),
-        self.var_value(),
+        self.reg_id(),
+        self.var_id(),
         self.graph_id()
       )),
       GraphIdType::VAR_STORE => {
-        f.write_fmt(format_args!("V{:03}[{:03}]<-   ", self.var_value(), self.graph_id()))
+        f.write_fmt(format_args!("V{:03}[{:03}]<-   ", self.var_id(), self.graph_id()))
       }
       GraphIdType::VAR_LOAD => {
-        f.write_fmt(format_args!("V{:03}[{:03}]->   ", self.var_value(), self.graph_id()))
+        f.write_fmt(format_args!("V{:03}[{:03}]->   ", self.var_id(), self.graph_id()))
       }
       GraphIdType::INVALID => f.write_fmt(format_args!("xxxx")),
     }
@@ -948,13 +1032,11 @@ Block-{id:03} {{
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SSAFunction {
   pub(crate) blocks: Vec<Box<IRBlock>>,
 
   pub(crate) graph: Vec<IRGraphNode>,
-
-  pub(crate) constants: Vec<ConstVal>,
 
   pub(super) variables: Vec<TypeInfo>,
 
@@ -1019,17 +1101,26 @@ pub mod graph_actions {
     mut node: IRGraphNode,
   ) -> GraphId {
     let id: GraphId = GraphId::ssa(graph.len());
-    node.out_id = id;
-    node.block_id = block.id;
+
+    if let IRGraphNode::SSA { out_id, block_id, .. } = &mut node {
+      *out_id = id;
+      *block_id = block.id;
+      block.ops.insert(insert_point, id);
+    }
+
     graph.push(node);
-    block.ops.insert(insert_point, id);
     id
   }
 
   pub fn push_graph_node(graph: &mut Vec<IRGraphNode>, mut node: IRGraphNode) -> GraphId {
     let id: GraphId = GraphId::ssa(graph.len());
-    node.out_id = id;
+
+    if let IRGraphNode::SSA { out_id, block_id, .. } = &mut node {
+      *out_id = id;
+    }
+
     graph.push(node);
+
     id
   }
 
@@ -1041,34 +1132,33 @@ pub mod graph_actions {
     output: TypeInfo,
     op1: GraphId,
     op2: GraphId,
-    op3: GraphId,
   ) -> GraphId {
-    push_graph_node_to_block(insert_point, block, graph, IRGraphNode {
+    push_graph_node_to_block(insert_point, block, graph, IRGraphNode::SSA {
       block_id: block.id,
       op,
       out_id: GraphId::INVALID,
       out_ty: output,
-      operands: [op1, op2, op3],
+      operands: [op1, op2],
     })
   }
 
   pub fn create_binary_op(op: IROp, output: TypeInfo, op1: GraphId, op2: GraphId) -> IRGraphNode {
-    IRGraphNode {
+    IRGraphNode::SSA {
       block_id: Default::default(),
       op,
       out_id: GraphId::INVALID,
       out_ty: output,
-      operands: [op1, op2, Default::default()],
+      operands: [op1, op2],
     }
   }
 
   pub fn create_unary_op(op: IROp, output: TypeInfo, op1: GraphId) -> IRGraphNode {
-    IRGraphNode {
+    IRGraphNode::SSA {
       block_id: Default::default(),
       op,
       out_id: GraphId::INVALID,
       out_ty: output,
-      operands: [op1, Default::default(), Default::default()],
+      operands: [op1, Default::default()],
     }
   }
 
@@ -1081,7 +1171,7 @@ pub mod graph_actions {
     op1: GraphId,
     op2: GraphId,
   ) -> GraphId {
-    push_op(graph, insert_point, block, op, output, op1, op2, Default::default())
+    push_op(graph, insert_point, block, op, output, op1, op2)
   }
 
   pub fn push_unary_op(
@@ -1092,7 +1182,7 @@ pub mod graph_actions {
     output: TypeInfo,
     op1: GraphId,
   ) -> GraphId {
-    push_op(graph, insert_point, block, op, output, op1, Default::default(), Default::default())
+    push_op(graph, insert_point, block, op, output, op1, Default::default())
   }
 
   pub fn push_zero_op(
@@ -1102,15 +1192,6 @@ pub mod graph_actions {
     op: IROp,
     output: TypeInfo,
   ) -> GraphId {
-    push_op(
-      graph,
-      insert_point,
-      block,
-      op,
-      output,
-      Default::default(),
-      Default::default(),
-      Default::default(),
-    )
+    push_op(graph, insert_point, block, op, output, Default::default(), Default::default())
   }
 }
