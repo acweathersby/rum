@@ -4,7 +4,7 @@ IMPORT comment as cmt
 IMPORT primitive as prim
 IMPORT expression as expr
 
-<> low_level_function 
+<> function 
 
   > ( type "<-" :ast $1 )?^return_type tk:( id "\(" )  param_binding(+)^params ")" block
 
@@ -23,7 +23,7 @@ IMPORT expression as expr
   > declaration 
   | block 
   | drop
-  | continue 
+  | break 
   | assignment 
   | loop 
   | match 
@@ -56,9 +56,13 @@ IMPORT expression as expr
 
 <> assignment 
 
-  > (id | memory_location ) "=" expression ";"?
+  > (id | memory_location )(+) "=" expression(+) ";"?
 
     :ast { t_RawAssign, location: $1, expression, tok  }
+
+  | (id | memory_location )(+) ( "+=" | "-=" | "/=" | "*=" | "&=" | "|=" ) expression(+) ";"?
+
+    :ast { t_ArithmaticAssign, location: $1, expression, tok  }
 
   | id mem_binding^expression ";"?
 
@@ -72,11 +76,11 @@ IMPORT expression as expr
     :ast { t_RawDrop, id  }
 
 
-<> continue 
+<> break 
   
-  > "continue" ";"?
+  > "break" ";"?
     
-    :ast { t_RawContinue, tok }
+    :ast { t_RawBreak, tok }
 
 
 <> loop 
@@ -85,10 +89,14 @@ IMPORT expression as expr
 
     :ast { t_RawLoop, block, tok  }
 
+  | "loop" match^block
+
+    :ast { t_RawLoop, block, tok  }
+
 
 <> match 
 
-  > "match" ( boolean | arithmetic )^expression  "{" match_statement(+)^statements "}"
+  > "match" ( boolean | arithmetic )^expression  match_statement(+)^statements
 
     :ast { t_RawMatch, expression, statements, tok  }
   
@@ -97,7 +105,7 @@ IMPORT expression as expr
 
   > match_case 
 
-  | block
+  | match_default
 
 
 <> match_case 
@@ -105,6 +113,12 @@ IMPORT expression as expr
   > ( primitive_bool | primitive_number ) block
 
     :ast { t_RawMatchCase, val:$1, block, tok  }
+
+<> match_default 
+  
+  > ( "default" | "def" ) block^block
+
+    :ast { t_DefaultMatchCase, block, tok  }
 
 
 <> mem_binding 

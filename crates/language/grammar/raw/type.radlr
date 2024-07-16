@@ -1,0 +1,52 @@
+IMPORT ../common/primitive as prim
+
+<> type 
+  
+  > primitive_type
+
+  | primitive_ptr_type
+
+  | named_type
+
+  | void_type
+
+  | flag_type
+
+<> void_type > "_" :ast { t_Type_Void }
+
+<> flag_type > "flag" :ast { t_Type_Flag }
+
+<> primitive_ptr_type
+
+  > "*m8"    :ast { t_Type_8BitPointer }
+  | "*m16"   :ast { t_Type_16BitPointer }
+  | "*m32"   :ast { t_Type_32BitPointer }
+  | "*m64"   :ast { t_Type_64BitPointer }
+  | "*m128"  :ast { t_Type_128BitPointer }
+  | "*" primitive_type :ast { t_Type_Pointer, base_type:$2 }
+  | "*" named_type :ast { t_Type_Pointer, base_type:$2 }
+
+<> named_type > prim::var^name :ast { t_NamedType, name }
+
+<> primitive_type
+  > primitive_uint
+  | "i8"    :ast { t_Type_i8 }
+  | "i16"   :ast { t_Type_i16 }
+  | "i32"   :ast { t_Type_i32 }
+  | "i64"   :ast { t_Type_i64 }
+  | "f32"   :ast { t_Type_f32 }
+  | "f64"   :ast { t_Type_f64 }
+  | "f128"  :ast { t_Type_f128 }
+  | "f32v2" :ast { t_Type_f32v2 }
+  | "f32v3" :ast { t_Type_f32v3 }
+  | "f32v4" :ast { t_Type_f32v4 }
+  | "f32v8" :ast { t_Type_f32v8 }
+  | "f64v2" :ast { t_Type_f64v2 }
+  | "f64v4" :ast { t_Type_f64v4 }
+
+
+<> primitive_uint 
+  > "u8"    :ast { t_Type_u8 }
+  | "u16"   :ast { t_Type_u16 }
+  | "u32"   :ast { t_Type_u32 }
+  | "u64"   :ast { t_Type_u64 }

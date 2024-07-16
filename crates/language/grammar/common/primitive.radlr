@@ -1,9 +1,16 @@
+<> label > id
+
+  :ast { t_Label, id, tok }
+
+<> var > id  
+  
+  :ast { t_Var, id, tok }
+
 <> id 
-    
-    > tk:(  ( c:id | "_" ) ( c:id | "_" | c:num )(*) | c:num(+) ( c:id ) ( c:id | "_" | c:num )(*)  )
+  
+  > tk:(  ( c:id | "_" ) ( c:id | "_" | c:num )(*) | c:num(+) ( c:id ) ( c:id | "_" | c:num )(*)  )
 
     :ast str($1)
-
 
 <> sci_num 
    
@@ -11,7 +18,7 @@
 
 <> int 
    
-   > tk:( uint )
+   > tk:( "-"? uint )
 
 <> uint 
    

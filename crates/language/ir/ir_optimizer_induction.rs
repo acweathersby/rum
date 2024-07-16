@@ -5,8 +5,7 @@ use rum_container::ArrayVec;
 use super::{
   ir_block_optimizer::OptimizerContext,
   ir_const_val::ConstVal,
-  ir_types::{BlockId, GraphId, IROp, TypeInfo},
-  IRGraphNode,
+  ir_types::{BlockId, GraphId, IRGraphNode, IROp, IRPrimitiveType},
 };
 #[derive(Debug, Default)]
 pub struct InductionCTX {
@@ -130,7 +129,7 @@ fn process_induction_variable<const SIZE: usize>(
       expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
       true
     }
-    IRGraphNode::PHI { out_id, out_ty, operands } => {
+    IRGraphNode::PHI { id: out_id, result_ty: out_ty, operands } => {
       if phi_ids.contains(&id) {
         if is_init {
           false
@@ -191,7 +190,7 @@ fn process_expression_inner(
       expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
       true
     }
-    IRGraphNode::PHI { out_id, out_ty, operands } => {
+    IRGraphNode::PHI { id: out_id, result_ty: out_ty, operands } => {
       if is_induction_variable(id, ctx, i_ctx) {
         expr.push(InductionVal::graph_id(id));
         true
@@ -199,7 +198,7 @@ fn process_expression_inner(
         false
       }
     }
-    IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } => {
+    IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } => {
       let operands = *operands;
       match op {
         IROp::V_DEF | IROp::CALL => {
@@ -525,7 +524,7 @@ pub fn generate_ssa(
   ctx: &mut OptimizerContext,
   i_ctx: &InductionCTX,
   target_block: BlockId,
-  const_type: TypeInfo,
+  const_type: IRPrimitiveType,
 ) -> GraphId {
   let mut stack_counter = stack.len() as isize - 1;
   let mut out_graph_id = GraphId::default();
@@ -540,8 +539,10 @@ pub fn generate_ssa(
 
         let ssa = GraphId::ssa(ctx.graph.len());
         ctx.graph.push(IRGraphNode::Const {
-          ssa_id: ssa,
-          val:    ConstVal::new(TypeInfo::Float | TypeInfo::b32).store(left.0.constant).convert(ty),
+          id:  ssa,
+          val: ConstVal::new(IRPrimitiveType::Float | IRPrimitiveType::b32)
+            .store(left.0.constant)
+            .convert(ty),
         });
         id_stack.push(ssa);
       },

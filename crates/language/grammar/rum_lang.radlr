@@ -3,10 +3,10 @@ IGNORE { c:sp c:nl }
 IMPORT execution  as exe
 IMPORT table      as table
 IMPORT primitive  as prim
-IMPORT low_level  as ll
+IMPORT raw        as raw
 
 EXPORT RS as RS
-EXPORT ll::low_level_function as LL
+EXPORT raw::function as Raw
 
 
 <> RS 
@@ -26,4 +26,6 @@ EXPORT ll::low_level_function as LL
 <> global_table > tk:( "global" ( " " | "\n" ) )  prim::id^name ":" prim::id^table_def
 
   :ast { t_GlobalTable, name, table_def_name: $table_def, tok }
+
+
 

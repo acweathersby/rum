@@ -12,7 +12,8 @@ members = [
     "./crates/math",
     "./crates/log",
     "./crates/window",
-    "./crates/language"
+    "./crates/language",
+    "./crates/rum_cli"
 ]
 
 exclude = [

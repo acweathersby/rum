@@ -1,16 +1,209 @@
 use radlr_rust_runtime::types::Token;
 use rum_container::ArrayVec;
-use rum_istring::IString;
-use std::{
-  fmt::{Debug, Display},
-  ops::IndexMut,
-  slice::SliceIndex,
-};
+use rum_istring::{CachedString, IString};
+use std::fmt::{Debug, Display};
 
-use super::ir_const_val::ConstVal;
+use super::{ir_const_val::ConstVal, ir_context::IRType};
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IRPointerState {
+  None,
+  Heap,
+  Stack,
+  Temporary,
+  Placeholder,
+}
+
+impl Display for IRPointerState {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      IRPointerState::Heap => f.write_str("*h->"),
+      IRPointerState::Temporary => f.write_str("*t->"),
+      IRPointerState::Stack => f.write_str("*s->"),
+      IRPointerState::Placeholder => f.write_str("*?->"),
+      _ => Ok(()),
+    }
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct IRTypeInfo {
+  base_type: IRBaseTypeInfo,
+  ptr:       IRPointerState,
+}
+
+impl Default for IRTypeInfo {
+  fn default() -> Self {
+    Self {
+      base_type: IRPrimitiveType::default().into(),
+      ptr:       IRPointerState::None,
+    }
+  }
+}
+
+impl From<IRPrimitiveType> for IRTypeInfo {
+  fn from(value: IRPrimitiveType) -> Self {
+    Self { base_type: value.into(), ptr: IRPointerState::None }
+  }
+}
+
+impl From<&IRType> for IRTypeInfo {
+  fn from(value: &IRType) -> Self {
+    Self { base_type: value.into(), ptr: IRPointerState::None }
+  }
+}
+
+impl IRTypeInfo {
+  pub fn base_type(&self) -> TypeInfoResult {
+    self.base_type.val()
+  }
+
+  pub fn is_pointer(&self) -> bool {
+    self.ptr != IRPointerState::None
+  }
+
+  pub fn as_ptr(&self, ptr: IRPointerState) -> IRTypeInfo {
+    Self { ptr, ..*self }
+  }
+
+  pub fn bit_size(&self) -> BitSize {
+    if self.is_pointer() {
+      BitSize::b64
+    } else {
+      match self.base_type.val() {
+        TypeInfoResult::IRPrimitive(prim) => BitSize::from(*prim),
+        // Types do not have bit sizes, only primitive have that quality
+        TypeInfoResult::IRType(ty) => BitSize::Zero,
+      }
+    }
+  }
+
+  pub fn byte_size(&self) -> u64 {
+    if self.is_pointer() {
+      8
+    } else {
+      match self.base_type.val() {
+        TypeInfoResult::IRPrimitive(prim) => prim.ele_byte_size() as u64,
+        TypeInfoResult::IRType(ty) => ty.byte_size as u64,
+      }
+    }
+  }
+
+  pub fn alignment(&self) -> u64 {
+    if self.is_pointer() {
+      8
+    } else {
+      match self.base_type.val() {
+        TypeInfoResult::IRPrimitive(prim) => prim.alignment() as u64,
+        TypeInfoResult::IRType(ty) => ty.alignment as u64,
+      }
+    }
+  }
+
+  pub fn is_numeric(&self) -> bool {
+    match self.base_type.val() {
+      TypeInfoResult::IRPrimitive(prim) => !prim.is_undefined(),
+      _ => false,
+    }
+  }
+
+  pub fn as_prim(&self) -> IRPrimitiveType {
+    match self.base_type.val() {
+      TypeInfoResult::IRPrimitive(prim) => *prim,
+      _ => IRPrimitiveType::default(),
+    }
+  }
+
+  pub fn as_node(&self) -> Option<&'_ IRType> {
+    unsafe {
+      match self.base_type.val() {
+        TypeInfoResult::IRType(prim) if (self.base_type.disambiguator & 1 == 0) => Some(prim),
+        _ => None,
+      }
+    }
+  }
+
+  pub fn is_undefined(&self) -> bool {
+    match self.base_type.val() {
+      TypeInfoResult::IRPrimitive(prim) => prim.is_undefined(),
+      _ => false,
+    }
+  }
+}
+
+impl Debug for IRTypeInfo {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("{}{:?}", self.ptr, self.base_type))
+  }
+}
+
+#[derive(Clone, Copy)]
+pub union IRBaseTypeInfo {
+  disambiguator: u64,
+  primitive:     IRPrimitiveType,
+  ptr:           *const IRType,
+}
+
+impl Eq for IRBaseTypeInfo {}
+impl PartialEq for IRBaseTypeInfo {
+  fn eq(&self, other: &Self) -> bool {
+    unsafe { self.disambiguator == other.disambiguator }
+  }
+}
+
+impl Debug for IRBaseTypeInfo {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self.val() {
+      TypeInfoResult::IRPrimitive(ti) => std::fmt::Debug::fmt(&ti, f),
+      TypeInfoResult::IRType(ty) => std::fmt::Debug::fmt(&ty.name.to_string().as_str(), f),
+    }
+  }
+}
+
+/**
+ * #Safety: ALL Type context's MUST outlive any TypeInfoResult, which should require
+ *
+ * The construction of TypeContext's first, followed by IR construction and
+ * final target compilation, and concluding with TypeContext tear down.
+ * Since TypeInfoResult is only relevant during the IR, OPT, and target
+ * compilation phases, as long as those occur before any TypeContext
+ * destruction all TypeInfoResults should be safe to access.
+ */
+pub enum TypeInfoResult<'a> {
+  IRPrimitive(&'a IRPrimitiveType),
+  IRType(&'a IRType),
+}
+
+impl From<IRPrimitiveType> for IRBaseTypeInfo {
+  fn from(value: IRPrimitiveType) -> Self {
+    let mut val = Self { primitive: value };
+    unsafe {
+      val.disambiguator |= 1;
+    }
+    val
+  }
+}
+
+impl From<&IRType> for IRBaseTypeInfo {
+  fn from(value: &IRType) -> Self {
+    let ptr = value as *const _;
+    Self { ptr }
+  }
+}
+
+impl IRBaseTypeInfo {
+  pub fn val(&self) -> TypeInfoResult<'_> {
+    unsafe {
+      if self.disambiguator & 1 == 1 {
+        TypeInfoResult::IRPrimitive(&self.primitive)
+      } else {
+        TypeInfoResult::IRType(self.ptr.as_ref().unwrap())
+      }
+    }
+  }
+}
 
 /// Operations that a register can perform.
-
 #[repr(u32)]
 #[derive(Hash, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[allow(unused, non_camel_case_types, non_upper_case_globals)]
@@ -67,40 +260,47 @@ pub enum Vectorized {
 }
 
 /// Stores information on the nature of a value
-#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TypeInfo(u64);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct IRPrimitiveType(u64);
 
-impl From<TypeInfo> for BitSize {
-  fn from(value: TypeInfo) -> Self {
+impl Default for IRPrimitiveType {
+  fn default() -> Self {
+    Self(1)
+  }
+}
+
+impl From<IRPrimitiveType> for BitSize {
+  fn from(value: IRPrimitiveType) -> Self {
     use BitSize::*;
-    if value.is_ptr() {
-      Self::b64
-    } else {
-      match value.bit_count() {
-        8 => b8,
-        16 => b16,
-        32 => b32,
-        64 => b64,
-        128 => b128,
-        256 => b256,
-        512 => b512,
-        1024 => b((value.0 & TypeInfo::DEFBITS_MASK) >> TypeInfo::DEFBITS_OFF),
-        _ => Zero,
-      }
+
+    match value.bit_count() {
+      8 => b8,
+      16 => b16,
+      32 => b32,
+      64 => b64,
+      128 => b128,
+      256 => b256,
+      512 => b512,
+      1024 => b((value.0 & IRPrimitiveType::DEFBITS_MASK) >> IRPrimitiveType::DEFBITS_OFF),
+      _ => Zero,
     }
   }
 }
 
-impl TypeInfo {
+impl IRPrimitiveType {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
 
-  pub const i64: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b64.0);
-  pub const i32: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b32.0);
-  pub const i16: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b16.0);
-  pub const i8: TypeInfo = TypeInfo(TypeInfo::Integer.0 | TypeInfo::b8.0);
+  pub const i64: IRPrimitiveType =
+    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b64.0);
+  pub const i32: IRPrimitiveType =
+    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b32.0);
+  pub const i16: IRPrimitiveType =
+    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b16.0);
+  pub const i8: IRPrimitiveType =
+    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b8.0);
 
   pub fn is_undefined(&self) -> bool {
-    self.0 == 0
+    self.0 <= 1
   }
 
   pub fn alignment(&self) -> usize {
@@ -110,9 +310,7 @@ impl TypeInfo {
   /// Total number of bytes needed to store this type. None is returned
   /// if the size cannot be calculated statically.
   pub fn total_byte_size(&self) -> Option<usize> {
-    if self.is_ptr() {
-      Some(8)
-    } else if let Some(count) = self.num_of_elements() {
+    if let Some(count) = self.num_of_elements() {
       Some(self.ele_byte_size() * count)
     } else {
       None
@@ -124,18 +322,10 @@ impl TypeInfo {
   }
 
   pub fn ele_bit_size(&self) -> usize {
-    if self.is_ptr() {
-      64
-    } else {
-      match BitSize::from(*self) {
-        BitSize::b(size) => (size * self.vec_val()) as usize,
-        size => (size.as_u64() * self.vec_val()) as usize,
-      }
+    match BitSize::from(*self) {
+      BitSize::b(size) => (size * self.vec_val()) as usize,
+      size => (size.as_u64() * self.vec_val()) as usize,
     }
-  }
-
-  pub fn is_ptr(&self) -> bool {
-    (self.0 & Self::Ptr.0) > 0
   }
 
   /// Returns the number of elements, i.e. the array length, of the type. None
@@ -165,7 +355,7 @@ impl TypeInfo {
   }
 
   fn ty_val(&self) -> u32 {
-    ((self.0 & (TypeInfo::TYPE_MASK)) >> (TypeInfo::TYPE_OFF - 1))
+    ((self.0 & (IRPrimitiveType::TYPE_MASK)) >> (IRPrimitiveType::TYPE_OFF - 1))
       .checked_ilog2()
       .unwrap_or_default()
   }
@@ -181,65 +371,33 @@ impl TypeInfo {
   }
 
   pub fn vec_val(&self) -> u64 {
-    ((self.0 & TypeInfo::VECT_MASK) >> TypeInfo::VECT_OFF).max(1)
-  }
-
-  pub fn var_id(&self) -> Option<usize> {
-    let val = ((self.0 & TypeInfo::STACK_ID_MASK) >> TypeInfo::STACK_ID_OFF);
-    if val > 0 {
-      Some(val as usize - 1)
-    } else {
-      None
-    }
-  }
-
-  pub fn location(&self) -> DataLocation {
-    let location_val = (self.0 & Self::LOCATION_MASK) >> Self::LOCATION_OFFSET;
-    match location_val {
-      1 => DataLocation::StackOff(self.var_id().unwrap_or_default()),
-      2 => DataLocation::SsaStack(self.var_id().unwrap_or_default()),
-      3 => DataLocation::Heap,
-      _ => DataLocation::Undefined,
-    }
+    ((self.0 & IRPrimitiveType::VECT_MASK) >> IRPrimitiveType::VECT_OFF).max(1)
   }
 }
 
-impl TypeInfo {
-  pub fn mask_out_location(self) -> TypeInfo {
+impl IRPrimitiveType {
+  pub fn mask_out_location(self) -> IRPrimitiveType {
     Self(self.0 & !Self::LOCATION_MASK)
   }
 
-  pub fn mask_out_elements(self) -> TypeInfo {
+  pub fn mask_out_elements(self) -> IRPrimitiveType {
     Self(self.0 & !Self::ELE_COUNT_MASK)
   }
 
-  pub fn mask_out_type(self) -> TypeInfo {
+  pub fn mask_out_type(self) -> IRPrimitiveType {
     Self(self.0 & !Self::TYPE_MASK)
   }
 
-  pub fn mask_out_vect(self) -> TypeInfo {
+  pub fn mask_out_vect(self) -> IRPrimitiveType {
     Self(self.0 & !Self::VECT_MASK)
   }
 
-  pub fn mask_out_bit_size(self) -> TypeInfo {
+  pub fn mask_out_bit_size(self) -> IRPrimitiveType {
     Self(self.0 & !Self::SIZE_MASK)
-  }
-
-  pub fn mask_out_var_id(self) -> TypeInfo {
-    Self(self.0 & !Self::STACK_ID_MASK)
-  }
-
-  /// Removes the pointer flag from the type info if set.
-  pub fn deref(&self) -> TypeInfo {
-    Self(self.0 & !Self::PTR_MASK)
-  }
-
-  pub fn unstacked(&self) -> TypeInfo {
-    Self(self.0 & !Self::STACK_ID_MASK)
   }
 }
 
-impl TypeInfo {
+impl IRPrimitiveType {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
   /// If the type is a pointer, LOCATION stores the area of memory
   /// where to which this point to.
@@ -248,16 +406,12 @@ impl TypeInfo {
 
   const SIZE_MASK: u64 = 0x0000_07F8;
   const SIZE_OFF: u64 = 02;
-  const PTR_MASK: u64 = 0x0000_0800;
-  const PTR_OFF: u64 = 11;
   const TYPE_MASK: u64 = 0x0000_F000;
   /// Use TYPE_MASK first to is isolate the TYPE bits, then shift them left by
   /// this value. A value of 1 or more is a type, 0 is undefined
   const TYPE_OFF: u64 = 12;
   const VECT_MASK: u64 = 0x000F_0000;
   const VECT_OFF: u64 = 15;
-  const STACK_ID_MASK: u64 = 0xFFF0_0000;
-  const STACK_ID_OFF: u64 = 20;
   const ELE_COUNT_MASK: u64 = 0x0000_FFFF_0000_0000;
   const ELE_COUNT_OFF: u64 = 32;
   const DEFBITS_MASK: u64 = 0xFFFF_0000_0000_0000;
@@ -267,7 +421,7 @@ impl TypeInfo {
 
 #[test]
 fn display_type_prop() {
-  use TypeInfo as T;
+  use IRPrimitiveType as T;
 
   assert_eq!(BitSize::b8, T::b8.into());
   assert_eq!(BitSize::b16, T::b16.into());
@@ -277,8 +431,6 @@ fn display_type_prop() {
   assert_eq!(BitSize::b256, T::b256.into());
   assert_eq!(BitSize::b512, T::b512.into());
   assert_eq!(BitSize::b(1024), T::bytes(1024 >> 3).into());
-
-  assert!(T::Ptr.is_ptr());
 
   assert_eq!(RawType::Undefined, T::default().ty());
   assert_eq!(RawType::Unsigned, T::Unsigned.ty());
@@ -291,22 +443,10 @@ fn display_type_prop() {
   assert_eq!(Vectorized::Vector4, T::v4.vec());
   assert_eq!(Vectorized::Vector8, T::v8.vec());
   assert_eq!(Vectorized::Vector16, T::v16.vec());
-
-  assert_eq!(None, T::default().var_id());
-  assert_eq!(Some(0), T::at_var_id(0).var_id());
-  assert_eq!(Some(1), T::at_var_id(1).var_id());
-  assert_eq!(Some(4093), T::at_var_id(4093).var_id());
-
-  assert_eq!(DataLocation::Heap, T::to_location(DataLocation::Heap).location());
 }
 
-impl TypeInfo {
-  #![allow(unused, non_camel_case_types, non_upper_case_globals)]
-  pub fn at_var_id(id: u16) -> TypeInfo {
-    Self(((id as u64 + 1) << Self::STACK_ID_OFF) & Self::STACK_ID_MASK)
-  }
-
-  pub fn elements(array_elements: u16) -> TypeInfo {
+impl IRPrimitiveType {
+  pub fn elements(array_elements: u16) -> IRPrimitiveType {
     if array_elements == 0 {
       Self(0)
     } else {
@@ -316,11 +456,11 @@ impl TypeInfo {
   }
 
   /// An array with more than 0 units, but with an unknown upper bound.
-  pub fn unknown_ele_count() -> TypeInfo {
+  pub fn unknown_ele_count() -> IRPrimitiveType {
     Self((u16::MAX as u64) << Self::ELE_COUNT_OFF)
   }
 
-  pub fn bytes(byte_size: u16) -> TypeInfo {
+  pub fn bytes(byte_size: u16) -> IRPrimitiveType {
     if byte_size <= 64 {
       let mut b = byte_size as i32 - 1;
       b |= b >> 1;
@@ -330,13 +470,13 @@ impl TypeInfo {
       b |= b >> 5;
       b |= b >> 6;
       b = b + 1;
-      TypeInfo((b as u64) << 3)
+      IRPrimitiveType((b as u64) << 3)
     } else {
-      TypeInfo(((byte_size as u64) << Self::DEFBYTES_OFF) | TypeInfo::bUnknown.0)
+      IRPrimitiveType(((byte_size as u64) << Self::DEFBYTES_OFF) | IRPrimitiveType::bUnknown.0)
     }
   }
 
-  pub fn to_location(location: DataLocation) -> TypeInfo {
+  pub fn to_location(location: DataLocation) -> IRPrimitiveType {
     let location = match location {
       DataLocation::StackOff(..) => 1,
       DataLocation::SsaStack(..) => 2,
@@ -349,22 +489,17 @@ impl TypeInfo {
 
   // Bit sizes ----------------------------------------------------------
 
-  pub const b8: TypeInfo = TypeInfo(1 << 03);
-  pub const b16: TypeInfo = TypeInfo(1 << 04);
-  pub const b32: TypeInfo = TypeInfo(1 << 05);
-  pub const b64: TypeInfo = TypeInfo(1 << 06);
-  pub const b128: TypeInfo = TypeInfo(1 << 07);
-  pub const b256: TypeInfo = TypeInfo(1 << 08);
-  pub const b512: TypeInfo = TypeInfo(1 << 09);
+  pub const b8: IRPrimitiveType = IRPrimitiveType(1 << 03);
+  pub const b16: IRPrimitiveType = IRPrimitiveType(1 << 04);
+  pub const b32: IRPrimitiveType = IRPrimitiveType(1 << 05);
+  pub const b64: IRPrimitiveType = IRPrimitiveType(1 << 06);
+  pub const b128: IRPrimitiveType = IRPrimitiveType(1 << 07);
+  pub const b256: IRPrimitiveType = IRPrimitiveType(1 << 08);
+  pub const b512: IRPrimitiveType = IRPrimitiveType(1 << 09);
 
   /// A value that exceeds one of the seven base size types. This usually
   /// indicates the prop stores aggregate data, i.e. it is a table or a struct.
-  const bUnknown: TypeInfo = TypeInfo(1 << 10);
-
-  // Ptr
-
-  /// This value represents a Register storing a memory location
-  pub const Ptr: TypeInfo = TypeInfo(1 << 11);
+  const bUnknown: IRPrimitiveType = IRPrimitiveType(1 << 10);
 
   // Types --------------------------------------------------------------
 
@@ -373,28 +508,28 @@ impl TypeInfo {
 
   /// This value represents a register storing an unsigned integer scalar or
   /// vector
-  pub const Unsigned: TypeInfo = TypeInfo(1 << 12);
+  pub const Unsigned: IRPrimitiveType = IRPrimitiveType(1 << 12);
 
   /// This value represents a register storing an integer scalar or vector
-  pub const Integer: TypeInfo = TypeInfo(1 << 13);
+  pub const Integer: IRPrimitiveType = IRPrimitiveType(1 << 13);
 
   /// This value represents a register storing a floating point scalar or vector
-  pub const Float: TypeInfo = TypeInfo(1 << 14);
+  pub const Float: IRPrimitiveType = IRPrimitiveType(1 << 14);
 
   /// This value  represents a generic memory location. Similar to void in c,
   /// but more often used to denote a mixed mode aggregate such as a struct of
   /// members with different types.
-  pub const Generic: TypeInfo = TypeInfo(1 << 15);
+  pub const Generic: IRPrimitiveType = IRPrimitiveType(1 << 15);
 
   /// Vector Sizes ------------------------------------------------------
-  pub const v2: TypeInfo = TypeInfo(1 << 16);
-  pub const v4: TypeInfo = TypeInfo(1 << 17);
-  pub const v8: TypeInfo = TypeInfo(1 << 18);
-  pub const v16: TypeInfo = TypeInfo(1 << 19);
+  pub const v2: IRPrimitiveType = IRPrimitiveType(1 << 16);
+  pub const v4: IRPrimitiveType = IRPrimitiveType(1 << 17);
+  pub const v8: IRPrimitiveType = IRPrimitiveType(1 << 18);
+  pub const v16: IRPrimitiveType = IRPrimitiveType(1 << 19);
 }
 
-impl std::ops::BitOr for TypeInfo {
-  type Output = TypeInfo;
+impl std::ops::BitOr for IRPrimitiveType {
+  type Output = IRPrimitiveType;
 
   fn bitor(self, rhs: Self) -> Self::Output {
     // Need to make sure the types can be combined.
@@ -402,10 +537,7 @@ impl std::ops::BitOr for TypeInfo {
       let a_bit_size = self.ele_bit_size();
       let b_bit_size = rhs.ele_bit_size();
 
-      if a_bit_size != b_bit_size
-        && !(a_bit_size == 0 || b_bit_size == 0)
-        && !(self.is_ptr() || rhs.is_ptr())
-      {
+      if a_bit_size != b_bit_size && !(a_bit_size == 0 || b_bit_size == 0) {
         panic!(
           "Cannot merge type props with different bit sizes:\n    {self:?} | {rhs:?} not allowed"
         )
@@ -426,45 +558,27 @@ impl std::ops::BitOr for TypeInfo {
           "Cannot merge type props with different vector lengths:\n    {self:?} | {rhs:?} not allowed"
         )
       }
-
-      let a_id = self.var_id();
-      let b_id = rhs.var_id();
-
-      if a_id != b_id && a_id.is_some() && b_id.is_some() {
-        panic!(
-          "Cannot merge type props with different stack ids:\n    {self:?} | {rhs:?} not allowed"
-        )
-      }
-
-      let a_loc = self.location();
-      let b_loc = rhs.location();
-
-      if a_loc != b_loc && a_loc != DataLocation::Undefined && b_loc != DataLocation::Undefined {
-        panic!(
-          "Cannot merge type props with different stack ids:\n    {self:?} | {rhs:?} not allowed"
-        )
-      }
     }
 
-    TypeInfo(self.0 | rhs.0)
+    IRPrimitiveType(self.0 | rhs.0)
   }
 }
 
-impl std::ops::BitOr for &TypeInfo {
-  type Output = TypeInfo;
+impl std::ops::BitOr for &IRPrimitiveType {
+  type Output = IRPrimitiveType;
 
   fn bitor(self, rhs: Self) -> Self::Output {
     *self | *rhs
   }
 }
 
-impl std::ops::BitOrAssign for TypeInfo {
+impl std::ops::BitOrAssign for IRPrimitiveType {
   fn bitor_assign(&mut self, rhs: Self) {
     *self = *self | rhs;
   }
 }
 
-impl Display for TypeInfo {
+impl Display for IRPrimitiveType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let val = self.0 & !Self::DEFBITS_MASK;
 
@@ -473,10 +587,10 @@ impl Display for TypeInfo {
     const TYPE_NAMES: [&'static str; 5] = ["und", "u", "i", "f", "gen"];
     const VECTOR_SIZE: [&'static str; 5] = ["", "x2", "x4", "x8", "x16"];
 
-    let bit_val = (val & TypeInfo::SIZE_MASK) >> TypeInfo::SIZE_OFF;
+    let bit_val = (val & IRPrimitiveType::SIZE_MASK) >> IRPrimitiveType::SIZE_OFF;
     let mut bits = BIT_NAMES[bit_val.checked_ilog2().unwrap_or_default() as usize].to_string();
 
-    let vecs = VECTOR_SIZE[((val & TypeInfo::VECT_MASK) >> TypeInfo::VECT_OFF)
+    let vecs = VECTOR_SIZE[((val & IRPrimitiveType::VECT_MASK) >> IRPrimitiveType::VECT_OFF)
       .checked_ilog2()
       .unwrap_or_default() as usize];
 
@@ -494,33 +608,14 @@ impl Display for TypeInfo {
       "[?]".to_string()
     };
 
-    let var_id =
-      if let Some(id) = self.var_id() { format!("stk<{:03}> ", id) } else { Default::default() };
-
-    let ty_val = (val & TypeInfo::TYPE_MASK) >> (TypeInfo::TYPE_OFF - 1);
+    let ty_val = (val & IRPrimitiveType::TYPE_MASK) >> (IRPrimitiveType::TYPE_OFF - 1);
     let ty = TYPE_NAMES[ty_val.checked_ilog2().unwrap_or_default() as usize];
 
-    let ptr = if self.is_ptr() { "*" } else { "" };
-
-    let loc = match self.location() {
-      DataLocation::Undefined => {
-        if self.is_ptr() {
-          "{?}"
-        } else {
-          ""
-        }
-      }
-      .to_string(),
-      loc => {
-        format!("{loc:?}")
-      }
-    };
-
-    f.write_fmt(format_args!("{}{}{}{}{}{}{}", var_id, ptr, loc, ty, bits, vecs, num_of_eles))
+    f.write_fmt(format_args!("{}{}{}{}", ty, bits, vecs, num_of_eles))
   }
 }
 
-impl Debug for TypeInfo {
+impl Debug for IRPrimitiveType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(&self, f)
   }
@@ -528,7 +623,7 @@ impl Debug for TypeInfo {
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Default)]
 pub struct RawVal {
-  pub info: TypeInfo,
+  pub info: IRPrimitiveType,
   ssa_id:   usize,
   val:      Option<[u8; 16]>,
 }
@@ -587,20 +682,8 @@ impl RawVal {
     self
   }
 
-  pub fn new(info: TypeInfo) -> Self {
+  pub fn new(info: IRPrimitiveType) -> Self {
     RawVal { info, val: None, ssa_id: 0 }
-  }
-
-  pub fn derefed(&self) -> RawVal {
-    RawVal {
-      info:   self.info.deref().mask_out_location(),
-      val:    self.val,
-      ssa_id: self.ssa_id,
-    }
-  }
-
-  pub fn unstacked(&self) -> RawVal {
-    RawVal { info: self.info.unstacked(), val: self.val, ssa_id: self.ssa_id }
   }
 
   pub fn load<T>(&self) -> Option<T> {
@@ -659,8 +742,8 @@ impl Debug for DataLocation {
 #[derive(Clone)]
 pub struct IRCall {
   pub name: IString,
-  pub args: ArrayVec<7, GraphId>,
-  pub ret:  GraphId,
+  pub args: ArrayVec<7, IRGraphId>,
+  pub ret:  IRGraphId,
 }
 
 impl Debug for IRCall {
@@ -679,24 +762,77 @@ impl IRCall {}
 #[repr(u8)]
 pub enum IRGraphNode {
   Const {
-    ssa_id: GraphId,
+    out_id: IRGraphId,
     val:    ConstVal,
   },
+  VAR {
+    out_id:         IRGraphId,
+    ty:             IRTypeInfo,
+    name:           IString,
+    loc:            IString, // Temp: Will use a more suitable type to define this in time.
+    stack_lu_index: u32,
+  },
   PHI {
-    out_id:   GraphId,
-    out_ty:   TypeInfo,
-    operands: Vec<GraphId>,
+    id:        IRGraphId,
+    result_ty: IRTypeInfo,
+    operands:  ArrayVec<2, IRGraphId>,
   },
   SSA {
-    op:       IROp,
-    out_id:   GraphId,
-    block_id: BlockId,
-    out_ty:   TypeInfo,
-    operands: [GraphId; 2],
+    id:        IRGraphId,
+    op:        IROp,
+    block_id:  BlockId,
+    result_ty: IRTypeInfo,
+    operands:  [IRGraphId; 2],
   },
 }
 
 impl IRGraphNode {
+  pub fn create_const(const_val: ConstVal) -> IRGraphNode {
+    IRGraphNode::Const { out_id: IRGraphId::INVALID, val: const_val }
+  }
+
+  pub fn create_var(name: IString, result_ty: IRTypeInfo) -> IRGraphNode {
+    IRGraphNode::VAR {
+      name,
+      loc: "stack".to_token(),
+      out_id: IRGraphId::INVALID,
+      ty: result_ty,
+      stack_lu_index: 0,
+    }
+  }
+
+  pub fn create_ssa(
+    op: IROp,
+    result_ty: IRTypeInfo,
+    operands: &[IRGraphId],
+    var_id: usize,
+  ) -> IRGraphNode {
+    debug_assert!(operands.len() <= 2);
+
+    let operands = match operands.len() {
+      0 => [IRGraphId::default(), IRGraphId::default()],
+      1 => [operands[0], IRGraphId::default()],
+      2 => [operands[0], operands[1]],
+      _ => unreachable!(),
+    };
+
+    IRGraphNode::SSA {
+      op: op,
+      id: IRGraphId::INVALID.to_var_id(var_id),
+      block_id: BlockId::default(),
+      result_ty,
+      operands,
+    }
+  }
+
+  pub fn create_phi(result_ty: IRTypeInfo, operands: &[IRGraphId]) -> IRGraphNode {
+    IRGraphNode::PHI {
+      id: IRGraphId::INVALID,
+      result_ty,
+      operands: ArrayVec::from_iter(operands.iter().cloned()),
+    }
+  }
+
   pub fn is_const(&self) -> bool {
     matches!(self, IRGraphNode::Const { .. })
   }
@@ -712,20 +848,22 @@ impl IRGraphNode {
     }
   }
 
-  pub fn ty(&self) -> TypeInfo {
+  pub fn ty(&self) -> IRTypeInfo {
     match self {
-      IRGraphNode::Const { val: ty, .. } => ty.ty,
-      IRGraphNode::SSA { out_ty, .. } => *out_ty,
-      IRGraphNode::PHI { out_ty, .. } => *out_ty,
+      IRGraphNode::Const { val, .. } => IRTypeInfo::from(val.ty),
+      IRGraphNode::SSA { result_ty: out_ty, .. } => *out_ty,
+      IRGraphNode::PHI { result_ty: out_ty, .. } => *out_ty,
+      IRGraphNode::VAR { ty: out_ty, .. } => *out_ty,
     }
   }
 
-  pub fn operand(&self, index: usize) -> GraphId {
+  pub fn operand(&self, index: usize) -> IRGraphId {
     if index > 1 {
-      GraphId::INVALID
+      IRGraphId::INVALID
     } else {
       match self {
-        IRGraphNode::Const { val: ty, .. } => GraphId::INVALID,
+        IRGraphNode::Const { .. } => IRGraphId::INVALID,
+        IRGraphNode::VAR { .. } => IRGraphId::INVALID,
         IRGraphNode::PHI { operands, .. } => operands[index],
         IRGraphNode::SSA { operands, .. } => operands[index],
       }
@@ -746,11 +884,22 @@ impl IRGraphNode {
     }
   }
 
-  pub fn id(&self) -> GraphId {
+  pub fn set_graph_id(&mut self, id: IRGraphId) {
     match self {
-      IRGraphNode::Const { val: ty, .. } => GraphId::INVALID,
-      IRGraphNode::SSA { out_id, .. } => *out_id,
-      IRGraphNode::PHI { out_id, .. } => *out_id,
+      IRGraphNode::VAR { out_id: graph_id, .. } => *graph_id = id,
+      IRGraphNode::SSA { id: graph_id, .. } => *graph_id = id,
+      IRGraphNode::PHI { id: graph_id, .. } => *graph_id = id,
+      IRGraphNode::Const { out_id: graph_id, .. } => *graph_id = id,
+      _ => {}
+    }
+  }
+
+  pub fn id(&self) -> IRGraphId {
+    match self {
+      IRGraphNode::Const { out_id, val: ty, .. } => *out_id,
+      IRGraphNode::SSA { id: out_id, .. } => *out_id,
+      IRGraphNode::PHI { id: out_id, .. } => *out_id,
+      IRGraphNode::VAR { out_id, .. } => *out_id,
     }
   }
 }
@@ -758,14 +907,21 @@ impl IRGraphNode {
 impl Debug for IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      IRGraphNode::Const { ssa_id, val, .. } => {
-        f.write_fmt(format_args!("{} constant [ {} ]", ssa_id, val))
+      IRGraphNode::Const { out_id, val, .. } => {
+        f.write_fmt(format_args!("CONST{} {}", out_id, val))
       }
-      IRGraphNode::PHI { out_id, out_ty, operands, .. } => {
+      IRGraphNode::VAR { out_id, name, ty, loc, .. } => f.write_fmt(format_args!(
+        "VAR  {} {} : {:?} loc:{}",
+        out_id,
+        name.to_str().as_str(),
+        ty,
+        loc.to_str().as_str(),
+      )),
+      IRGraphNode::PHI { id: out_id, result_ty: out_ty, operands, .. } => {
         f.write_fmt(format_args!(
-          "{}: {:28} = PHI {}",
+          "     {}: {:28} = PHI {}",
           out_id,
-          format!("{}", out_ty),
+          format!("{:?}", out_ty),
           operands
             .iter()
             .filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) })
@@ -773,12 +929,12 @@ impl Debug for IRGraphNode {
             .join("  ") //--
         ))
       }
-      IRGraphNode::SSA { out_id, block_id, out_ty, op, operands, .. } => {
+      IRGraphNode::SSA { id: out_id, block_id, result_ty: out_ty, op, operands, .. } => {
         f.write_fmt(format_args!(
-          "{}@{:03}: {:28} = {:15} {}",
-          out_id,
+          "b{:03} {}{:28} = {:15} {}",
           block_id,
-          format!("{}", out_ty),
+          out_id,
+          format!("{:?}", out_ty),
           format!("{:?}", op),
           operands
             .iter()
@@ -794,10 +950,15 @@ impl Debug for IRGraphNode {
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IROp {
-  /// Defines a variable name
-  V_DECL,
-  /// Defines the value of a variable
-  V_DEF,
+  // Encoding Oriented operators
+
+  // Calculates a ptr to a member variable based on a base aggregate pointer and a const offset.
+  // This is also used to get the address of a stack variable, by taking address of the
+  // difference between the sp and stack offset.
+  PTR_MEM_CALC,
+  /// Assigns a new value to a pointer argument.
+  PTR_ASSIGN,
+  // General use operators
   NOOP,
   ADD,
   SUB,
@@ -813,27 +974,27 @@ pub enum IROp {
   XOR,
   AND,
   NOT,
-  /// Move data from stack to register.
-  STACK_LOAD,
+  NEG,
+  /// Move data from a memory location to a register
+  LOAD,
   DEREF,
   /// Store working memory (op2) into global memory addressed by the first
   /// operand (op1)
-  MEM_STORE,
+  STORE,
+  PRIM_STORE,
   MEM_LOAD,
   CALL,
   CALL_ARG,
   CALL_RET,
-  RETURN,
+  RET_VAL,
   NE,
   EQ,
   // Deliberate movement of data from one location to another
   MOVE,
-  /// Stores a register value to a stack position denoted by a variable id.
-  STACK_STORE,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub struct GraphId(pub u64);
+pub struct IRGraphId(pub u64);
 // | type | meta_value | graph_index |
 
 #[repr(u8)]
@@ -848,79 +1009,58 @@ pub enum GraphIdType {
   INVALID = 0xF,
 }
 
-impl Default for GraphId {
+impl Default for IRGraphId {
   fn default() -> Self {
     Self::INVALID
   }
 }
 
-impl GraphId {
-  pub const INVALID: GraphId = GraphId(u64::MAX);
-  pub const TY_MASK: u64 = 0xF000_0000_0000_0000;
+impl IRGraphId {
+  pub const INVALID: IRGraphId = IRGraphId(u64::MAX);
   pub const INDEX_MASK: u64 = 0x0000_0000_00FF_FFFF;
   pub const VAR_MASK: u64 = 0x0000_FFFF_FF00_0000;
   pub const REG_MASK: u64 = 0x0FFF_0000_0000_0000;
-  pub const META_VALUE_MASK: u64 = 0x0FFF_FFFF_0000_0000;
 
-  pub const fn register(reg_index: usize) -> Self {
-    Self(0).to_reg_id(reg_index).to_ty(GraphIdType::REGISTER)
-  }
-
-  pub const fn ssa(index: usize) -> Self {
-    Self(0).to_graph_index(index).to_ty(GraphIdType::SSA)
-  }
-
-  pub const fn to_pure_register(&self) -> Self {
-    self.to_var_id(0).to_graph_index(0).to_ty(GraphIdType::REGISTER)
+  pub const fn register(reg_val: usize) -> Self {
+    Self::INVALID.to_reg_id(reg_val)
   }
 
   pub const fn drop_idx(&self) -> Self {
     self.to_graph_index(0)
   }
 
-  pub const fn is(&self, ty: GraphIdType) -> bool {
-    self.ty() as u8 == ty as u8
-  }
-
-  pub const fn is_var(&self) -> bool {
-    self.is(GraphIdType::VAR_LOAD) || self.is(GraphIdType::VAR_STORE)
-  }
-
-  pub const fn is_register(&self) -> bool {
-    self.is(GraphIdType::REGISTER) || self.is(GraphIdType::STORED_REGISTER)
-  }
-
-  pub const fn ty(&self) -> GraphIdType {
-    let ty = (self.0 >> 60) as u8;
-    unsafe { std::mem::transmute(ty) }
-  }
-  pub const fn to_ty(self, ty: GraphIdType) -> Self {
-    let ty = ty as u64;
-    GraphId(self.0 & !Self::TY_MASK | ty << 60)
-  }
-
   pub const fn graph_id(&self) -> usize {
     (self.0 & Self::INDEX_MASK) as usize
   }
 
-  pub const fn to_graph_index(self, index: usize) -> GraphId {
-    GraphId((self.0 & !Self::INDEX_MASK) | ((index as u64) & Self::INDEX_MASK))
+  pub const fn to_graph_index(self, index: usize) -> IRGraphId {
+    IRGraphId((self.0 & !Self::INDEX_MASK) | ((index as u64) & Self::INDEX_MASK))
   }
 
-  pub const fn reg_id(&self) -> usize {
-    ((self.0 & Self::REG_MASK) >> 48) as usize
+  pub const fn to_reg_id(self, index: usize) -> IRGraphId {
+    IRGraphId((self.0 & !Self::REG_MASK) | (((index as u64) << 48) & Self::REG_MASK))
   }
 
-  pub const fn to_reg_id(self, index: usize) -> GraphId {
-    GraphId((self.0 & !Self::REG_MASK) | (((index as u64) << 48) & Self::REG_MASK))
+  pub const fn var_id(&self) -> Option<usize> {
+    let var_id = (self.0 & Self::VAR_MASK);
+    if (var_id != Self::VAR_MASK) {
+      Some((var_id >> 24) as usize)
+    } else {
+      None
+    }
   }
 
-  pub const fn var_id(&self) -> usize {
-    ((self.0 & Self::VAR_MASK) >> 24) as usize
+  pub const fn reg_id(&self) -> Option<usize> {
+    let var_id = (self.0 & Self::REG_MASK);
+    if (var_id != Self::REG_MASK) {
+      Some((var_id >> 48) as usize)
+    } else {
+      None
+    }
   }
 
-  pub const fn to_var_id(self, index: usize) -> GraphId {
-    GraphId((self.0 & !Self::VAR_MASK) | (((index as u64) << 24) & Self::VAR_MASK))
+  pub const fn to_var_id(self, index: usize) -> IRGraphId {
+    IRGraphId((self.0 & !Self::VAR_MASK) | (((index as u64) << 24) & Self::VAR_MASK))
   }
 
   pub const fn is_invalid(&self) -> bool {
@@ -928,44 +1068,32 @@ impl GraphId {
   }
 }
 
-impl Display for GraphId {
+impl Display for IRGraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self.ty() {
-      GraphIdType::SSA => f.write_fmt(format_args!("${:03}        ", self.graph_id())),
-      GraphIdType::CALL => {
-        f.write_fmt(format_args!("CALL{:03}[{}]    ", self.var_id(), self.graph_id()))
+    if *self == Self::INVALID {
+      f.write_fmt(format_args!("xxxx"))
+    } else {
+      match (self.var_id(), self.reg_id()) {
+        (Some(var), Some(reg)) => {
+          f.write_fmt(format_args!("{:>4} v{:<3}r{:<3} ", self.graph_id(), var, reg,))
+        }
+
+        (None, Some(reg)) => f.write_fmt(format_args!("{:>4}     r{:<3} ", self.graph_id(), reg,)),
+        (Some(var), None) => f.write_fmt(format_args!("{:>4} v{:<3}     ", self.graph_id(), var,)),
+        (None, None) => f.write_fmt(format_args!("{:>4}          ", self.graph_id(),)),
       }
-      GraphIdType::STORED_REGISTER => f.write_fmt(format_args!(
-        "S{:03}:{:03}[{:03}] ",
-        self.reg_id(),
-        self.var_id(),
-        self.graph_id()
-      )),
-      GraphIdType::REGISTER => f.write_fmt(format_args!(
-        "R{:03}:{:03}[{:03}] ",
-        self.reg_id(),
-        self.var_id(),
-        self.graph_id()
-      )),
-      GraphIdType::VAR_STORE => {
-        f.write_fmt(format_args!("V{:03}[{:03}]<-   ", self.var_id(), self.graph_id()))
-      }
-      GraphIdType::VAR_LOAD => {
-        f.write_fmt(format_args!("V{:03}[{:03}]->   ", self.var_id(), self.graph_id()))
-      }
-      GraphIdType::INVALID => f.write_fmt(format_args!("xxxx")),
     }
   }
 }
 
-impl Debug for GraphId {
+impl Debug for IRGraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(self, f)
   }
 }
 
-impl From<GraphId> for usize {
-  fn from(value: GraphId) -> Self {
+impl From<IRGraphId> for usize {
+  fn from(value: IRGraphId) -> Self {
     value.0 as usize
   }
 }
@@ -979,9 +1107,9 @@ pub struct SymbolBinding {
   /// If the type is a pointer, then this represents the location where the data
   /// of the type the pointer points to. For non-pointer types this is
   /// Unallocated.
-  pub ty:     TypeInfo,
+  pub ty:     IRPrimitiveType,
   /// A function unique id for the declaration.
-  pub ssa_id: GraphId,
+  pub ssa_id: IRGraphId,
   pub tok:    Token,
   pub var_id: usize,
 }
@@ -995,10 +1123,11 @@ impl Debug for SymbolBinding {
 #[derive(Clone)]
 pub struct IRBlock {
   pub id:                   BlockId,
-  pub ops:                  Vec<GraphId>,
+  pub ops:                  Vec<IRGraphId>,
   pub branch_unconditional: Option<BlockId>,
   pub branch_succeed:       Option<BlockId>,
-  pub branch_fail:          Option<BlockId>,
+  pub branch_default:       Option<BlockId>,
+  pub name:                 IString,
 }
 
 impl Debug for IRBlock {
@@ -1014,7 +1143,7 @@ impl Debug for IRBlock {
 
     let branch = /* if let Some(ret) = self.return_val {
       format!("\n\n  return: {ret:?}")
-    } else  */if let (Some(fail), Some(pass)) = (self.branch_fail, self.branch_succeed) {
+    } else  */if let (Some(fail), Some(pass)) = (self.branch_default, self.branch_succeed) {
       format!("\n\n  pass: Block-{pass:03}\n  fail: Block-{fail:03}")
     } else if let Some(branch) = self.branch_unconditional {
       format!("\n\n  jump: Block-{branch:03}")
@@ -1024,10 +1153,11 @@ impl Debug for IRBlock {
 
     f.write_fmt(format_args!(
       r###"
-Block-{id:03} {{
+Block-{id:03} {} {{
   
 {ops}{branch}
-}}"###
+}}"###,
+      self.name.to_str().as_str()
     ))
   }
 }
@@ -1038,7 +1168,7 @@ pub struct SSAFunction {
 
   pub(crate) graph: Vec<IRGraphNode>,
 
-  pub(super) variables: Vec<TypeInfo>,
+  pub(crate) variables: Vec<(IRTypeInfo, IRGraphId)>,
 
   pub(crate) calls: Vec<IRCall>,
 }
@@ -1088,110 +1218,5 @@ impl<T, const SIZE: usize> std::ops::Index<BlockId> for ArrayVec<SIZE, T> {
 impl<T, const SIZE: usize> std::ops::IndexMut<BlockId> for ArrayVec<SIZE, T> {
   fn index_mut(&mut self, index: BlockId) -> &mut Self::Output {
     &mut self[index.0 as usize]
-  }
-}
-
-pub mod graph_actions {
-  use super::{GraphId, IRBlock, IRGraphNode, IROp, TypeInfo};
-
-  pub fn push_graph_node_to_block(
-    insert_point: usize,
-    block: &mut IRBlock,
-    graph: &mut Vec<IRGraphNode>,
-    mut node: IRGraphNode,
-  ) -> GraphId {
-    let id: GraphId = GraphId::ssa(graph.len());
-
-    if let IRGraphNode::SSA { out_id, block_id, .. } = &mut node {
-      *out_id = id;
-      *block_id = block.id;
-      block.ops.insert(insert_point, id);
-    }
-
-    graph.push(node);
-    id
-  }
-
-  pub fn push_graph_node(graph: &mut Vec<IRGraphNode>, mut node: IRGraphNode) -> GraphId {
-    let id: GraphId = GraphId::ssa(graph.len());
-
-    if let IRGraphNode::SSA { out_id, block_id, .. } = &mut node {
-      *out_id = id;
-    }
-
-    graph.push(node);
-
-    id
-  }
-
-  pub fn push_op(
-    graph: &mut Vec<IRGraphNode>,
-    insert_point: usize,
-    block: &mut IRBlock,
-    op: IROp,
-    output: TypeInfo,
-    op1: GraphId,
-    op2: GraphId,
-  ) -> GraphId {
-    push_graph_node_to_block(insert_point, block, graph, IRGraphNode::SSA {
-      block_id: block.id,
-      op,
-      out_id: GraphId::INVALID,
-      out_ty: output,
-      operands: [op1, op2],
-    })
-  }
-
-  pub fn create_binary_op(op: IROp, output: TypeInfo, op1: GraphId, op2: GraphId) -> IRGraphNode {
-    IRGraphNode::SSA {
-      block_id: Default::default(),
-      op,
-      out_id: GraphId::INVALID,
-      out_ty: output,
-      operands: [op1, op2],
-    }
-  }
-
-  pub fn create_unary_op(op: IROp, output: TypeInfo, op1: GraphId) -> IRGraphNode {
-    IRGraphNode::SSA {
-      block_id: Default::default(),
-      op,
-      out_id: GraphId::INVALID,
-      out_ty: output,
-      operands: [op1, Default::default()],
-    }
-  }
-
-  pub fn push_binary_op(
-    graph: &mut Vec<IRGraphNode>,
-    insert_point: usize,
-    block: &mut IRBlock,
-    op: IROp,
-    output: TypeInfo,
-    op1: GraphId,
-    op2: GraphId,
-  ) -> GraphId {
-    push_op(graph, insert_point, block, op, output, op1, op2)
-  }
-
-  pub fn push_unary_op(
-    graph: &mut Vec<IRGraphNode>,
-    insert_point: usize,
-    block: &mut IRBlock,
-    op: IROp,
-    output: TypeInfo,
-    op1: GraphId,
-  ) -> GraphId {
-    push_op(graph, insert_point, block, op, output, op1, Default::default())
-  }
-
-  pub fn push_zero_op(
-    graph: &mut Vec<IRGraphNode>,
-    insert_point: usize,
-    block: &mut IRBlock,
-    op: IROp,
-    output: TypeInfo,
-  ) -> GraphId {
-    push_op(graph, insert_point, block, op, output, Default::default(), Default::default())
   }
 }

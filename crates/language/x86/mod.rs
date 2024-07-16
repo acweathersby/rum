@@ -19,10 +19,11 @@
 //! - Window:
 
 pub(crate) mod x86_compiler;
-pub(crate) mod x86_encoder;
-pub(crate) mod x86_types;
-
 pub use x86_compiler::compile_from_ssa_fn;
+
+pub(crate) mod x86_encoder;
+pub(crate) mod x86_instructions;
+pub(crate) mod x86_types;
 
 #[inline]
 /// Pushes an arbitrary number of bytes to into a binary buffer.
@@ -45,18 +46,6 @@ fn set_bytes<T: Sized>(binary: &mut Vec<u8>, offset: usize, data: T) {
 
 mod test {
   #![cfg(test)]
-
-  use super::compile_from_ssa_fn;
-  use crate::{
-    compiler::interpreter::{
-      error::RumResult,
-      raw::ir::{
-        ir_block_compiler::compile_function_blocks,
-        ir_block_optimizer::optimize_function_blocks,
-      },
-    },
-    utils::get_source_file,
-  };
 }
 
 fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {

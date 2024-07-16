@@ -37,4 +37,4 @@ num-traits        = "0.2.17"
 version = "1.21.0"
 default-features = false
 # See below for all features
-features = ["std", "decoder", "masm"]
+features = ["std", "decoder", "masm", "code_asm"]

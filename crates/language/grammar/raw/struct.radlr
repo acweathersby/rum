@@ -1,0 +1,137 @@
+IGNORE { c:sp c:nl tk:cmt::comment }
+
+IMPORT type as ty
+IMPORT ./expression as expr
+IMPORT ../common/primitive as prim
+IMPORT ../common/comment as cmt
+
+
+<> flag_val > tk:( "flag" c:num+ )
+
+<> enum 
+  
+  > prim::var^name "=>" prim::var(+",")^ids
+
+    :ast  { t_RawUnion, name, ids, tok }
+
+  | prim::var^name "=>" ty::primitive_type ":" enum_value(+",")^values
+
+    :ast  { t_RawEnum, name, values, tok }
+
+  | prim::var^name "=>" flag_val ":" prim::var(+",")^ids
+
+    :ast  { t_RawBitFlagEnum, name, ids, tok }
+
+
+<> enum_value 
+
+  > prim::var^name ( "=" expr::expression )?^expression
+
+    :ast  { t_EnumValue, name, expression  }
+
+
+<> structure 
+  
+  > prim::var^name "=>" "[" property(+)^properties "]"
+
+    :ast  { t_RawStruct, name, properties, tok }
+
+
+<> property 
+
+  > single_prop
+
+  | bitfield_prop
+
+
+<> bitfield_prop 
+
+  > flag_val ":" bitfield_element(+"|")^props
+
+    :ast  { t_RawBitCompositeProp, base_type, props  }
+
+
+<> bitfield_element
+
+  > prim::var^name ":" ty::type^type "?"?^optional
+
+      :ast  { t_BitFieldProp, name, type, tok, optional: bool($optional)  }
+      
+  | tk:( "#desc" c:num+ )
+
+      :ast  { t_BitFieldDescriminator, val: $1  }
+
+
+<> single_prop 
+
+  > prim::var^name ":" ty::type^type "?"?^optional
+
+      :ast  { t_RawProperty, name, type, tok, optional: bool($optional)  }
+
+
++> expr::expression_types > structural_declaration
+
++> expr::term > region_access
+
+<> structural_declaration 
+
+  > prim::var^name "[" structure_member_initializer(*)^inits "]"
+
+    :ast  { t_RawStructDeclaration, name, inits, tok }
+
+<> region_access
+
+  > prim::var^name "[" expr::pointer_offset^expression "]"
+
+    :ast  { t_RawArrayAccess, name, expression, tok }
+
+
+<> structure_member_initializer 
+
+  > prim::var^name "=" expr::expression
+
+    :ast  { t_RawStructMemberInit, name, expression  }
+
+
+/*
+
+Possible representation of the "inline grammar" form for the raw parser.
+
+() <- #parse structure(ctx) { 
+  name := #prim::id
+  
+  "["
+
+  properties := #properties(ctx)
+
+  "]"
+
+  ctx.add_property(Property = name, properties)
+}
+
+[*StructProperty] <- #parse properties(ctx) {
+  
+  array: [StructProperty]
+
+  for(prop : #property(+",")) {
+    array.push(prop)
+  }
+
+  <- array
+}
+
+<> properties > property(+",")
+
+
+StructProperty <- #parse property {
+
+}
+
+
+name :Structure { 
+  
+}
+
+t: u32[32] = 0 
+
+*/

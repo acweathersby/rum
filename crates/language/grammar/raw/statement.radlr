@@ -1,0 +1,107 @@
+IGNORE { c:sp c:nl tk:cmt::comment }
+
+IMPORT ./expression as expr
+IMPORT ./struct as struct
+
+IMPORT type as ty
+IMPORT ../common/primitive as prim
+IMPORT ../common/comment as cmt
+
+<> statement 
+  > loop_statement 
+  | match_statement 
+  | assignment_statement 
+  | expression_statement
+
+<> expression_statement > expr::expression
+
+<> block_expression 
+
+  > "{" statement(+)^statements ( block_exit_expressions | break_statement )?^exit "}"
+
+    :ast { t_RawBlock, statements, exit }
+
+
++> expr::term > block_expression
+
+<> assignment_statement 
+
+  > assignment_var(+",")^vars "=" expr::expression(+){2}^expressions
+
+    :ast { t_RawAssignment, vars, expressions, tok  }
+
+
+<> assignment_var 
+
+  > prim::var^var ( ":" ty::type )?
+
+    :ast { t_RawAssignmentLabel, var:$1, ty:$2, tok  }
+
+  | struct::region_access
+
+<> mem_binding 
+
+  > "*{" ( expr::primitive_unsigned_integer | prim::var )^byte_count "}"
+
+    :ast { t_MemBinding, byte_count, heap: true }
+
+  | "*<" ( expr::primitive_unsigned_integer | prim::var )^byte_count ">"
+
+    :ast { t_MemBinding, byte_count, heap: bool(false) }
+
+
+<> break_statement 
+
+  > "break" ("#" prim::var)?^label ";"?
+
+    :ast { t_RawBreak, label, tok  }
+
+
+<> loop_statement 
+
+  > "loop" ("#" prim::var)?^label ( match_statement | block_expression ){1}^scope
+    
+    :ast { t_RawLoop, label, scope, tok  }
+
+
+<> match_statement 
+
+  > "if" expr::expression^expression "is" match_clause(+){2}^clauses
+
+    :ast { t_RawMatch, expression, clauses, tok  }
+
+
+<> match_clause 
+
+  > match_expression match_scope
+    
+    :ast { t_RawMatchClause, expr:$1, scope: $2 }
+
+  | ( "?" | "or" ) match_scope
+
+    :ast { t_RawDefaultClause, scope: $2 }
+
+<> match_scope 
+  
+  > block_expression 
+  
+  | ":" expr::expression
+
+<> match_expression
+
+  > ( ">" | "<" | ">=" | "<=" | "==" | "!=" ) expr::expression
+
+    :ast { t_RawExprMatch, op:str($1), expr: $2, tok  }
+
+  | ( expr::primitive_value | expr::primitive_bool )
+
+    :ast { t_RawValMatch, val: $1, tok  }
+
+<> block_exit_expressions
+
+  > "<-" expr::expression^expression
+
+    :ast { t_BlockExitExpressions, expression }
+
+
+<>  range > "[" "..." "]"

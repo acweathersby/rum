@@ -1,6 +1,6 @@
 use radlr_rust_runtime::{
-  parsers::ast::{AstDatabase, Tk},
-  types::{ParserProducer, RuntimeDatabase, StringInput},
+  parsers::ast::AstDatabase,
+  types::{RuntimeDatabase, StringInput},
 };
 
 #[allow(warnings)]
@@ -31,17 +31,47 @@ pub fn parse_RS(input: &str) -> Result<ASTNode, String> {
 }
 
 /// Parses input based on the LL grammar.
-pub fn parse_ll(input: &str) -> Result<RawFunction<Token>, String> {
+pub fn parse_raw(input: &str) -> Result<std::rc::Rc<RawFunction<Token>>, String> {
   let parser_db = parser::ParserDB::new();
   match parser_db.build_ast(
     &mut StringInput::from(input),
-    parser_db.get_entry_data_from_name("LL").unwrap(),
+    parser_db.get_entry_data_from_name("raw_function").unwrap(),
     ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
   ) {
     Err(err) => {
       println!("{err:?}");
       Err("Failed to parse input".to_string())
     }
-    Ok(node) => Ok(*node.into_RawFunction().unwrap()),
+    Ok(node) => Ok(node.into_RawFunction().unwrap()),
+  }
+}
+
+pub fn parse_raw_expr(input: &str) -> Result<bitwise_Value<Token>, String> {
+  let parser_db = parser::ParserDB::new();
+  match parser_db.build_ast(
+    &mut StringInput::from(input),
+    parser_db.get_entry_data_from_name("raw_expression").unwrap(),
+    ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
+  ) {
+    Err(err) => {
+      println!("{err:?}");
+      Err("Failed to parse input".to_string())
+    }
+    Ok(node) => Ok(node.into_bitwise_Value().unwrap()),
+  }
+}
+
+pub fn parse_raw_module(input: &str) -> Result<Vec<raw_module_Value<Token>>, String> {
+  let parser_db = parser::ParserDB::new();
+  match parser_db.build_ast(
+    &mut StringInput::from(input),
+    parser_db.get_entry_data_from_name("raw_module").unwrap(),
+    ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
+  ) {
+    Err(err) => {
+      println!("{err:?}");
+      Err("Failed to parse input".to_string())
+    }
+    Ok(node) => Ok(node.into_vec_raw_module_Value().unwrap()),
   }
 }

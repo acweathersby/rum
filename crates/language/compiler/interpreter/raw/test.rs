@@ -9,23 +9,23 @@ fn construct_function_blocks() -> RumResult<()> {
   let input = r##"
   *32 <- table_row_added( test:f32 ) {
   
-    table_22:*32 <-{ 5 }  // ptr(*32, #mem, 22)
-    table_33:*32 <-<test>
+    table_22:*32, 
+    table_33:*32 
+      = 
+    *{ 5 }, 
+    *<test> // ptr(*32, #mem, 22)
   
-    i:i32 
-    i = 4
-  
-    loop {
-      match i >= 0 {
-        true {
-          [table_22 + i] = f32(1130823691)
-          i = i-1
-          continue
-        }
-      }
-    }
+    i:i32 = 4
     
-    [table_22 + 4] = 0;
+    loop i + 2  
+      >= 0 {
+        [table_22 + i] = 231.0
+        i = i - 1
+      } 
+      or {
+        [table_22 + 4] = 0
+        break
+      }
   
     <- table_22
   }"##;
@@ -41,7 +41,10 @@ fn construct_function_blocks() -> RumResult<()> {
   **/
   let funct = parse_ll(&input)?;
 
+  dbg!(&funct);
+
   let blocks = compile_function_blocks(&funct)?;
+  dbg!(&blocks);
 
   let optimized_blocks = optimize_function_blocks(blocks);
 
@@ -58,4 +61,3 @@ fn construct_function_blocks() -> RumResult<()> {
 
   Ok(())
 }
-

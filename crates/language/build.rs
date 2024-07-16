@@ -7,9 +7,11 @@ use radlr_build::RadlrResult;
 
 const GRAMMAR_PATH: &'static str = "./grammar/";
 const RUM_SCRIPT_ROOT: &'static str = "rum_lang.radlr";
+const RAW_SCRIPT_ROOT: &'static str = "raw/raw.radlr";
 const BUILD_OUTPUT_PATH: &'static str = "./compiler/parser/";
 
 fn main() -> RadlrResult<()> {
+  return Ok(());
   let workspace_dir = Path::new(GRAMMAR_PATH).parent().unwrap();
 
   let grammar_root_dir =
@@ -18,6 +20,11 @@ fn main() -> RadlrResult<()> {
   println!(
     "cargo:rerun-if-changed={}",
     grammar_root_dir.to_str().expect("Could not create str from RADLR dir path")
+  );
+
+  println!(
+    "cargo:rerun-if-changed={}",
+    grammar_root_dir.join("raw").to_str().expect("Could not create str from RADLR dir path")
   );
 
   let out_dir = Path::new(&std::env::var("OUT_DIR").unwrap())
@@ -52,7 +59,7 @@ fn build_rum_script(grammar_root_dir: &Path, out_dir: &Path) -> std::process::Ch
     "-n",
     "rum_script",
     "-a",
-    grammar_root_dir.join(RUM_SCRIPT_ROOT).as_os_str().to_str().unwrap(),
+    grammar_root_dir.join(RAW_SCRIPT_ROOT).as_os_str().to_str().unwrap(),
   ]);
 
   radlr.spawn().expect("Could not spawn rum_script build job")

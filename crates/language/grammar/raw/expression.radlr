@@ -1,0 +1,223 @@
+IGNORE { c:sp c:nl tk:cmt::comment }
+
+IMPORT type as ty
+IMPORT ../common/primitive as prim
+IMPORT ../common/comment as cmt
+
+
+<> expression > expression_types
+
+
+  :ast { t_Expression, expr: $1 }
+
+<> expression_types
+
+  > bitwise
+
+<> mem_expr 
+
+  > mem_expr^left "+"{1} mem_expr{0}^right
+
+    :ast { t_RawMemAdd, left, right, tok }
+
+  | mem_expr^left "*"{3} mem_expr{2}^right
+
+    :ast { t_RawMemMul, left, right, tok }
+
+  | prim::var
+
+  | primitive_integer
+
+<> boolean 
+
+  > boolean^left "||"{1}  boolean{0}^right
+    
+    :ast { t_OR, left, right, tok } 
+
+  | boolean^left "|||"{3}  boolean{2}^right
+    
+    :ast { t_XOR, left, right, tok } 
+
+  | boolean^left "&&"{5}  boolean{4}^right
+    
+    :ast { t_AND, left, right, tok }
+
+  | logical
+
+  | "(" boolean ")"
+    
+    :ast $2
+
+
+<> logical 
+
+  > bitwise^left "=="{3}  bitwise{3}^right
+    
+    :ast { t_EQ, left, right, tok } 
+
+  | bitwise^left "!="{3}  bitwise{3}^right
+    
+    :ast { t_NE, left, right, tok } 
+
+  | bitwise^left ">="{3}  bitwise{3}^right
+    
+    :ast { t_GE, left, right, tok } 
+
+  | bitwise^left "<="{3}  bitwise{3}^right
+    
+    :ast { t_LE, left, right, tok } 
+
+  | bitwise^left  ">"{3}  bitwise{3}^right
+    
+    :ast { t_GR, left, right, tok } 
+
+  | bitwise^left  "<"{3}  bitwise{3}^right
+    
+    :ast { t_LS, left, right, tok } 
+
+  | "!"{4} logical^expr{3}
+    
+    :ast { t_NOT, expr }
+
+
+<> bitwise 
+
+  > bitwise^left  ">>"{3}  bitwise{3}^right
+    
+    :ast { t_BIT_SR, left, right } 
+
+  | bitwise^left  "<<"{3}  bitwise{3}^right
+    
+    :ast { t_BIT_SL, left, right } 
+
+  | bitwise^left "&"{2}  bitwise{2}^right
+    
+    :ast { t_BIT_AND, left, right } 
+
+  | bitwise^left "|"{2}  bitwise{2}^right
+    
+    :ast { t_BIT_OR, left, right } 
+
+  | bitwise^left "~|"{2}  bitwise{2}^right
+    
+    :ast { t_BIT_XOR, left, right } 
+
+  | arithmetic
+
+
+<> arithmetic 
+  
+  > arithmetic^left   "+"{2}  arithmetic{1}^right
+    
+    :ast { t_Add, right, left, tok }
+
+  | arithmetic^left   "-"{2}  arithmetic{1}^right
+    
+    :ast { t_Sub, right, left, tok }
+
+  | arithmetic^left   "*"{4}  arithmetic{3}^right
+    
+    :ast { t_Mul, right, left, tok }
+
+  | arithmetic^left   "/"{4}  arithmetic{3}^right
+    
+    :ast { t_Div, right, left, tok }
+
+  | arithmetic^left   "%"{4}  arithmetic{3}^right
+    
+    :ast { t_Mod, right, left, tok }
+
+  | arithmetic^left  "**"{6}  arithmetic{5}^right
+    
+    :ast { t_Pow, right, left, tok }
+
+  | arithmetic^left  "//"{6}  arithmetic{5}^right
+    
+    :ast { t_Root, right, left, tok }
+
+  | arithmetic^left "log"{6}  arithmetic{5}^right
+    
+    :ast { t_Log, right, left, tok }
+
+  | "-"{7} arithmetic^expr{6}
+    
+    :ast { t_Negate, expr, tok }
+
+  | term
+
+
+<> term 
+
+  > call
+
+  | primitive_value
+
+  | member
+
+  | "(" expression_types(+",")^expressions ")"
+    
+    :ast { t_RawTuple, expressions }
+
+
+<> call 
+
+  > prim::var^id "("{1} expression_types(+",") ")"
+
+    :ast { t_RawCall, id  }
+
+<> member 
+  
+  > prim::var(+".")^members
+
+    :ast { t_RawMember, members }
+
+<> pointer_offset 
+
+  > mem_expr^expression
+
+    :ast { t_RawMemLocation, expression, tok }
+
+<> pointer_cast 
+
+  > ty::primitive_ptr_type^ty "(" prim::var^id ")"
+
+    :ast { t_RawPointerCast, ty, id, tok }
+
+<> primitive_bool 
+
+  > prim::true
+
+    :ast { t_RawTrue }
+
+  | prim::false
+
+    :ast { t_RawFalse }
+
+<> primitive_value
+
+  > primitive_number
+
+  | prim::string^val
+
+    :ast { t_RawStr, val:str($val)  }
+
+
+<> primitive_number 
+
+  > prim::sci_num
+
+    :ast { t_RawNum, val:f64($1), tok }
+
+
+<> primitive_unsigned_integer 
+
+  > prim::uint
+
+    :ast { t_RawUint, val:i64($1) }
+
+
+<> primitive_integer 
+
+  > prim::int
+
+    :ast { t_RawInt, val:i64($1) }

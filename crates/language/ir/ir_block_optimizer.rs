@@ -1,13 +1,15 @@
-use super::{ir_const_val::ConstVal, ir_optimizer_induction::InductionVal, ir_types::*};
-use crate::compiler::interpreter::raw::{
+use crate::{
   bitfield,
-  ir::{
-    ir_optimizer_induction as induction,
-    ir_optimizer_induction::IEOp,
-    ir_register_allocator::{assign_registers, RegisterPack},
-    ir_types::graph_actions::{create_binary_op, push_graph_node_to_block},
-  },
+  ir::ir_register_allocator::{assign_registers, RegisterPack},
   x86::x86_types::*,
+};
+
+use super::{
+  ir_const_val::ConstVal,
+  ir_context::IRType,
+  ir_optimizer_induction as induction,
+  ir_optimizer_induction::{IEOp, InductionVal},
+  ir_types::*,
 };
 use rum_container::ArrayVec;
 use rum_logger::todo_note;
@@ -17,13 +19,15 @@ use std::{
   fmt::Debug,
   ops::Range,
 };
-use TypeInfo;
+use IRPrimitiveType;
 
 pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
   // remove any blocks that are empty.
   let mut funct = funct.clone();
 
   remove_passive_blocks(&mut funct);
+
+  dbg!(&funct);
 
   let mut ctx = OptimizerContext {
     block_annotations: Default::default(),
@@ -32,8 +36,6 @@ pub fn optimize_function_blocks(funct: SSAFunction) -> SSAFunction {
     blocks:            &mut funct.blocks,
     calls:             &mut funct.calls,
   };
-
-  dbg!(&ctx);
 
   build_annotations(&mut ctx);
 
@@ -75,10 +77,10 @@ fn create_phi_ops(ctx: &mut OptimizerContext) {
   for block_id in 0..ctx.blocks.len() {
     let annotation = &ctx.block_annotations[block_id];
 
-    let mut stack_lookup = HashMap::<TypeInfo, Vec<_>>::new();
+    let mut stack_lookup = HashMap::<IRPrimitiveType, Vec<_>>::new();
 
     for in_id in annotation.ins.iter().cloned() {
-      if let IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } =
+      if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } =
         ctx.graph[in_id.graph_id()]
       {
         let entry = stack_lookup.entry(out_ty).or_default();
@@ -110,8 +112,9 @@ fn create_phi_ops(ctx: &mut OptimizerContext) {
         };
 
         for op in ctx.blocks[block_id].ops.clone() {
-          if let IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } =
-            &mut ctx.graph[op.graph_id()]
+          if let IRGraphNode::SSA {
+            op, id: out_id, block_id, result_ty: out_ty, operands, ..
+          } = &mut ctx.graph[op.graph_id()]
           {
             for old_id in operands {
               if entries.binary_search(old_id).is_ok() {
@@ -149,7 +152,7 @@ pub(super) struct VarIntrinsic {
 #[derive(Debug)]
 struct LoopVar {
   stack_id:      usize,
-  ty:            TypeInfo,
+  ty:            IRPrimitiveType,
   initial_value: Option<ConstVal>,
   loop_change:   LoopChange,
 }
@@ -166,7 +169,9 @@ enum IndVal {
 fn const_propagation(ctx: &mut OptimizerContext) {
   for node_id in 0..ctx.graph.len() {
     let mut node = ctx.graph[node_id].clone();
-    if let IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } = &mut node {
+    if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } =
+      &mut node
+    {
       match op {
         IROp::MUL => {
           let left = &ctx.graph[operands[0].graph_id()];
@@ -175,18 +180,18 @@ fn const_propagation(ctx: &mut OptimizerContext) {
             let c_a = left.constant().unwrap();
             let c_b = right.constant().unwrap();
 
-            let T_F32: TypeInfo = (TypeInfo::Float | TypeInfo::b32);
-            let T_F64: TypeInfo = (TypeInfo::Float | TypeInfo::b64);
+            let T_F32: IRPrimitiveType = (IRPrimitiveType::Float | IRPrimitiveType::b32);
+            let T_F64: IRPrimitiveType = (IRPrimitiveType::Float | IRPrimitiveType::b64);
 
-            let T_U64: TypeInfo = (TypeInfo::Unsigned | TypeInfo::b64);
-            let T_U32: TypeInfo = (TypeInfo::Unsigned | TypeInfo::b32);
-            let T_U16: TypeInfo = (TypeInfo::Unsigned | TypeInfo::b16);
-            let T_U8: TypeInfo = (TypeInfo::Unsigned | TypeInfo::b8);
+            let T_U64: IRPrimitiveType = (IRPrimitiveType::Unsigned | IRPrimitiveType::b64);
+            let T_U32: IRPrimitiveType = (IRPrimitiveType::Unsigned | IRPrimitiveType::b32);
+            let T_U16: IRPrimitiveType = (IRPrimitiveType::Unsigned | IRPrimitiveType::b16);
+            let T_U8: IRPrimitiveType = (IRPrimitiveType::Unsigned | IRPrimitiveType::b8);
 
-            let T_I64: TypeInfo = (TypeInfo::Integer | TypeInfo::b64);
-            let T_I32: TypeInfo = (TypeInfo::Integer | TypeInfo::b32);
-            let T_I16: TypeInfo = (TypeInfo::Integer | TypeInfo::b16);
-            let T_I8: TypeInfo = (TypeInfo::Integer | TypeInfo::b8);
+            let T_I64: IRPrimitiveType = (IRPrimitiveType::Integer | IRPrimitiveType::b64);
+            let T_I32: IRPrimitiveType = (IRPrimitiveType::Integer | IRPrimitiveType::b32);
+            let T_I16: IRPrimitiveType = (IRPrimitiveType::Integer | IRPrimitiveType::b16);
+            let T_I8: IRPrimitiveType = (IRPrimitiveType::Integer | IRPrimitiveType::b8);
 
             let new_const = match *out_ty {
               t if t == T_F32 => ConstVal::new(T_F32).store(
@@ -231,7 +236,7 @@ fn const_propagation(ctx: &mut OptimizerContext) {
               _ => unreachable!(),
             };
 
-            node = IRGraphNode::Const { ssa_id: *out_id, val: new_const };
+            node = IRGraphNode::Const { id: *out_id, val: new_const };
           }
         }
 
@@ -249,10 +254,11 @@ fn dead_code_elimination(ctx: &mut OptimizerContext) {
 
   for block in ctx.blocks.iter_mut() {
     for id in &block.ops {
-      if let IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } = &ctx.graph[id.graph_id()]
+      if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } =
+        &ctx.graph[id.graph_id()]
       {
         match *op {
-          IROp::MEM_STORE | IROp::GE | IROp::GR | IROp::RETURN | IROp::CALL | IROp::CALL_ARG => {
+          IROp::MEM_STORE | IROp::GE | IROp::GR | IROp::RET_VAL | IROp::CALL | IROp::CALL_ARG => {
             alive_queue.push_back(*id);
           }
           _ => {}
@@ -274,7 +280,7 @@ fn dead_code_elimination(ctx: &mut OptimizerContext) {
           alive[id.graph_id()] = true;
         }
         IRGraphNode::PHI { operands, .. } => {
-          alive_queue.extend(operands);
+          alive_queue.extend(operands.as_slice());
           alive[id.graph_id()] = true;
         }
         _ => {}
@@ -379,7 +385,10 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
             }
 
             let mut node = ctx.graph[root_op_id.graph_id()].clone();
-            if let IRGraphNode::SSA { op, out_id, block_id, out_ty, operands } = &mut node {
+            if let IRGraphNode::SSA {
+              op, id: out_id, block_id, result_ty: out_ty, operands, ..
+            } = &mut node
+            {
               // Store and MEM_STORE identify or define variables.
               // there are two types of variables:
               // V_DEF and Memory Pointers. Memory Pointers derived
@@ -406,7 +415,7 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
                     );
 
                     let ty = ctx.graph[operands[0].graph_id()].ty();
-                    let c_ty = TypeInfo::b64 | TypeInfo::Integer;
+                    let c_ty = IRPrimitiveType::b64 | IRPrimitiveType::Integer;
 
                     // generate the induction variable and place in the nearest dominator block.
                     let ssa = induction::generate_ssa(&init, ctx, &i_ctx, target_block, c_ty);
@@ -456,8 +465,8 @@ fn optimize_loop_regions(ctx: &mut OptimizerContext) {
                           let result = if constant.is_some() && constant.unwrap().is_negative() {
                             let ssa = GraphId::ssa(ctx.graph.len());
                             ctx.graph.push(IRGraphNode::Const {
-                              ssa_id: ssa,
-                              val:    constant.unwrap().invert(),
+                              id:  ssa,
+                              val: constant.unwrap().invert(),
                             });
                             ctx.push_binary_op(IROp::SUB, ty, target, ssa, block_id)
                           } else {
@@ -559,9 +568,9 @@ fn build_annotations(ctx: &mut OptimizerContext) {
 
   let mut stores = Vec::new();
   for node in ctx.graph.as_slice() {
-    if let IRGraphNode::SSA { op, operands, out_ty, .. } = node {
+    if let IRGraphNode::SSA { op, operands, result_ty: out_ty, .. } = node {
       match op {
-        IROp::RETURN => {
+        IROp::RET_VAL => {
           let id = operands[0];
           if !id.is_invalid() {
             let stack_id = out_ty.var_id().expect("All STORE ops should be to stack locations");
@@ -603,7 +612,7 @@ fn build_annotations(ctx: &mut OptimizerContext) {
   }
 
   for (store_id, store) in stores.iter().enumerate() {
-    if let IRGraphNode::SSA { op, operands, out_ty, block_id, .. } = store {
+    if let IRGraphNode::SSA { op, operands, result_ty: out_ty, block_id, .. } = store {
       let block = block_id;
 
       let block_alive_row = block.usize() + alive_exports_offset;
@@ -779,41 +788,23 @@ fn iter_branch_indices(block: &IRBlock) -> impl Iterator<Item = BlockId> {
 }
 
 fn get_branch_indices(block: &IRBlock) -> [Option<BlockId>; 3] {
-  [block.branch_succeed, block.branch_fail, block.branch_unconditional]
+  [block.branch_succeed, block.branch_default, block.branch_unconditional]
 }
 
 fn remove_passive_blocks(ctx: &mut SSAFunction) {
+  let mut block_remaps = (0..ctx.blocks.len() as u32).map(|i| BlockId(i)).collect::<Vec<_>>();
+  let mut name_remaps = block_remaps.clone();
+
   'outer: loop {
-    let mut block_remaps = (0..ctx.blocks.len() as u32).map(|i| BlockId(i)).collect::<Vec<_>>();
     for empty_block in 0..ctx.blocks.len() {
       let block = &ctx.blocks[empty_block];
 
       if block_is_empty(block) {
         if let Some(target) = &block.branch_unconditional {
-          block_remaps[empty_block] = *target;
+          block_remaps[block.id] = *target;
         }
 
         ctx.blocks.remove(empty_block);
-
-        ctx.blocks[empty_block..].iter_mut().for_each(|b| {
-          b.id.0 -= 1;
-        });
-
-        block_remaps[empty_block + 1..].iter_mut().for_each(|i| {
-          i.0 -= 1;
-        });
-
-        for block in &mut ctx.blocks {
-          update_branch(&mut block.branch_succeed, &block_remaps);
-          update_branch(&mut block.branch_fail, &block_remaps);
-          update_branch(&mut block.branch_unconditional, &block_remaps);
-        }
-
-        for op in &mut ctx.graph {
-          if let IRGraphNode::SSA { block_id, .. } = op {
-            *block_id = block_remaps[*block_id]
-          }
-        }
 
         continue 'outer;
       }
@@ -821,17 +812,34 @@ fn remove_passive_blocks(ctx: &mut SSAFunction) {
     break;
   }
 
-  for i in 0..(ctx.blocks.len() - 1) {
+  for (index, block) in ctx.blocks.iter_mut().enumerate() {
+    let prev_index = block.id.usize();
+    block.id = BlockId(index as u32);
+    name_remaps[prev_index] = block.id;
+  }
+
+  for block in &mut ctx.blocks {
+    update_branch(&mut block.branch_succeed, &block_remaps, &name_remaps);
+    update_branch(&mut block.branch_default, &block_remaps, &name_remaps);
+    update_branch(&mut block.branch_unconditional, &block_remaps, &name_remaps);
+  }
+
+  /*   for i in 0..(ctx.blocks.len() - 1) {
     let block = &mut ctx.blocks[i];
     if !has_branch(block) {
       block.branch_unconditional = Some(BlockId(block.id.0 + 1));
     }
-  }
+    dbg!((i, block));
+  } */
 }
 
-fn update_branch(patch: &mut Option<BlockId>, block_remaps: &Vec<BlockId>) {
+fn update_branch(
+  patch: &mut Option<BlockId>,
+  block_remaps: &Vec<BlockId>,
+  name_remaps: &Vec<BlockId>,
+) {
   if let Some(branch_block) = patch {
-    *branch_block = block_remaps[*branch_block];
+    *branch_block = name_remaps[block_remaps[*branch_block].usize()];
   }
 }
 
@@ -840,7 +848,7 @@ fn block_is_empty(block: &IRBlock) -> bool {
 }
 
 fn has_choice_branch(block: &IRBlock) -> bool {
-  block.branch_fail.is_some() || block.branch_succeed.is_some()
+  block.branch_default.is_some() || block.branch_succeed.is_some()
 }
 
 fn has_branch(block: &IRBlock) -> bool {
@@ -929,188 +937,6 @@ impl Debug for BlockAnnotation {
     ))?;
 
     Ok(())
-  }
-}
-
-pub struct OptimizerContext<'funct> {
-  pub block_annotations: Vec<BlockAnnotation>,
-  pub graph:             &'funct mut Vec<IRGraphNode>,
-  pub variables:         &'funct mut Vec<TypeInfo>,
-  pub calls:             &'funct mut Vec<IRCall>,
-  pub blocks:            &'funct mut Vec<Box<IRBlock>>,
-}
-
-impl<'funct> Debug for OptimizerContext<'funct> {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    for block in self.blocks.as_slice() {
-      f.write_fmt(format_args!("\n\nBlock-{} \n", block.id))?;
-
-      for op_id in &block.ops {
-        if (op_id.0 as usize) < self.graph.len() {
-          let op = &self.graph[op_id.graph_id()];
-          f.write_str("  ")?;
-
-          op.fmt(f)?;
-
-          f.write_str("\n")?;
-        } else {
-          f.write_str("\n  Unknown\n")?;
-        }
-      }
-      if self.block_annotations.len() > block.id.usize() {
-        self.block_annotations[block.id].fmt(f)?;
-      }
-
-      if let Some(succeed) = block.branch_succeed {
-        f.write_fmt(format_args!("\n  pass: {}\n", succeed))?;
-      }
-
-      if let Some(fail) = block.branch_fail {
-        f.write_fmt(format_args!("\n  fail: {}\n", fail))?;
-      }
-
-      if let Some(branch) = block.branch_unconditional {
-        f.write_fmt(format_args!("\n  jump: {}\n", branch))?;
-      }
-
-      f.write_str("\n")?;
-    }
-
-    f.write_str("\ncalls\n")?;
-    self.calls.fmt(f)?;
-
-    /*     f.write_str("\nconstants\n")?;
-    self.constants.fmt(f)?;
-
-    f.write_str("\nvariables\n")?;
-    self.variables.fmt(f)?;
-
-    */
-    f.write_str("\ngraph\n")?;
-    self.graph.iter().collect::<Vec<_>>().fmt(f)?;
-    Ok(())
-  }
-}
-
-impl<'funct> OptimizerContext<'funct> {
-  pub fn replace_part() {}
-
-  // push op - blocks [Xi1...XiN]
-  // replace op - block[X]
-  //
-
-  // add annotation - iter rate - iter initial val - iter inc stack id const val
-
-  pub fn push_graph_node(&mut self, mut node: IRGraphNode) -> GraphId {
-    let id: GraphId = GraphId::ssa(self.graph.len());
-
-    if let IRGraphNode::SSA { out_id, .. } = &mut node {
-      *out_id = id;
-    }
-
-    self.graph.push(node);
-
-    id
-  }
-
-  pub fn push_binary_op(
-    &mut self,
-    op: IROp,
-    output: TypeInfo,
-    left: GraphId,
-    right: GraphId,
-    block_id: BlockId,
-  ) -> GraphId {
-    self.push_graph_node(IRGraphNode::SSA {
-      block_id,
-      op,
-      out_id: GraphId::INVALID,
-      out_ty: output,
-      operands: [left, right],
-    })
-  }
-
-  pub fn push_binary_phi(&mut self, output: TypeInfo, left: GraphId, right: GraphId) -> GraphId {
-    let id = GraphId::ssa(self.graph.len());
-    self.push_graph_node(IRGraphNode::PHI {
-      out_id:   id,
-      out_ty:   output,
-      operands: vec![left, right],
-    })
-  }
-
-  pub fn push_unary_op(
-    &mut self,
-    op: IROp,
-    output: TypeInfo,
-    left: GraphId,
-    block_id: BlockId,
-  ) -> GraphId {
-    self.push_graph_node(IRGraphNode::SSA {
-      block_id,
-      op,
-      out_id: GraphId::INVALID,
-      out_ty: output,
-      operands: [left, Default::default()],
-    })
-  }
-
-  pub fn push_zero_op(&mut self, op: IROp, output: TypeInfo, block_id: BlockId) -> GraphId {
-    self.push_graph_node(IRGraphNode::SSA {
-      block_id,
-      op,
-      out_id: GraphId::INVALID,
-      out_ty: output,
-      operands: Default::default(),
-    })
-  }
-
-  pub fn push_stack_val(&mut self, ty: TypeInfo) -> GraphId {
-    let var_id = self.variables.len();
-
-    let stack_id_ty = TypeInfo::at_var_id(var_id as u16) | ty.mask_out_var_id();
-
-    self.variables.push(stack_id_ty);
-
-    self.push_zero_op(IROp::V_DECL, stack_id_ty, BlockId(0))
-  }
-
-  pub fn blocks_range(&self) -> Range<usize> {
-    0..self.blocks.len()
-  }
-
-  pub fn blocks_id_range(&self) -> impl Iterator<Item = BlockId> {
-    (0..self.blocks.len() as u32).into_iter().map(|i| BlockId(i))
-  }
-
-  pub fn ops_range(&self) -> Range<usize> {
-    0..self.graph.len()
-  }
-}
-
-impl<'funct> std::ops::Index<GraphId> for OptimizerContext<'funct> {
-  type Output = IRGraphNode;
-  fn index(&self, index: GraphId) -> &Self::Output {
-    &self.graph[index.graph_id()]
-  }
-}
-
-impl<'funct> std::ops::IndexMut<GraphId> for OptimizerContext<'funct> {
-  fn index_mut(&mut self, index: GraphId) -> &mut Self::Output {
-    &mut self.graph[index.graph_id()]
-  }
-}
-
-impl<'funct> std::ops::Index<BlockId> for OptimizerContext<'funct> {
-  type Output = IRBlock;
-  fn index(&self, index: BlockId) -> &Self::Output {
-    &self.blocks[index]
-  }
-}
-
-impl<'funct> std::ops::IndexMut<BlockId> for OptimizerContext<'funct> {
-  fn index_mut(&mut self, index: BlockId) -> &mut Self::Output {
-    &mut self.blocks[index]
   }
 }
 

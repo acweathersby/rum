@@ -1,6 +1,7 @@
 use num_traits::{Num, NumCast};
 
-use super::{BitSize, RawType, TypeInfo as TI};
+use crate::ir_types::{BitSize, IRPrimitiveType as TI, RawType};
+
 use std::fmt::Debug;
 
 use std;
@@ -67,18 +68,14 @@ impl ConstVal {
 
   pub fn derefed(&self) -> ConstVal {
     ConstVal {
-      ty:       self.ty.deref().mask_out_location(),
+      ty:       self.ty.mask_out_location(),
       val:      self.val,
       have_val: self.have_val,
     }
   }
 
   pub fn unstacked(&self) -> ConstVal {
-    ConstVal {
-      ty:       self.ty.unstacked(),
-      val:      self.val,
-      have_val: self.have_val,
-    }
+    ConstVal { ty: self.ty, val: self.val, have_val: self.have_val }
   }
 
   pub fn load<T>(&self) -> Option<T> {
@@ -100,9 +97,10 @@ impl ConstVal {
   }
 
   pub fn store<T>(mut self, val: T) -> Self {
+    let byte_size = std::mem::size_of::<T>();
     let mut bytes: [u8; 16] = Default::default();
 
-    let byte_size = std::mem::size_of::<T>();
+    dbg!(byte_size, std::mem::size_of::<T>());
 
     unsafe { std::ptr::copy(&val as *const _ as *const u8, bytes.as_mut_ptr(), byte_size) };
 

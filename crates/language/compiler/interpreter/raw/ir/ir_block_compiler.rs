@@ -24,32 +24,53 @@ use std::{
 pub fn compile_function_blocks(funct: &RawFunction<Token>) -> RumResult<SSAFunction> {
   let mut ctx = IRContextBuilder::default();
   let root_block = ctx.push_block(None);
+  root_block.inner.name = "entry".to_token();
 
   if let Err(err) = process_params(&funct.params, root_block) {
     panic!("{err:>?}");
   }
 
-  let active_block = match process_block(&funct.block, root_block, BlockId::default()) {
-    Err(err) => {
-      panic!("failed {err:?}");
-    }
-    Ok(block) => block,
-  };
+  let mut leaf_blocks = vec![];
 
-  match &funct.block.ret.expression {
-    arithmetic_Value::None => {
-      active_block.push_zero_op(IROp::RETURN, Default::default());
+  let active_block =
+    match process_block(&funct.block, root_block, BlockId::default(), &mut leaf_blocks) {
+      Err(err) => {
+        panic!("failed {err:?}");
+      }
+      Ok(Some(block)) => block,
+      _ => unreachable!(),
+    };
+
+  for leaf_block_id in leaf_blocks {
+    let leaf_block = unsafe { ctx.blocks[leaf_block_id].as_mut() }.unwrap();
+    leaf_block.inner.branch_unconditional = Some(active_block.inner.id);
+  }
+
+  match &funct.block.exit {
+    block_statement_group_1_Value::None => {
+      active_block.push_zero_op(IROp::RET_VAL, Default::default());
     }
-    expr => {
+    block_statement_group_1_Value::RawBreak(_) => {
+      panic!("Invalid break!");
+    }
+    block_statement_group_1_Value::BlockExitExpressions(exit_expr) => {
+      let expressions = &exit_expr.expressions;
+      let return_values = &funct.return_types;
+
+      assert_eq!(expressions.len(), return_values.len(), "mismatched return types!");
+
       let block = active_block.create_successor();
-      let ty = ast_ty_to_ssa_ty(&funct.return_type);
-      let val = process_arithmetic_expression(&expr, block, ty, true)?;
+      active_block.inner.branch_unconditional = Some(block.inner.id);
 
-      if let IRGraphNode::SSA { out_ty, .. } = ctx.graph[val.graph_id()] {
-        // replace ssa with SSA_RETURN
-        block.push_unary_op(IROp::RETURN, out_ty, val);
-      } else {
-        panic!("Invalid operation")
+      for (expression, return_val) in expressions.iter().zip(return_values.iter()) {
+        let ty = ast_ty_to_ssa_ty(&return_val);
+        let val = process_arithmetic_expression(&expression, block, ty, true)?;
+
+        if let IRGraphNode::SSA { out_ty, .. } = ctx.graph[val.graph_id()] {
+          block.push_unary_op(IROp::RET_VAL, out_ty, val);
+        } else {
+          panic!("Invalid operation")
+        }
       }
     }
   }
@@ -78,7 +99,7 @@ fn process_params(
   block: &mut IRBlockConstructor,
 ) -> RumResult<()> {
   for (index, param) in params.iter().enumerate() {
-    create_binding(&param.id, &param.ty, &param.tok, block)?;
+    create_binding(&param.var, &param.ty, &param.tok, block)?;
   }
 
   Ok(())
@@ -88,137 +109,31 @@ fn process_block<'a>(
   ast_block: &RawBlock<Token>,
   block: &'a mut IRBlockConstructor,
   scope_block: BlockId,
-) -> RumResult<&'a mut IRBlockConstructor> {
+  leaf_blocks: &mut Vec<BlockId>,
+) -> RumResult<Option<&'a mut IRBlockConstructor>> {
   let mut block = block;
+
   for stmt in &ast_block.statements {
-    block = process_statements(stmt, block, scope_block)?;
-  }
-  Ok(block)
-}
-
-fn process_statements<'a>(
-  statement: &block_list_Value<Token>,
-  block: &'a mut IRBlockConstructor,
-  scope_block: BlockId,
-) -> RumResult<&'a mut IRBlockConstructor> {
-  use IROp::*;
-
-  match statement {
-    block_list_Value::RawContinue(t) => {
-      block.inner.branch_unconditional = Some(scope_block);
-      return Ok(block);
-    }
-    block_list_Value::RawPtrDeclaration(ptr_decl) => {
-      create_binding(&ptr_decl.id, &(ptr_decl.ty.clone().into()), &ptr_decl.tok, block)?;
-      let target = &ptr_decl.id;
-      let target_name = target.id.to_token();
-
-      create_allocation(
-        block,
-        target_name,
-        ptr_decl.expression.heap,
-        &ptr_decl.expression.byte_count,
-      );
-    }
-    block_list_Value::RawPrimitiveDeclaration(prim_decl) => {
-      create_binding(&prim_decl.id, &(prim_decl.ty.clone().into()), &prim_decl.tok, block)?;
-      let target = &prim_decl.id;
-      let target_name = target.id.to_token();
-      let location = (prim_decl.id.clone().into());
-
-      match &prim_decl.expression {
-        arithmetic_Value::None => {}
-        expression => {
-          process_assignment(block, &location, &expression, &prim_decl.tok)?;
-        }
-      }
-    }
-    /// Binds a variable to a type.
-    block_list_Value::RawAssign(assign) => {
-      process_assignment(block, &assign.location, &assign.expression, &assign.tok)?;
-    }
-    block_list_Value::RawLoop(loop_) => {
-      let predecessor = block.create_successor();
-      let id = predecessor.inner.id;
-      return Ok(process_block(&loop_.block, predecessor, id)?);
-    }
-    block_list_Value::RawMatch(m) => {
-      match process_match_expression(&m.expression, block, Default::default())? {
-        LogicalExprType::Arithmatic(op_arg, _) => {
-          todo!("Arithmetic based matching")
-        }
-        LogicalExprType::Boolean(bool_block) => {
-          let mut default_case = None;
-          let mut bool_success_case = None;
-
-          for match_block in &m.statements {
-            match match_block {
-              match_list_1_Value::RawBlock(block) => {
-                let start_block = bool_block.create_successor();
-                let start_block_id = start_block.inner.id;
-                let end_block = process_block(&block, start_block, scope_block)?;
-                default_case = Some((start_block_id, end_block));
-              }
-
-              match_list_1_Value::RawMatchCase(case) => {
-                let start_block = bool_block.create_successor();
-                let start_block_id = start_block.inner.id;
-                let end_block = process_block(&case.block, start_block, scope_block)?;
-
-                match &case.val {
-                  compiler::script_parser::match_case_Value::RawFalse(_) => {
-                    default_case = Some((start_block_id, end_block));
-                  }
-                  compiler::script_parser::match_case_Value::RawTrue(_) => {
-                    bool_success_case = Some((start_block_id, end_block));
-                  }
-                  compiler::script_parser::match_case_Value::RawNum(val) => {
-                    panic!("Incorrect expression for logical type");
-                  }
-                  _ => unreachable!(),
-                }
-              }
-              _ => unreachable!(),
-            }
-          }
-
-          let join_block = bool_block.create_successor();
-
-          if let Some((start_block_id, end_block)) = default_case {
-            bool_block.inner.branch_fail = Some(start_block_id);
-            if end_block.inner.branch_unconditional.is_none()
-              && end_block.inner.branch_fail.is_none()
-            {
-              end_block.inner.branch_unconditional = Some(join_block.inner.id);
-            }
-          } else {
-            bool_block.inner.branch_fail = Some(join_block.inner.id);
-          }
-
-          if let Some((start_block_id, end_block)) = bool_success_case {
-            bool_block.inner.branch_succeed = Some(start_block_id);
-            if end_block.inner.branch_unconditional.is_none()
-              && end_block.inner.branch_fail.is_none()
-            {
-              end_block.inner.branch_unconditional = Some(join_block.inner.id);
-            }
-          } else {
-            bool_block.inner.branch_succeed = Some(join_block.inner.id);
-          }
-
-          return Ok(join_block);
-        }
-      };
-    }
-    val => {
-      todo!("Process statement {val:#?} {block:?}")
+    if let Some(new_block) = process_statements(stmt, block, scope_block, leaf_blocks)? {
+      block = new_block
+    } else {
+      return Ok(None);
     }
   }
 
-  Ok(block)
+  match &ast_block.exit {
+    block_statement_group_1_Value::RawBreak(t) => {
+      block.break_id = Some("".to_token());
+      leaf_blocks.push(block.inner.id);
+      return Ok(None);
+    }
+    _ => {}
+  }
+
+  Ok(Some(block))
 }
 
-fn process_assignment(
+/* fn process_assignment(
   block: &mut IRBlockConstructor,
   location: &assignment_Value<Token>,
   expression: &arithmetic_Value<Token>,
@@ -276,6 +191,281 @@ fn process_assignment(
     }
     _ => unreachable!(),
   }
+} */
+
+/* fn create_allocation(
+  block: &mut IRBlockConstructor,
+  binding: &MemBinding<Token>,
+  is_heap: bool,
+  base_ty: TypeInfo,
+) -> GraphId {
+  match binding.byte_count {
+    mem_binding_group_Value::RawUint(int) => {
+      let val = int.val * base_ty.deref().ele_byte_size() as i64;
+
+      let constant = if (64 - val.leading_zeros()).div_ceil(8) <= 4 {
+        ConstVal::new(TypeInfo::Unsigned | TypeInfo::b32).store(val as i64)
+      } else {
+        ConstVal::new(TypeInfo::Unsigned | TypeInfo::b64).store(val as i64)
+      };
+
+      if val < u16::MAX as i64 {
+        base_ty |= TypeInfo::elements(val as u16);
+      } else {
+        base_ty |= TypeInfo::unknown_ele_count();
+      }
+
+      if is_heap {
+        let arg = block.push_constant(constant);
+        //block.push_binary_op(SSAOp::MALLOC, ty, target, arg);
+
+        let malloc =
+          block.push_call(base_ty.unstacked(), "malloc".intern(), ArrayVec::from_iter([arg]));
+
+        let def = block.push_unary_op(IROp::V_DEF, base_ty, malloc);
+
+        let name = block.binding_name(base_ty.var_id().unwrap()).unwrap();
+
+        block.scope_ssa.insert(name, (def, base_ty));
+      }
+    }
+
+    mem_binding_group_Value::Var(id) => {
+      base_ty |= TypeInfo::unknown_ele_count();
+
+      if let Some(((ptr_id, ptr_ty))) = block.get_binding(id.id.to_token(), true) {
+        if is_heap {
+          block.debug_op(id.tok.clone());
+          let id = block.push_call(ptr_ty, "malloc".intern(), ArrayVec::from_iter([ptr_id]));
+          let name = block.binding_name(ptr_ty.var_id().unwrap()).unwrap();
+          block.scope_ssa.insert(name, (id, base_ty));
+        }
+      } else {
+        panic!()
+      }
+    }
+
+    val => unreachable!("{val:?}"),
+  };
+
+  GraphId::default()
+}*/
+
+fn process_statements<'a>(
+  statement: &statement_Value<Token>,
+  block: &'a mut IRBlockConstructor,
+  scope_block: BlockId,
+  leaf_blocks: &mut Vec<BlockId>,
+) -> RumResult<Option<&'a mut IRBlockConstructor>> {
+  use IROp::*;
+
+  match statement {
+    statement_Value::RawAssignment(assignment) => {
+      let vars = &assignment.vars;
+
+      let expressions = &assignment.expressions;
+
+      let mut processed_expressions =
+        ArrayVec::<32, GraphId>::from_iter(expressions.iter().map(|_| GraphId::default()));
+
+      for expression in expressions {
+        match expression {
+          assignment_statement_list_1_Value::AssignmentExprVal(expr) => {
+            let value =
+              process_arithmetic_expression(&expr.expr, block, TypeInfo::default(), false)?;
+          }
+          assignment_statement_list_1_Value::MemBinding(mem_binding) => mem_binding.byte_count,
+          _ => unreachable!(),
+        }
+      }
+
+      for (index, var) in vars.iter().enumerate() {
+        let var_name = var.var.id.intern();
+        let tok: &Token = &var.tok;
+
+        match var.ty {
+          assignment_var_Value::None => {
+            if let Some(((decl, ty))) = block.get_binding(var_name, true) {
+              let graph_id = &mut processed_expressions[index];
+              let expression = &expressions[index];
+
+              let decl = decl.clone();
+
+              let value = process_arithmetic_expression(&expression, block, ty.unstacked(), false)?;
+
+              block.debug_op(tok.clone());
+
+              block.push_store(ty, decl, value);
+            } else {
+              panic!("{}", tok.blame(1, 1, "not found", Option::None))
+            }
+            // use existing variable
+          }
+          ty => {
+            process_ty
+            // New declaration for this variable
+          }
+        }
+      }
+
+      return Ok(Some(block));
+    }
+    /*     statement_Value::RawPtrDeclaration(ptr_decl) => {
+      create_binding(&ptr_decl.id, &(ptr_decl.ty.clone().into()), &ptr_decl.tok, block)?;
+      let target = &ptr_decl.id;
+      let target_name = target.id.to_token();
+
+      create_allocation(
+        block,
+        target_name,
+        ptr_decl.expression.heap,
+        &ptr_decl.expression.byte_count,
+      );
+    }
+    statement_Value::RawPrimitiveDeclaration(prim_decl) => {
+      create_binding(&prim_decl.id, &(prim_decl.ty.clone().into()), &prim_decl.tok, block)?;
+      let target = &prim_decl.id;
+      let target_name = target.id.to_token();
+      let location = (prim_decl.id.clone().into());
+
+      match &prim_decl.expression {
+        arithmetic_Value::None => {}
+        expression => {
+          process_assignment(block, &location, &expression, &prim_decl.tok)?;
+        }
+      }
+    }
+    /// Binds a variable to a type.
+    statement_Value::RawAssign(assign) => {
+      process_assignment(block, &assign.location, &assign.expression, &assign.tok)?;
+    } */
+    statement_Value::RawLoop(loop_) => {
+      todo!("Test");
+      /*       let loop_head = block.create_successor();
+      let loop_head_id = loop_head.inner.id;
+      block.inner.branch_unconditional = Some(loop_head_id);
+      loop_head.inner.name = "l_head".to_token();
+
+      let mut new_leaf_blocks = vec![];
+
+      match &loop_.scope {
+        loop_statement_group_Value::RawBlock(block) => {
+          if let Some(block) = process_block(block, loop_head, loop_head_id, &mut new_leaf_blocks)?
+          {
+            new_leaf_blocks.push(block.inner.id);
+          }
+        }
+        loop_statement_group_Value::RawMatch(m) => {
+          let block = process_match(m, loop_head, loop_head_id, &mut new_leaf_blocks)?;
+          new_leaf_blocks.push(block.inner.id);
+        }
+        _ => unreachable!(),
+      }
+
+      let loop_exit = block.create_successor();
+      let id = loop_exit.inner.id;
+      loop_exit.inner.name = "l_exit".to_token();
+
+      let blocks = &mut block.ctx().blocks;
+
+      for leaf_block_id in new_leaf_blocks {
+        let leaf_block = unsafe { blocks[leaf_block_id].as_mut() }.unwrap();
+        if leaf_block.break_id == Some("".to_token()) {
+          leaf_blocks.push(leaf_block_id);
+        } else {
+          leaf_block.inner.branch_unconditional = Some(loop_head_id);
+        }
+      }
+
+      return Ok(Some(loop_exit)); */
+    }
+    statement_Value::RawMatch(m) => {
+      return Ok(Some(process_match(m, block, scope_block, leaf_blocks)?))
+    }
+    val => {
+      todo!("Process statement {val:#?} {block:?}")
+    }
+  }
+
+  Ok(Some(block))
+}
+
+fn process_match<'a>(
+  m: &Box<RawMatch<Token>>,
+  block: &mut IRBlockConstructor,
+  scope_block: BlockId,
+  leaf_blocks: &mut Vec<BlockId>,
+) -> RumResult<&'a mut IRBlockConstructor> {
+  let expression = process_arithmetic_expression(&m.expression, block, Default::default(), true)?;
+
+  todo!("build match expressions")
+
+  /*   match  {
+    LogicalExprType::Arithmatic(op_arg, _) => {
+      todo!("Arithmetic based matching")
+    }
+    LogicalExprType::Boolean(bool_block) => {
+      let mut default_case = None;
+      let mut bool_success_case = None;
+
+      for match_block in &m.statements {
+        match match_block {
+          match_statement_Value::DefaultMatchCase(block) => {
+            let start_block = bool_block.create_successor();
+            let start_block_id = start_block.inner.id;
+
+            let end_block = process_block(&block.block, start_block, scope_block, leaf_blocks)?;
+
+            default_case = Some((start_block_id, end_block));
+          }
+
+          match_statement_Value::RawMatchCase(case) => {
+            let start_block = bool_block.create_successor();
+            let start_block_id = start_block.inner.id;
+
+            let end_block = process_block(&case.block, start_block, scope_block, leaf_blocks)?;
+
+            match &case.val {
+              compiler::script_parser::match_case_Value::RawFalse(_) => {
+                default_case = Some((start_block_id, end_block));
+              }
+              compiler::script_parser::match_case_Value::RawTrue(_) => {
+                bool_success_case = Some((start_block_id, end_block));
+              }
+              compiler::script_parser::match_case_Value::RawNum(val) => {
+                panic!("Incorrect expression for logical type");
+              }
+              _ => unreachable!(),
+            }
+          }
+          _ => unreachable!(),
+        }
+      }
+
+      let join_block = bool_block.create_successor();
+      join_block.inner.name = "m_join".to_token();
+
+      if let Some((start_block_id, end_block)) = default_case {
+        bool_block.inner.branch_default = Some(start_block_id);
+        if let Some(block) = end_block {
+          block.inner.branch_unconditional = Some(join_block.inner.id);
+        }
+      } else {
+        bool_block.inner.branch_default = Some(join_block.inner.id);
+      }
+
+      if let Some((start_block_id, end_block)) = bool_success_case {
+        bool_block.inner.branch_succeed = Some(start_block_id);
+        if let Some(block) = end_block {
+          block.inner.branch_unconditional = Some(join_block.inner.id);
+        }
+      } else {
+        bool_block.inner.branch_succeed = Some(join_block.inner.id);
+      }
+
+      return Ok(join_block);
+    }
+  } */
 }
 
 fn resolve_base_ptr(
@@ -283,7 +473,7 @@ fn resolve_base_ptr(
   block: &mut IRBlockConstructor,
 ) -> GraphId {
   match base_ptr {
-    pointer_offset_group_Value::Id(id) => {
+    pointer_offset_group_Value::Var(id) => {
       if let Some((decl, _)) = block.get_binding(id.id.to_token(), true) {
         decl
       } else {
@@ -297,7 +487,7 @@ fn resolve_base_ptr(
 
 fn resolve_mem_offset(expr: &mem_expr_Value<Token>, block: &mut IRBlockConstructor) -> GraphId {
   match expr {
-    mem_expr_Value::Id(id) => {
+    mem_expr_Value::Var(id) => {
       if let Some((val, _)) = block.get_binding(id.id.to_token(), true) {
         let op = resolve_base_ptr(&id.clone().into(), block);
         block.debug_op(id.tok.clone());
@@ -365,12 +555,12 @@ macro_rules! boolean_op {
   };
 }
 
-boolean_op!(handle_ge, compiler::script_parser::GE<Token>, IROp::GE);
+/* boolean_op!(handle_ge, compiler::script_parser::GE<Token>, IROp::GE);
 boolean_op!(handle_gr, compiler::script_parser::GR<Token>, IROp::GR);
 boolean_op!(handle_le, compiler::script_parser::LE<Token>, IROp::LE);
 boolean_op!(handle_ls, compiler::script_parser::LS<Token>, IROp::LS);
 boolean_op!(handle_eq, compiler::script_parser::EQ<Token>, IROp::EQ);
-boolean_op!(handle_ne, compiler::script_parser::NE<Token>, IROp::NE);
+boolean_op!(handle_ne, compiler::script_parser::NE<Token>, IROp::NE); */
 
 macro_rules! arithmetic_op {
   ($name: ident, $node_type:ty, $ir_op: expr) => {
@@ -398,20 +588,20 @@ arithmetic_op!(handle_add, compiler::script_parser::Add<Token>, IROp::ADD);
 arithmetic_op!(handle_mul, compiler::script_parser::Mul<Token>, IROp::MUL);
 arithmetic_op!(handle_div, compiler::script_parser::Div<Token>, IROp::DIV);
 
-fn process_match_expression<'b, 'a: 'b>(
-  expression: &match_group_Value<Token>,
+/* fn process_match_expression<'b, 'a: 'b>(
+  expression: &boolean_Value<Token>,
   block: &'a mut IRBlockConstructor,
   e_val: TypeInfo,
 ) -> RumResult<LogicalExprType<'a>> {
   use LogicalExprType as LET;
 
   match expression {
-    match_group_Value::EQ(val) => handle_eq(val, block, e_val),
-    match_group_Value::LE(val) => handle_le(val, block, e_val),
-    match_group_Value::LS(val) => handle_ls(val, block, e_val),
-    match_group_Value::GR(val) => handle_gr(val, block, e_val),
-    match_group_Value::GE(val) => handle_ge(val, block, e_val),
-    match_group_Value::NE(val) => handle_ne(val, block, e_val),
+    boolean_Value::EQ(val) => handle_eq(val, block, e_val),
+    boolean_Value::LE(val) => handle_le(val, block, e_val),
+    boolean_Value::LS(val) => handle_ls(val, block, e_val),
+    boolean_Value::GR(val) => handle_gr(val, block, e_val),
+    boolean_Value::GE(val) => handle_ge(val, block, e_val),
+    boolean_Value::NE(val) => handle_ne(val, block, e_val),
     //match_group_Value::AND(val) => handle_and(val, block),
     //match_group_Value::OR(val) => handle_or(val, block),
     //match_group_Value::XOR(val) => handle_xor(val, block),
@@ -433,7 +623,7 @@ fn process_match_expression<'b, 'a: 'b>(
     //}
     //match_group_Value::RawStr(..) => todo!(),
     //match_group_Value::RawNum(val) => LET::map_arith_result(handle_num(val, e_val), block),
-    match_group_Value::Add(val) => {
+    /*     match_group_Value::Add(val) => {
       LET::map_arith_result(handle_add(val, block, Default::default(), false), block)
     }
     match_group_Value::Div(val) => {
@@ -447,48 +637,39 @@ fn process_match_expression<'b, 'a: 'b>(
     //match_group_Value::Pow(val) => LET::map_arith_result(handle_pow(val, block), block),
     match_group_Value::Sub(val) => {
       LET::map_arith_result(handle_sub(val, block, e_val, false), block)
-    }
+    } */
     //match_group_Value::Root(..) => todo!(),
     //match_group_Value::None => unreachable!(),
     exp => unreachable!("{exp:#?}"),
   }
-}
+}*/
 
 fn process_arithmetic_expression(
-  expression: &arithmetic_Value<Token>,
+  expression: &bitwise_Value<Token>,
   block: &mut IRBlockConstructor,
   expected_ty: TypeInfo,
   ret_val: bool,
 ) -> RumResult<GraphId> {
   match expression {
-    arithmetic_Value::RawMember(mem) => handle_member(mem, block, ret_val),
-    //arithmetic_Value::RawSelfMember(mem) => handle_self_member(mem, block),
-    //arithmetic_Value::RawMemLocation(mem) => handle_mem_location(mem, block),
-    //arithmetic_Value::RawCall(val) => handle_call(val, block),
-    arithmetic_Value::RawPrimitiveCast(prim) => {
+    /*
+    //bitwise_Value::RawSelfMember(mem) => handle_self_member(mem, block),
+    //bitwise_Value::RawMemLocation(mem) => handle_mem_location(mem, block),
+    //bitwise_Value::RawCall(val) => handle_call(val, block),
+    bitwise_Value::RawPrimitiveCast(prim) => {
       handle_primitive_cast(prim, block, expected_ty, ret_val)
-    }
-    //arithmetic_Value::RawStr(..) => todo!(),
-    arithmetic_Value::RawNum(val) => handle_num(val, block, expected_ty),
-    arithmetic_Value::Add(val) => handle_add(val, block, expected_ty, ret_val),
-    arithmetic_Value::Div(val) => handle_div(val, block, expected_ty, ret_val),
-    //arithmetic_Value::Log(val) => handle_log(val, block),
-    arithmetic_Value::Mul(val) => handle_mul(val, block, expected_ty, ret_val),
-    //arithmetic_Value::Mod(val) => handle_mod(val, block),
-    //arithmetic_Value::Pow(val) => handle_pow(val, block),
-    arithmetic_Value::Sub(val) => handle_sub(val, block, expected_ty, ret_val),
+    } */
+    //bitwise_Value::RawStr(..) => todo!(),
+    bitwise_Value::RawNum(val) => handle_num(val, block, expected_ty),
+    bitwise_Value::Add(val) => handle_add(val, block, expected_ty, ret_val),
+    bitwise_Value::Div(val) => handle_div(val, block, expected_ty, ret_val),
+    //bitwise_Value::Log(val) => handle_log(val, block),
+    bitwise_Value::Mul(val) => handle_mul(val, block, expected_ty, ret_val),
+    //bitwise_Value::Mod(val) => handle_mod(val, block),
+    //bitwise_Value::Pow(val) => handle_pow(val, block),
+    bitwise_Value::Sub(val) => handle_sub(val, block, expected_ty, ret_val),
     //arithmetic_Value::Root(..) => todo!(), */
     exp => unreachable!("{exp:#?}"),
   }
-}
-
-fn handle_primitive_cast(
-  val: &compiler::script_parser::RawPrimitiveCast<Token>,
-  block: &mut IRBlockConstructor,
-  e_val: TypeInfo,
-  ret_val: bool,
-) -> RumResult<GraphId> {
-  process_arithmetic_expression(&val.expression, block, e_val, ret_val)
 }
 
 fn handle_num(
@@ -525,116 +706,8 @@ fn handle_num(
   Ok(block.push_constant(constant))
 }
 
-fn handle_member(
-  val: &compiler::script_parser::RawMember<Token>,
-  block: &mut IRBlockConstructor,
-  ret_val: bool,
-) -> RumResult<GraphId> {
-  if val.branches.len() > 0 {
-    todo!("Handle Member Expression - Multi Level Case, \n{val:?}");
-  }
-  match block.get_binding(val.root.id.to_token(), true) {
-    Some((decl, ty)) => {
-      block.debug_op(val.root.tok.clone());
-      Ok(decl)
-    }
-    None => {
-      panic!(
-        "Undeclared variable {block:#?}[{}]:\n{}",
-        val.root.id,
-        val.root.tok.blame(1, 1, "", None)
-      )
-    }
-  }
-}
-
-fn create_allocation(
-  block: &mut IRBlockConstructor,
-  target_name: IString,
-  is_heap: bool,
-  byte_count: &mem_binding_group_Value<Token>,
-) {
-  match block.get_binding(target_name, true) {
-    Some(((target, mut base_ty))) => {
-      if base_ty.location() != DataLocation::Undefined {
-        // panic!("Already allocated! {}", decl.tok.blame(1, 1, "", None))
-        panic!("");
-      }
-
-      if !base_ty.is_ptr() {
-        panic!("");
-        /*       panic!(
-          "Variable is not bound to a ptr type! {} \n {}",
-          decl.tok.blame(1, 1, "", None),
-          decl.ty
-        ) */
-      }
-      if is_heap {
-        block.refine_binding(target_name, TypeInfo::to_location(DataLocation::Heap));
-      } else {
-        block.refine_binding(
-          target_name,
-          TypeInfo::to_location(DataLocation::SsaStack(base_ty.var_id().unwrap())),
-        );
-      }
-
-      match byte_count {
-        mem_binding_group_Value::RawUint(int) => {
-          let val = int.val * base_ty.deref().ele_byte_size() as i64;
-
-          let constant = if (64 - val.leading_zeros()).div_ceil(8) <= 4 {
-            ConstVal::new(TypeInfo::Unsigned | TypeInfo::b32).store(val as i64)
-          } else {
-            ConstVal::new(TypeInfo::Unsigned | TypeInfo::b64).store(val as i64)
-          };
-
-          if val < u16::MAX as i64 {
-            base_ty |= TypeInfo::elements(val as u16);
-          } else {
-            base_ty |= TypeInfo::unknown_ele_count();
-          }
-
-          if is_heap {
-            let arg = block.push_constant(constant);
-            //block.push_binary_op(SSAOp::MALLOC, ty, target, arg);
-
-            let malloc =
-              block.push_call(base_ty.unstacked(), "malloc".intern(), ArrayVec::from_iter([arg]));
-
-            let def = block.push_unary_op(IROp::V_DEF, base_ty, malloc);
-
-            let name = block.binding_name(base_ty.var_id().unwrap()).unwrap();
-
-            block.scope_ssa.insert(name, (def, base_ty));
-          }
-        }
-
-        mem_binding_group_Value::Id(id) => {
-          base_ty |= TypeInfo::unknown_ele_count();
-          let decl = target.clone();
-          if let Some(((ptr_id, ptr_ty))) = block.get_binding(id.id.to_token(), true) {
-            if is_heap {
-              block.debug_op(id.tok.clone());
-              let id = block.push_call(ptr_ty, "malloc".intern(), ArrayVec::from_iter([ptr_id]));
-              let name = block.binding_name(ptr_ty.var_id().unwrap()).unwrap();
-              block.scope_ssa.insert(name, (id, base_ty));
-            }
-          } else {
-            panic!()
-          }
-        }
-
-        val => unreachable!("{val:?}"),
-      };
-    }
-    None => {
-      panic!("declaration not found:  {target_name:?}")
-    }
-  }
-}
-
 fn create_binding(
-  id: &Id<Token>,
+  id: &Var<Token>,
   ty: &type_Value,
   tok: &Token,
   block: &mut IRBlockConstructor,
@@ -671,298 +744,4 @@ fn ast_ty_to_ssa_ty(val: &type_Value) -> TypeInfo {
   };
 
   val
-}
-
-#[derive(Debug)]
-pub struct IRContextBuilder {
-  pub(super) blocks:      Vec<*mut IRBlockConstructor>,
-  pub(super) ssa_index:   isize,
-  pub(super) block_top:   BlockId,
-  pub(super) active_type: Vec<RawVal>,
-  pub(super) graph:       Vec<IRGraphNode>,
-  pub(super) variables:   Vec<TypeInfo>,
-  pub(super) calls:       Vec<IRCall>,
-}
-
-impl Default for IRContextBuilder {
-  fn default() -> Self {
-    Self {
-      blocks:      Default::default(),
-      ssa_index:   0,
-      block_top:   Default::default(),
-      active_type: Default::default(),
-      graph:       Vec::with_capacity(4096),
-      calls:       Default::default(),
-      variables:   Default::default(),
-    }
-  }
-}
-
-impl IRContextBuilder {
-  pub fn push_block<'a>(&mut self, predecessor: Option<u32>) -> &'a mut IRBlockConstructor {
-    self.block_top = BlockId(self.blocks.len() as u32);
-
-    let mut block = Box::new(IRBlockConstructor::default());
-
-    block.inner.id = self.block_top;
-    block.ctx = self;
-
-    if let Some(predecessor) = predecessor {
-      block.scope_parent = Some(self.blocks[predecessor as usize])
-    }
-
-    self.blocks.push(Box::into_raw(block));
-
-    unsafe { &mut *self.blocks[self.block_top] }
-  }
-
-  pub fn get_current_ssa_id(&self) -> usize {
-    self.ssa_index as usize
-  }
-
-  fn get_ssa_id(&mut self) -> usize {
-    let ssa = &mut self.ssa_index;
-    (*ssa) += 1;
-    (*ssa) as usize
-  }
-
-  pub fn next_block_id(&self) -> usize {
-    (self.block_top.0 + 1) as usize
-  }
-
-  pub fn get_block_mut(&mut self, block_id: usize) -> Option<&mut IRBlockConstructor> {
-    self.blocks.get_mut(block_id).map(|b| unsafe { &mut **b })
-  }
-
-  pub fn get_head_block(&mut self) -> &mut IRBlockConstructor {
-    self.get_block_mut(self.block_top.0 as usize).unwrap()
-  }
-}
-
-#[derive(Debug)]
-pub struct IRBlockConstructor {
-  inner:            Box<IRBlock>,
-  pub scope_parent: Option<*mut IRBlockConstructor>,
-  pub decls:        Vec<SymbolBinding>,
-  pub scope_ssa:    HashMap<IString, (GraphId, TypeInfo)>,
-  pub ctx:          *mut IRContextBuilder,
-}
-
-impl Default for IRBlockConstructor {
-  fn default() -> Self {
-    Self {
-      ctx:          std::ptr::null_mut(),
-      decls:        Default::default(),
-      scope_parent: Default::default(),
-      scope_ssa:    Default::default(),
-      inner:        Box::new(IRBlock {
-        id:                   Default::default(),
-        ops:                  Default::default(),
-        branch_succeed:       Default::default(),
-        branch_unconditional: Default::default(),
-        branch_fail:          Default::default(),
-      }),
-    }
-  }
-}
-
-impl Into<Box<IRBlock>> for IRBlockConstructor {
-  fn into(self) -> Box<IRBlock> {
-    self.inner
-  }
-}
-
-impl IRBlockConstructor {
-  pub fn push_binary_op(&mut self, op: IROp, output: TypeInfo, l: GraphId, r: GraphId) -> GraphId {
-    let graph = &mut self.ctx().graph;
-    let insert_point = self.inner.ops.len();
-    graph_actions::push_binary_op(graph, insert_point, &mut self.inner, op, output, l, r)
-  }
-
-  pub fn push_call(
-    &mut self,
-    output: TypeInfo,
-    fn_name: IString,
-    args: ArrayVec<7, GraphId>,
-  ) -> GraphId {
-    let call_id = GraphId::ssa(0).to_var_id((self.ctx().calls.len())).to_ty(GraphIdType::CALL);
-
-    for arg in args.iter() {
-      if arg.is_invalid() {
-        panic!("Invalid argument")
-      }
-      match self.ctx().graph[arg.graph_id()] {
-        IRGraphNode::Const { val: constant, .. } => {
-          self.push_unary_op(IROp::CALL_ARG, constant.ty, *arg);
-        }
-        IRGraphNode::SSA { out_ty, .. } => {
-          self.push_unary_op(IROp::CALL_ARG, out_ty, *arg);
-        }
-        IRGraphNode::PHI { out_ty, .. } => {
-          self.push_unary_op(IROp::CALL_ARG, out_ty, *arg);
-        }
-      }
-    }
-
-    let graph_id = self.push_unary_op(IROp::CALL, output, call_id);
-    self.ctx().calls.push(IRCall { name: fn_name, args, ret: graph_id });
-    graph_id
-  }
-
-  pub fn push_store(&mut self, output: TypeInfo, left: GraphId, right: GraphId) -> GraphId {
-    let graph_id = self.push_unary_op(IROp::V_DEF, output, right);
-
-    let name = self.binding_name(output.var_id().unwrap()).unwrap();
-    self.scope_ssa.insert(name, (graph_id, output));
-
-    graph_id
-  }
-
-  pub fn push_unary_op(&mut self, op: IROp, output: TypeInfo, left: GraphId) -> GraphId {
-    let graph = &mut self.ctx().graph;
-    let insert_point = self.inner.ops.len();
-    graph_actions::push_unary_op(graph, insert_point, &mut self.inner, op, output, left)
-  }
-
-  pub fn push_zero_op(&mut self, op: IROp, output: TypeInfo) -> GraphId {
-    let graph = &mut self.ctx().graph;
-    let insert_point = self.inner.ops.len();
-    graph_actions::push_zero_op(graph, insert_point, &mut self.inner, op, output)
-  }
-
-  pub fn push_constant(&mut self, output: ConstVal) -> GraphId {
-    let graph = &mut self.ctx().graph;
-    let ssa_id = GraphId::ssa(graph.len());
-
-    graph.push(IRGraphNode::Const { ssa_id, val: output });
-
-    ssa_id
-  }
-
-  pub fn debug_op(&mut self, tok: Token) {
-    //self.ops.push(SSAExpr::Debug(tok));
-  }
-
-  pub(super) fn ctx<'a>(&self) -> &'a mut IRContextBuilder {
-    unsafe { &mut *self.ctx }
-  }
-
-  pub(super) fn get_current_ssa_id(&self) -> usize {
-    if self.ctx.is_null() {
-      usize::MAX
-    } else {
-      self.ctx().get_current_ssa_id()
-    }
-  }
-
-  pub fn get_binding(&self, id: IString, search_hierarchy: bool) -> Option<(GraphId, TypeInfo)> {
-    if let Some(graph_id) = self.scope_ssa.get(&id) {
-      Some(*graph_id)
-    } else if !search_hierarchy {
-      None
-    } else if let Some(par) = self.scope_parent {
-      return unsafe { (&*par).get_binding(id, search_hierarchy) };
-    } else {
-      None
-    }
-  }
-
-  fn binding_name(&mut self, stack_id: usize) -> Option<IString> {
-    let ctx = self.ctx();
-    for binding in &mut self.decls {
-      if binding.var_id == stack_id {
-        return Some(binding.name);
-      }
-    }
-
-    if let Some(par) = self.scope_parent {
-      return unsafe { (&mut *par).binding_name(stack_id) };
-    }
-
-    None
-  }
-
-  pub(super) fn refine_binding(&mut self, name: IString, ty: TypeInfo) {
-    let ctx = self.ctx();
-    for binding in &mut self.decls {
-      if binding.name == name {
-        let id = binding.ssa_id;
-
-        if let IRGraphNode::SSA { out_ty, .. } = &mut ctx.graph[id.graph_id()] {
-          *out_ty |= ty;
-          binding.ty |= ty;
-          return;
-        } else {
-          panic!("Invalid operation")
-        }
-      }
-    }
-
-    if let Some(par) = self.scope_parent {
-      return unsafe { (&mut *par).refine_binding(name, ty) };
-    }
-  }
-
-  pub(super) fn create_binding(
-    &mut self,
-    name: IString,
-    mut ty: TypeInfo,
-    tok: Token,
-  ) -> RumResult<GraphId> {
-    let ctx = self.ctx();
-
-    let var_id = (ctx.variables.len()) as usize;
-
-    let ty = ty.mask_out_var_id() | TypeInfo::at_var_id(var_id as u16);
-
-    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode::SSA {
-      out_id:   GraphId::INVALID,
-      op:       IROp::V_DECL,
-      out_ty:   ty,
-      operands: Default::default(),
-      block_id: self.inner.id,
-    });
-
-    ctx.variables.push(ty);
-
-    self.scope_ssa.insert(name, (id, ty));
-
-    self.decls.push(SymbolBinding { name, ty, ssa_id: id, tok, var_id });
-
-    Ok(id)
-  }
-
-  pub(super) fn create_anonymous_binding(
-    &mut self,
-    mut ty: TypeInfo,
-    tok: Token,
-  ) -> RumResult<(GraphId, TypeInfo)> {
-    let ctx = self.ctx();
-
-    let var_id = (ctx.variables.len()) as usize;
-
-    let ty = ty.mask_out_var_id() | TypeInfo::at_var_id(var_id as u16);
-
-    let id = graph_actions::push_graph_node(&mut self.ctx().graph, IRGraphNode::SSA {
-      out_id:   GraphId::INVALID,
-      op:       IROp::V_DECL,
-      out_ty:   ty,
-      operands: Default::default(),
-      block_id: self.inner.id,
-    });
-
-    ctx.variables.push(ty);
-
-    Ok((id, ty))
-  }
-
-  pub(super) fn get_type(&self, id: GraphId) -> TypeInfo {
-    debug_assert!(!id.is_invalid());
-    self.ctx().graph[id.graph_id()].ty()
-  }
-
-  pub(super) fn create_successor<'a>(&self) -> &'a mut IRBlockConstructor {
-    let id = self.ctx().push_block(Some(self.inner.id.0)).inner.id;
-    unsafe { &mut *self.ctx().blocks[id] }
-  }
 }
