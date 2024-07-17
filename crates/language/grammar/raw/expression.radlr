@@ -6,13 +6,21 @@ IMPORT ../common/comment as cmt
 
 
 <> expression > expression_types
+    
+    :ast { t_Expression, expr: $1 }
 
+  | address_of
 
-  :ast { t_Expression, expr: $1 }
+    :ast { t_Expression, expr: $1 }
 
 <> expression_types
 
   > bitwise
+
+
+<> address_of > "&" prim::var^id
+
+    :ast { t_AddressOf, id }
 
 <> mem_expr 
 
@@ -82,23 +90,23 @@ IMPORT ../common/comment as cmt
 
 <> bitwise 
 
-  > bitwise^left  ">>"{3}  bitwise{3}^right
+  > bitwise^left  ">>"{5}  bitwise{4}^right
     
     :ast { t_BIT_SR, left, right } 
 
-  | bitwise^left  "<<"{3}  bitwise{3}^right
+  | bitwise^left  "<<"{5}  bitwise{4}^right
     
     :ast { t_BIT_SL, left, right } 
 
-  | bitwise^left "&"{2}  bitwise{2}^right
+  | bitwise^left "&"{3}  bitwise{2}^right
     
     :ast { t_BIT_AND, left, right } 
 
-  | bitwise^left "|"{2}  bitwise{2}^right
+  | bitwise^left "|"{3}  bitwise{2}^right
     
     :ast { t_BIT_OR, left, right } 
 
-  | bitwise^left "~|"{2}  bitwise{2}^right
+  | bitwise^left "~|"{3}  bitwise{2}^right
     
     :ast { t_BIT_XOR, left, right } 
 
@@ -161,9 +169,9 @@ IMPORT ../common/comment as cmt
 
 <> call 
 
-  > prim::var^id "("{1} expression_types(+",") ")"
+  > prim::var^id "("{1} expression(+",")^args ")"
 
-    :ast { t_RawCall, id  }
+    :ast { t_RawCall, id, args }
 
 <> member 
   

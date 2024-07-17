@@ -20,8 +20,29 @@ macro_rules! op_table {
 }
 
 /// https://www.felixcloutier.com/x86/call
+op_table!(
+  syscall [
+    ((8, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+    //
+    ((16, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+    //
+    ((32, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+    //
+    ((64, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+  ]
+);
+
+#[test]
+fn test_syscall() {
+  assert_eq!("syscall", test_enc_uno(&syscall, b8, Arg::None));
+  assert_eq!("syscall", test_enc_uno(&syscall, b16, Arg::None));
+  assert_eq!("syscall", test_enc_uno(&syscall, b32, Arg::None));
+  assert_eq!("syscall", test_enc_uno(&syscall, b64, Arg::None));
+}
+
+/// https://www.felixcloutier.com/x86/call
 op_table!(call [
-((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x00E8, 0x00, OpEncoding::D, gen_multi_op as *const OpEncoder as *const OpEncoder)),
+((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x00E8, 0x00, OpEncoding::D, gen_unary_op as *const OpEncoder as *const OpEncoder)),
 //
 ((64, OT::MEM, OT::NONE, OT::NONE), (0x00FF, 0x02, OpEncoding::M, gen_unary_op as *const OpEncoder as *const OpEncoder)),
 //
@@ -267,7 +288,7 @@ op_table!(mov_o [
 fn test_mov_o() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovo r8d,r11d", test_enc_dos(&mov_o, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovo r8,r11", test_enc_dos(&mov_o, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -289,7 +310,7 @@ op_table!(mov_no [
 fn test_mov_no() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovno r8d,r11d", test_enc_dos(&mov_no, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovno r8,r11", test_enc_dos(&mov_no, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -321,7 +342,7 @@ op_table!(mov_ae [
 fn test_mov_ae() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovae r8d,r11d", test_enc_dos(&mov_ae, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovae r8,r11", test_enc_dos(&mov_ae, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -343,7 +364,7 @@ op_table!(mov_e [
 fn test_mov_e() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmove r8d,r11d", test_enc_dos(&mov_e, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmove r8,r11", test_enc_dos(&mov_e, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -365,7 +386,7 @@ op_table!(mov_ne [
 fn test_mov_ne() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovne r8d,r11d", test_enc_dos(&mov_ne, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovne r8,r11", test_enc_dos(&mov_ne, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -387,7 +408,7 @@ op_table!(mov_be [
 fn test_mov_be() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovbe r8d,r11d", test_enc_dos(&mov_be, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovbe r8,r11", test_enc_dos(&mov_be, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -409,7 +430,7 @@ op_table!(mov_a [
 fn test_mov_a() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmova r8d,r11d", test_enc_dos(&mov_a, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmova r8,r11", test_enc_dos(&mov_a, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -431,7 +452,7 @@ op_table!(mov_s [
 fn test_mov_s() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovs r10d,r11d", test_enc_dos(&mov_s, b32, R10.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovs r10,r11", test_enc_dos(&mov_s, b64, R10.as_op(c, s), R11.as_op(c, s)));
 
@@ -453,7 +474,7 @@ op_table!(mov_ns [
 fn test_mov_ns() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovns r8d,r11d", test_enc_dos(&mov_ns, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovns r8,r11", test_enc_dos(&mov_ns, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -475,7 +496,7 @@ op_table!(mov_pe [
 fn test_mov_pe() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovp r8d,r11d", test_enc_dos(&mov_pe, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovp r8,r11", test_enc_dos(&mov_pe, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -497,7 +518,7 @@ op_table!(mov_po [
 fn test_mov_po() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovnp r8d,r11d", test_enc_dos(&mov_po, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovnp r8,r11", test_enc_dos(&mov_po, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -519,7 +540,7 @@ op_table!(mov_l [
 fn test_mov_l() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovl r8d,r11d", test_enc_dos(&mov_l, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovl r8,r11", test_enc_dos(&mov_l, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -541,7 +562,7 @@ op_table!(mov_ge [
 fn test_mov_ge() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovge r8d,r11d", test_enc_dos(&mov_ge, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovge r8,r11", test_enc_dos(&mov_ge, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -563,7 +584,7 @@ op_table!(mov_le [
 fn test_mov_le() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovle r8d,r11d", test_enc_dos(&mov_le, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovle r8,r11", test_enc_dos(&mov_le, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -585,7 +606,7 @@ op_table!(mov_g [
 fn test_mov_g() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, b32, R8.as_op(c, s), R11.as_op(c, s)));
   assert_eq!("cmovg r8,r11", test_enc_dos(&mov_g, b64, R8.as_op(c, s), R11.as_op(c, s)));
 
@@ -634,7 +655,7 @@ op_table!(lea [
 fn test_lea() {
   let c = SSAFunction::default();
   let c = &c;
-  let s = &[];
+  let s = &Default::default();
   assert_eq!("lea r8d,[r11]", test_enc_dos(&lea, b32, R8.as_op(c, s), R11.as_op(c, s).to_mem()));
   assert_eq!("cmovg r8,r11", test_enc_dos(&lea, b64, R8.as_op(c, s), Arg::RSP_REL(128)));
 }

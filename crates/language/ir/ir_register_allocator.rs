@@ -88,22 +88,6 @@ pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) {
             }
           }
         }
-
-        if *op == IROp::CALL {
-          todo!("Handle call")
-          /*    let call_id = operands[0];
-          let call = &mut calls[call_id.var_id()];
-
-          for call_op in call.args.iter_mut() {
-            if call_op.is(GraphIdType::SSA) {
-              if let IRGraphNode::SSA { id: out_id, .. } = graph[call_op.graph_id()] {
-                if out_id.is_var() {
-                  *call_op = out_id.to_ty(GraphIdType::VAR_LOAD);
-                }
-              }
-            }
-          } */
-        }
       }
       _ => {}
     }
@@ -296,8 +280,8 @@ pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) {
                 .to_reg_id(reg_pack.registers[reg_index].reg_id())
                 .to_ty(GraphIdType::REGISTER); */
             } else if graph_op == IROp::CALL_ARG {
-              /*               let op = operands[0];
-              if op.is_var() {
+              let op = operands[0];
+              if let Some(var_id) = op.var_id() {
                 let reg = get_register(
                   block_id,
                   &mut reg_lu,
@@ -313,7 +297,7 @@ pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) {
                 }
 
                 let op = &mut operands[0];
-                *op = op.to_reg_id(reg.unwrap().reg_id());
+                *op = op.to_reg_id(reg.unwrap().reg_id().unwrap());
               }
 
               let reg_index = call_registers[call_index];
@@ -323,9 +307,7 @@ pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) {
 
               apply_spill(graph, existing);
 
-              *out_id = out_id
-                .to_reg_id(reg_pack.registers[reg_index].reg_id())
-                .to_ty(GraphIdType::REGISTER); */
+              *out_id = out_id.to_reg_id(reg_pack.registers[reg_index].reg_id().unwrap());
             } else {
               for op_index in 0..operands.len() {
                 let op = operands[op_index];
@@ -523,7 +505,6 @@ fn get_register(
 }
 
 fn apply_spill(graph: &mut Vec<IRGraphNode>, existing_var: IRGraphId) {
-  todo!();
   if !existing_var.is_invalid() {
     match &mut graph[existing_var.graph_id()] {
       IRGraphNode::PHI { operands, .. } => {

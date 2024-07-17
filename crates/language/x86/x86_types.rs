@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::ir::ir_types::{GraphIdType, IRGraphId, SSAFunction};
 
 #[derive(Debug, Hash, Clone, Copy)]
@@ -215,7 +217,7 @@ impl IRGraphId {
     (self.reg_id().unwrap() & 0x1F) >= 16
   }
 
-  pub fn as_addr_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
+  pub fn as_addr_op(&self, ctx: &SSAFunction, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
     if let Some(reg) = self.reg_id() {
       Arg::Mem(Self::register(reg))
     } else {
@@ -243,7 +245,7 @@ impl IRGraphId {
     }
   }
 
-  pub fn as_op(&self, ctx: &SSAFunction, stack_offsets: &[u64]) -> Arg {
+  pub fn as_op(&self, ctx: &SSAFunction, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
     if let Some(reg) = self.reg_id() {
       Arg::Reg(Self::register(reg))
     } else if ctx.graph[self.graph_id()].is_const() {
@@ -251,7 +253,7 @@ impl IRGraphId {
       let val: i128 = unsafe { std::mem::transmute(constant.val) };
       Arg::Imm_Int(val as i64)
     } else if let Some(var_id) = self.var_id() {
-      Arg::RSP_REL(stack_offsets[var_id])
+      Arg::RSP_REL(*stack_offsets.get(&var_id).unwrap())
     } else {
       Arg::None
     }

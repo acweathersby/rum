@@ -144,7 +144,7 @@ impl VariableContext {
     name: IString,
   ) -> Option<(&mut IRTypeInfo, &mut IRGraphId, usize)> {
     let len = self.local_variables.len();
-    
+
     for i in 0..len {
       if self.local_variables[i].0 == name {
         let (_, ty, id, decl_index) = &mut self.local_variables[i];
@@ -177,6 +177,7 @@ impl VariableContext {
     if let Some((ty_, id_, _)) = self.get_variable_mut(name) {
       *id_ = id;
       *ty_ = ty;
+      panic!("Remapping a declared type");
     } else {
       self.local_variables.push((name, ty, id, decl_index));
     }

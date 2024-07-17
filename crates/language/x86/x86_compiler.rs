@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::{x86_encoder::*, x86_instructions::*, x86_types::*};
 use crate::{
   compiler::script_parser::Var,
@@ -93,8 +95,7 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
 
   // Create area on the stack for local declarations
 
-  let mut offsets = Vec::with_capacity(20);
-  offsets.resize_with(20, || 0);
+  let mut offsets = BTreeMap::<usize, u64>::new();
   let mut rsp_offset = 0;
 
   for node in &ctx.ctx.graph {
@@ -102,17 +103,17 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
       let id = *stack_lu_index as usize;
 
       if ty.is_pointer() {
-        offsets[id] = rum_container::get_aligned_value(rsp_offset, 8);
-        rsp_offset = offsets[id] + PTR_BYTE_SIZE as u64;
+        offsets.insert(id, rum_container::get_aligned_value(rsp_offset, 8));
+        rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
       } else {
         match ty.base_type() {
           crate::ir::ir_types::TypeInfoResult::IRPrimitive(ty) => {
-            offsets[id] = rum_container::get_aligned_value(rsp_offset, ty.alignment() as u64);
-            rsp_offset = offsets[id] + ty.ele_byte_size() as u64;
+            offsets.insert(id, rum_container::get_aligned_value(rsp_offset, ty.alignment() as u64));
+            rsp_offset = offsets.get(&id).unwrap() + ty.ele_byte_size() as u64;
           }
           crate::ir::ir_types::TypeInfoResult::IRType(ty) => {
-            offsets[id] = rum_container::get_aligned_value(rsp_offset, ty.alignment as u64);
-            rsp_offset = offsets[id] + ty.byte_size as u64;
+            offsets.insert(id, rum_container::get_aligned_value(rsp_offset, ty.alignment as u64));
+            rsp_offset = offsets.get(&id).unwrap() + ty.byte_size as u64;
           }
         }
       }
@@ -203,7 +204,7 @@ pub fn compile_op(
   node: &IRGraphNode,
   block: &IRBlock,
   ctx: &mut CompileContext,
-  so: &[u64],
+  so: &BTreeMap<usize, u64>,
   rsp_offset: u64,
 ) -> bool {
   const POINTER_SIZE: BitSize = b64;
@@ -288,12 +289,14 @@ pub fn compile_op(
         // need to be stored to memory, and can be just preserved in the op1 register.
 
         if out_ty.is_pointer() {
-          let op1_arg = op1.as_op(ctx, so);
+          let op1_arg = out_id.as_op(ctx, so);
           //Ensure op1 resolves to pointer value.
 
-          match &ctx.graph[op1.graph_id()] {
+          match &ctx.graph[op1.var_id().unwrap()] {
             IRGraphNode::VAR { out_id, ty, name, loc, stack_lu_index } => {
-              let offset = so[*stack_lu_index as usize];
+              let offset = *so.get(&(*stack_lu_index as usize)).unwrap();
+
+              encode(bin, &mov, POINTER_SIZE, RSP_REL(offset), op1.as_op(ctx, so), None);
               encode(bin, &lea, POINTER_SIZE, op1_arg, RSP_REL(offset), None);
             }
             _ => panic!("Invalid Pointer Arg type"),
@@ -303,7 +306,14 @@ pub fn compile_op(
             crate::ir::ir_types::TypeInfoResult::IRPrimitive(prim) => {
               let dest_arg = out_id.as_op(ctx, so);
               let source_arg = op1.as_op(ctx, so);
-              encode(bin, &mov, (*prim).into(), dest_arg, source_arg, None);
+
+              if ctx.graph[op1.graph_id()].ty().is_pointer() {
+                encode(bin, &mov, (*prim).into(), dest_arg, source_arg.to_mem(), None);
+              } else {
+                if (dest_arg != source_arg) {
+                  encode(bin, &mov, (*prim).into(), dest_arg, source_arg, None);
+                }
+              }
             }
             crate::ir::ir_types::TypeInfoResult::IRType(ty) => {
               todo!("{ty:?} is not a valid load target, must be either a primitive or a pointer")
@@ -332,13 +342,24 @@ pub fn compile_op(
         }
       }
       IROp::MOVE | IROp::CALL_ARG => {
-        todo!()
-        /*        let CompileContext { ctx, binary: bin, .. } = ctx;
+        let CompileContext { ctx, binary: bin, .. } = ctx;
         let op1 = out_id;
         let op2 = operands[0];
-        let bit_size = out_ty.into();
+        let bit_size = out_ty.bit_size();
 
-        encode(bin, &mov, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None); */
+        encode(bin, &mov, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
+      }
+      IROp::CALL => {
+        // Fudging this for calling syswrite. Rax needs to be set to the system call id
+        // and then we make a syscall.
+
+        let CompileContext { ctx, binary: bin, .. } = ctx;
+
+        let op1 = operands[0];
+
+        encode(bin, &mov, b64, RAX.as_op(ctx, so), op1.as_op(ctx, so), None);
+
+        encode_zero(bin, &syscall, b32);
       }
       IROp::DEREF => todo!("TODO: {node:?}"),
       /*     IROp::STORE => {

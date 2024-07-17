@@ -1,18 +1,27 @@
 use super::{
   ir_const_val::ConstVal,
-  ir_context::{IRBlockConstructor, IRStruct, IRStructMember, OptimizerContext, VariableContext},
+  ir_context::{
+    graph_actions,
+    IRBlockConstructor,
+    IRStruct,
+    IRStructMember,
+    OptimizerContext,
+    VariableContext,
+  },
   ir_types::{IRGraphId, IRTypeInfo, SSAFunction, TypeInfoResult},
 };
 use crate::{
   compiler::script_parser::{
     assignment_statement_list_Value,
     block_expression_group_1_Value,
+    expression_Value,
     expression_types_Value,
     raw_module_Value,
     statement_Value,
     type_Value,
     Expression,
     RawBlock,
+    RawCall,
     RawNum,
     RawStructDeclaration,
   },
@@ -32,16 +41,10 @@ use rum_istring::CachedString;
 use IRGraphNode as GN;
 use IRPointerState as Ptr;
 use IRPrimitiveType as Prim;
-use IRTypeInfo as Ty;
 
 use crate::{compiler::script_parser::property_Value, ir_types::IRPrimitiveType};
 
-// Get expression type.
-type Type = ();
-
 pub fn build_module(module: &Vec<raw_module_Value<Token>>) {
-  use super::ir_context::Type;
-
   let mut type_context =
     TypeContext { parent_context: std::ptr::null_mut(), local_types: Vec::new() };
 
@@ -137,7 +140,7 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>) {
 
     let reg_pack = RegisterPack {
       call_arg_registers: vec![7, 6, 2, 1, 8, 9],
-      int_registers:      vec![8, 9, 10, 11, 12, 13, 14, 15, 7, 6, 3, 2, 1, 0],
+      int_registers:      vec![10, 11, 12, 13, 14, 15, 8, 9, 0, 2, 3, 6, 7],
       max_register:       16,
       registers:          vec![
         RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15,
@@ -152,7 +155,7 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>) {
 
     x86_fn.unwrap().access_as_call::<fn()>()();
 
-    panic!("WTDN?")
+    panic!("WTDN?");
   }
   //  let type_resolution = VecDeque::from_iter(iter);
 }
@@ -169,9 +172,14 @@ Temp => [
 ]
 
 main => () {
-  d = 2000
-  data = Temp[ root = 2 val = 0 ]
-  mango = d
+  data = Temp[ root = 72 val = 0 ]
+  mango = data.root
+
+  stdcout_fd:u32 = 0
+  buffer:u32 = data.root
+  size:u64 = 1
+
+  sys_write(stdcout_fd, &buffer, size)
 
 }
     
@@ -221,24 +229,35 @@ fn process_expression(
   var_ctx: &mut VariableContext,
 ) -> (IRTypeInfo, IRGraphId, InitResult) {
   match &expr.expr {
-    expression_types_Value::RawNum(num) => process_const_number(num, block),
-    expression_types_Value::RawStructDeclaration(struct_decl) => {
+    expression_Value::RawCall(call) => process_call(call, type_ctx, block, var_ctx),
+    expression_Value::RawNum(num) => process_const_number(num, block),
+    expression_Value::AddressOf(addr) => {
+      let var_name = addr.id.id.intern();
+
+      if let Some((type_, graph_id, _)) = var_ctx.get_variable(var_name) {
+        let ptr = type_.as_ptr(Ptr::Stack);
+
+        let graph_id =
+          block.push_node(GN::create_ssa(IROp::LOAD, ptr, &[graph_id], graph_id.graph_id()));
+
+        (ptr, graph_id, InitResult::None)
+      } else {
+        panic!()
+      }
+    }
+    expression_Value::RawStructDeclaration(struct_decl) => {
       process_struct_instantiation(struct_decl, type_ctx, block, var_ctx)
     }
-    expression_types_Value::RawMember(mem) => {
+    expression_Value::RawMember(mem) => {
       let base = &mem.members[0];
 
       let var_name = base.id.intern();
 
-      if let Some((type_, graph_id, _)) = var_ctx.get_variable(var_name) {
+      if let Some((type_, graph_id, var_index)) = var_ctx.get_variable(var_name) {
         match type_.base_type() {
           TypeInfoResult::IRPrimitive(prim) => {
-            let val = block.push_node(GN::create_ssa(
-              IROp::LOAD,
-              (*prim).into(),
-              &[graph_id],
-              graph_id.graph_id(),
-            ));
+            let val =
+              block.push_node(GN::create_ssa(IROp::LOAD, (*prim).into(), &[graph_id], var_index));
 
             return ((*prim).into(), val, InitResult::None);
           }
@@ -254,11 +273,12 @@ fn process_expression(
                 // Acquire a pointer to this type.
 
                 // create a ptr to this type
+                let index = block.ctx().graph.len();
                 let ptr = block.push_node(GN::create_ssa(
                   IROp::PTR_MEM_CALC,
                   sub_type.ty.as_ptr(IRPointerState::Temporary),
                   &[graph_id, offset],
-                  44,
+                  index,
                 ));
 
                 let val = block.push_node(GN::create_ssa(
@@ -280,7 +300,7 @@ fn process_expression(
         panic!("Type {var_name:?} not found");
       }
     }
-    expression_types_Value::RawBlock(ast_block) => {
+    expression_Value::RawBlock(ast_block) => {
       process_block(ast_block, type_ctx, block, var_ctx);
       println!("Return the graph id value of a raw block");
       (IRTypeInfo::default(), IRGraphId::default(), InitResult::None)
@@ -297,7 +317,6 @@ fn process_const_number(
   let graph_id = block.push_node(IRGraphNode::create_const(if string_val.contains(".") {
     ConstVal::new(Prim::Float | Prim::b64).store(num.val)
   } else {
-    dbg!(string_val.parse::<u64>());
     ConstVal::new(Prim::Unsigned | Prim::b64).store::<u64>(string_val.parse::<u64>().unwrap())
   }));
 
@@ -341,6 +360,41 @@ enum InitResult {
   None,
 }
 
+fn process_call(
+  call: &RawCall<Token>,
+  type_ctx: &TypeContext,
+  block: &mut IRBlockConstructor,
+  var_ctx: &mut VariableContext,
+) -> (IRTypeInfo, IRGraphId, InitResult) {
+  let call_name = &call.id.id;
+
+  if call_name.contains("sys_") {
+    for (type_info, graph_id, ..) in call
+      .args
+      .iter()
+      .map(|arg| process_expression(&arg, type_ctx, block, var_ctx))
+      .collect::<Vec<_>>()
+    {
+      block.push_node(IRGraphNode::create_ssa(IROp::CALL_ARG, type_info, &[graph_id], usize::MAX));
+
+      println!("TODO: match type_info with arg type");
+    }
+  }
+
+  let graph_id = block.push_node(IRGraphNode::create_const(
+    ConstVal::new(Prim::Unsigned | Prim::b64).store(1 as u64),
+  ));
+
+  let graph_id = block.push_node(IRGraphNode::create_ssa(
+    IROp::CALL,
+    Default::default(),
+    &[graph_id],
+    usize::MAX,
+  ));
+
+  (Default::default(), graph_id, InitResult::None)
+}
+
 fn process_struct_instantiation(
   struct_decl: &RawStructDeclaration<Token>,
   type_ctx: &TypeContext,
@@ -376,7 +430,6 @@ fn process_struct_instantiation(
 
           if member.ty != expr_type {
             if member.ty.is_numeric() {
-              dbg!(member);
               remap_primitive_type(member.ty.as_prim(), id, &mut block.ctx().graph)
             } else {
               let node = &block.ctx().graph[id.graph_id()];
@@ -434,8 +487,6 @@ fn process_block(
   for stmt in &ast_block.statements {
     process_statement(stmt, type_ctx, block, var_ctx);
   }
-
-  dbg!(&block, block.ctx(), var_ctx);
 
   match &ast_block.exit {
     block_expression_group_1_Value::None => {
@@ -517,14 +568,24 @@ fn process_statement(
                     (type_ptr.graph_id(), store_type, type_ptr)
                   }
                 } else if ty != *expr_ty {
-                  panic!("Miss matched types")
+                  match (ty.base_type(), expr_ty.base_type()) {
+                    (
+                      TypeInfoResult::IRPrimitive(prim_ty),
+                      TypeInfoResult::IRPrimitive(prim_expr_ty),
+                    ) => {
+                      remap_primitive_type(*prim_ty, *expr_graph_id, &mut block.ctx().graph);
+
+                      let store_type = ty.as_ptr(IRPointerState::Stack);
+                      let type_ptr = block.push_node(GN::create_var(var_name, ty));
+                      var_ctx.set_variable(var_name, ty, type_ptr, type_ptr.graph_id());
+                      (type_ptr.graph_id(), store_type, type_ptr)
+                    }
+                    _ => panic!("Miss matched types ty:{ty:?} expr_ty:{expr_ty:?}"),
+                  }
                 } else {
                   let store_type = ty.as_ptr(IRPointerState::Stack);
-
                   let type_ptr = block.push_node(GN::create_var(var_name, ty));
-
                   var_ctx.set_variable(var_name, ty, type_ptr, type_ptr.graph_id());
-
                   (type_ptr.graph_id(), store_type, type_ptr)
                 };
 
@@ -545,7 +606,9 @@ fn process_statement(
 
       // Match assignments to targets.
     }
-    statement_Value::Expression(expr) => {}
+    statement_Value::Expression(expr) => {
+      let (ty, graph_actions, _) = process_expression(expr, type_ctx, block, var_ctx);
+    }
     d => todo!("process statement: {d:#?}"),
   }
 }
