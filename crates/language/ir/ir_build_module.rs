@@ -1,13 +1,6 @@
 use super::{
   ir_const_val::ConstVal,
-  ir_context::{
-    graph_actions,
-    IRBlockConstructor,
-    IRStruct,
-    IRStructMember,
-    OptimizerContext,
-    VariableContext,
-  },
+  ir_context::{graph_actions, IRBlockConstructor, IRCallable, IRModule, IRStruct, IRStructMember, OptimizerContext, VariableContext},
   ir_types::{IRGraphId, IRTypeInfo, SSAFunction, TypeInfoResult},
 };
 use crate::{
@@ -15,7 +8,6 @@ use crate::{
     assignment_statement_list_Value,
     block_expression_group_1_Value,
     expression_Value,
-    expression_types_Value,
     raw_module_Value,
     statement_Value,
     type_Value,
@@ -26,12 +18,9 @@ use crate::{
     RawStructDeclaration,
   },
   ir::{
-    ir_block_annotations::build_annotations,
     ir_context::{IRFunctionBuilder, IRSubType, IRType, TypeContext},
-    ir_register_allocator::{assign_registers, RegisterPack},
     ir_types::{IRGraphNode, IROp, IRPointerState},
   },
-  x86::compile_from_ssa_fn,
 };
 
 pub use radlr_rust_runtime::types::Token;
@@ -44,9 +33,8 @@ use IRPrimitiveType as Prim;
 
 use crate::{compiler::script_parser::property_Value, ir_types::IRPrimitiveType};
 
-pub fn build_module(module: &Vec<raw_module_Value<Token>>) {
-  let mut type_context =
-    TypeContext { parent_context: std::ptr::null_mut(), local_types: Vec::new() };
+pub fn build_module(module: &Vec<raw_module_Value<Token>>) -> IRModule {
+  let mut type_context = TypeContext { parent_context: std::ptr::null_mut(), local_types: Vec::new() };
 
   let mut functions = Vec::new();
   //let mut types = Vec::new();
@@ -121,43 +109,15 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>) {
     })
   }
 
+  let mut out_functions = Vec::new();
+
   // All types should have been resolved.
   for function in functions {
-    let mut funct = process_function(function, &type_context);
-
-    let mut ctx = OptimizerContext {
-      block_annotations: Default::default(),
-      graph:             &mut funct.graph,
-      variables:         &mut funct.variables,
-      blocks:            &mut funct.blocks,
-    };
-
-    build_annotations(&mut ctx);
-
-    dbg!(&ctx);
-
-    use crate::x86::x86_types::*;
-
-    let reg_pack = RegisterPack {
-      call_arg_registers: vec![7, 6, 2, 1, 8, 9],
-      int_registers:      vec![10, 11, 12, 13, 14, 15, 8, 9, 0, 2, 3, 6, 7],
-      max_register:       16,
-      registers:          vec![
-        RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15,
-      ],
-    };
-
-    assign_registers(&mut ctx, &reg_pack);
-
-    dbg!(&ctx);
-
-    let x86_fn = compile_from_ssa_fn(&funct);
-
-    x86_fn.unwrap().access_as_call::<fn()>()();
-
-    panic!("WTDN?");
+    let funct = process_function(function, &type_context);
+    out_functions.push(funct);
   }
-  //  let type_resolution = VecDeque::from_iter(iter);
+
+  IRModule { type_context, functions: out_functions }
 }
 
 #[test]
@@ -172,15 +132,18 @@ Temp => [
 ]
 
 main => () {
-  data = Temp[ root = 72 val = 0 ]
+  data  =  Temp[ 
+    root = 72 
+    val = 0
+  ]
+
   mango = data.root
 
-  stdcout_fd:u32 = 0
-  buffer:u32 = data.root
-  size:u64 = 1
+  stdcout_fd  :u32 = 0
+  buffer      :u32 = 72
+  size        :u64 = 2
 
   sys_write(stdcout_fd, &buffer, size)
-
 }
     
   
@@ -188,15 +151,14 @@ main => () {
   "##,
     )
     .unwrap(),
-  )
+  );
 }
 
-fn process_function(
-  function: &std::rc::Rc<crate::compiler::script_parser::RawFunction<Token>>,
-  type_context: &TypeContext,
-) -> SSAFunction {
+fn process_function(function: &std::rc::Rc<crate::compiler::script_parser::RawFunction<Token>>, type_context: &TypeContext) -> IRCallable {
   // Ensure the return type is present in our type context.
   println!("TODO: Ensure the return type is present in our type context");
+
+  let name = function.name.id.intern();
 
   let mut f_ctx = IRFunctionBuilder::default();
   let mut head_block = f_ctx.push_block(None);
@@ -214,11 +176,12 @@ fn process_function(
 
   process_expression(&function.expression, type_context, &mut head_block, &mut base_var_context);
 
-  SSAFunction {
-    blocks:    f_ctx.blocks.into_iter().map(|b| unsafe { (*Box::from_raw(b)).into() }).collect(),
-    calls:     Vec::new(),
-    graph:     f_ctx.graph,
-    variables: f_ctx.variables,
+  IRCallable {
+    blocks: f_ctx.blocks.into_iter().map(|b| unsafe { Box::from_raw(b).into() }).collect(),
+    graph: f_ctx.graph,
+    module: Default::default(),
+    name,
+    signature: (),
   }
 }
 
@@ -237,17 +200,14 @@ fn process_expression(
       if let Some((type_, graph_id, _)) = var_ctx.get_variable(var_name) {
         let ptr = type_.as_ptr(Ptr::Stack);
 
-        let graph_id =
-          block.push_node(GN::create_ssa(IROp::LOAD, ptr, &[graph_id], graph_id.graph_id()));
+        let graph_id = block.push_node(GN::create_ssa(IROp::ADDR, ptr, &[graph_id], graph_id.graph_id()));
 
         (ptr, graph_id, InitResult::None)
       } else {
         panic!()
       }
     }
-    expression_Value::RawStructDeclaration(struct_decl) => {
-      process_struct_instantiation(struct_decl, type_ctx, block, var_ctx)
-    }
+    expression_Value::RawStructDeclaration(struct_decl) => process_struct_instantiation(struct_decl, type_ctx, block, var_ctx),
     expression_Value::RawMember(mem) => {
       let base = &mem.members[0];
 
@@ -256,19 +216,14 @@ fn process_expression(
       if let Some((type_, graph_id, var_index)) = var_ctx.get_variable(var_name) {
         match type_.base_type() {
           TypeInfoResult::IRPrimitive(prim) => {
-            let val =
-              block.push_node(GN::create_ssa(IROp::LOAD, (*prim).into(), &[graph_id], var_index));
-
-            return ((*prim).into(), val, InitResult::None);
+            return ((*prim).into(), graph_id, InitResult::None);
           }
           TypeInfoResult::IRType(ir_type) => match &ir_type.sub_type {
             IRSubType::Struct(strct) => {
               let sub_name = mem.members[1].id.intern();
 
               if let Some(sub_type) = strct.members.iter().find(|d| d.name == sub_name) {
-                let offset = block.push_node(GN::create_const(
-                  ConstVal::new(Prim::Unsigned | Prim::b32).store(sub_type.offset as u32),
-                ));
+                let offset = block.push_node(GN::create_const(ConstVal::new(Prim::Unsigned | Prim::b32).store(sub_type.offset as u32)));
 
                 // Acquire a pointer to this type.
 
@@ -281,12 +236,7 @@ fn process_expression(
                   index,
                 ));
 
-                let val = block.push_node(GN::create_ssa(
-                  IROp::LOAD,
-                  sub_type.ty,
-                  &[ptr],
-                  graph_id.graph_id(),
-                ));
+                let val = block.push_node(GN::create_ssa(IROp::ADDR, sub_type.ty, &[ptr], graph_id.graph_id()));
 
                 return (sub_type.ty, val, InitResult::None);
               } else {
@@ -309,10 +259,7 @@ fn process_expression(
   }
 }
 
-fn process_const_number(
-  num: &RawNum<Token>,
-  block: &mut IRBlockConstructor,
-) -> (IRTypeInfo, IRGraphId, InitResult) {
+fn process_const_number(num: &RawNum<Token>, block: &mut IRBlockConstructor) -> (IRTypeInfo, IRGraphId, InitResult) {
   let string_val = num.tok.to_string();
   let graph_id = block.push_node(IRGraphNode::create_const(if string_val.contains(".") {
     ConstVal::new(Prim::Float | Prim::b64).store(num.val)
@@ -323,27 +270,29 @@ fn process_const_number(
   (block.ctx().graph[graph_id.graph_id()].ty(), graph_id, InitResult::None)
 }
 
-pub fn remap_primitive_type(
-  desired_type: IRPrimitiveType,
-  node_id: IRGraphId,
-  graph: &mut Vec<IRGraphNode>,
-) {
+pub fn remap_primitive_type(desired_type: IRPrimitiveType, node_id: IRGraphId, graph: &mut Vec<IRGraphNode>) {
   // Add some rules to say whether the type can be coerced or converted into the
   // desired type.
 
+  if node_id.is_invalid() {
+    return;
+  }
+
   match &mut graph[node_id.graph_id()] {
-    IRGraphNode::Const { out_id: ssa_id, val } => {
+    IRGraphNode::Const { id: ssa_id, val } => {
       if val.is_lit() {
         *val = val.convert(desired_type);
       } else {
         *val = ConstVal::new(desired_type);
       }
     }
-    IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands } => {
+    IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } => {
       if out_ty.is_numeric() {
         *out_ty = desired_type.into();
         let operands = *operands;
+
         remap_primitive_type(desired_type, operands[0], graph);
+
         remap_primitive_type(desired_type, operands[1], graph);
       } else if *out_ty != desired_type.into() {
         panic!("Can't convert type \n ",);
@@ -369,28 +318,16 @@ fn process_call(
   let call_name = &call.id.id;
 
   if call_name.contains("sys_") {
-    for (type_info, graph_id, ..) in call
-      .args
-      .iter()
-      .map(|arg| process_expression(&arg, type_ctx, block, var_ctx))
-      .collect::<Vec<_>>()
-    {
+    for (type_info, graph_id, ..) in call.args.iter().map(|arg| process_expression(&arg, type_ctx, block, var_ctx)).collect::<Vec<_>>() {
       block.push_node(IRGraphNode::create_ssa(IROp::CALL_ARG, type_info, &[graph_id], usize::MAX));
 
       println!("TODO: match type_info with arg type");
     }
   }
 
-  let graph_id = block.push_node(IRGraphNode::create_const(
-    ConstVal::new(Prim::Unsigned | Prim::b64).store(1 as u64),
-  ));
+  let graph_id = block.push_node(IRGraphNode::create_const(ConstVal::new(Prim::Unsigned | Prim::b64).store(1 as u64)));
 
-  let graph_id = block.push_node(IRGraphNode::create_ssa(
-    IROp::CALL,
-    Default::default(),
-    &[graph_id],
-    usize::MAX,
-  ));
+  let graph_id = block.push_node(IRGraphNode::create_ssa(IROp::CALL, Default::default(), &[graph_id], usize::MAX));
 
   (Default::default(), graph_id, InitResult::None)
 }
@@ -414,19 +351,13 @@ fn process_struct_instantiation(
       let struct_id = block.push_node(GN::create_var(struct_type_name, s_type));
       var_ctx.set_variable(struct_type_name, s_type, struct_id, struct_id.graph_id());
 
-      let struct_ptr_id = block.push_node(GN::create_ssa(
-        IROp::LOAD,
-        s_type.as_ptr(Ptr::Stack),
-        &[struct_id],
-        struct_id.graph_id(),
-      ));
+      let struct_ptr_id = block.push_node(GN::create_ssa(IROp::ADDR, s_type.as_ptr(Ptr::Stack), &[struct_id], block.ctx().graph.len()));
 
       for init_expression in &struct_decl.inits {
         let member_name = init_expression.name.id.intern();
 
         if let Some(member) = struct_definition.members.iter().find(|i| i.name == member_name) {
-          let (expr_type, id, _) =
-            process_expression(&init_expression.expression, type_ctx, block, var_ctx);
+          let (expr_type, id, _) = process_expression(&init_expression.expression, type_ctx, block, var_ctx);
 
           if member.ty != expr_type {
             if member.ty.is_numeric() {
@@ -441,29 +372,17 @@ fn process_struct_instantiation(
           let member_ptr = member.ty.as_ptr(Ptr::Temporary);
 
           if member.offset > 0 {
-            let offset = block.push_node(GN::create_const(
-              ConstVal::new(Prim::Unsigned | Prim::b32).store(member.offset as u32),
-            ));
+            let offset = block.push_node(GN::create_const(ConstVal::new(Prim::Unsigned | Prim::b32).store(member.offset as u32)));
             let index = block.ctx().graph.len();
-            let ptr = block.push_node(GN::create_ssa(
-              IROp::PTR_MEM_CALC,
-              member_ptr,
-              &[struct_ptr_id, offset],
-              index,
-            ));
+            let ptr = block.push_node(GN::create_ssa(IROp::PTR_MEM_CALC, member_ptr, &[struct_ptr_id, offset], index));
 
             block.ctx().variables.push((member_ptr, ptr));
 
             base_ptr_resolutions.push(ptr);
 
-            block.push_node(GN::create_ssa(IROp::STORE, member_ptr, &[ptr, id], usize::MAX));
+            block.push_node(GN::create_ssa(IROp::MEM_STORE, member_ptr, &[ptr, id], usize::MAX));
           } else {
-            let node = block.push_node(GN::create_ssa(
-              IROp::STORE,
-              member_ptr,
-              &[struct_ptr_id, id],
-              usize::MAX,
-            ));
+            let node = block.push_node(GN::create_ssa(IROp::MEM_STORE, member_ptr, &[struct_ptr_id, id], usize::MAX));
             base_ptr_resolutions.push(node);
           }
         } else {
@@ -478,12 +397,7 @@ fn process_struct_instantiation(
   (IRTypeInfo::default(), IRGraphId::default(), InitResult::None)
 }
 
-fn process_block(
-  ast_block: &RawBlock<Token>,
-  type_ctx: &TypeContext,
-  block: &mut IRBlockConstructor,
-  var_ctx: &mut VariableContext,
-) {
+fn process_block(ast_block: &RawBlock<Token>, type_ctx: &TypeContext, block: &mut IRBlockConstructor, var_ctx: &mut VariableContext) {
   for stmt in &ast_block.statements {
     process_statement(stmt, type_ctx, block, var_ctx);
   }
@@ -496,20 +410,11 @@ fn process_block(
   }
 }
 
-fn process_statement(
-  stmt: &statement_Value<Token>,
-  type_ctx: &TypeContext,
-  block: &mut IRBlockConstructor,
-  var_ctx: &mut VariableContext,
-) {
+fn process_statement(stmt: &statement_Value<Token>, type_ctx: &TypeContext, block: &mut IRBlockConstructor, var_ctx: &mut VariableContext) {
   match stmt {
     statement_Value::RawAssignment(assign) => {
       // Process assignments.
-      let expression = assign
-        .expressions
-        .iter()
-        .map(|expr| process_expression(expr, type_ctx, block, var_ctx))
-        .collect::<Vec<_>>();
+      let expression = assign.expressions.iter().map(|expr| process_expression(expr, type_ctx, block, var_ctx)).collect::<Vec<_>>();
 
       // Process assignment targets.
       for (variable_index, variable) in assign.vars.iter().enumerate() {
@@ -522,10 +427,7 @@ fn process_statement(
             let mut ty = get_type(&var_assign.ty, type_ctx);
             let existing_variable = var_ctx.get_variable(var_name);
 
-            if ty.is_undefined()
-              && existing_variable.is_some()
-              && !existing_variable.unwrap().0.is_undefined()
-            {
+            if ty.is_undefined() && existing_variable.is_some() && !existing_variable.unwrap().0.is_undefined() {
               panic!("Variable already exists. Use := expression to reassign this variable to a new slot.");
             }
 
@@ -569,10 +471,7 @@ fn process_statement(
                   }
                 } else if ty != *expr_ty {
                   match (ty.base_type(), expr_ty.base_type()) {
-                    (
-                      TypeInfoResult::IRPrimitive(prim_ty),
-                      TypeInfoResult::IRPrimitive(prim_expr_ty),
-                    ) => {
+                    (TypeInfoResult::IRPrimitive(prim_ty), TypeInfoResult::IRPrimitive(prim_expr_ty)) => {
                       remap_primitive_type(*prim_ty, *expr_graph_id, &mut block.ctx().graph);
 
                       let store_type = ty.as_ptr(IRPointerState::Stack);
@@ -589,12 +488,8 @@ fn process_statement(
                   (type_ptr.graph_id(), store_type, type_ptr)
                 };
 
-                let graph_id = block.push_node(GN::create_ssa(
-                  IROp::STORE,
-                  store_type.as_ptr(Ptr::None),
-                  &[type_ptr, *expr_graph_id],
-                  var_index,
-                ));
+                let graph_id =
+                  block.push_node(GN::create_ssa(IROp::STORE, store_type.as_ptr(Ptr::None), &[type_ptr, *expr_graph_id], var_index));
 
                 var_ctx.set_id(var_name, graph_id);
               }

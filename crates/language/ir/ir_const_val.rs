@@ -100,8 +100,6 @@ impl ConstVal {
     let byte_size = std::mem::size_of::<T>();
     let mut bytes: [u8; 16] = Default::default();
 
-    dbg!(byte_size, std::mem::size_of::<T>());
-
     unsafe { std::ptr::copy(&val as *const _ as *const u8, bytes.as_mut_ptr(), byte_size) };
 
     self.val = bytes;

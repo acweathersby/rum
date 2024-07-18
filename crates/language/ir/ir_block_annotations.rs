@@ -60,7 +60,7 @@ pub fn build_annotations(ctx: &mut OptimizerContext) {
   }
 
   let group_size = ctx.blocks.len();
-  let row_size = ctx.variables.len().max(stores.len().max(group_size));
+  let row_size = ctx.graph.iter().fold(0, |a, b| a + matches!(b, IRGraphNode::VAR { .. }) as usize);
   let mut bitfield = bitfield::BitFieldArena::new(group_size * 11 + 1, row_size);
 
   let def_rows_offset = group_size * 0;

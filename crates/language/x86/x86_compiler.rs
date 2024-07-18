@@ -4,7 +4,10 @@ use super::{x86_encoder::*, x86_instructions::*, x86_types::*};
 use crate::{
   compiler::script_parser::Var,
   error::RumResult,
-  ir::ir_types::{BitSize, BlockId, GraphIdType, IRBlock, IRGraphNode, IROp, SSAFunction},
+  ir::{
+    ir_context::IRCallable,
+    ir_types::{BitSize, BlockId, GraphIdType, IRBlock, IRGraphNode, IROp, SSAFunction},
+  },
   x86::{print_instructions, push_bytes},
 };
 use rum_logger::todo_note;
@@ -15,7 +18,7 @@ struct CompileContext<'a> {
   stack_size:   u64,
   jmp_resolver: JumpResolution,
   binary:       Vec<u8>,
-  ctx:          &'a SSAFunction,
+  ctx:          &'a IRCallable,
 }
 
 #[derive(Debug)]
@@ -45,8 +48,7 @@ impl x86Function {
     let prot = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
     let flags: i32 = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
 
-    let ptr =
-      unsafe { libc::mmap(std::ptr::null_mut(), allocation_size, prot, flags, -1, 0) as *mut u8 };
+    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), allocation_size, prot, flags, -1, 0) as *mut u8 };
 
     let data = unsafe { std::slice::from_raw_parts_mut(ptr, allocation_size) };
 
@@ -70,17 +72,14 @@ impl Drop for x86Function {
   }
 }
 
-pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
+pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> RumResult<x86Function> {
   const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
   const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
   const PTR_BYTE_SIZE: usize = 8;
 
   let mut ctx = CompileContext {
     stack_size:   0,
-    jmp_resolver: JumpResolution {
-      block_offset: Default::default(),
-      jump_points:  Default::default(),
-    },
+    jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
     binary:       Vec::<u8>::with_capacity(PAGE_SIZE),
     ctx:          funct,
   };
@@ -98,25 +97,40 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
   let mut offsets = BTreeMap::<usize, u64>::new();
   let mut rsp_offset = 0;
 
-  for node in &ctx.ctx.graph {
-    if let IRGraphNode::VAR { loc, name, out_id, ty, stack_lu_index, .. } = node {
-      let id = *stack_lu_index as usize;
-
+  fn fun_name(node: &IRGraphNode, offsets: &mut BTreeMap<usize, u64>, rsp_offset: &mut u64) {
+    let id = node.id();
+    let ty = node.ty();
+    if let Some(id) = id.var_id() {
       if ty.is_pointer() {
-        offsets.insert(id, rum_container::get_aligned_value(rsp_offset, 8));
-        rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
+        offsets.insert(id, rum_container::get_aligned_value(*rsp_offset, 8));
+        *rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
       } else {
         match ty.base_type() {
           crate::ir::ir_types::TypeInfoResult::IRPrimitive(ty) => {
-            offsets.insert(id, rum_container::get_aligned_value(rsp_offset, ty.alignment() as u64));
-            rsp_offset = offsets.get(&id).unwrap() + ty.ele_byte_size() as u64;
+            offsets.insert(id, rum_container::get_aligned_value(*rsp_offset, ty.alignment() as u64));
+            *rsp_offset = offsets.get(&id).unwrap() + ty.ele_byte_size() as u64;
           }
           crate::ir::ir_types::TypeInfoResult::IRType(ty) => {
-            offsets.insert(id, rum_container::get_aligned_value(rsp_offset, ty.alignment as u64));
-            rsp_offset = offsets.get(&id).unwrap() + ty.byte_size as u64;
+            offsets.insert(id, rum_container::get_aligned_value(*rsp_offset, ty.alignment as u64));
+            *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size as u64;
           }
         }
       }
+    } else {
+      panic!("All Var nodes should have a var_id assigned to that node's id, Dave; {node:?}");
+    }
+  }
+
+  for node in &ctx.ctx.graph {
+    if matches!(node, IRGraphNode::VAR { .. }) {
+      fun_name(node, &mut offsets, &mut rsp_offset);
+    }
+  }
+
+  for var_id in spilled_variables {
+    let var_id = *var_id as usize;
+    if !offsets.contains_key(&var_id) {
+      fun_name(&ctx.ctx.graph[var_id], &mut offsets, &mut rsp_offset);
     }
   }
 
@@ -127,7 +141,7 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
   for block in &funct.blocks {
     ctx.jmp_resolver.block_offset.push(ctx.binary.len());
     println!("START_BLOCK {} ---------------- \n", block.id);
-    for op_expr in &block.ops {
+    for op_expr in &block.nodes {
       let node = &funct.graph[op_expr.graph_id()];
 
       println!("{node:?}");
@@ -150,10 +164,7 @@ pub fn compile_from_ssa_fn(funct: &SSAFunction) -> RumResult<x86Function> {
       }
     }
 
-    if !block.branch_default.is_some()
-      && !block.branch_succeed.is_some()
-      && !block.branch_unconditional.is_some()
-    {
+    if !block.branch_default.is_some() && !block.branch_succeed.is_some() && !block.branch_unconditional.is_some() {
       funct_postamble(&mut ctx, rsp_offset);
       encode(&mut ctx.binary, &ret, BitSize::b64, Arg::None, Arg::None, Arg::None);
     }
@@ -200,17 +211,42 @@ fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
   encode_unary(bin, &pop, BitSize::b64, Arg::Reg(RBX));
 }
 
-pub fn compile_op(
-  node: &IRGraphNode,
-  block: &IRBlock,
-  ctx: &mut CompileContext,
-  so: &BTreeMap<usize, u64>,
-  rsp_offset: u64,
-) -> bool {
+pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext, so: &BTreeMap<usize, u64>, rsp_offset: u64) -> bool {
   const POINTER_SIZE: BitSize = b64;
   use Arg::*;
   use BitSize::*;
-  if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } = *node {
+  if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, spills, .. } = *node {
+    // Perform spills
+    for (op_index, spill) in spills.iter().enumerate() {
+      if *spill < u32::MAX {
+        let var_id = *spill as usize;
+        let node = &ctx.ctx.graph[var_id];
+        let ty = node.ty();
+        let bit_size = ty.bit_size();
+        let offset = *so.get(&var_id).unwrap();
+        let reg = match op_index {
+          0 => out_id.as_reg_op(),
+          1 => operands[0].as_reg_op(),
+          2 => operands[1].as_reg_op(),
+          _ => unreachable!(),
+        };
+        encode(&mut ctx.binary, &mov, bit_size, RSP_REL(offset), reg, None);
+      }
+    }
+
+    // Perform loads from spills.
+    for op in operands {
+      if op.need_load() {
+        let var_id = op.var_id().unwrap();
+        let node = &ctx.ctx.graph[var_id];
+        let ty = node.ty();
+        let bit_size = ty.bit_size();
+        let offset = *so.get(&var_id).unwrap();
+        let reg = op.as_reg_op();
+        encode(&mut ctx.binary, &mov, bit_size, reg, RSP_REL(offset), None);
+      }
+    }
+
     match op {
       /*       IROp::RET_VAL => {
         let op1 = operands[0];
@@ -241,6 +277,27 @@ pub fn compile_op(
        *
        */
       IROp::STORE => {
+        let [_, op2] = operands;
+        let CompileContext { ctx, binary: bin, .. } = ctx;
+
+        // operand 1 and the return type determines the type of store to be
+        // made. If the return type is a pointer value, the store will made to
+        // an address determined by op1, which should resolve to a pointer.
+
+        // Otherwise, the store will be made to stack slot, which may not actually
+        // need to be stored to memory, and can be just preserved in the op1 register.
+
+        let bit_size = out_ty.bit_size();
+
+        let dst_arg = out_id.as_op(ctx, so);
+        let src_arg = op2.as_op(ctx, so);
+
+        if dst_arg != src_arg {
+          encode(bin, &mov, bit_size, dst_arg, src_arg, None);
+        }
+      }
+
+      IROp::MEM_STORE => {
         let [op1, op2] = operands;
         let CompileContext { ctx, binary: bin, .. } = ctx;
 
@@ -266,18 +323,11 @@ pub fn compile_op(
             panic!("Can't store to a non primitive type {out_ty:?}");
           }
         } else {
-          let bit_size = out_ty.bit_size();
-
-          let op1_arg = op1.as_op(ctx, so);
-          let op2_arg = op2.as_op(ctx, so);
-
-          if op1_arg != op2_arg {
-            encode(bin, &mov, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
-          }
+          unreachable!();
         }
       }
 
-      IROp::LOAD => {
+      IROp::ADDR => {
         let [op1, _] = operands;
         let CompileContext { ctx, binary: bin, .. } = ctx;
 
@@ -293,32 +343,18 @@ pub fn compile_op(
           //Ensure op1 resolves to pointer value.
 
           match &ctx.graph[op1.var_id().unwrap()] {
-            IRGraphNode::VAR { out_id, ty, name, loc, stack_lu_index } => {
-              let offset = *so.get(&(*stack_lu_index as usize)).unwrap();
-
-              encode(bin, &mov, POINTER_SIZE, RSP_REL(offset), op1.as_op(ctx, so), None);
-              encode(bin, &lea, POINTER_SIZE, op1_arg, RSP_REL(offset), None);
+            IRGraphNode::VAR { id: out_id, ty, name, loc } => {
+              if let Some(var_id) = out_id.var_id() {
+                let offset = *so.get(&var_id).unwrap();
+                encode(bin, &lea, POINTER_SIZE, op1_arg, RSP_REL(offset), None);
+              } else {
+                panic!("All Var nodes should have a var_id assigned to that node's id, Dave");
+              }
             }
             _ => panic!("Invalid Pointer Arg type"),
           }
         } else {
-          match out_ty.base_type() {
-            crate::ir::ir_types::TypeInfoResult::IRPrimitive(prim) => {
-              let dest_arg = out_id.as_op(ctx, so);
-              let source_arg = op1.as_op(ctx, so);
-
-              if ctx.graph[op1.graph_id()].ty().is_pointer() {
-                encode(bin, &mov, (*prim).into(), dest_arg, source_arg.to_mem(), None);
-              } else {
-                if (dest_arg != source_arg) {
-                  encode(bin, &mov, (*prim).into(), dest_arg, source_arg, None);
-                }
-              }
-            }
-            crate::ir::ir_types::TypeInfoResult::IRType(ty) => {
-              todo!("{ty:?} is not a valid load target, must be either a primitive or a pointer")
-            }
-          }
+          unreachable!()
         }
       }
       IROp::PTR_MEM_CALC => {
@@ -327,16 +363,19 @@ pub fn compile_op(
 
         let op1_node = &ctx.graph[op1.graph_id()];
         let op2_node = &ctx.graph[op2.graph_id()];
-        let t_reg = out_id;
 
         debug_assert!(op1_node.ty().is_pointer());
 
+        let base_reg = op1.as_op(ctx, so);
+        let dest_reg = out_id.as_op(ctx, so);
+        let offset = op2.as_op(ctx, so);
+
         if op2_node.is_const() {
-          if op1 != t_reg {
-            encode(bin, &mov, POINTER_SIZE, t_reg.as_op(ctx, so), op1.as_op(ctx, so), None);
+          if base_reg != dest_reg {
+            encode(bin, &mov, POINTER_SIZE, dest_reg, base_reg, None);
           }
 
-          encode(bin, &add, POINTER_SIZE, t_reg.as_op(ctx, so), op2.as_op(ctx, so), None);
+          encode(bin, &add, POINTER_SIZE, dest_reg, offset, None);
         } else {
           todo!()
         }
@@ -537,15 +576,7 @@ pub fn compile_op(
         }
       }     */
       IROp::NOOP => {}
-      IROp::OR
-      | IROp::XOR
-      | IROp::AND
-      | IROp::NOT
-      | IROp::DIV
-      | IROp::LOG
-      | IROp::POW
-      | IROp::LS
-      | IROp::LE => todo!("TODO: {node:?}"),
+      IROp::OR | IROp::XOR | IROp::AND | IROp::NOT | IROp::DIV | IROp::LOG | IROp::POW | IROp::LS | IROp::LE => todo!("TODO: {node:?}"),
       op => todo!("Handle {op:?}"),
     }
   };

@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::ir::ir_types::{GraphIdType, IRGraphId, SSAFunction};
+use crate::ir::{
+  ir_context::IRCallable,
+  ir_types::{GraphIdType, IRGraphId, SSAFunction},
+};
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub(super) enum OpEncoding {
@@ -217,7 +220,7 @@ impl IRGraphId {
     (self.reg_id().unwrap() & 0x1F) >= 16
   }
 
-  pub fn as_addr_op(&self, ctx: &SSAFunction, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
+  pub fn as_addr_op(&self, ctx: &IRCallable, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
     if let Some(reg) = self.reg_id() {
       Arg::Mem(Self::register(reg))
     } else {
@@ -245,7 +248,7 @@ impl IRGraphId {
     }
   }
 
-  pub fn as_op(&self, ctx: &SSAFunction, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
+  pub fn as_op(&self, ctx: &IRCallable, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
     if let Some(reg) = self.reg_id() {
       Arg::Reg(Self::register(reg))
     } else if ctx.graph[self.graph_id()].is_const() {

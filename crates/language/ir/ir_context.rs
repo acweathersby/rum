@@ -7,17 +7,7 @@ use crate::compiler::script_parser::Var;
 
 use super::{
   ir_const_val::ConstVal,
-  ir_types::{
-    BlockId,
-    IRBlock,
-    IRGraphId,
-    IRGraphNode,
-    IROp,
-    IRPrimitiveType,
-    IRTypeInfo,
-    RawVal,
-    SymbolBinding,
-  },
+  ir_types::{BlockId, IRBlock, IRGraphId, IRGraphNode, IROp, IRPrimitiveType, IRTypeInfo, RawVal, SymbolBinding},
 };
 
 /// Block settings store information for an expression block.
@@ -25,6 +15,11 @@ use super::{
 /// as exceptions modes for arithmetic instructions.
 struct BlockScope {
   settings: u64,
+}
+
+pub struct IRModule {
+  pub type_context: TypeContext,
+  pub functions:    Vec<IRCallable>,
 }
 
 enum BlockFlags {
@@ -46,6 +41,22 @@ pub struct Type {
 
 struct IRBitUnion {}
 
+struct IRCallableSignature {
+  /// Determins the calling interface for the callable
+  abi:  (),
+  args: Vec<IRTypeInfo>,
+  ret:  Vec<IRTypeInfo>,
+}
+
+#[derive(Default)]
+pub struct IRCallable {
+  pub name:      IString,
+  pub module:    IString,
+  pub signature: (),
+  pub graph:     Vec<IRGraphNode>,
+  pub blocks:    Vec<IRBlock>,
+}
+
 #[derive(Debug)]
 pub struct IRStruct {
   pub name:      IString,
@@ -62,6 +73,12 @@ pub struct IRStructMember {
   pub name:           IString,
   pub offset:         usize,
 }
+
+pub struct IRArray {}
+pub struct IRBitField {}
+pub struct IREnum {}
+pub struct IRConst {}
+pub struct IRUnion {}
 
 enum IRTypeWrapper {
   Primitive(IRPrimitiveType),
@@ -102,10 +119,6 @@ pub enum IRSubType {
   Function,
 }
 
-struct IRArray {
-  element_type: IRType,
-}
-
 /*
 M => [  ]
 M => u32
@@ -139,10 +152,7 @@ impl VariableContext {
     }
   }
 
-  fn get_variable_mut(
-    &mut self,
-    name: IString,
-  ) -> Option<(&mut IRTypeInfo, &mut IRGraphId, usize)> {
+  fn get_variable_mut(&mut self, name: IString) -> Option<(&mut IRTypeInfo, &mut IRGraphId, usize)> {
     let len = self.local_variables.len();
 
     for i in 0..len {
@@ -266,19 +276,22 @@ impl Default for IRBlockConstructor {
       break_id:     None,
       inner:        Box::new(IRBlock {
         id:                   Default::default(),
-        ops:                  Default::default(),
+        nodes:                Default::default(),
         branch_succeed:       Default::default(),
         branch_unconditional: Default::default(),
         branch_default:       Default::default(),
         name:                 Default::default(),
+        direct_predecessors:  Default::default(),
+        is_loop_head:         Default::default(),
+        loop_components:      Default::default(),
       }),
     }
   }
 }
 
-impl Into<Box<IRBlock>> for IRBlockConstructor {
-  fn into(self) -> Box<IRBlock> {
-    self.inner
+impl Into<IRBlock> for Box<IRBlockConstructor> {
+  fn into(self) -> IRBlock {
+    *self.inner
   }
 }
 
@@ -286,24 +299,19 @@ pub mod graph_actions {
 
   use super::{IRBlock, IRGraphId, IRGraphNode};
 
-  pub fn push_graph_node_to_block(
-    block: Option<&mut IRBlock>,
-    graph: &mut Vec<IRGraphNode>,
-    mut node: IRGraphNode,
-  ) -> IRGraphId {
+  pub fn push_graph_node_to_block(block: Option<&mut IRBlock>, graph: &mut Vec<IRGraphNode>, mut node: IRGraphNode) -> IRGraphId {
     match &mut node {
-      IRGraphNode::VAR { out_id: id, stack_lu_index, .. } => {
+      IRGraphNode::VAR { id, .. } => {
         *id = id.to_graph_index(graph.len()).to_var_id(graph.len());
-        *stack_lu_index = graph.len() as u32;
       }
-      IRGraphNode::Const { out_id: id, val } => {
+      IRGraphNode::Const { id, val } => {
         *id = id.to_graph_index(graph.len());
       }
-      IRGraphNode::SSA { id, op, block_id, result_ty, operands } => {
+      IRGraphNode::SSA { id, op, block_id, result_ty, operands, .. } => {
         *id = id.to_graph_index(graph.len());
         if let Some(block) = block {
           *block_id = block.id;
-          block.ops.push(*id);
+          block.nodes.push(*id);
         }
       }
       IRGraphNode::PHI { id, result_ty, operands } => unreachable!(),
@@ -314,11 +322,7 @@ pub mod graph_actions {
     id
   }
 
-  pub fn push_node(
-    graph: &mut Vec<IRGraphNode>,
-    block: &mut IRBlock,
-    node: IRGraphNode,
-  ) -> IRGraphId {
+  pub fn push_node(graph: &mut Vec<IRGraphNode>, block: &mut IRBlock, node: IRGraphNode) -> IRGraphId {
     push_graph_node_to_block(Some(block), graph, node)
   }
 }
@@ -355,10 +359,8 @@ impl IRBlockConstructor {
 }
 
 pub struct OptimizerContext<'funct> {
-  pub block_annotations: Vec<BlockAnnotation>,
-  pub graph:             &'funct mut Vec<IRGraphNode>,
-  pub variables:         &'funct mut Vec<(IRTypeInfo, IRGraphId)>,
-  pub blocks:            &'funct mut Vec<Box<IRBlock>>,
+  pub graph:  &'funct mut Vec<IRGraphNode>,
+  pub blocks: &'funct mut Vec<IRBlock>,
 }
 
 impl<'funct> Debug for OptimizerContext<'funct> {
@@ -366,7 +368,7 @@ impl<'funct> Debug for OptimizerContext<'funct> {
     for block in self.blocks.as_slice() {
       f.write_fmt(format_args!("\n\nBlock-{} {}\n", block.id, block.name.to_str().as_str()))?;
 
-      for op_id in &block.ops {
+      for op_id in &block.nodes {
         if (op_id.graph_id() as usize) < self.graph.len() {
           let op = &self.graph[op_id.graph_id()];
           f.write_str("  ")?;
@@ -377,9 +379,6 @@ impl<'funct> Debug for OptimizerContext<'funct> {
         } else {
           f.write_str("\n  Unknown\n")?;
         }
-      }
-      if self.block_annotations.len() > block.id.usize() {
-        self.block_annotations[block.id].fmt(f)?;
       }
 
       if let Some(succeed) = block.branch_succeed {
@@ -487,45 +486,24 @@ impl Debug for BlockAnnotation {
       ))?;
     }
 
-    f.write_fmt(format_args!(
-      "  dominators: {} \n",
-      self.dominators.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("  dominators: {} \n", self.dominators.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")))?;
 
-    f.write_fmt(format_args!(
-      "  predecessors: {} \n",
-      self.predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("  predecessors: {} \n", self.predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")))?;
 
-    f.write_fmt(format_args!(
-      "  successors: {} \n",
-      self.successors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("  successors: {} \n", self.successors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")))?;
 
     f.write_fmt(format_args!(
       "  direct predecessors: {} \n",
       self.direct_predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
     ))?;
 
-    f.write_fmt(format_args!(
-      "\n  ins: {}",
-      self.ins.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("\n  ins: {}", self.ins.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")))?;
 
-    f.write_fmt(format_args!(
-      "\n  outs: {}",
-      self.outs.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("\n  outs: {}", self.outs.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")))?;
 
-    f.write_fmt(format_args!(
-      "\n  decls: {}",
-      self.decls.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("\n  decls: {}", self.decls.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")))?;
 
-    f.write_fmt(format_args!(
-      "\n  alive: {}",
-      self.alive.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("\n  alive: {}", self.alive.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")))?;
 
     Ok(())
   }

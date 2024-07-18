@@ -1,6 +1,6 @@
 #![allow(unused, non_upper_case_globals)]
 
-use crate::ir::ir_types::{BitSize, SSAFunction};
+use crate::ir::{ir_context::IRCallable, ir_types::BitSize};
 
 use super::{set_bytes, x86_types::*};
 
@@ -286,7 +286,7 @@ op_table!(mov_o [
 
 #[test]
 fn test_mov_o() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovo r8d,r11d", test_enc_dos(&mov_o, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -308,7 +308,7 @@ op_table!(mov_no [
 
 #[test]
 fn test_mov_no() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovno r8d,r11d", test_enc_dos(&mov_no, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -340,7 +340,7 @@ op_table!(mov_ae [
 
 #[test]
 fn test_mov_ae() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovae r8d,r11d", test_enc_dos(&mov_ae, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -362,7 +362,7 @@ op_table!(mov_e [
 
 #[test]
 fn test_mov_e() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmove r8d,r11d", test_enc_dos(&mov_e, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -384,7 +384,7 @@ op_table!(mov_ne [
 
 #[test]
 fn test_mov_ne() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovne r8d,r11d", test_enc_dos(&mov_ne, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -406,7 +406,7 @@ op_table!(mov_be [
 
 #[test]
 fn test_mov_be() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovbe r8d,r11d", test_enc_dos(&mov_be, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -428,7 +428,7 @@ op_table!(mov_a [
 
 #[test]
 fn test_mov_a() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmova r8d,r11d", test_enc_dos(&mov_a, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -450,7 +450,7 @@ op_table!(mov_s [
 
 #[test]
 fn test_mov_s() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovs r10d,r11d", test_enc_dos(&mov_s, b32, R10.as_op(c, s), R11.as_op(c, s)));
@@ -472,7 +472,7 @@ op_table!(mov_ns [
 
 #[test]
 fn test_mov_ns() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovns r8d,r11d", test_enc_dos(&mov_ns, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -494,7 +494,7 @@ op_table!(mov_pe [
 
 #[test]
 fn test_mov_pe() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovp r8d,r11d", test_enc_dos(&mov_pe, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -516,7 +516,7 @@ op_table!(mov_po [
 
 #[test]
 fn test_mov_po() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovnp r8d,r11d", test_enc_dos(&mov_po, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -538,7 +538,7 @@ op_table!(mov_l [
 
 #[test]
 fn test_mov_l() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovl r8d,r11d", test_enc_dos(&mov_l, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -560,7 +560,7 @@ op_table!(mov_ge [
 
 #[test]
 fn test_mov_ge() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovge r8d,r11d", test_enc_dos(&mov_ge, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -582,7 +582,7 @@ op_table!(mov_le [
 
 #[test]
 fn test_mov_le() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovle r8d,r11d", test_enc_dos(&mov_le, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -604,7 +604,7 @@ op_table!(mov_g [
 
 #[test]
 fn test_mov_g() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, b32, R8.as_op(c, s), R11.as_op(c, s)));
@@ -653,7 +653,7 @@ op_table!(lea [
 
 #[test]
 fn test_lea() {
-  let c = SSAFunction::default();
+  let c = IRCallable::default();
   let c = &c;
   let s = &Default::default();
   assert_eq!("lea r8d,[r11]", test_enc_dos(&lea, b32, R8.as_op(c, s), R11.as_op(c, s).to_mem()));

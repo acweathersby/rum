@@ -8,7 +8,11 @@
 
 <> id 
   
-  > tk:(  ( c:id | "_" ) ( c:id | "_" | c:num )(*) | c:num(+) ( c:id ) ( c:id | "_" | c:num )(*)  )
+  > tk:(  
+          ( c:id | "_" ) ( c:id | "_" | c:num )(*) 
+          | 
+           c:num(+) ( c:id ) ( c:id | "_" | c:num )(*)  
+    )
 
     :ast str($1)
 

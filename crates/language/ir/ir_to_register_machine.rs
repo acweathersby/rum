@@ -31,15 +31,13 @@ pub struct CompilerFunction<R: RegisterIdentifier> {
   pub(crate) graph:  Vec<RegisterExp<R>>,
 }
 
-pub(crate) fn convert_to_register_names<T: RegisterAllocator>(
-  funct: SSAFunction,
-) -> CompilerFunction<T::RegisterType> {
+pub(crate) fn convert_to_register_names<T: RegisterAllocator>(funct: SSAFunction) -> CompilerFunction<T::RegisterType> {
   let mut allocator: T = T::new();
 
   let mut out = CompilerFunction { blocks: Default::default(), graph: Default::default() };
 
   for block in funct.blocks {
-    for op in block.ops {
+    for op in block.nodes {
       let ssa = &funct.graph[op.graph_id()];
       let action = allocator.map_register(ssa);
       out.graph.push(action);

@@ -290,14 +290,10 @@ impl From<IRPrimitiveType> for BitSize {
 impl IRPrimitiveType {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
 
-  pub const i64: IRPrimitiveType =
-    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b64.0);
-  pub const i32: IRPrimitiveType =
-    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b32.0);
-  pub const i16: IRPrimitiveType =
-    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b16.0);
-  pub const i8: IRPrimitiveType =
-    IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b8.0);
+  pub const i64: IRPrimitiveType = IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b64.0);
+  pub const i32: IRPrimitiveType = IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b32.0);
+  pub const i16: IRPrimitiveType = IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b16.0);
+  pub const i8: IRPrimitiveType = IRPrimitiveType(IRPrimitiveType::Integer.0 | IRPrimitiveType::b8.0);
 
   pub fn is_undefined(&self) -> bool {
     self.0 <= 1
@@ -355,9 +351,7 @@ impl IRPrimitiveType {
   }
 
   fn ty_val(&self) -> u32 {
-    ((self.0 & (IRPrimitiveType::TYPE_MASK)) >> (IRPrimitiveType::TYPE_OFF - 1))
-      .checked_ilog2()
-      .unwrap_or_default()
+    ((self.0 & (IRPrimitiveType::TYPE_MASK)) >> (IRPrimitiveType::TYPE_OFF - 1)).checked_ilog2().unwrap_or_default()
   }
 
   pub fn vec(&self) -> Vectorized {
@@ -538,9 +532,7 @@ impl std::ops::BitOr for IRPrimitiveType {
       let b_bit_size = rhs.ele_bit_size();
 
       if a_bit_size != b_bit_size && !(a_bit_size == 0 || b_bit_size == 0) {
-        panic!(
-          "Cannot merge type props with different bit sizes:\n    {self:?} | {rhs:?} not allowed"
-        )
+        panic!("Cannot merge type props with different bit sizes:\n    {self:?} | {rhs:?} not allowed")
       }
 
       let a_type = self.ty_val();
@@ -554,9 +546,7 @@ impl std::ops::BitOr for IRPrimitiveType {
       let b_vec = rhs.vec_val();
 
       if a_vec != b_vec && a_vec > 1 && b_vec > 1 {
-        panic!(
-          "Cannot merge type props with different vector lengths:\n    {self:?} | {rhs:?} not allowed"
-        )
+        panic!("Cannot merge type props with different vector lengths:\n    {self:?} | {rhs:?} not allowed")
       }
     }
 
@@ -590,9 +580,7 @@ impl Display for IRPrimitiveType {
     let bit_val = (val & IRPrimitiveType::SIZE_MASK) >> IRPrimitiveType::SIZE_OFF;
     let mut bits = BIT_NAMES[bit_val.checked_ilog2().unwrap_or_default() as usize].to_string();
 
-    let vecs = VECTOR_SIZE[((val & IRPrimitiveType::VECT_MASK) >> IRPrimitiveType::VECT_OFF)
-      .checked_ilog2()
-      .unwrap_or_default() as usize];
+    let vecs = VECTOR_SIZE[((val & IRPrimitiveType::VECT_MASK) >> IRPrimitiveType::VECT_OFF).checked_ilog2().unwrap_or_default() as usize];
 
     if bits == "#?" {
       bits = format!("{}", (self.0 & Self::DEFBITS_MASK) >> Self::DEFBITS_OFF);
@@ -633,10 +621,7 @@ impl Display for RawVal {
     if self.ssa_id > 0 {
       f.write_fmt(format_args!("<{:03}> ", self.ssa_id))?;
     }
-    fn fmt_val<T: Display + Default>(
-      val: &RawVal,
-      f: &mut std::fmt::Formatter<'_>,
-    ) -> Result<(), std::fmt::Error> {
+    fn fmt_val<T: Display + Default>(val: &RawVal, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
       if val.val.is_some() {
         f.write_fmt(format_args!("{}=[{}]", val.info, val.load::<T>().unwrap_or_default()))
       } else {
@@ -748,12 +733,7 @@ pub struct IRCall {
 
 impl Debug for IRCall {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!(
-      "{} <- {}({})",
-      self.ret,
-      self.name.to_str().as_str(),
-      self.args.join(" ")
-    ))
+    f.write_fmt(format_args!("{} <- {}({})", self.ret, self.name.to_str().as_str(), self.args.join(" ")))
   }
 }
 
@@ -762,15 +742,14 @@ impl IRCall {}
 #[repr(u8)]
 pub enum IRGraphNode {
   Const {
-    out_id: IRGraphId,
-    val:    ConstVal,
+    id:  IRGraphId,
+    val: ConstVal,
   },
   VAR {
-    out_id:         IRGraphId,
-    ty:             IRTypeInfo,
-    name:           IString,
-    loc:            IString, // Temp: Will use a more suitable type to define this in time.
-    stack_lu_index: u32,
+    id:   IRGraphId,
+    ty:   IRTypeInfo,
+    name: IString,
+    loc:  IString, // Temp: Will use a more suitable type to define this in time.
   },
   PHI {
     id:        IRGraphId,
@@ -778,35 +757,26 @@ pub enum IRGraphNode {
     operands:  ArrayVec<2, IRGraphId>,
   },
   SSA {
-    id:        IRGraphId,
     op:        IROp,
     block_id:  BlockId,
-    result_ty: IRTypeInfo,
     operands:  [IRGraphId; 2],
+    id:        IRGraphId,
+    result_ty: IRTypeInfo,
+    // VarIds that need to be stored to the stack when this node is executed.
+    spills:    [u32; 3],
   },
 }
 
 impl IRGraphNode {
   pub fn create_const(const_val: ConstVal) -> IRGraphNode {
-    IRGraphNode::Const { out_id: IRGraphId::INVALID, val: const_val }
+    IRGraphNode::Const { id: IRGraphId::INVALID, val: const_val }
   }
 
   pub fn create_var(name: IString, result_ty: IRTypeInfo) -> IRGraphNode {
-    IRGraphNode::VAR {
-      name,
-      loc: "stack".to_token(),
-      out_id: IRGraphId::INVALID,
-      ty: result_ty,
-      stack_lu_index: 0,
-    }
+    IRGraphNode::VAR { name, loc: "stack".to_token(), id: IRGraphId::INVALID, ty: result_ty }
   }
 
-  pub fn create_ssa(
-    op: IROp,
-    result_ty: IRTypeInfo,
-    operands: &[IRGraphId],
-    var_id: usize,
-  ) -> IRGraphNode {
+  pub fn create_ssa(op: IROp, result_ty: IRTypeInfo, operands: &[IRGraphId], var_id: usize) -> IRGraphNode {
     debug_assert!(operands.len() <= 2);
 
     let operands = match operands.len() {
@@ -822,6 +792,7 @@ impl IRGraphNode {
       block_id: BlockId::default(),
       result_ty,
       operands,
+      spills: [u32::MAX; 3],
     }
   }
 
@@ -886,20 +857,20 @@ impl IRGraphNode {
 
   pub fn set_graph_id(&mut self, id: IRGraphId) {
     match self {
-      IRGraphNode::VAR { out_id: graph_id, .. } => *graph_id = id,
+      IRGraphNode::VAR { id: graph_id, .. } => *graph_id = id,
       IRGraphNode::SSA { id: graph_id, .. } => *graph_id = id,
       IRGraphNode::PHI { id: graph_id, .. } => *graph_id = id,
-      IRGraphNode::Const { out_id: graph_id, .. } => *graph_id = id,
+      IRGraphNode::Const { id: graph_id, .. } => *graph_id = id,
       _ => {}
     }
   }
 
   pub fn id(&self) -> IRGraphId {
     match self {
-      IRGraphNode::Const { out_id, val: ty, .. } => *out_id,
+      IRGraphNode::Const { id: out_id, val: ty, .. } => *out_id,
       IRGraphNode::SSA { id: out_id, .. } => *out_id,
       IRGraphNode::PHI { id: out_id, .. } => *out_id,
-      IRGraphNode::VAR { out_id, .. } => *out_id,
+      IRGraphNode::VAR { id: out_id, .. } => *out_id,
     }
   }
 }
@@ -907,40 +878,40 @@ impl IRGraphNode {
 impl Debug for IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      IRGraphNode::Const { out_id, val, .. } => {
-        f.write_fmt(format_args!("CONST{} {}", out_id, val))
+      IRGraphNode::Const { id: out_id, val, .. } => f.write_fmt(format_args!("CONST{} {}", out_id, val)),
+      IRGraphNode::VAR { id: out_id, name, ty, loc, .. } => {
+        f.write_fmt(format_args!("VAR  {} {} : {:?} loc:{}", out_id, name.to_str().as_str(), ty, loc.to_str().as_str(),))
       }
-      IRGraphNode::VAR { out_id, name, ty, loc, .. } => f.write_fmt(format_args!(
-        "VAR  {} {} : {:?} loc:{}",
-        out_id,
-        name.to_str().as_str(),
-        ty,
-        loc.to_str().as_str(),
-      )),
       IRGraphNode::PHI { id: out_id, result_ty: out_ty, operands, .. } => {
         f.write_fmt(format_args!(
           "     {}: {:28} = PHI {}",
           out_id,
           format!("{:?}", out_ty),
-          operands
-            .iter()
-            .filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) })
-            .collect::<Vec<_>>()
-            .join("  ") //--
+          operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  ") //--
         ))
       }
-      IRGraphNode::SSA { id: out_id, block_id, result_ty: out_ty, op, operands, .. } => {
+      IRGraphNode::SSA {
+        id: out_id, block_id, result_ty: out_ty, op, operands, spills: spill, ..
+      } => {
         f.write_fmt(format_args!(
-          "b{:03} {}{:28} = {:15} {}",
+          "b{:03} {}{:28} = {:15} {} {}",
           block_id,
           out_id,
           format!("{:?}", out_ty),
           format!("{:?}", op),
-          operands
+          operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "), //--
+          spill
             .iter()
-            .filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) })
+            .enumerate()
+            .map(|(i, v)| {
+              if *v < u32::MAX {
+                format!("spill{i}-v{v}")
+              } else {
+                "   ".to_string()
+              }
+            })
             .collect::<Vec<_>>()
-            .join("  ") //--
+            .join(" ")
         ))
       }
     }
@@ -951,13 +922,11 @@ impl Debug for IRGraphNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IROp {
   // Encoding Oriented operators
-
-  // Calculates a ptr to a member variable based on a base aggregate pointer and a const offset.
-  // This is also used to get the address of a stack variable, by taking address of the
-  // difference between the sp and stack offset.
+  /// Calculates a ptr to a member variable based on a base aggregate pointer
+  /// and a const offset. This is also used to get the address of a stack
+  /// variable, by taking address of the difference between the sp and stack
+  /// offset.
   PTR_MEM_CALC,
-  /// Assigns a new value to a pointer argument.
-  PTR_ASSIGN,
   // General use operators
   NOOP,
   ADD,
@@ -975,12 +944,14 @@ pub enum IROp {
   AND,
   NOT,
   NEG,
-  /// Move data from a memory location to a register
-  LOAD,
+  /// Returns the address of op1 as a pointer
+  ADDR,
   DEREF,
-  /// Store working memory (op2) into global memory addressed by the first
-  /// operand (op1)
+  /// Stores the primitive or register in op2 into the stack slot assigned to
+  /// the var of op1.
   STORE,
+  /// Store of a primitive value in op(2) to memory at pointer in op(1)
+  MEM_STORE,
   PRIM_STORE,
   MEM_LOAD,
   CALL,
@@ -1020,6 +991,8 @@ impl IRGraphId {
   pub const INDEX_MASK: u64 = 0x0000_0000_00FF_FFFF;
   pub const VAR_MASK: u64 = 0x0000_FFFF_FF00_0000;
   pub const REG_MASK: u64 = 0x0FFF_0000_0000_0000;
+  pub const NEEDS_LOAD_VAL: u64 = 0x7000_0000_0000_0000;
+  pub const LOAD_MASK_OUT: u64 = 0x0FFF_FFFF_FFFF_FFFF;
 
   pub const fn register(reg_val: usize) -> Self {
     Self::INVALID.to_reg_id(reg_val)
@@ -1039,6 +1012,14 @@ impl IRGraphId {
 
   pub const fn to_reg_id(self, index: usize) -> IRGraphId {
     IRGraphId((self.0 & !Self::REG_MASK) | (((index as u64) << 48) & Self::REG_MASK))
+  }
+
+  pub const fn to_load(self) -> IRGraphId {
+    IRGraphId((self.0 & Self::LOAD_MASK_OUT) | Self::NEEDS_LOAD_VAL)
+  }
+
+  pub const fn need_load(&self) -> bool {
+    (self.0 & !Self::LOAD_MASK_OUT) == Self::NEEDS_LOAD_VAL
   }
 
   pub const fn var_id(&self) -> Option<usize> {
@@ -1070,19 +1051,32 @@ impl IRGraphId {
 
 impl Display for IRGraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if self.need_load() {
+      f.write_str("L")?;
+    } else {
+      f.write_str(" ")?;
+    }
+
     if *self == Self::INVALID {
-      f.write_fmt(format_args!("xxxx"))
+      f.write_fmt(format_args!("xxxx"))?;
     } else {
       match (self.var_id(), self.reg_id()) {
         (Some(var), Some(reg)) => {
-          f.write_fmt(format_args!("{:>4} v{:<3}r{:<3} ", self.graph_id(), var, reg,))
+          f.write_fmt(format_args!("{:>4} v{:<3}r{:<3} ", self.graph_id(), var, reg,))?;
         }
 
-        (None, Some(reg)) => f.write_fmt(format_args!("{:>4}     r{:<3} ", self.graph_id(), reg,)),
-        (Some(var), None) => f.write_fmt(format_args!("{:>4} v{:<3}     ", self.graph_id(), var,)),
-        (None, None) => f.write_fmt(format_args!("{:>4}          ", self.graph_id(),)),
+        (None, Some(reg)) => {
+          f.write_fmt(format_args!("{:>4}     r{:<3} ", self.graph_id(), reg,))?;
+        }
+        (Some(var), None) => {
+          f.write_fmt(format_args!("{:>4} v{:<3}     ", self.graph_id(), var,))?;
+        }
+        (None, None) => {
+          f.write_fmt(format_args!("{:>4}          ", self.graph_id(),))?;
+        }
       }
-    }
+    };
+    Ok(())
   }
 }
 
@@ -1123,23 +1117,20 @@ impl Debug for SymbolBinding {
 #[derive(Clone)]
 pub struct IRBlock {
   pub id:                   BlockId,
-  pub ops:                  Vec<IRGraphId>,
+  pub nodes:                Vec<IRGraphId>,
   pub branch_unconditional: Option<BlockId>,
   pub branch_succeed:       Option<BlockId>,
   pub branch_default:       Option<BlockId>,
   pub name:                 IString,
+  pub is_loop_head:         bool,
+  pub loop_components:      Vec<BlockId>,
+  pub direct_predecessors:  Vec<BlockId>,
 }
 
 impl Debug for IRBlock {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let id = self.id;
-    let ops = self
-      .ops
-      .iter()
-      .enumerate()
-      .map(|(index, val)| format!("{val:?}"))
-      .collect::<Vec<_>>()
-      .join("\n  ");
+    let ops = self.nodes.iter().enumerate().map(|(index, val)| format!("{val:?}")).collect::<Vec<_>>().join("\n  ");
 
     let branch = /* if let Some(ret) = self.return_val {
       format!("\n\n  return: {ret:?}")
@@ -1169,8 +1160,6 @@ pub struct SSAFunction {
   pub(crate) graph: Vec<IRGraphNode>,
 
   pub(crate) variables: Vec<(IRTypeInfo, IRGraphId)>,
-
-  pub(crate) calls: Vec<IRCall>,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default)]
