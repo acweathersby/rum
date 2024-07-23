@@ -182,11 +182,12 @@ impl VariableContext {
       *id = new_id
     }
   }
-
+  
   pub fn set_variable(&mut self, name: IString, ty: IRTypeInfo, id: IRGraphId, decl_index: usize) {
     if let Some((ty_, id_, _)) = self.get_variable_mut(name) {
       *id_ = id;
       *ty_ = ty;
+      dbg!(name);
       panic!("Remapping a declared type");
     } else {
       self.local_variables.push((name, ty, id, decl_index));

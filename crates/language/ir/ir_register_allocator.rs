@@ -1,23 +1,17 @@
 use crate::{
-  bitfield,
   ir::{
     ir_build_module::build_module,
-    ir_types::{GraphIdType, IRGraphNode, IROp},
+    ir_types::{IRGraphNode, IROp},
   },
   x86::compile_from_ssa_fn,
 };
 
 use super::{
-  super::x86::x86_types::{RBP, RDI, RSI, RSP},
   ir_context::OptimizerContext,
   //ir_block_optimizer::OptimizerContext,
-  ir_types::{BlockId, IRBlock, IRGraphId, IRPrimitiveType},
+  ir_types::IRGraphId,
 };
 
-use rum_container::ArrayVec;
-use rum_istring::CachedString;
-use rum_profile::profile_block;
-use std::collections::VecDeque;
 
 /// Architectural specific register mappings
 pub struct RegisterPack {
@@ -68,6 +62,12 @@ fn register_allocator() {
       b = b
       c = c
     ]
+
+    tempB = 02Temp [
+      a = temp.a
+      b = temp.b
+      c = a 
+    ]
   }
       
     
@@ -84,9 +84,9 @@ fn register_allocator() {
   use crate::x86::x86_types::*;
 
   let reg_pack = RegisterPack {
-    call_arg_registers: vec![0, 1],
-    ptr_registers:      vec![0, 1],
-    int_registers:      vec![0, 1],
+    call_arg_registers: vec![1],
+    ptr_registers:      vec![0,1,2,3],
+    int_registers:      vec![0,1,2,3],
     float_registers:    vec![],
     max_register:       6,
     registers:          vec![RAX, RCX, RDX, R9, R14, R15],
@@ -138,6 +138,7 @@ pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) -> 
     use IROp::*;
     match op {
       PTR_MEM_CALC => (Allocate, true, true),
+      MEM_LOAD => (Allocate, true, false),
       MEM_STORE => (None, true, true),
       ADDR => (Allocate, false, true),
       STORE => (Allocate, false, true),
@@ -278,7 +279,7 @@ fn allocate_op_register(
         *op = op.to_load();
       }
     } else {
-      panic!("Could not assign register for operand");
+      panic!("Could not assign register for operand, out of available registers");
     }
   }
 }
@@ -355,7 +356,7 @@ fn get_register_for_var(
       let mut spill = None;
 
       // Find the next use of this variable.
-      for op_index in (node_index + 1)..graph.len() {
+      'outer: for op_index in (node_index + 1)..graph.len() {
         let node = &graph[op_index];
 
         if node.block_id().usize() != block_index {
@@ -371,7 +372,7 @@ fn get_register_for_var(
             for operand in operands {
               if operand.var_id() == Some(var) {
                 spill = operand.var_id();
-                break;
+                break 'outer;
               }
             }
           }
@@ -382,6 +383,11 @@ fn get_register_for_var(
         }
 
         score -= 1;
+
+        if op_index == graph.len() -1 {
+          // The variable is no longer accessed and the associated register can be freely reused.
+          score = 0;
+        }
       }
 
       candidates.push((score, register_index, spill));
@@ -393,8 +399,8 @@ fn get_register_for_var(
 
     candidates.sort_unstable();
 
-    if let Some((_, register, spill)) = candidates.pop() {
-      compatible_register = Some((*register, spill, true));
+    if let Some((_, register, spill)) = candidates.get(0) {
+      compatible_register = Some((**register, *spill, true));
     } else {
       return None;
     }

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use crate::IString;
 use super::{
   ir_const_val::ConstVal,
   ir_context::{graph_actions, IRBlockConstructor, IRCallable, IRModule, IRStruct, IRStructMember, OptimizerContext, VariableContext},
@@ -154,7 +156,7 @@ main => () {
   );
 }
 
-fn process_function(function: &std::rc::Rc<crate::compiler::script_parser::RawFunction<Token>>, type_context: &TypeContext) -> IRCallable {
+fn process_function(function: &std::sync::Arc<crate::compiler::script_parser::RawFunction<Token>>, type_context: &TypeContext) -> IRCallable {
   // Ensure the return type is present in our type context.
   println!("TODO: Ensure the return type is present in our type context");
 
@@ -235,8 +237,8 @@ fn process_expression(
                   &[graph_id, offset],
                   index,
                 ));
-
-                let val = block.push_node(GN::create_ssa(IROp::ADDR, sub_type.ty, &[ptr], graph_id.graph_id()));
+                // Loading the variable into a register creates a temporary variable
+                let val = block.push_node(GN::create_ssa(IROp::MEM_LOAD, sub_type.ty, &[ptr], block.ctx().graph.len()));
 
                 return (sub_type.ty, val, InitResult::None);
               } else {
@@ -349,7 +351,7 @@ fn process_struct_instantiation(
       let s_type = struct_type.into();
 
       let struct_id = block.push_node(GN::create_var(struct_type_name, s_type));
-      var_ctx.set_variable(struct_type_name, s_type, struct_id, struct_id.graph_id());
+      //var_ctx.set_variable(struct_type_name, s_type, struct_id, struct_id.graph_id());
 
       let struct_ptr_id = block.push_node(GN::create_ssa(IROp::ADDR, s_type.as_ptr(Ptr::Stack), &[struct_id], block.ctx().graph.len()));
 
@@ -502,7 +504,7 @@ fn process_statement(stmt: &statement_Value<Token>, type_ctx: &TypeContext, bloc
       // Match assignments to targets.
     }
     statement_Value::Expression(expr) => {
-      let (ty, graph_actions, _) = process_expression(expr, type_ctx, block, var_ctx);
+      let (_ty, _graph_actions, _) = process_expression(expr, type_ctx, block, var_ctx);
     }
     d => todo!("process statement: {d:#?}"),
   }
@@ -526,6 +528,18 @@ pub fn get_type(ir_type: &type_Value<Token>, type_context: &TypeContext) -> IRTy
         Default::default()
       }
     }
-    t => IRTypeInfo::from(Prim::default()),
+    _t => IRTypeInfo::from(Prim::default()),
   }
+}
+
+// Returns a variable index number for a temporary variable derived from a struct member 
+// lookup.
+fn get_temporary_member_variable_number(type_context: &TypeContext, base_struct:IString, member: IString) -> Option<usize> {
+  None
+}
+
+
+pub struct TypeLookup {
+  /// The variable id's of a type is stored in this temporary structure. 
+  pub sub_types: BTreeMap<IString, usize>,
 }

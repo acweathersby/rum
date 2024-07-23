@@ -4,6 +4,7 @@ pub mod compiler;
 pub mod error;
 pub mod ir;
 pub mod x86;
+pub mod types;
 use std::{
   collections::{HashMap, VecDeque},
   f64::consts::PI,

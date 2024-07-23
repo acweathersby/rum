@@ -178,7 +178,7 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
     unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
   }
 
-  print_instructions(&ctx.binary[16..], offset);
+  print_instructions(&ctx.binary[16..], 0);
 
   Ok(x86Function::new(&ctx.binary, 16))
 }
@@ -326,7 +326,20 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
           unreachable!();
         }
       }
+      IROp::MEM_LOAD => {
+        let [op1, _] = operands;
+        let CompileContext { ctx, binary: bin, .. } = ctx;
+        let src_ops = op1.as_op(ctx, so).to_mem();
+        let dst_ops = out_id.as_op(ctx, so);
+        let bit_size = out_ty.bit_size();
 
+        if ctx.graph[op1.graph_id()].ty().is_pointer() {
+          encode(bin, &mov, bit_size, dst_ops, src_ops, None);
+        } else {
+          unreachable!()
+        }
+        
+      }
       IROp::ADDR => {
         let [op1, _] = operands;
         let CompileContext { ctx, binary: bin, .. } = ctx;
@@ -337,7 +350,7 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
 
         // Otherwise, the store will be made to stack slot, which may not actually
         // need to be stored to memory, and can be just preserved in the op1 register.
-
+        println!("DDD- {out_ty:?}");
         if out_ty.is_pointer() {
           let op1_arg = out_id.as_op(ctx, so);
           //Ensure op1 resolves to pointer value.

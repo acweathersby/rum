@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use radlr_rust_runtime::types::Token;
 use rum_container::ArrayVec;
 use rum_istring::{CachedString, IString};
@@ -918,6 +919,7 @@ impl Debug for IRGraphNode {
   }
 }
 
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IROp {
@@ -952,7 +954,7 @@ pub enum IROp {
   STORE,
   /// Store of a primitive value in op(2) to memory at pointer in op(1)
   MEM_STORE,
-  PRIM_STORE,
+  /// Loads a primitive value into a suitable register. 
   MEM_LOAD,
   CALL,
   CALL_ARG,
@@ -1209,3 +1211,6 @@ impl<T, const SIZE: usize> std::ops::IndexMut<BlockId> for ArrayVec<SIZE, T> {
     &mut self[index.0 as usize]
   }
 }
+
+
+
