@@ -20,9 +20,9 @@ pub enum SuccessorMode {
 pub struct StateMachine<'a, 'ts> {
   pub graph:              &'a mut Vec<IRGraphNode>,
   pub ssa_stack:          Vec<IRGraphId>,
-  pub block_stack:        Vec<usize>,
+  pub block_stack:        Vec<BlockId>,
   pub blocks:             &'a mut Vec<Box<IRBlock>>,
-  pub active_block_id:    usize,
+  pub active_block_id:    BlockId,
   pub vars:               Vec<InternalVData>,
   pub variable_contexts:  Vec<VecDeque<usize>>,
   pub type_scopes:        &'ts TypeScopes,
@@ -39,7 +39,7 @@ impl<'f, 'ts> StateMachine<'f, 'ts> {
       type_scopes:        type_context,
       type_context_index: type_ctx_index,
       variable_contexts:  Default::default(),
-      active_block_id:    0,
+      active_block_id:    Default::default(),
       block_stack:        Default::default(),
     };
 
@@ -52,7 +52,7 @@ impl<'f, 'ts> StateMachine<'f, 'ts> {
 #[derive(Debug)]
 pub struct InternalVData {
   pub var_index:         usize,
-  pub block_index:       usize,
+  pub block_index:       BlockId,
   pub offset:            u64,
   pub name:              IString,
   pub ty:                Type,
@@ -66,7 +66,7 @@ pub struct InternalVData {
 pub struct ExternalVData {
   internal_var_index:    usize,
   pub var_index:         usize,
-  pub block_index:       usize,
+  pub block_index:       BlockId,
   pub is_member_pointer: bool,
   pub name:              IString,
   pub ty:                Type,
@@ -289,7 +289,7 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
     let node = IRGraphNode::SSA {
       op,
       id,
-      block_id: BlockId::default(),
+      block_id: self.active_block_id,
       result_ty: match ty {
         SMT::Inherit => graph[operands[0].graph_id()].ty(),
         SMT::Type(ty) => ty,
@@ -340,24 +340,25 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
       block.direct_predecessors.push(id);
     }
 
-    self.block_stack.push(id.usize());
-    self.active_block_id = self.blocks.len();
+    self.block_stack.push(id);
+    self.active_block_id = id;
     self.variable_contexts.push(Default::default());
     self.blocks.push(block);
   }
   /// Replace the current block on the hierarchy stack with a new one
   pub fn swap_block(&mut self, successor_mode: SuccessorMode) {
     let id = BlockId(self.blocks.len() as u32);
-    let mut block = Box::new(IRBlock {
-      id:                   BlockId(self.blocks.len() as u32),
-      nodes:                Default::default(),
-      branch_succeed:       Default::default(),
+
+    let block = Box::new(IRBlock {
+      id,
+      nodes: Default::default(),
+      branch_succeed: Default::default(),
       branch_unconditional: Default::default(),
-      branch_default:       Default::default(),
-      name:                 Default::default(),
-      direct_predecessors:  Default::default(),
-      is_loop_head:         Default::default(),
-      loop_components:      Default::default(),
+      branch_default: Default::default(),
+      name: Default::default(),
+      direct_predecessors: Default::default(),
+      is_loop_head: Default::default(),
+      loop_components: Default::default(),
     });
 
     self.block_stack.pop();
@@ -372,8 +373,8 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
       block.direct_predecessors.push(id);
     }
 
-    self.block_stack.push(id.usize());
-    self.active_block_id = self.blocks.len();
+    self.block_stack.push(id);
+    self.active_block_id = id;
     self.variable_contexts.push(Default::default());
 
     self.blocks.push(block);
