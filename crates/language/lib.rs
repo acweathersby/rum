@@ -22,7 +22,7 @@ use types::PrimitiveType;
 use crate::{
   compiler::script_parser::property_Value,
   ir::ir_graph::{IRBlock, SSAFunction},
-  ir_graph::{IRGraphId, IRGraphNode, RawType},
+  ir_graph::{IRGraphId, IRGraphNode},
   //x86::compile_from_ssa_fn,
 };
 

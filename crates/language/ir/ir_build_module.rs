@@ -1,6 +1,6 @@
 use super::{
-  ir_state_machine::{ExternalVData, StateMachine},
   ir_graph::IRGraphId,
+  ir_state_machine::{ExternalVData, StateMachine},
 };
 use crate::{
   compiler::script_parser::{
@@ -20,8 +20,8 @@ use crate::{
     RawStructDeclaration,
   },
   ir::{
-    ir_state_machine::{SuccessorMode, SMO, SMT},
     ir_graph::{IRGraphNode, IROp},
+    ir_state_machine::{SuccessorMode, SMO, SMT},
   },
   types::{BaseType, ComplexType, ConstVal, PrimitiveType, ProcedureBody, ProcedureType, StructMemberType, StructType, Type, TypeScopes},
   IString,
@@ -47,7 +47,6 @@ pub fn process_types(
         dbg!(union);
       }
       raw_module_Value::RawStruct(strct) => {
-        dbg!(strct);
         let name = strct.name.id.intern();
         let mut members = Vec::new();
         let mut offset = 0;
@@ -146,8 +145,6 @@ pub fn process_types(
           size: get_aligned_value(offset, min_alignment as u64),
         };
 
-        dbg!(&s);
-
         type_scope.set(type_scope_index, name, crate::types::ComplexType::Struct(s));
       }
       _ => {}
@@ -179,8 +176,6 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usi
 
     type_scope.set(type_scope_index, name, crate::types::ComplexType::Procedure(ty));
   }
-
-  dbg!(type_scope);
 
   ()
 }
@@ -502,8 +497,6 @@ fn process_statement(stmt: &statement_Value<Token>, sm: &mut StateMachine, last_
         process_expression(&expression, sm)
       }
 
-      dbg!(&sm);
-
       // Process assignment targets.
       for variable in assign.vars.iter() {
         match variable {
@@ -655,15 +648,4 @@ pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &
     }
     _t => None,
   }
-}
-
-// Returns a variable index number for a temporary variable derived from a
-// struct member lookup.
-fn get_temporary_member_variable_number(type_context: &TypeScopes, base_struct: IString, member: IString) -> Option<usize> {
-  None
-}
-
-pub struct TypeLookup {
-  /// The variable id's of a type is stored in this temporary structure.
-  pub sub_types: BTreeMap<IString, usize>,
 }
