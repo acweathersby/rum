@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use super::{x86_encoder::*, x86_instructions::*, x86_types::*};
 use crate::{
-  compiler::script_parser::Var,
   error::RumResult,
   ir::{
     ir_context::IRCallable,
-    ir_types::{BitSize, BlockId, GraphIdType, IRBlock, IRGraphNode, IROp, SSAFunction},
+    ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   },
+  types::BaseType,
   x86::{print_instructions, push_bytes},
 };
 use rum_logger::todo_note;
@@ -106,13 +106,13 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
         *rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
       } else {
         match ty.base_type() {
-          crate::ir::ir_types::TypeInfoResult::IRPrimitive(ty) => {
+          BaseType::Prim(ty) => {
             offsets.insert(id, rum_container::get_aligned_value(*rsp_offset, ty.alignment() as u64));
-            *rsp_offset = offsets.get(&id).unwrap() + ty.ele_byte_size() as u64;
+            *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
           }
-          crate::ir::ir_types::TypeInfoResult::IRType(ty) => {
-            offsets.insert(id, rum_container::get_aligned_value(*rsp_offset, ty.alignment as u64));
-            *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size as u64;
+          BaseType::Complex(ty) => {
+            offsets.insert(id, rum_container::get_aligned_value(*rsp_offset, ty.alignment() as u64));
+            *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
           }
         }
       }
@@ -155,10 +155,9 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
 
     if let Some(block_id) = block.branch_unconditional {
       use Arg::*;
-      use BitSize::*;
       if block_id != BlockId(block.id.0 + 1) {
         let CompileContext { stack_size, jmp_resolver, binary: bin, ctx } = &mut ctx;
-        encode(bin, &jmp, b32, Imm_Int(block_id.0 as i64), None, None);
+        encode(bin, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
         jmp_resolver.add_jump(bin, block_id.0 as usize);
         println!("JL BLOCK({block_id})");
       }
@@ -166,7 +165,7 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
 
     if !block.branch_default.is_some() && !block.branch_succeed.is_some() && !block.branch_unconditional.is_some() {
       funct_postamble(&mut ctx, rsp_offset);
-      encode(&mut ctx.binary, &ret, BitSize::b64, Arg::None, Arg::None, Arg::None);
+      encode(&mut ctx.binary, &ret, 64, Arg::None, Arg::None, Arg::None);
     }
   }
 
@@ -185,36 +184,35 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
 
 fn funct_preamble(ctx: &mut CompileContext, rsp_offset: u64) {
   let bin = &mut ctx.binary;
-  encode_unary(bin, &push, BitSize::b64, Arg::Reg(RBX));
-  encode_unary(bin, &push, BitSize::b64, Arg::Reg(RBP));
-  encode_unary(bin, &push, BitSize::b64, Arg::Reg(R12));
-  encode_unary(bin, &push, BitSize::b64, Arg::Reg(R13));
-  encode_unary(bin, &push, BitSize::b64, Arg::Reg(R14));
-  encode_unary(bin, &push, BitSize::b64, Arg::Reg(R15));
+  encode_unary(bin, &push, 64, Arg::Reg(RBX));
+  encode_unary(bin, &push, 64, Arg::Reg(RBP));
+  encode_unary(bin, &push, 64, Arg::Reg(R12));
+  encode_unary(bin, &push, 64, Arg::Reg(R13));
+  encode_unary(bin, &push, 64, Arg::Reg(R14));
+  encode_unary(bin, &push, 64, Arg::Reg(R15));
 
   if rsp_offset > 0 {
     // Move RSP to allow for enough stack space for our variables -
-    encode_binary(bin, &sub, BitSize::b64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset as i64));
+    encode_binary(bin, &sub, 64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset as i64));
   }
 }
 
 fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
   let bin = &mut ctx.binary;
   if rsp_offset > 0 {
-    encode_binary(bin, &add, BitSize::b64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset as i64));
+    encode_binary(bin, &add, 64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset as i64));
   }
-  encode_unary(bin, &pop, BitSize::b64, Arg::Reg(R15));
-  encode_unary(bin, &pop, BitSize::b64, Arg::Reg(R14));
-  encode_unary(bin, &pop, BitSize::b64, Arg::Reg(R13));
-  encode_unary(bin, &pop, BitSize::b64, Arg::Reg(R12));
-  encode_unary(bin, &pop, BitSize::b64, Arg::Reg(RBP));
-  encode_unary(bin, &pop, BitSize::b64, Arg::Reg(RBX));
+  encode_unary(bin, &pop, 64, Arg::Reg(R15));
+  encode_unary(bin, &pop, 64, Arg::Reg(R14));
+  encode_unary(bin, &pop, 64, Arg::Reg(R13));
+  encode_unary(bin, &pop, 64, Arg::Reg(R12));
+  encode_unary(bin, &pop, 64, Arg::Reg(RBP));
+  encode_unary(bin, &pop, 64, Arg::Reg(RBX));
 }
 
 pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext, so: &BTreeMap<usize, u64>, rsp_offset: u64) -> bool {
-  const POINTER_SIZE: BitSize = b64;
+  const POINTER_SIZE: u64 = 64;
   use Arg::*;
-  use BitSize::*;
   if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, spills, .. } = *node {
     // Perform spills
     for (op_index, spill) in spills.iter().enumerate() {
@@ -309,16 +307,14 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
         // need to be stored to memory, and can be just preserved in the op1 register.
 
         if out_ty.is_pointer() {
-          if let crate::ir::ir_types::TypeInfoResult::IRPrimitive(prim) = out_ty.base_type() {
-            let bit_size = BitSize::from(*prim);
-
+          if let BaseType::Prim(prim) = out_ty.base_type() {
             let op1_arg = op1.as_op(ctx, so);
             //Ensure op1 resolves to pointer value.
 
             let op1_arg = op1_arg.to_mem();
             let op2_arg = op2.as_op(ctx, so);
 
-            encode(bin, &mov, bit_size, op1_arg, op2_arg, None);
+            encode(bin, &mov, prim.bit_size(), op1_arg, op2_arg, None);
           } else {
             panic!("Can't store to a non primitive type {out_ty:?}");
           }
@@ -338,7 +334,6 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
         } else {
           unreachable!()
         }
-        
       }
       IROp::ADDR => {
         let [op1, _] = operands;
@@ -356,7 +351,7 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
           //Ensure op1 resolves to pointer value.
 
           match &ctx.graph[op1.var_id().unwrap()] {
-            IRGraphNode::VAR { id: out_id, ty, name, loc } => {
+            IRGraphNode::VAR { id: out_id, ty, name, loc, .. } => {
               if let Some(var_id) = out_id.var_id() {
                 let offset = *so.get(&var_id).unwrap();
                 encode(bin, &lea, POINTER_SIZE, op1_arg, RSP_REL(offset), None);
@@ -409,9 +404,9 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
 
         let op1 = operands[0];
 
-        encode(bin, &mov, b64, RAX.as_op(ctx, so), op1.as_op(ctx, so), None);
+        encode(bin, &mov, 64, RAX.as_op(ctx, so), op1.as_op(ctx, so), None);
 
-        encode_zero(bin, &syscall, b32);
+        encode_zero(bin, &syscall, 32);
       }
       IROp::DEREF => todo!("TODO: {node:?}"),
       /*     IROp::STORE => {

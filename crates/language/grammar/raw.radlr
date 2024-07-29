@@ -283,7 +283,7 @@ IMPORT expression as expr
 
 <> member > id^root ("." id )(*)^branches
 
-  :ast { t_RawMember, root, branches }
+  :ast { t_RawMember, root, branches, tok }
 
 
 <> self 

@@ -10,7 +10,7 @@ IMPORT ../common/comment as cmt
 
 <> enum 
   
-  > prim::var^name "=>" prim::var(+",")^ids
+  > prim::var^name "=>" prim::var(+"|")^ids
 
     :ast  { t_RawUnion, name, ids, tok }
 
@@ -46,9 +46,9 @@ IMPORT ../common/comment as cmt
 
 <> bitfield_prop 
 
-  > flag_val ":" bitfield_element(+"|")^props
+  > tk:( "bf" c:num+ )^base_type ":" bitfield_element(+"|")^props
 
-    :ast  { t_RawBitCompositeProp, base_type, props  }
+    :ast  { t_RawBitCompositeProp, bit_count: u32($base_type<2,0>), props  }
 
 
 <> bitfield_element
@@ -59,7 +59,7 @@ IMPORT ../common/comment as cmt
       
   | tk:( "#desc" c:num+ )
 
-      :ast  { t_BitFieldDescriminator, val: $1  }
+      :ast  { t_BitFieldDescriminator, bit_count: u32($1<5,0>)  }
 
 
 <> single_prop 

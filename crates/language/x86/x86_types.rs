@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::ir::{
   ir_context::IRCallable,
-  ir_types::{GraphIdType, IRGraphId, SSAFunction},
+  ir_graph::{GraphIdType, IRGraphId, SSAFunction},
 };
 
 #[derive(Debug, Hash, Clone, Copy)]

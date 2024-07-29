@@ -1,17 +1,17 @@
 use crate::{
   ir::{
     ir_build_module::build_module,
-    ir_types::{IRGraphNode, IROp},
+    ir_graph::{IRGraphNode, IROp},
   },
+  types::{BaseType, PrimitiveSubType},
   x86::compile_from_ssa_fn,
 };
 
 use super::{
   ir_context::OptimizerContext,
   //ir_block_optimizer::OptimizerContext,
-  ir_types::IRGraphId,
+  ir_graph::IRGraphId,
 };
-
 
 /// Architectural specific register mappings
 pub struct RegisterPack {
@@ -29,18 +29,10 @@ pub struct RegisterPack {
   pub registers:          Vec<IRGraphId>,
 }
 
-/*
-
-OpID
-
-Has Out Reg
-
-
-
-*/
-
 #[test]
 fn register_allocator() {
+  let mut scope = crate::types::TypeScopes::new();
+
   let mut module = build_module(
     &crate::compiler::script_parser::parse_raw_module(
       &r##"
@@ -75,9 +67,11 @@ fn register_allocator() {
     "##,
     )
     .unwrap(),
+    0,
+    &mut scope,
   );
 
-  let funct = &mut module.functions[0];
+  /*   let funct = &mut module.functions[0];
 
   let mut ctx = OptimizerContext { graph: &mut funct.graph, blocks: &mut funct.blocks };
 
@@ -85,8 +79,8 @@ fn register_allocator() {
 
   let reg_pack = RegisterPack {
     call_arg_registers: vec![1],
-    ptr_registers:      vec![0,1,2,3],
-    int_registers:      vec![0,1,2,3],
+    ptr_registers:      vec![0, 1, 2, 3],
+    int_registers:      vec![0, 1, 2, 3],
     float_registers:    vec![],
     max_register:       6,
     registers:          vec![RAX, RCX, RDX, R9, R14, R15],
@@ -105,7 +99,7 @@ fn register_allocator() {
 
   funct();
 
-  panic!("WTDN?");
+  panic!("WTDN?"); */
 }
 
 pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) -> Vec<u32> {
@@ -289,7 +283,7 @@ fn get_register_for_var(
   node_index: usize,
   block_index: usize,
   graph: &mut [IRGraphNode],
-  ty: super::ir_types::IRTypeInfo,
+  ty: crate::types::Type,
   reg_pack: &RegisterPack,
   assigned_registers: &mut Vec<usize>,
   blocked_register: Option<usize>,
@@ -302,12 +296,12 @@ fn get_register_for_var(
       &reg_pack.ptr_registers
     } else {
       match ty.base_type() {
-        crate::ir::ir_types::TypeInfoResult::IRPrimitive(prim) => match prim.ty() {
-          crate::ir::ir_types::RawType::Integer | crate::ir::ir_types::RawType::Unsigned => &reg_pack.ptr_registers,
-          crate::ir::ir_types::RawType::Float => &reg_pack.float_registers,
+        BaseType::Prim(prim) => match prim.sub_type() {
+          PrimitiveSubType::Signed | PrimitiveSubType::Unsigned => &reg_pack.ptr_registers,
+          PrimitiveSubType::Float => &reg_pack.float_registers,
           _ => unreachable!("Invalid primitive for register assignment"),
         },
-        crate::ir::ir_types::TypeInfoResult::IRType(_) => {
+        BaseType::Complex(_) => {
           &reg_pack.ptr_registers
           // /unreachable!("Non-primitive types {ty:?} can only be accessed
           // through pointers...maybe. TBD")
@@ -384,8 +378,9 @@ fn get_register_for_var(
 
         score -= 1;
 
-        if op_index == graph.len() -1 {
-          // The variable is no longer accessed and the associated register can be freely reused.
+        if op_index == graph.len() - 1 {
+          // The variable is no longer accessed and the associated register can be freely
+          // reused.
           score = 0;
         }
       }

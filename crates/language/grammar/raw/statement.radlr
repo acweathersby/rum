@@ -26,16 +26,20 @@ IMPORT ../common/comment as cmt
 
 <> assignment_statement 
 
-  > assignment_var(+",")^vars "=" expr::expression(+){2}^expressions
+  > assignment_var(+",")^vars "=" expr::expression(+","){2}^expressions
 
     :ast { t_RawAssignment, vars, expressions, tok  }
 
 
 <> assignment_var 
 
-  > prim::var^var ( ":" ty::type )?
+  > prim::var^var ":" ty::type
 
-    :ast { t_RawAssignmentLabel, var:$1, ty:$2, tok  }
+    :ast { t_RawAssignmentDeclaration, var:$1, ty:$3, tok  }
+
+  | expr::member
+
+    :ast { t_RawAssignmentVariable, var:$1, tok  }
 
   | struct::region_access
 

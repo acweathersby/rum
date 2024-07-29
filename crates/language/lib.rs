@@ -3,30 +3,26 @@ pub mod bitfield;
 pub mod compiler;
 pub mod error;
 pub mod ir;
-pub mod x86;
 pub mod types;
+pub mod x86;
 use std::{
   collections::{HashMap, VecDeque},
   f64::consts::PI,
 };
 
 use compiler::script_parser::{arithmetic_Value, raw_module_Value, type_Value, RawProperty};
-use ir::{
-  ir_const_val,
-  ir_context::{IRStruct, IRStructMember},
-  ir_types,
-};
+use ir::ir_graph;
 
-use ir_types::BlockId;
+use ir_graph::BlockId;
 pub use radlr_rust_runtime::types::Token;
 use rum_container::{get_aligned_value, ArrayVec};
 use rum_istring::{CachedString, IString};
+use types::PrimitiveType;
 
 use crate::{
   compiler::script_parser::property_Value,
-  ir::ir_types::{IRBlock, SSAFunction},
-  ir_const_val::ConstVal,
-  ir_types::{IRGraphId, IRGraphNode, IRPrimitiveType, RawType},
+  ir::ir_graph::{IRBlock, SSAFunction},
+  ir_graph::{IRGraphId, IRGraphNode, RawType},
   //x86::compile_from_ssa_fn,
 };
 
@@ -38,23 +34,6 @@ fn test() {
   compiler::script_parser::parse_raw_expr("2*8").unwrap();
 }
 
-pub fn get_type(ir_type: &type_Value<Token>) -> IRPrimitiveType {
-  match ir_type {
-    type_Value::Type_u8(_) => IRPrimitiveType::Unsigned | IRPrimitiveType::b8,
-    type_Value::Type_u16(_) => IRPrimitiveType::Unsigned | IRPrimitiveType::b16,
-    type_Value::Type_u32(_) => IRPrimitiveType::Unsigned | IRPrimitiveType::b32,
-    type_Value::Type_u64(_) => IRPrimitiveType::Unsigned | IRPrimitiveType::b64,
-    type_Value::Type_i8(_) => IRPrimitiveType::Integer | IRPrimitiveType::b8,
-    type_Value::Type_i16(_) => IRPrimitiveType::Integer | IRPrimitiveType::b16,
-    type_Value::Type_i32(_) => IRPrimitiveType::Integer | IRPrimitiveType::b32,
-    type_Value::Type_i64(_) => IRPrimitiveType::Integer | IRPrimitiveType::b64,
-    type_Value::NamedType(name) => {
-      let name = name.name.id.intern();
-      IRPrimitiveType::Generic | IRPrimitiveType::b64
-    }
-    t => unreachable!("Not supported in this edition! {t:?}"),
-  }
-}
 /*
 pub fn expression(expr: &compiler::script_parser::Expression<Token>) {
   let mut graph = Vec::<IRGraphNode>::with_capacity(1024);

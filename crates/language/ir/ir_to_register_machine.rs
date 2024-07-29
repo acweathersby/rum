@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use super::ir_types::{IRBlock, IRGraphNode, SSAFunction};
+use super::ir_graph::{IRBlock, IRGraphNode, SSAFunction};
 pub(crate) enum RegisterProperty {
   IntegerArithmwetic,
   FloatingPointArithmetic,

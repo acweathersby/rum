@@ -177,7 +177,7 @@ IMPORT ../common/comment as cmt
   
   > prim::var(+".")^members
 
-    :ast { t_RawMember, members }
+    :ast { t_RawMember, members, tok }
 
 <> pointer_offset 
 

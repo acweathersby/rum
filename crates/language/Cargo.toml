@@ -24,10 +24,10 @@ path = "../profile"
 path = "../istring"
 
 [dependencies.radlr_rust_runtime]
-path = "../../../radlr/crates/radlr-rust-runtime"
+path = "../../../lib_radlr/crates/radlr-rust-runtime"
 
 [build_dependencies.radlr_build]
-path = "../../../radlr/crates/radlr-build"
+path = "../../../lib_radlr/crates/radlr-build"
 
 [dependencies]
 libc = "0.2.154"

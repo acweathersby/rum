@@ -3,8 +3,8 @@
 #[derive(Hash, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[allow(unused, non_camel_case_types, non_upper_case_globals)]
 pub enum BitSize {
-  b0 = 0,
-  b1 = 1,
+  b0   = 0,
+  b1   = 1,
   b8   = 8,
   b16  = 16,
   b32  = 32,
