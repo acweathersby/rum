@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use radlr_rust_runtime::{
   parsers::ast::AstDatabase,
   types::{RuntimeDatabase, StringInput},
@@ -31,7 +33,7 @@ pub fn parse_RS(input: &str) -> Result<ASTNode, String> {
 }
 
 /// Parses input based on the LL grammar.
-pub fn parse_raw(input: &str) -> Result<std::rc::Rc<RawFunction<Token>>, String> {
+pub fn parse_raw(input: &str) -> Result<Arc<RawFunction<Token>>, String> {
   let parser_db = parser::ParserDB::new();
   match parser_db.build_ast(
     &mut StringInput::from(input),

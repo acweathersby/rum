@@ -1,9 +1,5 @@
+use crate::ir::{ir_context::IRCallable, ir_graph::IRGraphId};
 use std::collections::BTreeMap;
-
-use crate::ir::{
-  ir_context::IRCallable,
-  ir_graph::{GraphIdType, IRGraphId, SSAFunction},
-};
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub(super) enum OpEncoding {

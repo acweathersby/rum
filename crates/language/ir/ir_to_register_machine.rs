@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 
-use super::ir_graph::{IRBlock, IRGraphNode, SSAFunction};
+use crate::types::ProcedureBody;
+
+use super::ir_graph::{IRBlock, IRGraphNode};
 pub(crate) enum RegisterProperty {
   IntegerArithmwetic,
   FloatingPointArithmetic,
@@ -31,14 +33,14 @@ pub struct CompilerFunction<R: RegisterIdentifier> {
   pub(crate) graph:  Vec<RegisterExp<R>>,
 }
 
-pub(crate) fn convert_to_register_names<T: RegisterAllocator>(funct: SSAFunction) -> CompilerFunction<T::RegisterType> {
+pub(crate) fn convert_to_register_names<T: RegisterAllocator>(proc: ProcedureBody) -> CompilerFunction<T::RegisterType> {
   let mut allocator: T = T::new();
 
   let mut out = CompilerFunction { blocks: Default::default(), graph: Default::default() };
 
-  for block in funct.blocks {
+  for block in proc.blocks {
     for op in block.nodes {
-      let ssa = &funct.graph[op.graph_id()];
+      let ssa = &proc.graph[op.graph_id()];
       let action = allocator.map_register(ssa);
       out.graph.push(action);
     }

@@ -34,7 +34,7 @@ fn register_allocator() {
   let mut scope = crate::types::TypeScopes::new();
 
   let mut module = build_module(
-    &crate::compiler::script_parser::parse_raw_module(
+    &crate::parser::script_parser::parse_raw_module(
       &r##"
   
   02Temp => [

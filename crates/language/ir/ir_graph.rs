@@ -1,5 +1,4 @@
 use crate::types::{ConstVal, Type};
-use radlr_rust_runtime::types::Token;
 use rum_container::ArrayVec;
 use rum_istring::IString;
 use std::fmt::{Debug, Display};
@@ -362,25 +361,6 @@ impl From<IRGraphId> for usize {
 // ---------------------------------------------------------------------
 // RawBlock
 
-#[derive(Clone)]
-pub struct SymbolBinding {
-  pub name:   IString,
-  /// If the type is a pointer, then this represents the location where the data
-  /// of the type the pointer points to. For non-pointer types this is
-  /// Unallocated.
-  pub ty:     Type,
-  /// A function unique id for the declaration.
-  pub ssa_id: IRGraphId,
-  pub tok:    Token,
-  pub var_id: usize,
-}
-
-impl Debug for SymbolBinding {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("decl({:?} : {:?})", self.name.to_str().as_str(), self.ty))
-  }
-}
-
 #[derive(Clone, Debug)]
 pub struct IRBlock {
   pub id:                   BlockId,
@@ -418,15 +398,6 @@ Block-{id:03} {} {{
       self.name.to_str().as_str()
     ))
   }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SSAFunction {
-  pub(crate) blocks: Vec<Box<IRBlock>>,
-
-  pub(crate) graph: Vec<IRGraphNode>,
-
-  pub(crate) variables: Vec<(Type, IRGraphId)>,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default)]

@@ -17,33 +17,38 @@ pub enum SuccessorMode {
 }
 
 #[derive(Debug)]
-pub struct StateMachine<'a, 'ts> {
+pub struct IRBuilder<'a, 'ts> {
   pub graph:              &'a mut Vec<IRGraphNode>,
   pub ssa_stack:          Vec<IRGraphId>,
   pub block_stack:        Vec<BlockId>,
   pub blocks:             &'a mut Vec<Box<IRBlock>>,
   pub active_block_id:    BlockId,
-  pub vars:               Vec<InternalVData>,
-  pub variable_contexts:  Vec<VecDeque<usize>>,
+  pub var_scope_stack:    Vec<usize>,
+  pub variables:          Vec<InternalVData>,
+  pub variable_scopes:    Vec<VecDeque<usize>>,
+  pub unused_scope:       Vec<usize>,
   pub type_scopes:        &'ts TypeScopes,
   pub type_context_index: usize,
 }
 
-impl<'f, 'ts> StateMachine<'f, 'ts> {
+impl<'f, 'ts> IRBuilder<'f, 'ts> {
   pub fn new(proc: &'f mut ProcedureBody, type_ctx_index: usize, type_context: &'ts TypeScopes) -> Self {
     let mut state_machine = Self {
       ssa_stack:          Default::default(),
       graph:              &mut proc.graph,
       blocks:             &mut proc.blocks,
-      vars:               Default::default(),
+      variables:          Default::default(),
       type_scopes:        type_context,
       type_context_index: type_ctx_index,
-      variable_contexts:  Default::default(),
+      variable_scopes:    Default::default(),
       active_block_id:    Default::default(),
       block_stack:        Default::default(),
+      var_scope_stack:    Default::default(),
+      unused_scope:       Default::default(),
     };
 
     state_machine.push_block(SuccessorMode::Default);
+    state_machine.push_var_scope();
 
     state_machine
   }
@@ -124,25 +129,39 @@ impl From<&ComplexType> for SMT {
   }
 }
 
-impl<'a, 'ts> StateMachine<'a, 'ts> {
+impl<'a, 'ts> IRBuilder<'a, 'ts> {
+  pub fn get_node_type(&self, node_id: IRGraphId) -> Option<Type> {
+    self.graph.get(node_id.graph_id()).map(|t| t.ty())
+  }
+
   pub fn get_type(&self, type_name: IString) -> Option<&'ts ComplexType> {
     self.type_scopes.get(self.type_context_index, type_name)
   }
 
   pub fn rename_var(&mut self, var_id: IRGraphId, name: IString) {
+    let active_scope = self.get_active_var_scope();
     match &mut self.graph[var_id.graph_id()] {
       IRGraphNode::VAR { name: v_name, var_index, .. } => {
-        self.vars[*var_index].name = name;
+        self.variables[*var_index].name = name;
         *v_name = name;
+
+        if !self.variable_scopes[active_scope].contains(var_index) {
+          self.variable_scopes[active_scope].push_front(*var_index);
+        }
       }
       _ => unreachable!(),
     }
   }
 
-  pub fn push_variable(&mut self, name: IString, ty: Type) -> ExternalVData {
-    let variables = &mut self.variable_contexts[self.active_block_id];
+  fn get_active_var_scope(&self) -> usize {
+    *self.var_scope_stack.last().unwrap()
+  }
 
-    let var_index = self.vars.len();
+  pub fn push_variable(&mut self, name: IString, ty: Type) -> ExternalVData {
+    let active_scope = self.get_active_var_scope();
+    let variables = &mut self.variable_scopes[active_scope];
+
+    let var_index = self.variables.len();
     let graph_id = IRGraphId::default().to_graph_index(self.graph.len()).to_var_id(self.graph.len());
     let var = InternalVData {
       offset: 0,
@@ -157,21 +176,21 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
     };
     variables.push_front(var_index);
 
-    self.vars.push(var);
+    self.variables.push(var);
 
     self.graph.push(IRGraphNode::VAR { id: graph_id, ty, name, loc: Default::default(), var_index });
 
     self.ssa_stack.push(graph_id);
 
-    (&self.vars[self.vars.len() - 1]).into()
+    (&self.variables[self.variables.len() - 1]).into()
   }
 
   pub fn get_variable(&self, var_name: IString) -> Option<ExternalVData> {
-    for block_index in self.block_stack.iter().rev() {
-      let var_ctx = &self.variable_contexts[*block_index];
+    for var_index in self.var_scope_stack.iter().rev() {
+      let var_ctx = &self.variable_scopes[*var_index];
 
       for var in var_ctx.iter() {
-        let var = &self.vars[*var];
+        let var = &self.variables[*var];
         if var.name == var_name {
           return Some(var.into());
         }
@@ -182,9 +201,8 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
   }
 
   pub fn get_variable_member(&mut self, var: &ExternalVData, sub_member_name: IString) -> Option<ExternalVData> {
-    let var = self.variable_contexts[var.block_index][var.internal_var_index];
-    let var_index = self.vars.len();
-    let var = &mut self.vars[var];
+    let var_index = self.variables.len();
+    let var = &mut self.variables[var.internal_var_index];
 
     match var.ty.base_type() {
       crate::types::BaseType::Prim(_) => None,
@@ -194,7 +212,7 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
             match var.sub_members.entry(ty.original_index) {
               std::collections::hash_map::Entry::Occupied(entry) => {
                 let id = *entry.get();
-                Some((&self.vars[id]).into())
+                Some((&self.variables[id]).into())
               }
               std::collections::hash_map::Entry::Vacant(entry) => {
                 let graph_id = IRGraphId::default().to_graph_index(self.graph.len()).to_var_id(self.graph.len());
@@ -218,11 +236,11 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
                   is_member_pointer: true,
                 };
 
-                self.vars.push(var);
+                self.variables.push(var);
 
                 self.graph.push(IRGraphNode::VAR { id: graph_id, ty, name, loc: Default::default(), var_index });
 
-                let mut val: ExternalVData = (&(self.vars[var_index])).into();
+                let mut val: ExternalVData = (&(self.variables[var_index])).into();
 
                 val.is_member_pointer = true;
 
@@ -258,10 +276,42 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
     }
   }
 
+  pub fn push_var_scope(&mut self) {
+    let index = if let Some(unused_scope_index) = self.unused_scope.pop() { unused_scope_index } else { self.variable_scopes.len() };
+    self.variable_scopes.push(Default::default());
+    self.var_scope_stack.push(index);
+  }
+
+  pub fn pop_var_scope(&mut self) {
+    if let Some(index) = self.var_scope_stack.pop() {
+      if self.variable_scopes[index].is_empty() {
+        self.unused_scope.push(index);
+      }
+    }
+  }
+
+  pub fn push_node(&mut self, val: IRGraphId) {
+    debug_assert!(val.graph_id() < self.graph.len());
+    self.ssa_stack.push(val);
+  }
+
   pub fn push_const(&mut self, val: ConstVal) {
+    for node in self.graph.iter() {
+      match node {
+        IRGraphNode::Const { id, val: v } => {
+          if val == *v {
+            self.ssa_stack.push(*id);
+            return;
+          }
+        }
+        _ => {}
+      }
+    }
+
     let graph = &mut *self.graph;
     let id = IRGraphId::default().to_graph_index(graph.len());
     let node = IRGraphNode::Const { id, val };
+
     graph.push(node);
     self.ssa_stack.push(id);
   }
@@ -304,7 +354,7 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
 
     if matches!(op, IROp::STORE | IROp::MEM_STORE) && var_id != usize::MAX {
       if let IRGraphNode::VAR { var_index, .. } = self.graph[var_id] {
-        self.vars[var_index].store = self.vars[var_index].store.to_graph_index(id.graph_id());
+        self.variables[var_index].store = self.variables[var_index].store.to_graph_index(id.graph_id());
       } else {
         panic!("Invalid variable (mem)store. Variable id is invalid. {self:#?}")
       }
@@ -318,7 +368,7 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
   /// Push a new block into the block hierarchy stack.
   pub fn push_block(&mut self, successor_mode: SuccessorMode) {
     let id = BlockId(self.blocks.len() as u32);
-    let mut block = Box::new(IRBlock {
+    let block = Box::new(IRBlock {
       id:                   id,
       nodes:                Default::default(),
       branch_succeed:       Default::default(),
@@ -342,11 +392,11 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
 
     self.block_stack.push(id);
     self.active_block_id = id;
-    self.variable_contexts.push(Default::default());
     self.blocks.push(block);
   }
+
   /// Replace the current block on the hierarchy stack with a new one
-  pub fn swap_block(&mut self, successor_mode: SuccessorMode) {
+  pub fn split_block(&mut self, successor_mode: SuccessorMode) {
     let id = BlockId(self.blocks.len() as u32);
 
     let block = Box::new(IRBlock {
@@ -361,8 +411,6 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
       loop_components: Default::default(),
     });
 
-    self.block_stack.pop();
-
     if let Some(block_id) = self.block_stack.last() {
       let block = &mut self.blocks[*block_id];
       match successor_mode {
@@ -372,10 +420,9 @@ impl<'a, 'ts> StateMachine<'a, 'ts> {
       }
       block.direct_predecessors.push(id);
     }
-
+    self.block_stack.pop();
     self.block_stack.push(id);
     self.active_block_id = id;
-    self.variable_contexts.push(Default::default());
 
     self.blocks.push(block);
   }
@@ -392,7 +439,7 @@ fn variable_contexts() {
   let mut type_scope = TypeScopes::new();
 
   process_types(
-    &crate::compiler::script_parser::parse_raw_module(
+    &crate::parser::script_parser::parse_raw_module(
       &r##"
 Temp => [
   bf32: #desc8 | name: u8 | id: u8 | mem: u8
@@ -405,7 +452,7 @@ Temp => [
   );
 
   let mut proc = ProcedureBody::default();
-  let mut sm = StateMachine::new(&mut proc, 0, &type_scope);
+  let mut sm = IRBuilder::new(&mut proc, 0, &type_scope);
 
   // Get the type info of the Temp value.
   let ty = sm.get_type("Temp".to_token()).unwrap();
@@ -431,7 +478,7 @@ fn stores() {
   let mut type_scope = TypeScopes::new();
 
   process_types(
-    &crate::compiler::script_parser::parse_raw_module(
+    &crate::parser::script_parser::parse_raw_module(
       &r##"
 
       Temp => [d:u32]
@@ -444,7 +491,7 @@ fn stores() {
   );
 
   let mut proc = ProcedureBody::default();
-  let mut sm = StateMachine::new(&mut proc, 0, &type_scope);
+  let mut sm = IRBuilder::new(&mut proc, 0, &type_scope);
 
   // Get the type info of the Temp value.
   let ty = sm.get_type("Temp".to_token()).unwrap();
@@ -452,13 +499,13 @@ fn stores() {
   sm.push_variable("test".to_token(), ty.into());
 
   let var_id = IRGraphId::default().to_graph_index(0).to_var_id(0);
-  assert_eq!(sm.vars[0].store, var_id);
+  assert_eq!(sm.variables[0].store, var_id);
 
   sm.push_ssa(IROp::STORE, ty.into(), &[], var_id.graph_id());
-  assert_eq!(sm.vars[0].store, var_id.to_graph_index(1));
+  assert_eq!(sm.variables[0].store, var_id.to_graph_index(1));
 
   sm.push_ssa(IROp::MEM_STORE, ty.into(), &[], var_id.graph_id());
-  assert_eq!(sm.vars[0].store, var_id.to_graph_index(2));
+  assert_eq!(sm.variables[0].store, var_id.to_graph_index(2));
 
   dbg!(sm);
 }
@@ -468,7 +515,7 @@ fn blocks() {
   let mut type_scope = TypeScopes::new();
 
   process_types(
-    &crate::compiler::script_parser::parse_raw_module(
+    &crate::parser::script_parser::parse_raw_module(
       &r##"
 
       Temp => [d:u32]
@@ -481,7 +528,7 @@ fn blocks() {
   );
 
   let mut proc = ProcedureBody::default();
-  let mut sm = StateMachine::new(&mut proc, 0, &type_scope);
+  let mut sm = IRBuilder::new(&mut proc, 0, &type_scope);
 
   sm.push_variable("Test".to_token(), PrimitiveType::u32.into());
 
@@ -494,7 +541,7 @@ fn blocks() {
 
   dbg!(&sm.blocks);
 
-  sm.swap_block(SuccessorMode::Fail);
+  sm.split_block(SuccessorMode::Fail);
 
   assert!(sm.get_variable("Test".to_token()).is_some());
   assert!(sm.get_variable("Test1".to_token()).is_none());

@@ -180,48 +180,6 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usi
   ()
 }
 
-#[test]
-fn test() {
-  let mut scope = crate::types::TypeScopes::new();
-  build_module(
-    &crate::compiler::script_parser::parse_raw_module(
-      &r##"
-
-Temp => [
-  bf32: #desc8 | name: u8 | id: u8 | mem: u8
-  val:u32
-]
-
-Bent => [
-  bf32: #desc6 | name: u16 
-  val: u32
-]
-
-Union => Bent | Temp
-
-main => () {
-  data = Temp[ 
-    name = 32
-  ]
-
-  data.val, data.mem = { 
-    222
-    data.val 
-  }, 2
-
-  32
-}
-    
-  
-  
-  "##,
-    )
-    .unwrap(),
-    0,
-    &mut scope,
-  );
-}
-
 fn process_function(function: &RawFunction<Token>, type_ctx_index: usize, type_context: &TypeScopes) -> ProcedureBody {
   // Ensure the return type is present in our type context.
   println!("TODO: Ensure the return type is present in our type context");
