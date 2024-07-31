@@ -192,7 +192,6 @@ pub enum IROp {
   /// offset.
   PTR_MEM_CALC,
   // General use operators
-  NOOP,
   ADD,
   SUB,
   MUL,
@@ -203,16 +202,17 @@ pub enum IROp {
   LE,
   GE,
   LS,
+  NE,
+  EQ,
   OR,
   XOR,
   AND,
   NOT,
   NEG,
-  SHIFT_L,
-  SHIFT_R,
+  SHL,
+  SHR,
   /// Returns the address of op1 as a pointer
   ADDR,
-  DEREF,
   /// Stores the primitive or register in op2 into the stack slot assigned to
   /// the var of op1.
   STORE,
@@ -220,12 +220,14 @@ pub enum IROp {
   MEM_STORE,
   /// Loads a primitive value into a suitable register.
   MEM_LOAD,
+  /// Zeroes all bytes of a type pointer or an array pointer.
+  ZERO,
+  /// Copies data from one type pointer to another type pointer.
+  COPY,
   CALL,
   CALL_ARG,
   CALL_RET,
   RET_VAL,
-  NE,
-  EQ,
   // Deliberate movement of data from one location to another
   MOVE,
 }
@@ -363,15 +365,14 @@ impl From<IRGraphId> for usize {
 
 #[derive(Clone, Debug)]
 pub struct IRBlock {
-  pub id:                   BlockId,
-  pub nodes:                Vec<IRGraphId>,
-  pub branch_unconditional: Option<BlockId>,
-  pub branch_succeed:       Option<BlockId>,
-  pub branch_default:       Option<BlockId>,
-  pub name:                 IString,
-  pub is_loop_head:         bool,
-  pub loop_components:      Vec<BlockId>,
-  pub direct_predecessors:  Vec<BlockId>,
+  pub id:                  BlockId,
+  pub nodes:               Vec<IRGraphId>,
+  pub branch_succeed:      Option<BlockId>,
+  pub branch_fail:         Option<BlockId>,
+  pub name:                IString,
+  pub is_loop_head:        bool,
+  pub loop_components:     Vec<BlockId>,
+  pub direct_predecessors: Vec<BlockId>,
 }
 
 impl Display for IRBlock {
@@ -381,9 +382,9 @@ impl Display for IRBlock {
 
     let branch = /* if let Some(ret) = self.return_val {
       format!("\n\n  return: {ret:?}")
-    } else  */if let (Some(fail), Some(pass)) = (self.branch_default, self.branch_succeed) {
+    } else  */if let (Some(fail), Some(pass)) = (self.branch_fail, self.branch_succeed) {
       format!("\n\n  pass: Block-{pass:03}\n  fail: Block-{fail:03}")
-    } else if let Some(branch) = self.branch_unconditional {
+    } else if let Some(branch) = self.branch_succeed {
       format!("\n\n  jump: Block-{branch:03}")
     } else {
       Default::default()

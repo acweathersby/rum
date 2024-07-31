@@ -34,10 +34,10 @@ impl Default for PrimitiveType {
 impl PrimitiveType {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
   const SUBTYPE_MASK: u64 = 0x0000_00F0;
-  const SUBTYPE_BIT_OFFSET: u64 = 0x4;
+  const SUBTYPE_BIT_OFFSET: u64 = 4;
 
   const BITSIZE_MASK: u64 = 0x00FF_FF00;
-  const BITSIZE_BIT_OFFSET: u64 = 0x8;
+  const BITSIZE_BIT_OFFSET: u64 = 8;
 
   const VECTSIZE_MASK: u64 = 0xFF00_0000;
   const VECTSIZE_BIT_OFFSET: u64 = 24;
@@ -167,6 +167,10 @@ impl PrimitiveType {
     ((self.0 & PrimitiveType::BITFIELD_BASE_SIZE_MASK) >> PrimitiveType::BITFIELD_BASE_SIZE_OFFSET).max(0)
   }
 
+  pub fn bitfield_mask(&self) -> u64 {
+    ((1 << self.bitfield_size()) - 1) << self.bitfield_offset()
+  }
+
   pub fn sub_type_byte_size(&self) -> u64 {
     self.sub_type_bit_size() >> 3
   }
@@ -187,6 +191,10 @@ impl PrimitiveType {
 
   pub fn mask_out_bit_size(self) -> PrimitiveType {
     Self(self.0 & !Self::BITSIZE_MASK)
+  }
+
+  pub fn mask_out_bitfield(self) -> PrimitiveType {
+    Self(self.0 & !(Self::BITFIELD_BASE_SIZE_MASK | Self::BITFIELD_OFFSET_MASK))
   }
 }
 

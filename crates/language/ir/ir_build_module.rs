@@ -1,47 +1,67 @@
+mod test;
+
 use super::{
+  ir_builder::{ExternalVData, IRBuilder, SuccessorMode},
   ir_graph::IRGraphId,
-  ir_state_machine::{ExternalVData, StateMachine},
 };
 use crate::{
-  compiler::script_parser::{
+  ir::{
+    ir_builder::{SMO, SMT},
+    ir_graph::{IRGraphNode, IROp},
+  },
+  parser::script_parser::{
     assignment_var_Value,
     bitfield_element_Value,
     block_expression_group_1_Value,
     expression_Value,
+    loop_statement_group_1_Value,
+    match_clause_Value,
+    match_expression_Value,
+    match_scope_Value,
     property_Value,
     raw_module_Value,
     statement_Value,
     type_Value,
+    Add,
+    Div,
     Expression,
+    Mul,
+    Pow,
     RawBlock,
     RawCall,
     RawFunction,
+    RawLoop,
+    RawMatch,
+    RawMember,
     RawNum,
     RawStructDeclaration,
-  },
-  ir::{
-    ir_graph::{IRGraphNode, IROp},
-    ir_state_machine::{SuccessorMode, SMO, SMT},
+    Sub,
+    BIT_SL,
+    BIT_SR,
   },
   types::{BaseType, ComplexType, ConstVal, PrimitiveType, ProcedureBody, ProcedureType, StructMemberType, StructType, Type, TypeScopes},
   IString,
 };
 pub use radlr_rust_runtime::types::Token;
-use rum_container::get_aligned_value;
+use rum_container::{get_aligned_value, ArrayVec};
 use rum_istring::CachedString;
-use std::collections::{hash_map, BTreeMap, HashMap};
+use std::collections::{hash_map, HashMap};
 
-pub fn process_types(
-  module: &Vec<raw_module_Value<Token>>,
+use IROp::*;
+use SMO::*;
+use SMT::*;
+
+pub fn process_types<'a>(
+  module: &'a Vec<raw_module_Value<Token>>,
   type_scope_index: usize,
   type_scope: &mut TypeScopes,
-) -> Vec<std::rc::Rc<RawFunction<Token>>> {
+) -> Vec<&'a RawFunction<Token>> {
   let mut functions = Vec::new();
 
   for mod_member in module {
     match mod_member {
       raw_module_Value::RawFunction(funct) => {
-        functions.push(funct.clone());
+        functions.push(funct.as_ref());
       }
       raw_module_Value::RawUnion(union) => {
         dbg!(union);
@@ -130,10 +150,6 @@ pub fn process_types(
 
               members.push(StructMemberType { ty, original_index: index, name, offset: prop_offset })
             }
-
-            property_Value::RawBitCompositeProp(bit_composition) => {
-              println!("Bit composite property type not supported yet");
-            }
             _ => {}
           }
         }
@@ -186,75 +202,150 @@ fn process_function(function: &RawFunction<Token>, type_ctx_index: usize, type_c
 
   let mut pb = ProcedureBody { graph: Default::default(), blocks: Default::default() };
 
-  let mut state_machine = StateMachine::new(&mut pb, type_ctx_index, type_context);
+  let mut ir_builder = IRBuilder::new(&mut pb, type_ctx_index, type_context);
 
-  process_expression(&function.expression, &mut state_machine);
+  process_expression(&function.expression.expr, &mut ir_builder);
 
-  dbg!(state_machine);
+  dbg!(ir_builder);
 
   pb
 }
 
-fn process_expression(expr: &Expression<Token>, sm: &mut StateMachine) {
-  match &expr.expr {
-    expression_Value::RawCall(call) => process_call(call, sm),
-    expression_Value::RawNum(num) => process_const_number(num, sm),
-    expression_Value::AddressOf(addr) => {
-      if let Some(var) = sm.get_variable(addr.id.id.intern()) {
-        sm.push_ssa(IROp::ADDR, var.ty.as_pointer().into(), &[SMO::IROp(var.store)], var.decl.graph_id())
-      } else {
-        panic!("Variable not found")
-      }
-    }
-    expression_Value::RawStructDeclaration(struct_decl) => process_struct_instantiation(struct_decl, sm),
-    expression_Value::RawMember(mem) => {
-      if let Some(var) = resolve_variable(mem, sm) {
-        if var.is_member_pointer {
-          // Loading the variable into a register creates a temporary variable
-          sm.push_ssa(IROp::MEM_LOAD, var.ty.into(), &[SMO::IROp(var.store)], var.decl.graph_id());
-        } else {
-          unreachable!("Could not locate variable")
-        }
-      } else {
-        let blame_string = mem.tok.blame(1, 1, "could not find variable", None);
-        panic!("{blame_string}",)
-      }
-    }
-    expression_Value::RawBlock(ast_block) => {
-      sm.push_block(SuccessorMode::Default);
-      process_block(ast_block, sm);
-      sm.swap_block(SuccessorMode::Default);
-      println!("Return the graph id value of a raw block");
-    }
+fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
+  match expr {
+    expression_Value::RawCall(call) => process_call(call, ib),
+    expression_Value::RawNum(num) => process_const_number(num, ib),
+    expression_Value::AddressOf(addr) => process_address_of(ib, addr),
+    expression_Value::RawStructDeclaration(struct_decl) => process_struct_instantiation(struct_decl, ib),
+    expression_Value::RawMember(mem) => process_member_load(mem, ib),
+    expression_Value::RawBlock(ast_block) => process_block(ast_block, ib),
+    expression_Value::Add(add) => process_add(add, ib),
+    expression_Value::Sub(sub) => process_sub(sub, ib),
+    expression_Value::Mul(mul) => process_mul(mul, ib),
+    expression_Value::Div(div) => process_div(div, ib),
+    expression_Value::Pow(pow) => process_pow(pow, ib),
+    expression_Value::BIT_SL(sl) => process_sl(sl, ib),
+    expression_Value::BIT_SR(sr) => process_sr(sr, ib),
     d => todo!("process expression: {d:#?}"),
   }
 }
 
-fn resolve_variable(mem: &std::rc::Rc<crate::compiler::script_parser::RawMember<Token>>, sm: &mut StateMachine) -> Option<ExternalVData> {
+fn process_address_of(ib: &mut IRBuilder<'_, '_>, addr: &std::sync::Arc<crate::parser::script_parser::AddressOf<Token>>) {
+  if let Some(var) = ib.get_variable(addr.id.id.intern()) {
+    ib.push_ssa(ADDR, var.ty.as_pointer().into(), &[SMO::IROp(var.store)], var.decl.graph_id())
+  } else {
+    panic!("Variable not found")
+  }
+}
+
+fn process_member_load(mem: &std::sync::Arc<RawMember<Token>>, ib: &mut IRBuilder<'_, '_>) {
+  if let Some(var) = resolve_variable(mem, ib) {
+    if var.is_member_pointer {
+      // Loading the variable into a register creates a temporary variable
+      match var.ty.base_type() {
+        BaseType::Prim(prim) => {
+          if prim.bitfield_offset() > 0 {
+            let ty: Type = prim.mask_out_bitfield().into();
+            ib.push_ssa(MEM_LOAD, ty.into(), &[var.store.into()], var.decl.graph_id());
+          } else {
+            ib.push_ssa(MEM_LOAD, var.ty.into(), &[var.store.into()], var.decl.graph_id());
+          }
+        }
+        _ => {
+          ib.push_ssa(MEM_LOAD, var.ty.into(), &[var.store.into()], var.decl.graph_id());
+        }
+      }
+    } else if var.ty.is_pointer() {
+      todo!("Handle pointer semantics")
+    } else {
+      match var.ty.base_type() {
+        BaseType::Prim(..) => ib.push_node(var.store),
+        BaseType::Complex(..) => {
+          todo!("Handle complex reference")
+        }
+      }
+    }
+  } else {
+    let blame_string = mem.tok.blame(1, 1, "could not find variable", None);
+    panic!("{blame_string}",)
+  }
+}
+
+fn process_add(add: &Add<Token>, ib: &mut IRBuilder) {
+  process_expression(&(add.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(add.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+
+  ib.push_ssa(ADD, Inherit, &[StackOp, StackOp], usize::MAX);
+}
+
+fn process_sub(sub: &Sub<Token>, ib: &mut IRBuilder) {
+  process_expression(&(sub.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(sub.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+
+  ib.push_ssa(SUB, Inherit, &[StackOp, StackOp], usize::MAX);
+}
+
+fn process_mul(mul: &Mul<Token>, ib: &mut IRBuilder) {
+  process_expression(&(mul.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(mul.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+
+  ib.push_ssa(MUL, Inherit, &[StackOp, StackOp], usize::MAX);
+}
+
+fn process_div(div: &Div<Token>, ib: &mut IRBuilder) {
+  process_expression(&(div.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(div.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+
+  ib.push_ssa(DIV, Inherit, &[StackOp, StackOp], usize::MAX);
+}
+
+fn process_pow(pow: &Pow<Token>, ib: &mut IRBuilder) {
+  process_expression(&(pow.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(pow.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+
+  ib.push_ssa(POW, Inherit, &[StackOp, StackOp], usize::MAX);
+}
+
+fn process_sl(sl: &BIT_SL<Token>, ib: &mut IRBuilder) {
+  process_expression(&(sl.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(sl.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+
+  ib.push_ssa(SHL, Inherit, &[StackOp, StackOp], usize::MAX);
+}
+
+fn process_sr(sr: &BIT_SR<Token>, ib: &mut IRBuilder) {
+  process_expression(&(sr.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(sr.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+
+  ib.push_ssa(SHR, Inherit, &[StackOp, StackOp], usize::MAX);
+}
+
+fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<ExternalVData> {
   let base = &mem.members[0];
 
   let var_name = base.id.intern();
 
-  if let Some(var_data) = sm.get_variable(var_name) {
+  if let Some(var_data) = ib.get_variable(var_name) {
     match var_data.ty.base_type() {
-      BaseType::Prim(prim) => {
+      BaseType::Prim(..) => {
         return Some(var_data);
       }
       BaseType::Complex(ir_type) => match &ir_type {
-        ComplexType::Struct(strct) => {
-          let sub_name = mem.members[1].id.intern();
-          if let Some(mut sub_var) = sm.get_variable_member(&var_data, sub_name) {
-            sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(sub_var.offset as u32));
-            sm.push_ssa(
-              IROp::PTR_MEM_CALC,
-              sub_var.ty.as_pointer().into(),
-              &[SMO::IROp(var_data.store), SMO::StackOp],
-              sub_var.decl.graph_id(),
-            );
-            sub_var.store = sm.pop_stack().unwrap();
-            Some(sub_var)
+        ComplexType::Struct(..) => {
+          if mem.members.len() == 1 {
+            Some(var_data)
           } else {
-            None
+            let sub_name = mem.members[1].id.intern();
+            if let Some(mut sub_var) = ib.get_variable_member(&var_data, sub_name) {
+              ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(sub_var.offset as u32));
+
+              ib.push_ssa(PTR_MEM_CALC, sub_var.ty.as_pointer().into(), &[SMO::IROp(var_data.store), StackOp], sub_var.var_index);
+              sub_var.store = ib.pop_stack().unwrap();
+
+              Some(sub_var)
+            } else {
+              None
+            }
           }
         }
         _ => unreachable!(),
@@ -265,23 +356,25 @@ fn resolve_variable(mem: &std::rc::Rc<crate::compiler::script_parser::RawMember<
   }
 }
 
-fn process_const_number(num: &RawNum<Token>, sm: &mut StateMachine) {
+fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
   let string_val = num.tok.to_string();
 
-  sm.push_const(if string_val.contains(".") {
+  ib.push_const(if string_val.contains(".") {
     ConstVal::new(PrimitiveType::Float | PrimitiveType::b64).store(num.val)
   } else {
     ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64).store::<u64>(string_val.parse::<u64>().unwrap())
   });
 }
 
-pub fn remap_primitive_type(desired_type: PrimitiveType, node_id: IRGraphId, sm: &mut StateMachine) {
+pub fn remap_primitive_type(desired_type: PrimitiveType, node_id: IRGraphId, sm: &mut IRBuilder) {
   // Add some rules to say whether the type can be coerced or converted into the
   // desired type.
 
   if node_id.is_invalid() {
     return;
   }
+
+  return;
 
   match &mut sm.graph[node_id.graph_id()] {
     IRGraphNode::Const { id: ssa_id, val } => {
@@ -293,10 +386,15 @@ pub fn remap_primitive_type(desired_type: PrimitiveType, node_id: IRGraphId, sm:
     }
     IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } => {
       if out_ty.is_primitive() {
-        *out_ty = desired_type.into();
-        let operands = *operands;
-        remap_primitive_type(desired_type, operands[0], sm);
-        remap_primitive_type(desired_type, operands[1], sm);
+        if out_ty.is_pointer() {
+        } else {
+          *out_ty = desired_type.into();
+          let operands = *operands;
+
+          remap_primitive_type(desired_type, operands[0], sm);
+
+          remap_primitive_type(desired_type, operands[1], sm);
+        }
       } else if *out_ty != desired_type.into() {
         panic!("Can't convert type \n ",);
       }
@@ -312,28 +410,28 @@ enum InitResult {
   None,
 }
 
-fn process_call(call: &RawCall<Token>, sm: &mut StateMachine) {
+fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
   let call_name = &call.id.id;
 
   if call_name.contains("sys_") {
-    for _ in call.args.iter().map(|arg| process_expression(&arg, sm)).collect::<Vec<_>>() {
-      sm.push_ssa(IROp::CALL_ARG, SMT::Inherit, &[SMO::StackOp], usize::MAX);
+    for _ in call.args.iter().map(|arg| process_expression(&arg.expr, ib)).collect::<Vec<_>>() {
+      ib.push_ssa(CALL_ARG, Inherit, &[StackOp], usize::MAX);
       println!("TODO: match type_info with arg type");
     }
   }
 
-  sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64).store(1 as u64));
-  sm.push_ssa(IROp::CALL, SMT::None, &[SMO::StackOp], usize::MAX);
-  sm.pop_stack();
+  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64).store(1 as u64));
+  ib.push_ssa(CALL, Undef, &[StackOp], usize::MAX);
+  ib.pop_stack();
 }
 
-fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, sm: &mut StateMachine) {
+fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &mut IRBuilder) {
   let struct_type_name = struct_decl.name.id.intern();
 
-  if let Some(s_type @ ComplexType::Struct(struct_definition)) = sm.get_type(struct_type_name) {
+  if let Some(s_type @ ComplexType::Struct(struct_definition)) = ib.get_type(struct_type_name) {
     let s_type: Type = s_type.into();
 
-    let struct_var = sm.push_variable(struct_type_name, s_type.into());
+    let struct_var = ib.push_variable(struct_type_name, s_type.into());
 
     struct StructEntry {
       ty:    Type,
@@ -350,15 +448,13 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, sm: &
       let member_name = init_expression.name.id.intern();
 
       if let Some(member) = struct_definition.members.iter().find(|i| i.name == member_name) {
-        process_expression(&init_expression.expression, sm);
+        process_expression(&init_expression.expression.expr, ib);
 
-        if Some(member.ty) != sm.get_top_type() {
+        if Some(member.ty) != ib.get_top_type() {
           if member.ty.is_primitive() {
-            remap_primitive_type(*member.ty.as_prim().unwrap(), sm.get_top_id().unwrap(), sm)
+            remap_primitive_type(*member.ty.as_prim().unwrap(), ib.get_top_id().unwrap(), ib)
           } else {
-            //let node = &block.ctx().graph[expr_id.graph_id()];
-            //panic!("handle type coercions of member:{:?} expr:{:?}",
-            // member.ty, node.ty());
+            todo!("Handle non-primitive struct member");
           }
         }
 
@@ -369,30 +465,28 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, sm: &
           let bit_field_size = ty.bitfield_size();
           let bit_mask = ((1 << bit_size) - 1) << bit_offset;
 
-          println!("{bit_mask:032b}");
-
           let bf_type: Type = (PrimitiveType::Unsigned | PrimitiveType::new_bit_size(bit_field_size)).into();
 
           // bitfield initializers must be combined into one value and then
           // submitted at the end of this section. So we make or retrieve the
           // temporary variable for this field.
 
-          remap_primitive_type(*bf_type.as_prim().unwrap(), sm.get_top_id().unwrap(), sm);
+          remap_primitive_type(*bf_type.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
 
-          sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_offset as u32));
-          sm.push_ssa(IROp::SHIFT_L, bf_type.into(), &[SMO::StackOp, SMO::StackOp], usize::MAX);
+          ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_offset as u32));
+          ib.push_ssa(SHL, bf_type.into(), &[StackOp, StackOp], usize::MAX);
 
-          sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_mask as u32));
-          sm.push_ssa(IROp::AND, bf_type.into(), &[SMO::StackOp, SMO::StackOp], usize::MAX);
+          ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_mask as u32));
+          ib.push_ssa(AND, bf_type.into(), &[StackOp, StackOp], usize::MAX);
 
           match value_maps.entry(member.offset) {
             hash_map::Entry::Occupied(mut entry) => {
               let val = entry.get_mut().value;
-              sm.push_ssa(IROp::OR, bf_type.into(), &[val.into(), SMO::StackOp], usize::MAX);
-              entry.get_mut().value = sm.pop_stack().unwrap();
+              ib.push_ssa(OR, bf_type.into(), &[val.into(), StackOp], usize::MAX);
+              entry.get_mut().value = ib.pop_stack().unwrap();
             }
             hash_map::Entry::Vacant(val) => {
-              val.insert(StructEntry { ty: bf_type, value: sm.pop_stack().unwrap(), name: member_name });
+              val.insert(StructEntry { ty: bf_type, value: ib.pop_stack().unwrap(), name: member_name });
             }
           }
 
@@ -401,7 +495,7 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, sm: &
 
           // Mask out the expression.
         } else {
-          value_maps.insert(member.offset, StructEntry { ty: member.ty, value: sm.pop_stack().unwrap(), name: member_name });
+          value_maps.insert(member.offset, StructEntry { ty: member.ty, value: ib.pop_stack().unwrap(), name: member_name });
         };
 
         // Calculate the offset to the member within the struct
@@ -410,22 +504,20 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, sm: &
       }
     }
 
-    sm.push_ssa(IROp::ADDR, s_type.as_pointer().into(), &[struct_var.store.into()], struct_var.var_index);
-    let ptr_id = sm.pop_stack().unwrap();
+    ib.push_ssa(ADDR, s_type.as_pointer().into(), &[struct_var.store.into()], struct_var.var_index);
+    let ptr_id = ib.pop_stack().unwrap();
 
     for (offset, StructEntry { ty, value, name }) in value_maps {
-      if let Some(var) = sm.get_variable_member(&struct_var, name) {
-        let member_ptr = ty.as_pointer();
+      if let Some(var) = ib.get_variable_member(&struct_var, name) {
+        ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(offset as u32));
 
-        sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(offset as u32));
+        ib.push_ssa(PTR_MEM_CALC, ty.as_pointer().into(), &[ptr_id.into(), StackOp], var.var_index);
 
-        sm.push_ssa(IROp::PTR_MEM_CALC, member_ptr.into(), &[ptr_id.into(), SMO::StackOp], var.var_index);
+        ib.push_ssa(MEM_STORE, Inherit, &[StackOp, value.into()], var.var_index);
 
-        sm.push_ssa(IROp::MEM_STORE, SMT::Inherit, &[SMO::StackOp, value.into()], var.var_index);
-
-        sm.pop_stack();
+        ib.pop_stack();
       } else {
-        panic!("AAAAA");
+        todo!("TBD");
       }
     }
   } else {
@@ -433,156 +525,260 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, sm: &
   }
 }
 
-fn process_block(ast_block: &RawBlock<Token>, sm: &mut StateMachine) {
+fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
+  ib.push_var_scope();
+
   let len = ast_block.statements.len();
+
   for (i, stmt) in ast_block.statements.iter().enumerate() {
-    process_statement(stmt, sm, i == len - 1);
+    process_statement(stmt, ib, i == len - 1);
   }
 
-  match &ast_block.exit {
-    block_expression_group_1_Value::None => {
-      println!("Resolve return expression of a block exit");
-    }
-    d => todo!("process block exit: {d:#?}"),
-  }
-}
-
-fn process_statement(stmt: &statement_Value<Token>, sm: &mut StateMachine, last_value: bool) {
-  match stmt {
-    statement_Value::RawAssignment(assign) => {
-      // Process assignments.
-      for expression in &assign.expressions {
-        process_expression(&expression, sm)
-      }
-
-      // Process assignment targets.
-      for variable in assign.vars.iter() {
-        match variable {
-          assignment_var_Value::RawArrayAccess(array) => {
-            todo!("Array access")
-          }
-          assignment_var_Value::RawAssignmentVariable(var_assign) => {
-            let expr_ty = sm.get_top_type().unwrap();
-
-            if let Some(var_data) = resolve_variable(&var_assign.var, sm) {
-              if var_data.is_member_pointer {
-                match var_data.ty.base_type() {
-                  BaseType::Prim(prim) => {
-                    if prim.bitfield_size() > 0 {
-                      let ty: &PrimitiveType = &prim;
-                      let bit_size = ty.bit_size();
-                      let bit_offset = ty.bitfield_offset();
-                      let bit_field_size = ty.bitfield_size();
-                      let bit_mask = ((1 << bit_size) - 1) << bit_offset;
-                      let bf_type: Type = (PrimitiveType::Unsigned | PrimitiveType::new_bit_size(bit_field_size)).into();
-
-                      // bitfield initializers must be combined into one value and then
-                      // submitted at the end of this section. So we make or retrieve the
-                      // temporary variable for this field.
-
-                      remap_primitive_type(*bf_type.as_prim().unwrap(), sm.get_top_id().unwrap(), sm);
-
-                      // Offset variable
-                      sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_offset as u32));
-                      sm.push_ssa(IROp::SHIFT_L, var_data.ty.into(), &[SMO::StackOp, SMO::StackOp], usize::MAX);
-
-                      // Mask out unwanted bits
-                      sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_mask as u32));
-                      sm.push_ssa(IROp::AND, SMT::Inherit, &[SMO::StackOp, SMO::StackOp], usize::MAX);
-
-                      // Load the base value from the structure and mask out target bitfield
-                      sm.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(!bit_mask as u32));
-                      sm.push_ssa(IROp::MEM_LOAD, var_data.ty.into(), &[var_data.store.into()], var_data.var_index);
-                      sm.push_ssa(IROp::AND, var_data.ty.into(), &[SMO::StackOp, SMO::StackOp], var_data.var_index);
-
-                      // Combine the original value and the new bitfield value.
-                      sm.push_ssa(IROp::OR, var_data.ty.into(), &[SMO::StackOp, SMO::StackOp], var_data.var_index);
-
-                      // Store value back in the structure.
-                      sm.push_ssa(IROp::MEM_STORE, var_data.ty.into(), &[var_data.store.into(), SMO::StackOp], var_data.var_index);
-                      sm.pop_stack();
-                    } else {
-                      remap_primitive_type(*var_data.ty.as_prim().unwrap(), sm.get_top_id().unwrap(), sm);
-                      sm.push_ssa(IROp::MEM_STORE, var_data.ty.into(), &[var_data.store.into(), SMO::StackOp], var_data.var_index);
-                      sm.pop_stack();
-                    }
-                  }
-                  _ => unreachable!(),
-                }
-              } else {
-                sm.push_ssa(IROp::STORE, var_data.ty.into(), &[var_data.decl.into(), SMO::StackOp], var_data.var_index);
-              }
-            } else if var_assign.var.members.len() == 1 {
-              // Create and assign a new variable based on the expression.
-              let var_name = var_assign.var.members[0].id.intern();
-
-              match expr_ty.base_type() {
-                BaseType::Complex(ty) => match &ty {
-                  ComplexType::Struct(strc) => {
-                    let node = sm.pop_stack().unwrap();
-                    sm.rename_var(node, var_name);
-                  }
-                  _ => unreachable!(),
-                },
-                _ => {
-                  let var = sm.push_variable(var_name, expr_ty);
-
-                  sm.push_ssa(IROp::STORE, var.ty.into(), &[var.decl.into(), SMO::StackOp], var.var_index);
-                }
-              }
-            } else {
-              let blame_string = var_assign.tok.blame(1, 1, "could not find variable", None);
-              panic!("{blame_string}",)
-            }
-          }
-          assignment_var_Value::RawAssignmentDeclaration(var_decl) => {
-            let var_name = var_decl.var.id.intern();
-            let expected_ty = get_type_from_sm(&var_decl.ty, sm).unwrap();
-
-            let expr_ty = sm.get_top_type().unwrap();
-
-            match expr_ty.base_type() {
-              BaseType::Complex(ty) => match &ty {
-                ComplexType::Struct(strc) => {
-                  todo!("Rename struct variable");
-                }
-                _ => unreachable!(),
-              },
-              _ => {
-                if expected_ty != expr_ty {
-                  match (expected_ty.base_type(), expr_ty.base_type()) {
-                    (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
-                      remap_primitive_type(prim_ty, sm.get_top_id().unwrap(), sm);
-                      let var = sm.push_variable(var_name, expr_ty);
-                      sm.push_ssa(IROp::STORE, var.ty.into(), &[var.decl.into(), SMO::StackOp], var.var_index);
-                    }
-                    _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
-                  }
-                } else {
-                  let var = sm.push_variable(var_name, expr_ty);
-                  sm.push_ssa(IROp::STORE, var.ty.into(), &[var.decl.into(), SMO::StackOp], var.var_index);
-                }
-              }
-            }
-          }
-          _ => unreachable!(),
+  let returns = match &ast_block.exit {
+    block_expression_group_1_Value::None => false,
+    block_expression_group_1_Value::RawBreak(brk) => {
+      dbg!(brk);
+      if !brk.label.id.is_empty() {
+        let name = brk.label.id.to_token();
+        if let Some((.., end_block)) = ib.loop_stack.iter().find(|(_, head, _)| ib.blocks[*head].name == name) {
+          ib.set_successor(*end_block, SuccessorMode::Default);
+        } else {
+          panic!("Could not find successor block!");
+        }
+      } else {
+        if let Some((.., end_block)) = ib.loop_stack.last() {
+          ib.set_successor(*end_block, SuccessorMode::Default);
         }
       }
+      true
+    }
+    d => {
+      todo!("process block exit: {d:#?}");
+      true
+    }
+  };
 
-      // Match assignments to targets.
-    }
-    statement_Value::Expression(expr) => {
-      process_expression(expr, sm);
-      if !last_value {
-        sm.pop_stack();
-      }
-    }
+  ib.pop_var_scope();
+}
+
+fn process_statement(stmt: &statement_Value<Token>, ib: &mut IRBuilder, last_value: bool) {
+  match stmt {
+    statement_Value::RawAssignment(assign) => process_assign_statement(assign, ib),
+    statement_Value::Expression(expr) => process_expression_statement(expr, ib, last_value),
+    statement_Value::RawLoop(loop_) => process_loop(loop_, ib),
+    statement_Value::RawMatch(match_) => process_match(match_, ib),
+
     d => todo!("process statement: {d:#?}"),
   }
 }
 
-pub fn get_type_from_sm(ir_type: &type_Value<Token>, sm: &mut StateMachine) -> Option<crate::types::Type> {
-  get_type(ir_type, sm.type_context_index, sm.type_scopes)
+fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_, '_>) {
+  process_expression(&match_.expression.expr, ib);
+
+  let expr_id = ib.pop_stack().unwrap();
+
+  let end = ib.create_block();
+
+  for clause in &match_.clauses {
+    match clause {
+      match_clause_Value::RawDefaultClause(def) => {
+        process_match_scope(&def.scope, ib);
+      }
+      match_clause_Value::RawMatchClause(mtch) => {
+        match &mtch.expr {
+          match_expression_Value::RawExprMatch(expr_match) => {
+            process_expression(&expr_match.expr.expr, ib);
+            let op = match expr_match.op.as_str() {
+              "<" => LS,
+              ">" => GR,
+              "<=" => LE,
+              ">=" => GE,
+              "==" => EQ,
+              "!=" => NE,
+              _ => unreachable!(),
+            };
+
+            ib.push_ssa(op, Inherit, &[expr_id.into(), StackOp], usize::MAX);
+            ib.pop_stack();
+          }
+          _ => todo!(),
+        }
+
+        let (succeed, failed) = ib.create_branch();
+
+        ib.set_active(succeed);
+
+        process_match_scope(&mtch.scope, ib);
+
+        ib.set_successor(end, SuccessorMode::Default);
+        ib.set_active(failed);
+      }
+      _ => {}
+    }
+  }
+
+  ib.set_successor(end, SuccessorMode::Default);
+  ib.set_active(end);
+}
+
+fn process_match_scope(scope: &match_scope_Value<Token>, ib: &mut IRBuilder<'_, '_>) {
+  match &scope {
+    match_scope_Value::Expression(expr) => process_expression(&expr.expr, ib),
+    match_scope_Value::RawBlock(block) => process_block(block, ib),
+    _ => unreachable!(),
+  }
+}
+
+fn process_loop(loop_: &RawLoop<Token>, ib: &mut IRBuilder<'_, '_>) {
+  let (loop_head, loop_exit) = ib.push_loop(loop_.label.id.intern());
+
+  match &loop_.scope {
+    loop_statement_group_1_Value::RawBlock(block) => process_block(block, ib),
+    loop_statement_group_1_Value::RawMatch(match_) => process_match(match_, ib),
+    _ => unreachable!(),
+  }
+
+  ib.set_successor(loop_head, SuccessorMode::Default);
+  ib.pop_loop();
+}
+
+fn process_expression_statement(expr: &std::sync::Arc<Expression<Token>>, ib: &mut IRBuilder<'_, '_>, last_value: bool) {
+  process_expression(&expr.expr, ib);
+  if !last_value {
+    ib.pop_stack();
+  }
+}
+
+fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser::RawAssignment<Token>>, ib: &mut IRBuilder<'_, '_>) {
+  // Process assignments.
+  for expression in &assign.expressions {
+    process_expression(&expression.expr, ib)
+  }
+
+  let mut expression_data = (0..assign.expressions.len()).into_iter().map(|_| ib.pop_stack().unwrap()).collect::<ArrayVec<6, _>>();
+  expression_data.reverse();
+
+  // Process assignment targets.
+  for (variable, expr_id) in assign.vars.iter().zip(&mut expression_data.iter().cloned()) {
+    let expr_ty = ib.get_node_type(expr_id).unwrap();
+    match variable {
+      assignment_var_Value::RawArrayAccess(..) => {
+        todo!("Array access")
+      }
+      assignment_var_Value::RawAssignmentVariable(var_assign) => {
+        if let Some(var_data) = resolve_variable(&var_assign.var, ib) {
+          if var_data.is_member_pointer {
+            match var_data.ty.base_type() {
+              BaseType::Prim(prim) => {
+                if prim.bitfield_size() > 0 {
+                  let ty: &PrimitiveType = &prim;
+                  let bit_size = ty.bit_size();
+                  let bit_offset = ty.bitfield_offset();
+                  let bit_field_size = ty.bitfield_size();
+                  let bit_mask = ((1 << bit_size) - 1) << bit_offset;
+                  let bf_type: Type = (PrimitiveType::Unsigned | PrimitiveType::new_bit_size(bit_field_size)).into();
+
+                  // bitfield initializers must be combined into one value and then
+                  // submitted at the end of this section. So we make or retrieve the
+                  // temporary variable for this field.
+
+                  remap_primitive_type(*bf_type.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
+
+                  // Offset variable
+                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_offset as u32));
+                  ib.push_ssa(SHL, var_data.ty.into(), &[StackOp, StackOp], usize::MAX);
+
+                  // Mask out unwanted bits
+                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_mask as u32));
+                  ib.push_ssa(AND, Inherit, &[StackOp, StackOp], usize::MAX);
+
+                  // Load the base value from the structure and mask out target bitfield
+                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(!bit_mask as u32));
+                  ib.push_ssa(MEM_LOAD, var_data.ty.into(), &[var_data.store.into()], var_data.var_index);
+                  ib.push_ssa(AND, var_data.ty.into(), &[StackOp, StackOp], var_data.var_index);
+
+                  // Combine the original value and the new bitfield value.
+                  ib.push_ssa(OR, var_data.ty.into(), &[StackOp, StackOp], var_data.var_index);
+
+                  // Store value back in the structure.
+                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.var_index);
+                  ib.pop_stack();
+                } else {
+                  remap_primitive_type(*var_data.ty.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
+                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.var_index);
+                  ib.pop_stack();
+                }
+              }
+              _ => unreachable!(),
+            }
+          } else {
+            ib.push_ssa(STORE, var_data.ty.into(), &[var_data.decl.into(), expr_id.into()], var_data.var_index);
+            ib.pop_stack();
+          }
+        } else if var_assign.var.members.len() == 1 {
+          // Create and assign a new variable based on the expression.
+          let var_name = var_assign.var.members[0].id.intern();
+
+          match expr_ty.base_type() {
+            BaseType::Complex(ty) => match &ty {
+              ComplexType::Struct(..) => ib.rename_var(expr_id, var_name),
+              _ => unreachable!(),
+            },
+            _ => {
+              let var = ib.push_variable(var_name, expr_ty);
+              ib.pop_stack();
+
+              ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.var_index);
+              ib.pop_stack();
+            }
+          }
+        } else {
+          let blame_string = var_assign.tok.blame(1, 1, "could not find variable", None);
+          panic!("{blame_string}",)
+        }
+      }
+      assignment_var_Value::RawAssignmentDeclaration(var_decl) => {
+        let var_name = var_decl.var.id.intern();
+        let expected_ty = get_type_from_sm(&var_decl.ty, ib).unwrap();
+
+        match expr_ty.base_type() {
+          BaseType::Complex(ty) => match &ty {
+            ComplexType::Struct(..) => ib.rename_var(expr_id, var_name),
+            _ => unreachable!(),
+          },
+          _ => {
+            if expected_ty != expr_ty {
+              match (expected_ty.base_type(), expr_ty.base_type()) {
+                (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
+                  remap_primitive_type(prim_ty, expr_id.into(), ib);
+
+                  let var = ib.push_variable(var_name, expr_ty);
+                  ib.pop_stack();
+
+                  ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.var_index);
+                  ib.pop_stack();
+                }
+                _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
+              }
+            } else {
+              let var = ib.push_variable(var_name, expr_ty);
+              ib.pop_stack();
+
+              ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.var_index);
+              ib.pop_stack();
+            }
+          }
+        }
+      }
+      _ => unreachable!(),
+    }
+  }
+
+  // Match assignments to targets.
+}
+
+pub fn get_type_from_sm(ir_type: &type_Value<Token>, ib: &mut IRBuilder) -> Option<crate::types::Type> {
+  get_type(ir_type, ib.type_context_index, ib.type_scopes)
 }
 
 pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &TypeScopes) -> Option<crate::types::Type> {

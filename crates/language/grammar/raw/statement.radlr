@@ -81,7 +81,7 @@ IMPORT ../common/comment as cmt
     
     :ast { t_RawMatchClause, expr:$1, scope: $2 }
 
-  | ( "?" | "or" ) match_scope
+  | ( "?" | "or" | "else" ) match_scope
 
     :ast { t_RawDefaultClause, scope: $2 }
 
@@ -97,7 +97,7 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawExprMatch, op:str($1), expr: $2, tok  }
 
-  | ( expr::primitive_value | expr::primitive_bool )
+  | ( expr::primitive_value | expr::primitive_bool | prim::var )
 
     :ast { t_RawValMatch, val: $1, tok  }
 

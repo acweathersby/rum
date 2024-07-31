@@ -49,7 +49,7 @@ pub mod graph_actions {
 
 pub struct OptimizerContext<'funct> {
   pub graph:  &'funct mut Vec<IRGraphNode>,
-  pub blocks: &'funct mut Vec<IRBlock>,
+  pub blocks: &'funct mut Vec<Box<IRBlock>>,
 }
 
 impl<'funct> Debug for OptimizerContext<'funct> {
@@ -74,12 +74,8 @@ impl<'funct> Debug for OptimizerContext<'funct> {
         f.write_fmt(format_args!("\n  pass: {}\n", succeed))?;
       }
 
-      if let Some(fail) = block.branch_default {
+      if let Some(fail) = block.branch_fail {
         f.write_fmt(format_args!("\n  fail: {}\n", fail))?;
-      }
-
-      if let Some(branch) = block.branch_unconditional {
-        f.write_fmt(format_args!("\n  jump: {}\n", branch))?;
       }
 
       f.write_str("\n")?;

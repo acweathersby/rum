@@ -104,11 +104,11 @@ impl Type {
   const FLAGS_MASK: u64 = Self::PTR_MASK | Self::PRIM_MASK;
 
   pub fn is_pointer(&self) -> bool {
-    unsafe { self.flags & Self::PTR_MASK > 0 }
+    unsafe { (self.flags & Self::PTR_MASK) > 0 }
   }
 
   pub fn is_primitive(&self) -> bool {
-    unsafe { self.flags & Self::PRIM_MASK > 0 }
+    unsafe { (self.flags & Self::PRIM_MASK) > 0 }
   }
 
   pub fn as_prim(&self) -> Option<&PrimitiveType> {

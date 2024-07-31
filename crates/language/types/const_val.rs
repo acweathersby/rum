@@ -6,7 +6,7 @@ use std::{
 };
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Default)]
-#[repr(align(16))]
+#[repr(align(8))]
 pub struct ConstVal {
   pub(crate) val: [u8; 16],
   pub(crate) ty:  TI,

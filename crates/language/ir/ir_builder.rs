@@ -6,6 +6,7 @@ use crate::{
   },
   types::{ComplexType, ConstVal, PrimitiveType, ProcedureBody, Type, TypeScopes},
 };
+use iced_x86::code_asm::bl;
 pub use radlr_rust_runtime::types::Token;
 use rum_istring::{CachedString, IString};
 use std::collections::{HashMap, VecDeque};
@@ -20,7 +21,7 @@ pub enum SuccessorMode {
 pub struct IRBuilder<'a, 'ts> {
   pub graph:              &'a mut Vec<IRGraphNode>,
   pub ssa_stack:          Vec<IRGraphId>,
-  pub block_stack:        Vec<BlockId>,
+  pub loop_stack:         Vec<(IString, BlockId, BlockId)>,
   pub blocks:             &'a mut Vec<Box<IRBlock>>,
   pub active_block_id:    BlockId,
   pub var_scope_stack:    Vec<usize>,
@@ -42,12 +43,12 @@ impl<'f, 'ts> IRBuilder<'f, 'ts> {
       type_context_index: type_ctx_index,
       variable_scopes:    Default::default(),
       active_block_id:    Default::default(),
-      block_stack:        Default::default(),
       var_scope_stack:    Default::default(),
       unused_scope:       Default::default(),
+      loop_stack:         Default::default(),
     };
-
-    state_machine.push_block(SuccessorMode::Default);
+    let block = state_machine.create_block();
+    state_machine.set_active(block);
     state_machine.push_var_scope();
 
     state_machine
@@ -114,7 +115,7 @@ pub enum SMT {
   Type(Type),
   /// Inherits the type of the first operand
   Inherit,
-  None,
+  Undef,
 }
 
 impl From<Type> for SMT {
@@ -343,7 +344,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
       result_ty: match ty {
         SMT::Inherit => graph[operands[0].graph_id()].ty(),
         SMT::Type(ty) => ty,
-        SMT::None => PrimitiveType::Undefined.into(),
+        SMT::Undef => PrimitiveType::Undefined.into(),
       },
       operands,
       spills: [u32::MAX; 3],
@@ -365,72 +366,97 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
     }
   }
 
-  /// Push a new block into the block hierarchy stack.
-  pub fn push_block(&mut self, successor_mode: SuccessorMode) {
-    let id = BlockId(self.blocks.len() as u32);
-    let block = Box::new(IRBlock {
-      id:                   id,
-      nodes:                Default::default(),
-      branch_succeed:       Default::default(),
-      branch_unconditional: Default::default(),
-      branch_default:       Default::default(),
-      name:                 Default::default(),
-      direct_predecessors:  Default::default(),
-      is_loop_head:         Default::default(),
-      loop_components:      Default::default(),
-    });
-
-    if let Some(block_id) = self.block_stack.last() {
-      let block = &mut self.blocks[*block_id];
-      match successor_mode {
-        SuccessorMode::Default => block.branch_unconditional = Some(id),
-        SuccessorMode::Succeed => block.branch_succeed = Some(id),
-        SuccessorMode::Fail => block.branch_default = Some(id),
-      }
-      block.direct_predecessors.push(id);
-    }
-
-    self.block_stack.push(id);
-    self.active_block_id = id;
-    self.blocks.push(block);
+  pub fn set_active(&mut self, block: BlockId) {
+    self.active_block_id = block;
   }
 
-  /// Replace the current block on the hierarchy stack with a new one
-  pub fn split_block(&mut self, successor_mode: SuccessorMode) {
-    let id = BlockId(self.blocks.len() as u32);
+  pub fn create_block(&mut self) -> BlockId {
+    let block_id: BlockId = BlockId((self.blocks.len()) as u32);
 
-    let block = Box::new(IRBlock {
-      id,
+    self.blocks.push(Box::new(IRBlock {
+      id:                  block_id,
+      nodes:               Default::default(),
+      branch_succeed:      Default::default(),
+      branch_fail:         Default::default(),
+      name:                Default::default(),
+      direct_predecessors: Default::default(),
+      is_loop_head:        Default::default(),
+      loop_components:     Default::default(),
+    }));
+
+    block_id
+  }
+
+  pub fn create_branch(&mut self) -> (BlockId, BlockId) {
+    let pass: BlockId = self.create_block();
+    let fail: BlockId = self.create_block();
+
+    self.set_successor(pass, SuccessorMode::Succeed);
+    self.set_successor(fail, SuccessorMode::Fail);
+
+    (pass, fail)
+  }
+
+  pub fn set_successor(&mut self, block_id: BlockId, successor_mode: SuccessorMode) {
+    let active_block = &mut self.blocks[self.active_block_id];
+
+    match successor_mode {
+      SuccessorMode::Default => {
+        if active_block.branch_succeed.is_none() {
+          active_block.branch_succeed = Some(block_id);
+          self.blocks[block_id].direct_predecessors.push(self.active_block_id);
+        }
+      }
+      SuccessorMode::Succeed => {
+        active_block.branch_succeed = Some(block_id);
+        self.blocks[block_id].direct_predecessors.push(self.active_block_id);
+      }
+      SuccessorMode::Fail => {
+        active_block.branch_fail = Some(block_id);
+        self.blocks[block_id].direct_predecessors.push(self.active_block_id);
+      }
+    }
+  }
+
+  pub fn push_loop(&mut self, name: IString) -> (BlockId, BlockId) {
+    let loop_start_id: BlockId = BlockId((self.blocks.len()) as u32);
+    let loop_end_id: BlockId = BlockId((self.blocks.len() + 1) as u32);
+
+    self.blocks.push(Box::new(IRBlock {
+      id: loop_start_id,
       nodes: Default::default(),
       branch_succeed: Default::default(),
-      branch_unconditional: Default::default(),
-      branch_default: Default::default(),
-      name: Default::default(),
+      branch_fail: Default::default(),
+      name,
       direct_predecessors: Default::default(),
-      is_loop_head: Default::default(),
+      is_loop_head: true,
       loop_components: Default::default(),
-    });
+    }));
 
-    if let Some(block_id) = self.block_stack.last() {
-      let block = &mut self.blocks[*block_id];
-      match successor_mode {
-        SuccessorMode::Default => block.branch_unconditional = Some(id),
-        SuccessorMode::Succeed => block.branch_succeed = Some(id),
-        SuccessorMode::Fail => block.branch_default = Some(id),
-      }
-      block.direct_predecessors.push(id);
-    }
-    self.block_stack.pop();
-    self.block_stack.push(id);
-    self.active_block_id = id;
+    self.blocks.push(Box::new(IRBlock {
+      id:                  loop_end_id,
+      nodes:               Default::default(),
+      branch_succeed:      Default::default(),
+      branch_fail:         Default::default(),
+      name:                Default::default(),
+      direct_predecessors: Default::default(),
+      is_loop_head:        Default::default(),
+      loop_components:     Default::default(),
+    }));
 
-    self.blocks.push(block);
+    self.set_successor(loop_start_id, SuccessorMode::Default);
+
+    self.loop_stack.push((name, loop_start_id, loop_end_id));
+
+    self.active_block_id = loop_start_id;
+
+    (loop_start_id, loop_end_id)
   }
 
-  /// Pop the top block off the hierarchy stack.
-  pub fn pop_block(&mut self) {
-    self.block_stack.pop();
-    self.active_block_id = self.block_stack[self.block_stack.len() - 1];
+  pub fn pop_loop(&mut self) {
+    if let Some((.., tail)) = self.loop_stack.pop() {
+      self.active_block_id = tail;
+    }
   }
 }
 
@@ -532,7 +558,9 @@ fn blocks() {
 
   sm.push_variable("Test".to_token(), PrimitiveType::u32.into());
 
-  sm.push_block(SuccessorMode::Succeed);
+  let block = sm.create_block();
+  sm.set_successor(block, SuccessorMode::Default);
+  sm.set_active(block);
 
   sm.push_variable("Test1".to_token(), PrimitiveType::u32.into());
 
@@ -540,11 +568,4 @@ fn blocks() {
   assert!(sm.get_variable("Test1".to_token()).is_some());
 
   dbg!(&sm.blocks);
-
-  sm.split_block(SuccessorMode::Fail);
-
-  assert!(sm.get_variable("Test".to_token()).is_some());
-  assert!(sm.get_variable("Test1".to_token()).is_none());
-
-  dbg!(&sm);
 }

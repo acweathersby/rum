@@ -22,12 +22,15 @@ Bent => [
   val: u32
 ]
 
-Union => Bent | Temp
+Union => Bent | Temp | u32
 
-main => () {
-  PI = 3.14159
-  data = 2.0 + PI * 22.22
-  data + PI
+main => () { 
+
+  d = Bent [
+    name = 2
+  ]
+
+  r = d.name
 }
     
   
