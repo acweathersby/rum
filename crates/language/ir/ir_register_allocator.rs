@@ -1,9 +1,11 @@
+use rum_istring::CachedString;
+
 use crate::{
   ir::{
     ir_build_module::build_module,
     ir_graph::{IRGraphNode, IROp},
   },
-  types::{BaseType, PrimitiveSubType},
+  types::{BaseType, ComplexType, PrimitiveSubType},
   x86::compile_from_ssa_fn,
 };
 
@@ -39,6 +41,7 @@ fn register_allocator() {
   
   02Temp => [
     a: u32
+    
     b: u32
     c: u32
   ]
@@ -71,6 +74,39 @@ fn register_allocator() {
     &mut scope,
   );
 
+  if let Some(ComplexType::Procedure(proc)) = scope.get(0, "main".intern()) {
+    dbg!(proc);
+
+    let mut graph = proc.body.graph.clone();
+    let mut blocks = proc.body.blocks.clone();
+
+    let mut ctx = OptimizerContext { graph: &mut graph, blocks: &mut blocks };
+    use crate::x86::x86_types::*;
+    let reg_pack = RegisterPack {
+      call_arg_registers: vec![1],
+      ptr_registers:      vec![0, 1, 2, 3, 4, 5],
+      int_registers:      vec![0, 1, 2, 3, 4, 5],
+      float_registers:    vec![],
+      max_register:       6,
+      registers:          vec![RAX, RCX, RDX, R9, R14, R15],
+    };
+
+    let spilled_variables = assign_registers(&mut ctx, &reg_pack);
+
+    dbg!(&spilled_variables);
+
+    let x86_fn = compile_from_ssa_fn(&ctx, &spilled_variables);
+
+    let val = x86_fn.unwrap();
+    let funct = val.access_as_call::<fn()>();
+
+    funct();
+
+    dbg!(ctx);
+
+    panic!("WTDN?");
+  }
+
   /*   let funct = &mut module.functions[0];
 
   let mut ctx = OptimizerContext { graph: &mut funct.graph, blocks: &mut funct.blocks };
@@ -102,8 +138,17 @@ fn register_allocator() {
   panic!("WTDN?"); */
 }
 
+#[derive(Default, Clone, Copy)]
+struct RegisterAssignement {
+  pub out: IRGraphId,
+  pub op1: IRGraphId,
+  pub op2: IRGraphId,
+}
+
 pub fn assign_registers(ctx: &mut OptimizerContext, reg_pack: &RegisterPack) -> Vec<u32> {
   create_and_diffuse_temp_variables(ctx);
+
+  let register_variables = vec![RegisterAssignement::default(); ctx.graph.len()];
 
   let block_ordering = create_block_ordering(ctx);
 

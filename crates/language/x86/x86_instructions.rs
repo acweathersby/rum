@@ -283,14 +283,11 @@ op_table!(mov_o [
 
 #[test]
 fn test_mov_o() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovo r8d,r11d", test_enc_dos(&mov_o, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovo r8,r11", test_enc_dos(&mov_o, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovo r8d,r11d", test_enc_dos(&mov_o, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovo r8,r11", test_enc_dos(&mov_o, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovo r8d,[r11]", test_enc_dos(&mov_o, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovo r8,[r11]", test_enc_dos(&mov_o, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovo r8d,[r11]", test_enc_dos(&mov_o, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovo r8,[r11]", test_enc_dos(&mov_o, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -305,14 +302,11 @@ op_table!(mov_no [
 
 #[test]
 fn test_mov_no() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovno r8d,r11d", test_enc_dos(&mov_no, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovno r8,r11", test_enc_dos(&mov_no, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovno r8d,r11d", test_enc_dos(&mov_no, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovno r8,r11", test_enc_dos(&mov_no, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovno r8d,[r11]", test_enc_dos(&mov_no, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovno r8,[r11]", test_enc_dos(&mov_no, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovno r8d,[r11]", test_enc_dos(&mov_no, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovno r8,[r11]", test_enc_dos(&mov_no, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -337,14 +331,11 @@ op_table!(mov_ae [
 
 #[test]
 fn test_mov_ae() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovae r8d,r11d", test_enc_dos(&mov_ae, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovae r8,r11", test_enc_dos(&mov_ae, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovae r8d,r11d", test_enc_dos(&mov_ae, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovae r8,r11", test_enc_dos(&mov_ae, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovae r8d,[r11]", test_enc_dos(&mov_ae, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovae r8,[r11]", test_enc_dos(&mov_ae, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovae r8d,[r11]", test_enc_dos(&mov_ae, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovae r8,[r11]", test_enc_dos(&mov_ae, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -359,14 +350,11 @@ op_table!(mov_e [
 
 #[test]
 fn test_mov_e() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmove r8d,r11d", test_enc_dos(&mov_e, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmove r8,r11", test_enc_dos(&mov_e, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmove r8d,r11d", test_enc_dos(&mov_e, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmove r8,r11", test_enc_dos(&mov_e, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmove r8d,[r11]", test_enc_dos(&mov_e, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmove r8,[r11]", test_enc_dos(&mov_e, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmove r8d,[r11]", test_enc_dos(&mov_e, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmove r8,[r11]", test_enc_dos(&mov_e, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -381,14 +369,11 @@ op_table!(mov_ne [
 
 #[test]
 fn test_mov_ne() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovne r8d,r11d", test_enc_dos(&mov_ne, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovne r8,r11", test_enc_dos(&mov_ne, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovne r8d,r11d", test_enc_dos(&mov_ne, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovne r8,r11", test_enc_dos(&mov_ne, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovne r8d,[r11]", test_enc_dos(&mov_ne, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovne r8,[r11]", test_enc_dos(&mov_ne, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovne r8d,[r11]", test_enc_dos(&mov_ne, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovne r8,[r11]", test_enc_dos(&mov_ne, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -403,14 +388,11 @@ op_table!(mov_be [
 
 #[test]
 fn test_mov_be() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovbe r8d,r11d", test_enc_dos(&mov_be, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovbe r8,r11", test_enc_dos(&mov_be, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovbe r8d,r11d", test_enc_dos(&mov_be, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovbe r8,r11", test_enc_dos(&mov_be, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovbe r8d,[r11]", test_enc_dos(&mov_be, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovbe r8,[r11]", test_enc_dos(&mov_be, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovbe r8d,[r11]", test_enc_dos(&mov_be, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovbe r8,[r11]", test_enc_dos(&mov_be, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -425,14 +407,11 @@ op_table!(mov_a [
 
 #[test]
 fn test_mov_a() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmova r8d,r11d", test_enc_dos(&mov_a, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmova r8,r11", test_enc_dos(&mov_a, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmova r8d,r11d", test_enc_dos(&mov_a, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmova r8,r11", test_enc_dos(&mov_a, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmova r8d,[r11]", test_enc_dos(&mov_a, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmova r8,[r11]", test_enc_dos(&mov_a, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmova r8d,[r11]", test_enc_dos(&mov_a, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmova r8,[r11]", test_enc_dos(&mov_a, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -447,14 +426,11 @@ op_table!(mov_s [
 
 #[test]
 fn test_mov_s() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovs r10d,r11d", test_enc_dos(&mov_s, 32, R10.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovs r10,r11", test_enc_dos(&mov_s, 64, R10.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovs r10d,r11d", test_enc_dos(&mov_s, 32, R10.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovs r10,r11", test_enc_dos(&mov_s, 64, R10.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovs r10d,[r11]", test_enc_dos(&mov_s, 32, R10.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovs r10,[r11]", test_enc_dos(&mov_s, 64, R10.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovs r10d,[r11]", test_enc_dos(&mov_s, 32, R10.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovs r10,[r11]", test_enc_dos(&mov_s, 64, R10.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -469,14 +445,11 @@ op_table!(mov_ns [
 
 #[test]
 fn test_mov_ns() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovns r8d,r11d", test_enc_dos(&mov_ns, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovns r8,r11", test_enc_dos(&mov_ns, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovns r8d,r11d", test_enc_dos(&mov_ns, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovns r8,r11", test_enc_dos(&mov_ns, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovns r8d,[r11]", test_enc_dos(&mov_ns, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovns r8,[r11]", test_enc_dos(&mov_ns, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovns r8d,[r11]", test_enc_dos(&mov_ns, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovns r8,[r11]", test_enc_dos(&mov_ns, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -491,14 +464,11 @@ op_table!(mov_pe [
 
 #[test]
 fn test_mov_pe() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovp r8d,r11d", test_enc_dos(&mov_pe, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovp r8,r11", test_enc_dos(&mov_pe, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovp r8d,r11d", test_enc_dos(&mov_pe, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovp r8,r11", test_enc_dos(&mov_pe, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovp r8d,[r11]", test_enc_dos(&mov_pe, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovp r8,[r11]", test_enc_dos(&mov_pe, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovp r8d,[r11]", test_enc_dos(&mov_pe, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovp r8,[r11]", test_enc_dos(&mov_pe, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -513,14 +483,11 @@ op_table!(mov_po [
 
 #[test]
 fn test_mov_po() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovnp r8d,r11d", test_enc_dos(&mov_po, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovnp r8,r11", test_enc_dos(&mov_po, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovnp r8d,r11d", test_enc_dos(&mov_po, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovnp r8,r11", test_enc_dos(&mov_po, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovnp r8d,[r11]", test_enc_dos(&mov_po, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovnp r8,[r11]", test_enc_dos(&mov_po, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovnp r8d,[r11]", test_enc_dos(&mov_po, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovnp r8,[r11]", test_enc_dos(&mov_po, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -535,14 +502,11 @@ op_table!(mov_l [
 
 #[test]
 fn test_mov_l() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovl r8d,r11d", test_enc_dos(&mov_l, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovl r8,r11", test_enc_dos(&mov_l, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovl r8d,r11d", test_enc_dos(&mov_l, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovl r8,r11", test_enc_dos(&mov_l, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovl r8d,[r11]", test_enc_dos(&mov_l, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovl r8,[r11]", test_enc_dos(&mov_l, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovl r8d,[r11]", test_enc_dos(&mov_l, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovl r8,[r11]", test_enc_dos(&mov_l, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -557,14 +521,11 @@ op_table!(mov_ge [
 
 #[test]
 fn test_mov_ge() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovge r8d,r11d", test_enc_dos(&mov_ge, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovge r8,r11", test_enc_dos(&mov_ge, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovge r8d,r11d", test_enc_dos(&mov_ge, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovge r8,r11", test_enc_dos(&mov_ge, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovge r8d,[r11]", test_enc_dos(&mov_ge, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovge r8,[r11]", test_enc_dos(&mov_ge, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovge r8d,[r11]", test_enc_dos(&mov_ge, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovge r8,[r11]", test_enc_dos(&mov_ge, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -579,14 +540,11 @@ op_table!(mov_le [
 
 #[test]
 fn test_mov_le() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovle r8d,r11d", test_enc_dos(&mov_le, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovle r8,r11", test_enc_dos(&mov_le, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovle r8d,r11d", test_enc_dos(&mov_le, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovle r8,r11", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovle r8d,[r11]", test_enc_dos(&mov_le, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovle r8,[r11]", test_enc_dos(&mov_le, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovle r8d,[r11]", test_enc_dos(&mov_le, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovle r8,[r11]", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -601,14 +559,11 @@ op_table!(mov_g [
 
 #[test]
 fn test_mov_g() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, 32, R8.as_op(c, s), R11.as_op(c, s)));
-  assert_eq!("cmovg r8,r11", test_enc_dos(&mov_g, 64, R8.as_op(c, s), R11.as_op(c, s)));
+  assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovg r8,r11", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovg r8d,[r11]", test_enc_dos(&mov_g, 32, R8.as_op(c, s), R11.as_addr_op(c, s)));
-  assert_eq!("cmovg r8,[r11]", test_enc_dos(&mov_g, 64, R8.as_op(c, s), R11.as_addr_op(c, s)));
+  assert_eq!("cmovg r8d,[r11]", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovg r8,[r11]", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_addr_op()));
 }
 
 /// https://www.felixcloutier.com/x86/mov
@@ -650,11 +605,8 @@ op_table!(lea [
 
 #[test]
 fn test_lea() {
-  let c = IRCallable::default();
-  let c = &c;
-  let s = &Default::default();
-  assert_eq!("lea r8d,[r11]", test_enc_dos(&lea, 32, R8.as_op(c, s), R11.as_op(c, s).to_mem()));
-  assert_eq!("cmovg r8,r11", test_enc_dos(&lea, 64, R8.as_op(c, s), Arg::RSP_REL(128)));
+  assert_eq!("lea r8d,[r11]", test_enc_dos(&lea, 32, R8.as_reg_op(), R11.as_reg_op().to_mem()));
+  assert_eq!("cmovg r8,r11", test_enc_dos(&lea, 64, R8.as_reg_op(), Arg::RSP_REL(128)));
 }
 
 /// https://www.felixcloutier.com/x86/mov

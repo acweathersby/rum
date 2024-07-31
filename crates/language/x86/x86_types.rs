@@ -1,4 +1,7 @@
-use crate::ir::{ir_context::IRCallable, ir_graph::IRGraphId};
+use crate::ir::{
+  ir_context::{IRCallable, OptimizerContext},
+  ir_graph::IRGraphId,
+};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Hash, Clone, Copy)]
@@ -216,11 +219,11 @@ impl IRGraphId {
     (self.reg_id().unwrap() & 0x1F) >= 16
   }
 
-  pub fn as_addr_op(&self, ctx: &IRCallable, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
+  pub fn as_addr_op(&self) -> Arg {
     if let Some(reg) = self.reg_id() {
       Arg::Mem(Self::register(reg))
     } else {
-      self.as_op(ctx, stack_offsets)
+      panic!("GraphID node is not a register {self}");
     }
   }
 
@@ -244,7 +247,7 @@ impl IRGraphId {
     }
   }
 
-  pub fn as_op(&self, ctx: &IRCallable, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
+  pub fn as_op(&self, ctx: &OptimizerContext, stack_offsets: &BTreeMap<usize, u64>) -> Arg {
     if let Some(reg) = self.reg_id() {
       Arg::Reg(Self::register(reg))
     } else if ctx.graph[self.graph_id()].is_const() {

@@ -4,7 +4,7 @@ use super::{x86_encoder::*, x86_instructions::*, x86_types::*};
 use crate::{
   error::RumResult,
   ir::{
-    ir_context::IRCallable,
+    ir_context::{IRCallable, OptimizerContext},
     ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   },
   types::BaseType,
@@ -18,7 +18,7 @@ struct CompileContext<'a> {
   stack_size:   u64,
   jmp_resolver: JumpResolution,
   binary:       Vec<u8>,
-  ctx:          &'a IRCallable,
+  ctx:          &'a OptimizerContext<'a>,
 }
 
 #[derive(Debug)]
@@ -72,7 +72,7 @@ impl Drop for x86Function {
   }
 }
 
-pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> RumResult<x86Function> {
+pub fn compile_from_ssa_fn(funct: &OptimizerContext, spilled_variables: &[u32]) -> RumResult<x86Function> {
   const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
   const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
   const PTR_BYTE_SIZE: usize = 8;
@@ -121,7 +121,7 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
     }
   }
 
-  for node in &ctx.ctx.graph {
+  for node in ctx.ctx.graph.iter() {
     if matches!(node, IRGraphNode::VAR { .. }) {
       fun_name(node, &mut offsets, &mut rsp_offset);
     }
@@ -138,7 +138,7 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
 
   funct_preamble(&mut ctx, rsp_offset);
 
-  for block in &funct.blocks {
+  for block in funct.blocks.iter() {
     ctx.jmp_resolver.block_offset.push(ctx.binary.len());
     println!("START_BLOCK {} ---------------- \n", block.id);
     for op_expr in &block.nodes {
@@ -153,7 +153,7 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
       println!("\n")
     }
 
-    if let Some(block_id) = block.branch_unconditional {
+    if let Some(block_id) = block.branch_succeed {
       use Arg::*;
       if block_id != BlockId(block.id.0 + 1) {
         let CompileContext { stack_size, jmp_resolver, binary: bin, ctx } = &mut ctx;
@@ -163,7 +163,7 @@ pub fn compile_from_ssa_fn(funct: &IRCallable, spilled_variables: &[u32]) -> Rum
       }
     }
 
-    if !block.branch_default.is_some() && !block.branch_succeed.is_some() && !block.branch_unconditional.is_some() {
+    if !block.branch_fail.is_some() && !block.branch_succeed.is_some() {
       funct_postamble(&mut ctx, rsp_offset);
       encode(&mut ctx.binary, &ret, 64, Arg::None, Arg::None, Arg::None);
     }
@@ -372,7 +372,7 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
         let op1_node = &ctx.graph[op1.graph_id()];
         let op2_node = &ctx.graph[op2.graph_id()];
 
-        debug_assert!(op1_node.ty().is_pointer());
+        //debug_assert!(op1_node.ty().is_pointer(), "{}", op1_node.ty());
 
         let base_reg = op1.as_op(ctx, so);
         let dest_reg = out_id.as_op(ctx, so);
@@ -408,7 +408,6 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
 
         encode_zero(bin, &syscall, 32);
       }
-      IROp::DEREF => todo!("TODO: {node:?}"),
       /*     IROp::STORE => {
                   let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
                   if let SSAExpr::BinaryOp(op, val, op1, op2) = node {
@@ -583,7 +582,6 @@ pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext,
           _ => {}
         }
       }     */
-      IROp::NOOP => {}
       IROp::OR | IROp::XOR | IROp::AND | IROp::NOT | IROp::DIV | IROp::LOG | IROp::POW | IROp::LS | IROp::LE => todo!("TODO: {node:?}"),
       op => todo!("Handle {op:?}"),
     }
