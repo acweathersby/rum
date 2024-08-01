@@ -6,6 +6,7 @@ use crate::{
   ir::{
     ir_context::{IRCallable, OptimizerContext},
     ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
+    ir_register_allocator::RegisterAssignement,
   },
   types::BaseType,
   x86::{print_instructions, push_bytes},
@@ -210,10 +211,17 @@ fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
   encode_unary(bin, &pop, 64, Arg::Reg(RBX));
 }
 
-pub fn compile_op(node: &IRGraphNode, block: &IRBlock, ctx: &mut CompileContext, so: &BTreeMap<usize, u64>, rsp_offset: u64) -> bool {
+pub fn compile_op(
+  node: &IRGraphNode,
+  reg_data: &RegisterAssignement,
+  block: &IRBlock,
+  ctx: &mut CompileContext,
+  so: &BTreeMap<usize, u64>,
+  rsp_offset: u64,
+) -> bool {
   const POINTER_SIZE: u64 = 64;
   use Arg::*;
-  if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, spills, .. } = *node {
+  if let IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } = *node {
     // Perform spills
     for (op_index, spill) in spills.iter().enumerate() {
       if *spill < u32::MAX {

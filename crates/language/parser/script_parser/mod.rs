@@ -33,7 +33,7 @@ pub fn parse_RS(input: &str) -> Result<ASTNode, String> {
 }
 
 /// Parses input based on the LL grammar.
-pub fn parse_raw(input: &str) -> Result<Arc<RawFunction<Token>>, String> {
+pub fn parse_raw(input: &str) -> Result<Arc<RawRoutine<Token>>, String> {
   let parser_db = parser::ParserDB::new();
   match parser_db.build_ast(
     &mut StringInput::from(input),
@@ -44,7 +44,7 @@ pub fn parse_raw(input: &str) -> Result<Arc<RawFunction<Token>>, String> {
       println!("{err:?}");
       Err("Failed to parse input".to_string())
     }
-    Ok(node) => Ok(node.into_RawFunction().unwrap()),
+    Ok(node) => Ok(node.into_RawRoutine().unwrap()),
   }
 }
 

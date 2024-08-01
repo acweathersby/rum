@@ -7,7 +7,7 @@ use std::fmt::{Debug, Display};
 #[derive(Debug)]
 pub enum ComplexType {
   Struct(StructType),
-  Procedure(ProcedureType),
+  Procedure(RoutineType),
   Union(UnionType),
   Enum(EnumType),
   BitField(BitFieldType),

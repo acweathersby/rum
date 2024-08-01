@@ -18,11 +18,11 @@
 //!
 //! - Window:
 
-pub(crate) mod x86_compiler;
-pub use x86_compiler::compile_from_ssa_fn;
+//pub(crate) mod x86_compiler;
+//pub use x86_compiler::compile_from_ssa_fn;
 
-pub(crate) mod x86_encoder;
-pub(crate) mod x86_instructions;
+//pub(crate) mod x86_encoder;
+//pub(crate) mod x86_instructions;
 pub(crate) mod x86_types;
 
 #[inline]

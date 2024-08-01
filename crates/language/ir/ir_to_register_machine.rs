@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::types::ProcedureBody;
+use crate::types::RoutineBody;
 
 use super::ir_graph::{IRBlock, IRGraphNode};
 pub(crate) enum RegisterProperty {
@@ -33,7 +33,7 @@ pub struct CompilerFunction<R: RegisterIdentifier> {
   pub(crate) graph:  Vec<RegisterExp<R>>,
 }
 
-pub(crate) fn convert_to_register_names<T: RegisterAllocator>(proc: ProcedureBody) -> CompilerFunction<T::RegisterType> {
+pub(crate) fn convert_to_register_names<T: RegisterAllocator>(proc: RoutineBody) -> CompilerFunction<T::RegisterType> {
   let mut allocator: T = T::new();
 
   let mut out = CompilerFunction { blocks: Default::default(), graph: Default::default() };

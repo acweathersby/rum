@@ -1,0 +1,34 @@
+IGNORE { c:sp c:nl tk:cmt::comment }
+
+IMPORT type as ty
+IMPORT ../common/primitive as prim
+IMPORT ./expression as expr
+IMPORT ../common/comment as cmt
+
+<> routine 
+
+  >  prim::var^name routine_type^routine_type expr::expression^expression
+
+    :ast { t_RawRoutine, name, ty: $routine_type, expression  }
+
+<> routine_type 
+
+  > params "=>" ty::type^return_type
+
+    :ast { t_RawFunctionType, params, return_type  }
+
+  | params "=|"
+
+    :ast { t_RawProcedureType, params  }
+
+<> params 
+  
+  > "\(" param_binding(*) "\)" :ast { t_Params, params: $2 }
+
++> ty::type > routine_type
+
+<> param_binding 
+  
+  > prim::var^var ":" ty::type^ty
+
+    :ast { t_RawParamBinding, var, ty, tok }

@@ -1,15 +1,17 @@
-use super::ir_graph::IRGraphId;
+use super::ir_graph::{IRGraphId, VarId};
 use crate::{
   ir::{
     ir_build_module::process_types,
     ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   },
-  types::{ComplexType, ConstVal, PrimitiveType, ProcedureBody, Type, TypeScopes},
+  types::{ComplexType, ConstVal, PrimitiveType, RoutineBody, Type, TypeScopes},
 };
-use iced_x86::code_asm::bl;
 pub use radlr_rust_runtime::types::Token;
 use rum_istring::{CachedString, IString};
-use std::collections::{HashMap, VecDeque};
+use std::{
+  collections::{HashMap, VecDeque},
+  fmt::{Debug, Display},
+};
 
 pub enum SuccessorMode {
   Default,
@@ -17,12 +19,10 @@ pub enum SuccessorMode {
   Succeed,
 }
 
-#[derive(Debug)]
 pub struct IRBuilder<'a, 'ts> {
-  pub graph:              &'a mut Vec<IRGraphNode>,
+  pub body:               &'a mut RoutineBody,
   pub ssa_stack:          Vec<IRGraphId>,
   pub loop_stack:         Vec<(IString, BlockId, BlockId)>,
-  pub blocks:             &'a mut Vec<Box<IRBlock>>,
   pub active_block_id:    BlockId,
   pub var_scope_stack:    Vec<usize>,
   pub variables:          Vec<InternalVData>,
@@ -33,19 +33,18 @@ pub struct IRBuilder<'a, 'ts> {
 }
 
 impl<'f, 'ts> IRBuilder<'f, 'ts> {
-  pub fn new(proc: &'f mut ProcedureBody, type_ctx_index: usize, type_context: &'ts TypeScopes) -> Self {
+  pub fn new(body: &'f mut RoutineBody, type_ctx_index: usize, type_context: &'ts TypeScopes) -> Self {
     let mut state_machine = Self {
-      ssa_stack:          Default::default(),
-      graph:              &mut proc.graph,
-      blocks:             &mut proc.blocks,
-      variables:          Default::default(),
-      type_scopes:        type_context,
+      ssa_stack: Default::default(),
+      body,
+      variables: Default::default(),
+      type_scopes: type_context,
       type_context_index: type_ctx_index,
-      variable_scopes:    Default::default(),
-      active_block_id:    Default::default(),
-      var_scope_stack:    Default::default(),
-      unused_scope:       Default::default(),
-      loop_stack:         Default::default(),
+      variable_scopes: Default::default(),
+      active_block_id: Default::default(),
+      var_scope_stack: Default::default(),
+      unused_scope: Default::default(),
+      loop_stack: Default::default(),
     };
     let block = state_machine.create_block();
     state_machine.set_active(block);
@@ -64,8 +63,24 @@ pub struct InternalVData {
   pub ty:                Type,
   pub store:             IRGraphId,
   pub decl:              IRGraphId,
-  pub sub_members:       HashMap<usize, usize>,
+  pub sub_members:       HashMap<IString, usize>,
   pub is_member_pointer: bool,
+}
+
+impl Display for InternalVData {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("{:>5}: ", self.var_index))?;
+    f.write_fmt(format_args!("{:<15}", self.name.to_str().as_str()))?;
+    f.write_str(" => ")?;
+    f.write_fmt(format_args!("{:>25}", self.ty))?;
+    f.write_str("  ")?;
+
+    for (_, index) in &self.sub_members {
+      f.write_fmt(format_args!(" mem({:})", index))?;
+    }
+
+    Ok(())
+  }
 }
 
 #[derive(Debug)]
@@ -132,7 +147,7 @@ impl From<&ComplexType> for SMT {
 
 impl<'a, 'ts> IRBuilder<'a, 'ts> {
   pub fn get_node_type(&self, node_id: IRGraphId) -> Option<Type> {
-    self.graph.get(node_id.graph_id()).map(|t| t.ty())
+    self.body.graph.get(node_id.graph_id()).map(|t| t.ty())
   }
 
   pub fn get_type(&self, type_name: IString) -> Option<&'ts ComplexType> {
@@ -141,8 +156,8 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
 
   pub fn rename_var(&mut self, var_id: IRGraphId, name: IString) {
     let active_scope = self.get_active_var_scope();
-    match &mut self.graph[var_id.graph_id()] {
-      IRGraphNode::VAR { name: v_name, var_index, .. } => {
+    match &mut self.body.graph[var_id.graph_id()] {
+      IRGraphNode::VAR { name: v_name, var_id, var_index, .. } => {
         self.variables[*var_index].name = name;
         *v_name = name;
 
@@ -163,7 +178,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
     let variables = &mut self.variable_scopes[active_scope];
 
     let var_index = self.variables.len();
-    let graph_id = IRGraphId::default().to_graph_index(self.graph.len()).to_var_id(self.graph.len());
+    let graph_id = IRGraphId::new(self.body.graph.len());
     let var = InternalVData {
       offset: 0,
       var_index,
@@ -179,7 +194,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
 
     self.variables.push(var);
 
-    self.graph.push(IRGraphNode::VAR { id: graph_id, ty, name, loc: Default::default(), var_index });
+    self.body.graph.push(IRGraphNode::VAR { var_id: VarId::new(self.body.graph.len() as u32), ty, name, var_index });
 
     self.ssa_stack.push(graph_id);
 
@@ -210,13 +225,13 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
       crate::types::BaseType::Complex(cplx) => match cplx {
         ComplexType::Struct(strct) => {
           if let Some(ty) = strct.members.iter().find(|m| m.name == sub_member_name) {
-            match var.sub_members.entry(ty.original_index) {
+            match var.sub_members.entry(sub_member_name) {
               std::collections::hash_map::Entry::Occupied(entry) => {
                 let id = *entry.get();
                 Some((&self.variables[id]).into())
               }
               std::collections::hash_map::Entry::Vacant(entry) => {
-                let graph_id = IRGraphId::default().to_graph_index(self.graph.len()).to_var_id(self.graph.len());
+                let graph_id = IRGraphId::new(self.body.graph.len());
                 let name = (var.name.to_string() + "." + sub_member_name.to_str().as_str()).intern();
                 let offset = ty.offset;
                 let ty = ty.ty;
@@ -239,7 +254,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
 
                 self.variables.push(var);
 
-                self.graph.push(IRGraphNode::VAR { id: graph_id, ty, name, loc: Default::default(), var_index });
+                self.body.graph.push(IRGraphNode::VAR { ty, name, var_index, var_id: VarId::new(self.body.graph.len() as u32) });
 
                 let mut val: ExternalVData = (&(self.variables[var_index])).into();
 
@@ -263,7 +278,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
   }
 
   pub fn get_top_type(&mut self) -> Option<Type> {
-    self.get_top_id().map(|s| self.graph[s.graph_id()].ty())
+    self.get_top_id().map(|s| self.body.graph[s.graph_id()].ty())
   }
 
   pub fn get_top_id(&mut self) -> Option<IRGraphId> {
@@ -292,16 +307,16 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
   }
 
   pub fn push_node(&mut self, val: IRGraphId) {
-    debug_assert!(val.graph_id() < self.graph.len());
+    debug_assert!(val.graph_id() < self.body.graph.len());
     self.ssa_stack.push(val);
   }
 
   pub fn push_const(&mut self, val: ConstVal) {
-    for node in self.graph.iter() {
+    for (id, node) in self.body.graph.iter().enumerate() {
       match node {
-        IRGraphNode::Const { id, val: v } => {
+        IRGraphNode::Const { val: v } => {
           if val == *v {
-            self.ssa_stack.push(*id);
+            self.ssa_stack.push(IRGraphId::new(id));
             return;
           }
         }
@@ -309,15 +324,13 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
       }
     }
 
-    let graph = &mut *self.graph;
-    let id = IRGraphId::default().to_graph_index(graph.len());
-    let node = IRGraphNode::Const { id, val };
-
+    let graph = &mut self.body.graph;
+    let id = IRGraphId::new(graph.len());
+    let node = IRGraphNode::Const { val };
     graph.push(node);
     self.ssa_stack.push(id);
   }
 
-  #[track_caller]
   pub fn push_ssa(&mut self, op: IROp, ty: SMT, operands: &[SMO], var_id: usize) {
     let operands = match (operands.get(0), operands.get(1)) {
       (Some(op1), Some(op2)) => {
@@ -329,17 +342,12 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
       _ => unreachable!(),
     };
 
-    let graph = &mut *self.graph;
-
-    let id = if var_id != usize::MAX {
-      IRGraphId::default().to_graph_index(graph.len()).to_var_id(var_id)
-    } else {
-      IRGraphId::default().to_graph_index(graph.len())
-    };
+    let graph = &mut self.body.graph;
+    let id = IRGraphId::new(graph.len());
 
     let node = IRGraphNode::SSA {
       op,
-      id,
+      var_id: if var_id != usize::MAX { VarId::new(var_id as u32) } else { VarId::default() },
       block_id: self.active_block_id,
       result_ty: match ty {
         SMT::Inherit => graph[operands[0].graph_id()].ty(),
@@ -347,22 +355,21 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
         SMT::Undef => PrimitiveType::Undefined.into(),
       },
       operands,
-      spills: [u32::MAX; 3],
     };
 
     graph.push(node);
     self.ssa_stack.push(id);
 
-    if matches!(op, IROp::STORE | IROp::MEM_STORE) && var_id != usize::MAX {
-      if let IRGraphNode::VAR { var_index, .. } = self.graph[var_id] {
-        self.variables[var_index].store = self.variables[var_index].store.to_graph_index(id.graph_id());
+    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR) && var_id != usize::MAX {
+      if let IRGraphNode::VAR { var_index, .. } = self.body.graph[var_id] {
+        self.variables[var_index].store = id;
       } else {
         panic!("Invalid variable (mem)store. Variable id is invalid. {self:#?}")
       }
     }
 
     match op {
-      _ => self.blocks[self.active_block_id].nodes.push(id),
+      _ => self.body.blocks[self.active_block_id].nodes.push(id),
     }
   }
 
@@ -371,9 +378,9 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
   }
 
   pub fn create_block(&mut self) -> BlockId {
-    let block_id: BlockId = BlockId((self.blocks.len()) as u32);
+    let block_id: BlockId = BlockId((self.body.blocks.len()) as u32);
 
-    self.blocks.push(Box::new(IRBlock {
+    self.body.blocks.push(Box::new(IRBlock {
       id:                  block_id,
       nodes:               Default::default(),
       branch_succeed:      Default::default(),
@@ -398,31 +405,31 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
   }
 
   pub fn set_successor(&mut self, block_id: BlockId, successor_mode: SuccessorMode) {
-    let active_block = &mut self.blocks[self.active_block_id];
+    let active_block = &mut self.body.blocks[self.active_block_id];
 
     match successor_mode {
       SuccessorMode::Default => {
         if active_block.branch_succeed.is_none() {
           active_block.branch_succeed = Some(block_id);
-          self.blocks[block_id].direct_predecessors.push(self.active_block_id);
+          self.body.blocks[block_id].direct_predecessors.push(self.active_block_id);
         }
       }
       SuccessorMode::Succeed => {
         active_block.branch_succeed = Some(block_id);
-        self.blocks[block_id].direct_predecessors.push(self.active_block_id);
+        self.body.blocks[block_id].direct_predecessors.push(self.active_block_id);
       }
       SuccessorMode::Fail => {
         active_block.branch_fail = Some(block_id);
-        self.blocks[block_id].direct_predecessors.push(self.active_block_id);
+        self.body.blocks[block_id].direct_predecessors.push(self.active_block_id);
       }
     }
   }
 
   pub fn push_loop(&mut self, name: IString) -> (BlockId, BlockId) {
-    let loop_start_id: BlockId = BlockId((self.blocks.len()) as u32);
-    let loop_end_id: BlockId = BlockId((self.blocks.len() + 1) as u32);
+    let loop_start_id: BlockId = BlockId((self.body.blocks.len()) as u32);
+    let loop_end_id: BlockId = BlockId((self.body.blocks.len() + 1) as u32);
 
-    self.blocks.push(Box::new(IRBlock {
+    self.body.blocks.push(Box::new(IRBlock {
       id: loop_start_id,
       nodes: Default::default(),
       branch_succeed: Default::default(),
@@ -433,7 +440,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
       loop_components: Default::default(),
     }));
 
-    self.blocks.push(Box::new(IRBlock {
+    self.body.blocks.push(Box::new(IRBlock {
       id:                  loop_end_id,
       nodes:               Default::default(),
       branch_succeed:      Default::default(),
@@ -477,7 +484,7 @@ Temp => [
     &mut type_scope,
   );
 
-  let mut proc = ProcedureBody::default();
+  let mut proc = RoutineBody::default();
   let mut sm = IRBuilder::new(&mut proc, 0, &type_scope);
 
   // Get the type info of the Temp value.
@@ -516,7 +523,7 @@ fn stores() {
     &mut type_scope,
   );
 
-  let mut proc = ProcedureBody::default();
+  let mut proc = RoutineBody::default();
   let mut sm = IRBuilder::new(&mut proc, 0, &type_scope);
 
   // Get the type info of the Temp value.
@@ -524,14 +531,14 @@ fn stores() {
 
   sm.push_variable("test".to_token(), ty.into());
 
-  let var_id = IRGraphId::default().to_graph_index(0).to_var_id(0);
+  let var_id = IRGraphId::new(0);
   assert_eq!(sm.variables[0].store, var_id);
 
   sm.push_ssa(IROp::STORE, ty.into(), &[], var_id.graph_id());
-  assert_eq!(sm.variables[0].store, var_id.to_graph_index(1));
+  assert_eq!(sm.variables[0].store, IRGraphId::new(1));
 
   sm.push_ssa(IROp::MEM_STORE, ty.into(), &[], var_id.graph_id());
-  assert_eq!(sm.variables[0].store, var_id.to_graph_index(2));
+  assert_eq!(sm.variables[0].store, IRGraphId::new(2));
 
   dbg!(sm);
 }
@@ -553,7 +560,7 @@ fn blocks() {
     &mut type_scope,
   );
 
-  let mut proc = ProcedureBody::default();
+  let mut proc = RoutineBody::default();
   let mut sm = IRBuilder::new(&mut proc, 0, &type_scope);
 
   sm.push_variable("Test".to_token(), PrimitiveType::u32.into());
@@ -567,5 +574,16 @@ fn blocks() {
   assert!(sm.get_variable("Test".to_token()).is_some());
   assert!(sm.get_variable("Test1".to_token()).is_some());
 
-  dbg!(&sm.blocks);
+  dbg!(&sm.body.blocks);
+}
+
+impl<'a, 'b> Debug for IRBuilder<'a, 'b> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let mut st = f.debug_struct("IRBuilder");
+
+    st.field("body", self.body);
+    st.field("variables", &self.variables.iter().map(|v| format!("{v}")).collect::<Vec<String>>());
+
+    st.finish()
+  }
 }

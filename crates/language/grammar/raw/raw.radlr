@@ -1,7 +1,7 @@
 IGNORE { c:sp c:nl tk:cmt::comment }
 
 
-IMPORT function as fn
+IMPORT routine as rt
 IMPORT statement as stmt
 IMPORT expression as expr
 IMPORT struct as struct
@@ -10,7 +10,7 @@ IMPORT ../common/comment as cmt
 EXPORT raw_module as raw_module
 EXPORT raw_struct as raw_struct
 EXPORT raw_statement as raw_statement
-EXPORT raw_function as raw_function
+EXPORT raw_routine as raw_routine
 EXPORT raw_expression as raw_expression
 
 <> raw_enum > struct::enum
@@ -21,6 +21,6 @@ EXPORT raw_expression as raw_expression
 
 <> raw_expression > expr::expression
 
-<> raw_function > fn::function_definition
+<> raw_routine > rt::routine
 
-<> raw_module > ( raw_struct | raw_enum | raw_function )(+)
+<> raw_module > ( raw_struct | raw_enum | raw_routine )(+)

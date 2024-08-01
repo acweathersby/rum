@@ -15,37 +15,6 @@ pub struct IRCallable {
   pub graph:     Vec<IRGraphNode>,
   pub blocks:    Vec<IRBlock>,
 }
-pub mod graph_actions {
-
-  use super::{IRBlock, IRGraphId, IRGraphNode};
-
-  pub fn push_graph_node_to_block(block: Option<&mut IRBlock>, graph: &mut Vec<IRGraphNode>, mut node: IRGraphNode) -> IRGraphId {
-    match &mut node {
-      IRGraphNode::VAR { id, .. } => {
-        *id = id.to_graph_index(graph.len()).to_var_id(graph.len());
-      }
-      IRGraphNode::Const { id, val } => {
-        *id = id.to_graph_index(graph.len());
-      }
-      IRGraphNode::SSA { id, op, block_id, result_ty, operands, .. } => {
-        *id = id.to_graph_index(graph.len());
-        if let Some(block) = block {
-          *block_id = block.id;
-          block.nodes.push(*id);
-        }
-      }
-      IRGraphNode::PHI { id, result_ty, operands } => unreachable!(),
-    }
-
-    let id = node.id();
-    graph.push(node);
-    id
-  }
-
-  pub fn push_node(graph: &mut Vec<IRGraphNode>, block: &mut IRBlock, node: IRGraphNode) -> IRGraphId {
-    push_graph_node_to_block(Some(block), graph, node)
-  }
-}
 
 pub struct OptimizerContext<'funct> {
   pub graph:  &'funct mut Vec<IRGraphNode>,
@@ -104,10 +73,6 @@ impl<'funct> OptimizerContext<'funct> {
   //
 
   // add annotation - iter rate - iter initial val - iter inc stack id const val
-
-  pub fn push_graph_node(&mut self, mut node: IRGraphNode) -> IRGraphId {
-    graph_actions::push_graph_node_to_block(None, self.graph, node)
-  }
 
   pub fn blocks_range(&self) -> Range<usize> {
     0..self.blocks.len()

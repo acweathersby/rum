@@ -1,9 +1,7 @@
-use std::fmt::Debug;
-
-use crate::ir::ir_graph::{IRBlock, IRGraphNode};
-
 use super::*;
+use crate::ir::ir_graph::{IRBlock, IRGraphNode};
 use rum_istring::IString;
+use std::fmt::{Debug, Display};
 
 #[derive(Debug)]
 pub struct StructType {
@@ -21,18 +19,53 @@ pub struct StructMemberType {
   pub offset:         u64,
 }
 
-#[derive(Debug)]
-pub struct ProcedureType {
+pub struct RoutineType {
   pub name:       IString,
   pub parameters: Vec<Type>,
   pub returns:    Vec<Type>,
-  pub body:       ProcedureBody,
+  pub body:       RoutineBody,
 }
 
-#[derive(Default, Debug)]
-pub struct ProcedureBody {
+impl Debug for RoutineType {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let mut st = f.debug_struct("RoutineType");
+
+    st.field("name", &self.name.to_str().as_str());
+
+    if self.parameters.len() > 0 {
+      st.field("params", &self.parameters);
+    }
+
+    if self.returns.len() > 0 {
+      st.field("returns", &self.returns);
+    }
+
+    st.field("body", &self.body);
+
+    st.finish()
+  }
+}
+
+#[derive(Default)]
+pub struct RoutineBody {
   pub graph:  Vec<IRGraphNode>,
   pub blocks: Vec<Box<IRBlock>>,
+}
+
+impl Display for RoutineBody {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    for (index, node) in self.graph.iter().enumerate() {
+      f.write_fmt(format_args!("\n{index: >5}: {node}"))?;
+    }
+
+    Ok(())
+  }
+}
+
+impl Debug for RoutineBody {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self, f)
+  }
 }
 
 #[derive(Debug)]

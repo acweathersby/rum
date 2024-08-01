@@ -20,6 +20,7 @@ use crate::{
     match_scope_Value,
     property_Value,
     raw_module_Value,
+    routine_type_Value,
     statement_Value,
     type_Value,
     Add,
@@ -29,17 +30,17 @@ use crate::{
     Pow,
     RawBlock,
     RawCall,
-    RawFunction,
     RawLoop,
     RawMatch,
     RawMember,
     RawNum,
+    RawRoutine,
     RawStructDeclaration,
     Sub,
     BIT_SL,
     BIT_SR,
   },
-  types::{BaseType, ComplexType, ConstVal, PrimitiveType, ProcedureBody, ProcedureType, StructMemberType, StructType, Type, TypeScopes},
+  types::{BaseType, ComplexType, ConstVal, PrimitiveType, RoutineBody, RoutineType, StructMemberType, StructType, Type, TypeScopes},
   IString,
 };
 pub use radlr_rust_runtime::types::Token;
@@ -55,13 +56,13 @@ pub fn process_types<'a>(
   module: &'a Vec<raw_module_Value<Token>>,
   type_scope_index: usize,
   type_scope: &mut TypeScopes,
-) -> Vec<&'a RawFunction<Token>> {
-  let mut functions = Vec::new();
+) -> Vec<&'a RawRoutine<Token>> {
+  let mut routines = Vec::new();
 
   for mod_member in module {
     match mod_member {
-      raw_module_Value::RawFunction(funct) => {
-        functions.push(funct.as_ref());
+      raw_module_Value::RawRoutine(routine) => {
+        routines.push(routine.as_ref());
       }
       raw_module_Value::RawUnion(union) => {
         dbg!(union);
@@ -167,23 +168,29 @@ pub fn process_types<'a>(
     }
   }
 
-  functions
+  routines
 }
 
 pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeScopes) -> () {
-  let mut functions = process_types(module, type_scope_index, type_scope);
+  let mut routines = process_types(module, type_scope_index, type_scope);
   //let mut types = Vec::new();
 
-  for function in &functions {
+  for routine in &routines {
     // Gather function type information.
 
-    let name = function.name.id.intern();
-    let params = &function.ty.params;
-    let return_ty = &function.ty.return_type;
+    let name = routine.name.id.intern();
 
-    let body = process_function(function, type_scope_index, &type_scope);
+    let none = type_Value::None;
 
-    let ty = ProcedureType {
+    let (params, ret) = match &routine.ty {
+      routine_type_Value::RawFunctionType(fn_ty) => (&fn_ty.params, &fn_ty.return_type),
+      routine_type_Value::RawProcedureType(proc_ty) => (&proc_ty.params, &none),
+      _ => unreachable!(),
+    };
+
+    let body = process_function(routine, type_scope_index, &type_scope);
+
+    let ty = RoutineType {
       name,
       body,
       parameters: Default::default(),
@@ -196,11 +203,11 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usi
   ()
 }
 
-fn process_function(function: &RawFunction<Token>, type_ctx_index: usize, type_context: &TypeScopes) -> ProcedureBody {
+fn process_function(function: &RawRoutine<Token>, type_ctx_index: usize, type_context: &TypeScopes) -> RoutineBody {
   // Ensure the return type is present in our type context.
   println!("TODO: Ensure the return type is present in our type context");
 
-  let mut pb = ProcedureBody { graph: Default::default(), blocks: Default::default() };
+  let mut pb = RoutineBody { graph: Default::default(), blocks: Default::default() };
 
   let mut ir_builder = IRBuilder::new(&mut pb, type_ctx_index, type_context);
 
@@ -337,7 +344,7 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Extern
           } else {
             let sub_name = mem.members[1].id.intern();
             if let Some(mut sub_var) = ib.get_variable_member(&var_data, sub_name) {
-              ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(sub_var.offset as u32));
+              ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, sub_var.offset as u32));
 
               ib.push_ssa(PTR_MEM_CALC, sub_var.ty.as_pointer().into(), &[SMO::IROp(var_data.store), StackOp], sub_var.var_index);
               sub_var.store = ib.pop_stack().unwrap();
@@ -360,9 +367,9 @@ fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
   let string_val = num.tok.to_string();
 
   ib.push_const(if string_val.contains(".") {
-    ConstVal::new(PrimitiveType::Float | PrimitiveType::b64).store(num.val)
+    ConstVal::new(PrimitiveType::Float | PrimitiveType::b64, num.val)
   } else {
-    ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64).store::<u64>(string_val.parse::<u64>().unwrap())
+    ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64, string_val.parse::<u64>().unwrap())
   });
 }
 
@@ -375,16 +382,11 @@ pub fn remap_primitive_type(desired_type: PrimitiveType, node_id: IRGraphId, sm:
   }
 
   return;
-
-  match &mut sm.graph[node_id.graph_id()] {
-    IRGraphNode::Const { id: ssa_id, val } => {
-      if val.is_lit() {
-        *val = val.convert(desired_type);
-      } else {
-        *val = ConstVal::new(desired_type);
-      }
+  match &mut sm.body.graph[node_id] {
+    IRGraphNode::Const { val } => {
+      *val = val.convert(desired_type);
     }
-    IRGraphNode::SSA { op, id: out_id, block_id, result_ty: out_ty, operands, .. } => {
+    IRGraphNode::SSA { op, block_id, result_ty: out_ty, operands, .. } => {
       if out_ty.is_primitive() {
         if out_ty.is_pointer() {
         } else {
@@ -420,7 +422,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
     }
   }
 
-  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64).store(1 as u64));
+  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64, 1 as u64));
   ib.push_ssa(CALL, Undef, &[StackOp], usize::MAX);
   ib.pop_stack();
 }
@@ -473,10 +475,10 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
 
           remap_primitive_type(*bf_type.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
 
-          ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_offset as u32));
+          ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_offset as u32));
           ib.push_ssa(SHL, bf_type.into(), &[StackOp, StackOp], usize::MAX);
 
-          ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_mask as u32));
+          ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_mask as u32));
           ib.push_ssa(AND, bf_type.into(), &[StackOp, StackOp], usize::MAX);
 
           match value_maps.entry(member.offset) {
@@ -509,7 +511,7 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
 
     for (offset, StructEntry { ty, value, name }) in value_maps {
       if let Some(var) = ib.get_variable_member(&struct_var, name) {
-        ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(offset as u32));
+        ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, offset as u32));
 
         ib.push_ssa(PTR_MEM_CALC, ty.as_pointer().into(), &[ptr_id.into(), StackOp], var.var_index);
 
@@ -540,7 +542,7 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
       dbg!(brk);
       if !brk.label.id.is_empty() {
         let name = brk.label.id.to_token();
-        if let Some((.., end_block)) = ib.loop_stack.iter().find(|(_, head, _)| ib.blocks[*head].name == name) {
+        if let Some((.., end_block)) = ib.loop_stack.iter().find(|(_, head, _)| ib.body.blocks[*head].name == name) {
           ib.set_successor(*end_block, SuccessorMode::Default);
         } else {
           panic!("Could not find successor block!");
@@ -685,15 +687,15 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
                   remap_primitive_type(*bf_type.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
 
                   // Offset variable
-                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_offset as u32));
+                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_offset as u32));
                   ib.push_ssa(SHL, var_data.ty.into(), &[StackOp, StackOp], usize::MAX);
 
                   // Mask out unwanted bits
-                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(bit_mask as u32));
+                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_mask as u32));
                   ib.push_ssa(AND, Inherit, &[StackOp, StackOp], usize::MAX);
 
                   // Load the base value from the structure and mask out target bitfield
-                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32).store(!bit_mask as u32));
+                  ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, !bit_mask as u32));
                   ib.push_ssa(MEM_LOAD, var_data.ty.into(), &[var_data.store.into()], var_data.var_index);
                   ib.push_ssa(AND, var_data.ty.into(), &[StackOp, StackOp], var_data.var_index);
 
