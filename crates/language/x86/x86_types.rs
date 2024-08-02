@@ -1,7 +1,10 @@
-use crate::ir::{
-  ir_context::{IRCallable, OptimizerContext},
-  ir_graph::IRGraphId,
-  ir_register_allocator::Reg,
+use crate::{
+  ir::{
+    ir_context::{IRCallable, OptimizerContext},
+    ir_graph::IRGraphId,
+    ir_register_allocator::Reg,
+  },
+  types::ConstVal,
 };
 use std::collections::BTreeMap;
 
@@ -265,6 +268,11 @@ impl Arg {
       Arg::RIP_REL(..) => OperandType::MEM,
       _ => OperandType::NONE,
     }
+  }
+
+  pub(super) fn from_const(c: ConstVal) -> Self {
+    let val: i128 = unsafe { std::mem::transmute(c.val) };
+    Arg::Imm_Int(val as i64)
   }
 
   /// Converts the argument from an operation on a value stored in a register to

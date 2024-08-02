@@ -156,12 +156,7 @@ impl BitFieldArena {
   }
 
   pub fn iter_row_set_indices<'a>(&'a self, row: usize) -> impl Iterator<Item = usize> + 'a {
-    BitFieldIndiceIterator {
-      row_offset: row * self.row_ele_size,
-      bit_offset: 0,
-      bitfield:   self,
-      col_offset: 0,
-    }
+    BitFieldIndiceIterator { row_offset: row * self.row_ele_size, bit_offset: 0, bitfield: self, col_offset: 0 }
   }
 }
 

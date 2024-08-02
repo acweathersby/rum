@@ -121,9 +121,7 @@ impl Display for IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val)),
-      IRGraphNode::VAR { name, ty, var_index, var_id, .. } => {
-        f.write_fmt(format_args!("VAR   {} [{:03}]{:>23} = {:?}", var_id, var_index, name.to_str().as_str(), ty,))
-      }
+      IRGraphNode::VAR { name, ty, var_index, var_id, .. } => f.write_fmt(format_args!("VAR   {} [{:03}]{:>23} = {:?}", var_id, var_index, name.to_str().as_str(), ty,)),
       IRGraphNode::PHI { result_ty: out_ty, operands, .. } => f.write_fmt(format_args!(
         "      {:28} = PHI {}",
         format!("{:?}", out_ty),
@@ -233,7 +231,7 @@ impl IRGraphId {
   pub const NEEDS_LOAD_VAL: u64 = 0x7000_0000_0000_0000;
   pub const LOAD_MASK_OUT: u64 = 0x0FFF_FFFF_FFFF_FFFF;
 
-  pub const fn graph_id(&self) -> usize {
+  pub const fn usize(&self) -> usize {
     self.0 as usize
   }
 

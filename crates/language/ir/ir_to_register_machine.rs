@@ -40,7 +40,7 @@ pub(crate) fn convert_to_register_names<T: RegisterAllocator>(proc: RoutineBody)
 
   for block in proc.blocks {
     for op in block.nodes {
-      let ssa = &proc.graph[op.graph_id()];
+      let ssa = &proc.graph[op.usize()];
       let action = allocator.map_register(ssa);
       out.graph.push(action);
     }

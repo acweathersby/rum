@@ -39,10 +39,7 @@ impl TypeScopes {
   pub fn add_scope(&mut self, parent_scope_index: usize) -> usize {
     let out_index = self.scopes.len();
 
-    self.scopes.push(TypeScopeEntry {
-      parent_index: Some(parent_scope_index),
-      entries:      Default::default(),
-    });
+    self.scopes.push(TypeScopeEntry { parent_index: Some(parent_scope_index), entries: Default::default() });
 
     out_index
   }
@@ -134,16 +131,7 @@ impl<'v_scope> VarScope<'v_scope> {
 fn test_type_scope() {
   let mut t_scope = TypeScopes::new();
 
-  t_scope.set(
-    t_scope.current_index,
-    "test".to_token(),
-    ComplexType::Struct(StructType {
-      name:      "test".intern(),
-      members:   Default::default(),
-      size:      0,
-      alignment: 0,
-    }),
-  );
+  t_scope.set(t_scope.current_index, "test".to_token(), ComplexType::Struct(StructType { name: "test".intern(), members: Default::default(), size: 0, alignment: 0 }));
 
   dbg!(t_scope);
 }
@@ -157,15 +145,7 @@ fn test_variable_scope() {
 
   c_v_scope.set("test".intern(), VariableEntry::WeakCandidates { types: vec![PrimitiveType::i64.into()], generics: vec![] });
 
-  c_v_scope.add_type(
-    "main".intern(),
-    ComplexType::Struct(StructType {
-      name:      "main".to_token(),
-      size:      0,
-      alignment: 0,
-      members:   Default::default(),
-    }),
-  );
+  c_v_scope.add_type("main".intern(), ComplexType::Struct(StructType { name: "main".to_token(), size: 0, alignment: 0, members: Default::default() }));
 
   if let Some(var) = c_v_scope.get("test".to_token()) {
     dbg!(var);

@@ -1,8 +1,8 @@
 #![feature(unsized_tuple_coercion)]
 pub mod bitfield;
-pub mod parser;
 pub mod error;
 pub mod ir;
+pub mod parser;
 pub mod types;
 pub mod x86;
 use std::{
@@ -18,9 +18,9 @@ use rum_istring::{CachedString, IString};
 use types::PrimitiveType;
 
 use crate::{
-  parser::script_parser::property_Value,
   ir_graph::{IRGraphId, IRGraphNode},
   //x86::compile_from_ssa_fn,
+  parser::script_parser::property_Value,
 };
 
 // Get expression type.

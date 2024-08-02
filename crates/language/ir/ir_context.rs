@@ -27,8 +27,8 @@ impl<'funct> Debug for OptimizerContext<'funct> {
       f.write_fmt(format_args!("\n\nBlock-{} {}\n", block.id, block.name.to_str().as_str()))?;
 
       for op_id in &block.nodes {
-        if (op_id.graph_id() as usize) < self.graph.len() {
-          let op = &self.graph[op_id.graph_id()];
+        if (op_id.usize() as usize) < self.graph.len() {
+          let op = &self.graph[op_id.usize()];
           f.write_str("  ")?;
 
           op.fmt(f)?;
@@ -90,13 +90,13 @@ impl<'funct> OptimizerContext<'funct> {
 impl<'funct> std::ops::Index<IRGraphId> for OptimizerContext<'funct> {
   type Output = IRGraphNode;
   fn index(&self, index: IRGraphId) -> &Self::Output {
-    &self.graph[index.graph_id()]
+    &self.graph[index.usize()]
   }
 }
 
 impl<'funct> std::ops::IndexMut<IRGraphId> for OptimizerContext<'funct> {
   fn index_mut(&mut self, index: IRGraphId) -> &mut Self::Output {
-    &mut self.graph[index.graph_id()]
+    &mut self.graph[index.usize()]
   }
 }
 
@@ -130,10 +130,7 @@ impl Debug for BlockAnnotation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.is_loop_head {
       f.write_str("  LOOP_HEAD\n")?;
-      f.write_fmt(format_args!(
-        "  loop_components: {} \n",
-        self.loop_components.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
-      ))?;
+      f.write_fmt(format_args!("  loop_components: {} \n", self.loop_components.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")))?;
     }
 
     f.write_fmt(format_args!("  dominators: {} \n", self.dominators.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")))?;
@@ -142,10 +139,7 @@ impl Debug for BlockAnnotation {
 
     f.write_fmt(format_args!("  successors: {} \n", self.successors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")))?;
 
-    f.write_fmt(format_args!(
-      "  direct predecessors: {} \n",
-      self.direct_predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
-    ))?;
+    f.write_fmt(format_args!("  direct predecessors: {} \n", self.direct_predecessors.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")))?;
 
     f.write_fmt(format_args!("\n  ins: {}", self.ins.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(" ")))?;
 

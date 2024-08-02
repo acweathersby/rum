@@ -57,6 +57,7 @@ impl<'f, 'ts> IRBuilder<'f, 'ts> {
 #[derive(Debug)]
 pub struct InternalVData {
   pub var_index:         usize,
+  pub var_id:            VarId,
   pub block_index:       BlockId,
   pub offset:            u64,
   pub name:              IString,
@@ -87,6 +88,7 @@ impl Display for InternalVData {
 pub struct ExternalVData {
   internal_var_index:    usize,
   pub var_index:         usize,
+  pub id:                VarId,
   pub block_index:       BlockId,
   pub is_member_pointer: bool,
   pub name:              IString,
@@ -99,7 +101,8 @@ pub struct ExternalVData {
 impl From<&InternalVData> for ExternalVData {
   fn from(value: &InternalVData) -> Self {
     ExternalVData {
-      var_index:          value.decl.graph_id(),
+      var_index:          value.decl.usize(),
+      id:                 value.var_id,
       block_index:        value.block_index,
       internal_var_index: value.var_index,
       is_member_pointer:  value.is_member_pointer,
@@ -147,7 +150,7 @@ impl From<&ComplexType> for SMT {
 
 impl<'a, 'ts> IRBuilder<'a, 'ts> {
   pub fn get_node_type(&self, node_id: IRGraphId) -> Option<Type> {
-    self.body.graph.get(node_id.graph_id()).map(|t| t.ty())
+    self.body.graph.get(node_id.usize()).map(|t| t.ty())
   }
 
   pub fn get_type(&self, type_name: IString) -> Option<&'ts ComplexType> {
@@ -156,7 +159,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
 
   pub fn rename_var(&mut self, var_id: IRGraphId, name: IString) {
     let active_scope = self.get_active_var_scope();
-    match &mut self.body.graph[var_id.graph_id()] {
+    match &mut self.body.graph[var_id.usize()] {
       IRGraphNode::VAR { name: v_name, var_id, var_index, .. } => {
         self.variables[*var_index].name = name;
         *v_name = name;
@@ -180,6 +183,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
     let var_index = self.variables.len();
     let graph_id = IRGraphId::new(self.body.graph.len());
     let var = InternalVData {
+      var_id: VarId::new(graph_id.0),
       offset: 0,
       var_index,
       block_index: self.active_block_id,
@@ -241,6 +245,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
                 let _ = entry;
 
                 let var = InternalVData {
+                  var_id: VarId::new(graph_id.0),
                   var_index,
                   block_index: self.active_block_id,
                   name,
@@ -278,7 +283,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
   }
 
   pub fn get_top_type(&mut self) -> Option<Type> {
-    self.get_top_id().map(|s| self.body.graph[s.graph_id()].ty())
+    self.get_top_id().map(|s| self.body.graph[s.usize()].ty())
   }
 
   pub fn get_top_id(&mut self) -> Option<IRGraphId> {
@@ -307,7 +312,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
   }
 
   pub fn push_node(&mut self, val: IRGraphId) {
-    debug_assert!(val.graph_id() < self.body.graph.len());
+    debug_assert!(val.usize() < self.body.graph.len());
     self.ssa_stack.push(val);
   }
 
@@ -331,7 +336,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
     self.ssa_stack.push(id);
   }
 
-  pub fn push_ssa(&mut self, op: IROp, ty: SMT, operands: &[SMO], var_id: usize) {
+  pub fn push_ssa(&mut self, op: IROp, ty: SMT, operands: &[SMO], var_id: VarId) {
     let operands = match (operands.get(0), operands.get(1)) {
       (Some(op1), Some(op2)) => {
         let (b, a) = (self.get_operand(*op2), self.get_operand(*op1));
@@ -347,10 +352,10 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
 
     let node = IRGraphNode::SSA {
       op,
-      var_id: if var_id != usize::MAX { VarId::new(var_id as u32) } else { VarId::default() },
+      var_id,
       block_id: self.active_block_id,
       result_ty: match ty {
-        SMT::Inherit => graph[operands[0].graph_id()].ty(),
+        SMT::Inherit => graph[operands[0].usize()].ty(),
         SMT::Type(ty) => ty,
         SMT::Undef => PrimitiveType::Undefined.into(),
       },
@@ -360,7 +365,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
     graph.push(node);
     self.ssa_stack.push(id);
 
-    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR) && var_id != usize::MAX {
+    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR) && var_id.is_valid() {
       if let IRGraphNode::VAR { var_index, .. } = self.body.graph[var_id] {
         self.variables[var_index].store = id;
       } else {
@@ -531,13 +536,13 @@ fn stores() {
 
   sm.push_variable("test".to_token(), ty.into());
 
-  let var_id = IRGraphId::new(0);
-  assert_eq!(sm.variables[0].store, var_id);
+  let var_id = VarId::new(0);
+  assert_eq!(sm.variables[0].var_id, var_id);
 
-  sm.push_ssa(IROp::STORE, ty.into(), &[], var_id.graph_id());
+  sm.push_ssa(IROp::STORE, ty.into(), &[], var_id);
   assert_eq!(sm.variables[0].store, IRGraphId::new(1));
 
-  sm.push_ssa(IROp::MEM_STORE, ty.into(), &[], var_id.graph_id());
+  sm.push_ssa(IROp::MEM_STORE, ty.into(), &[], var_id);
   assert_eq!(sm.variables[0].store, IRGraphId::new(2));
 
   dbg!(sm);

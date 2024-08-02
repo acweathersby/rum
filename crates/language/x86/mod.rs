@@ -18,11 +18,10 @@
 //!
 //! - Window:
 
-//pub(crate) mod x86_compiler;
-//pub use x86_compiler::compile_from_ssa_fn;
-
-//pub(crate) mod x86_encoder;
-//pub(crate) mod x86_instructions;
+pub(crate) mod x86_compiler;
+pub use x86_compiler::compile_from_ssa_fn;
+pub(crate) mod x86_encoder;
+pub(crate) mod x86_instructions;
 pub(crate) mod x86_types;
 
 #[inline]
@@ -64,7 +63,7 @@ fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {
   for instruction in decoder {
     let mut output = String::default();
     formatter.format(&instruction, &mut output);
-    print!("{:016} ", instruction.ip());
+    print!("{:8X} ", instruction.ip());
     println!(" {}", output);
 
     offset = instruction.ip() + instruction.len() as u64
@@ -82,6 +81,7 @@ fn print_instruction(binary: &[u8]) -> String {
   formatter.options_mut().set_digit_separator("_");
   formatter.options_mut().set_number_base(iced_x86::NumberBase::Decimal);
   formatter.options_mut().set_add_leading_zero_to_hex_numbers(true);
+  formatter.options_mut().set_leading_zeros(true);
   formatter.options_mut().set_first_operand_char_index(2);
   formatter.options_mut().set_always_show_scale(true);
   formatter.options_mut().set_rip_relative_addresses(true);

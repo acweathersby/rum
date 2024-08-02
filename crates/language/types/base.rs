@@ -179,12 +179,7 @@ impl Display for Type {
 fn test_type() {
   assert_eq!(format!("{}", Type::from(PrimitiveType::f64).as_pointer()), "*f64");
 
-  let strct = StructType {
-    name:      "test".intern(),
-    members:   Default::default(),
-    size:      0,
-    alignment: 0,
-  };
+  let strct = StructType { name: "test".intern(), members: Default::default(), size: 0, alignment: 0 };
   let cplx = ComplexType::Struct(strct);
 
   assert_eq!(format!("{}", Type::from(&cplx).as_pointer()), "*f64");

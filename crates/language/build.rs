@@ -38,15 +38,7 @@ fn build_rum_script(grammar_root_dir: &Path, out_dir: &Path) -> std::process::Ch
   if radlr.get_program().is_empty() {
     panic!("Could not find radlr executable, is this in PATH?");
   }
-  radlr.args([
-    "build",
-    "-o",
-    out_dir.as_os_str().to_str().unwrap(),
-    "-n",
-    "rum_script",
-    "-a",
-    grammar_root_dir.join(RAW_SCRIPT_ROOT).as_os_str().to_str().unwrap(),
-  ]);
+  radlr.args(["build", "-o", out_dir.as_os_str().to_str().unwrap(), "-n", "rum_script", "-a", grammar_root_dir.join(RAW_SCRIPT_ROOT).as_os_str().to_str().unwrap()]);
 
   radlr.spawn().expect("Could not spawn rum_script build job")
 }

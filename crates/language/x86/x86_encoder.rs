@@ -47,35 +47,20 @@ pub(super) fn encode_unary<'bin>(
   encode(binary, table, bit_size, op1, Arg::None, Arg::None)
 }
 
-pub(super) fn test_enc_uno<'bin>(
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-  op1: Arg,
-) -> String {
+pub(super) fn test_enc_uno<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg) -> String {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, Arg::None, Arg::None);
   print_instruction(&bin)
 }
 
-pub(super) fn test_enc_dos<'bin>(
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-  op1: Arg,
-  op2: Arg,
-) -> String {
+pub(super) fn test_enc_dos<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg) -> String {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, op2, Arg::None);
   //println!("{:02X?}", &bin);
   print_instruction(&bin)
 }
 
-pub(super) fn test_enc_tres<'bin>(
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-  op1: Arg,
-  op2: Arg,
-  op3: Arg,
-) -> String {
+pub(super) fn test_enc_tres<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg, op3: Arg) -> String {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, op2, op3);
   //println!("{:02X?}", &bin);
@@ -122,13 +107,7 @@ pub(super) fn encode<'bin>(
   );
 }
 
-pub(super) fn encoded_vec(
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-  op1: Arg,
-  op2: Arg,
-  op3: Arg,
-) -> usize {
+pub(super) fn encoded_vec(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg, op3: Arg) -> usize {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, op2, op3);
   bin.len()
@@ -189,16 +168,7 @@ pub(super) fn gen_unary_op(props: &mut InstructionProps, op_code: u32, bit_size:
   }
 }
 
-pub(super) fn gen_multi_op(
-  props: &mut InstructionProps,
-  op_code: u32,
-  bit_size: u64,
-  enc: OpEncoding,
-  op1: Arg,
-  op2: Arg,
-  op3: Arg,
-  ext: u8,
-) {
+pub(super) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, op2: Arg, op3: Arg, ext: u8) {
   use Arg::*;
   use OpEncoding::*;
 
@@ -301,7 +271,7 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
     4 => match r_m {
       Arg::Mem(RSP) | Arg::Mem(R12) => {
         // use sib index to access the RSP register
-        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.reg_id().unwrap() & 7) as u8) as u8
+        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
       }
 
       Arg::RSP_REL(val) => {
@@ -313,7 +283,7 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
 
         displace_val = val;
 
-        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.reg_id().unwrap() & 7) as u8) as u8
+        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
       }
       _ => {
         ///
@@ -421,7 +391,7 @@ pub(crate) fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: 
   }
 
   let (vvvv, V) = match op3 {
-    Arg::Reg(reg) if !op3.is_mask_register() => (!(reg.reg_id().unwrap() as u8) & 0xF, ((reg.is_upper_16_reg() as u8) ^ 0x1)),
+    Arg::Reg(reg) if !op3.is_mask_register() => (!(reg.0 as u8) & 0xF, ((reg.is_upper_16_reg() as u8) ^ 0x1)),
     _ => (0xF, 0x1),
   };
   let (vvvv, V) = (vvvv << 3, V << 3);
@@ -500,16 +470,7 @@ pub(crate) fn encode_vex(op_code: u32, op2: Arg, op1: Arg, bit_size: u64, props:
   op_code
 }
 
-pub(super) fn gen_tri_op(
-  props: &mut InstructionProps,
-  op_code: u32,
-  bit_size: u64,
-  enc: OpEncoding,
-  op1: Arg,
-  op2: Arg,
-  op3: Arg,
-  ext: u8,
-) {
+pub(super) fn gen_tri_op(props: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, op2: Arg, op3: Arg, ext: u8) {
   use Arg::*;
   use OpEncoding::*;
 

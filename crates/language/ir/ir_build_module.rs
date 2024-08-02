@@ -46,17 +46,13 @@ use crate::{
 pub use radlr_rust_runtime::types::Token;
 use rum_container::{get_aligned_value, ArrayVec};
 use rum_istring::CachedString;
-use std::collections::{hash_map, HashMap};
+use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
 
 use IROp::*;
 use SMO::*;
 use SMT::*;
 
-pub fn process_types<'a>(
-  module: &'a Vec<raw_module_Value<Token>>,
-  type_scope_index: usize,
-  type_scope: &mut TypeScopes,
-) -> Vec<&'a RawRoutine<Token>> {
+pub fn process_types<'a>(module: &'a Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeScopes) -> Vec<&'a RawRoutine<Token>> {
   let mut routines = Vec::new();
 
   for mod_member in module {
@@ -155,12 +151,7 @@ pub fn process_types<'a>(
           }
         }
 
-        let s = StructType {
-          name,
-          members,
-          alignment: min_alignment,
-          size: get_aligned_value(offset, min_alignment as u64),
-        };
+        let s = StructType { name, members, alignment: min_alignment, size: get_aligned_value(offset, min_alignment as u64) };
 
         type_scope.set(type_scope_index, name, crate::types::ComplexType::Struct(s));
       }
@@ -190,12 +181,7 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usi
 
     let body = process_function(routine, type_scope_index, &type_scope);
 
-    let ty = RoutineType {
-      name,
-      body,
-      parameters: Default::default(),
-      returns: Default::default(),
-    };
+    let ty = RoutineType { name, body, parameters: Default::default(), returns: Default::default() };
 
     type_scope.set(type_scope_index, name, crate::types::ComplexType::Procedure(ty));
   }
@@ -239,7 +225,7 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
 
 fn process_address_of(ib: &mut IRBuilder<'_, '_>, addr: &std::sync::Arc<crate::parser::script_parser::AddressOf<Token>>) {
   if let Some(var) = ib.get_variable(addr.id.id.intern()) {
-    ib.push_ssa(ADDR, var.ty.as_pointer().into(), &[SMO::IROp(var.store)], var.decl.graph_id())
+    ib.push_ssa(ADDR, var.ty.as_pointer().into(), &[SMO::IROp(var.store)], var.id)
   } else {
     panic!("Variable not found")
   }
@@ -253,13 +239,13 @@ fn process_member_load(mem: &std::sync::Arc<RawMember<Token>>, ib: &mut IRBuilde
         BaseType::Prim(prim) => {
           if prim.bitfield_offset() > 0 {
             let ty: Type = prim.mask_out_bitfield().into();
-            ib.push_ssa(MEM_LOAD, ty.into(), &[var.store.into()], var.decl.graph_id());
+            ib.push_ssa(MEM_LOAD, ty.into(), &[var.store.into()], Default::default());
           } else {
-            ib.push_ssa(MEM_LOAD, var.ty.into(), &[var.store.into()], var.decl.graph_id());
+            ib.push_ssa(MEM_LOAD, var.ty.into(), &[var.store.into()], Default::default());
           }
         }
         _ => {
-          ib.push_ssa(MEM_LOAD, var.ty.into(), &[var.store.into()], var.decl.graph_id());
+          ib.push_ssa(MEM_LOAD, var.ty.into(), &[var.store.into()], Default::default());
         }
       }
     } else if var.ty.is_pointer() {
@@ -282,49 +268,49 @@ fn process_add(add: &Add<Token>, ib: &mut IRBuilder) {
   process_expression(&(add.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(add.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
-  ib.push_ssa(ADD, Inherit, &[StackOp, StackOp], usize::MAX);
+  ib.push_ssa(ADD, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_sub(sub: &Sub<Token>, ib: &mut IRBuilder) {
   process_expression(&(sub.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sub.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
-  ib.push_ssa(SUB, Inherit, &[StackOp, StackOp], usize::MAX);
+  ib.push_ssa(SUB, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_mul(mul: &Mul<Token>, ib: &mut IRBuilder) {
   process_expression(&(mul.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(mul.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
-  ib.push_ssa(MUL, Inherit, &[StackOp, StackOp], usize::MAX);
+  ib.push_ssa(MUL, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_div(div: &Div<Token>, ib: &mut IRBuilder) {
   process_expression(&(div.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(div.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
-  ib.push_ssa(DIV, Inherit, &[StackOp, StackOp], usize::MAX);
+  ib.push_ssa(DIV, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_pow(pow: &Pow<Token>, ib: &mut IRBuilder) {
   process_expression(&(pow.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(pow.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
-  ib.push_ssa(POW, Inherit, &[StackOp, StackOp], usize::MAX);
+  ib.push_ssa(POW, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_sl(sl: &BIT_SL<Token>, ib: &mut IRBuilder) {
   process_expression(&(sl.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sl.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
-  ib.push_ssa(SHL, Inherit, &[StackOp, StackOp], usize::MAX);
+  ib.push_ssa(SHL, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_sr(sr: &BIT_SR<Token>, ib: &mut IRBuilder) {
   process_expression(&(sr.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sr.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
-  ib.push_ssa(SHR, Inherit, &[StackOp, StackOp], usize::MAX);
+  ib.push_ssa(SHR, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<ExternalVData> {
@@ -346,7 +332,7 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Extern
             if let Some(mut sub_var) = ib.get_variable_member(&var_data, sub_name) {
               ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, sub_var.offset as u32));
 
-              ib.push_ssa(PTR_MEM_CALC, sub_var.ty.as_pointer().into(), &[SMO::IROp(var_data.store), StackOp], sub_var.var_index);
+              ib.push_ssa(PTR_MEM_CALC, sub_var.ty.as_pointer().into(), &[SMO::IROp(var_data.store), StackOp], sub_var.id);
               sub_var.store = ib.pop_stack().unwrap();
 
               Some(sub_var)
@@ -417,13 +403,13 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
 
   if call_name.contains("sys_") {
     for _ in call.args.iter().map(|arg| process_expression(&arg.expr, ib)).collect::<Vec<_>>() {
-      ib.push_ssa(CALL_ARG, Inherit, &[StackOp], usize::MAX);
+      ib.push_ssa(CALL_ARG, Inherit, &[StackOp], Default::default());
       println!("TODO: match type_info with arg type");
     }
   }
 
   ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64, 1 as u64));
-  ib.push_ssa(CALL, Undef, &[StackOp], usize::MAX);
+  ib.push_ssa(CALL, Undef, &[StackOp], Default::default());
   ib.pop_stack();
 }
 
@@ -441,7 +427,7 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
       name:  IString,
     }
 
-    let mut value_maps = HashMap::<u64, StructEntry>::new();
+    let mut value_maps = BTreeMap::<u64, StructEntry>::new();
 
     //var_ctx.set_variable(struct_type_name, s_type, struct_id,
     // struct_id.graph_id());
@@ -476,18 +462,18 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
           remap_primitive_type(*bf_type.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
 
           ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_offset as u32));
-          ib.push_ssa(SHL, bf_type.into(), &[StackOp, StackOp], usize::MAX);
+          ib.push_ssa(SHL, bf_type.into(), &[StackOp, StackOp], Default::default());
 
           ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_mask as u32));
-          ib.push_ssa(AND, bf_type.into(), &[StackOp, StackOp], usize::MAX);
+          ib.push_ssa(AND, bf_type.into(), &[StackOp, StackOp], Default::default());
 
           match value_maps.entry(member.offset) {
-            hash_map::Entry::Occupied(mut entry) => {
+            btree_map::Entry::Occupied(mut entry) => {
               let val = entry.get_mut().value;
-              ib.push_ssa(OR, bf_type.into(), &[val.into(), StackOp], usize::MAX);
+              ib.push_ssa(OR, bf_type.into(), &[val.into(), StackOp], Default::default());
               entry.get_mut().value = ib.pop_stack().unwrap();
             }
-            hash_map::Entry::Vacant(val) => {
+            btree_map::Entry::Vacant(val) => {
               val.insert(StructEntry { ty: bf_type, value: ib.pop_stack().unwrap(), name: member_name });
             }
           }
@@ -506,16 +492,16 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
       }
     }
 
-    ib.push_ssa(ADDR, s_type.as_pointer().into(), &[struct_var.store.into()], struct_var.var_index);
+    ib.push_ssa(ADDR, s_type.as_pointer().into(), &[struct_var.store.into()], struct_var.id);
     let ptr_id = ib.pop_stack().unwrap();
 
     for (offset, StructEntry { ty, value, name }) in value_maps {
       if let Some(var) = ib.get_variable_member(&struct_var, name) {
         ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, offset as u32));
 
-        ib.push_ssa(PTR_MEM_CALC, ty.as_pointer().into(), &[ptr_id.into(), StackOp], var.var_index);
+        ib.push_ssa(PTR_MEM_CALC, ty.as_pointer().into(), &[ptr_id.into(), StackOp], var.id);
 
-        ib.push_ssa(MEM_STORE, Inherit, &[StackOp, value.into()], var.var_index);
+        ib.push_ssa(MEM_STORE, Inherit, &[StackOp, value.into()], var.id);
 
         ib.pop_stack();
       } else {
@@ -600,7 +586,7 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_, '_>) {
               _ => unreachable!(),
             };
 
-            ib.push_ssa(op, Inherit, &[expr_id.into(), StackOp], usize::MAX);
+            ib.push_ssa(op, Inherit, &[expr_id.into(), StackOp], Default::default());
             ib.pop_stack();
           }
           _ => todo!(),
@@ -688,33 +674,33 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
 
                   // Offset variable
                   ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_offset as u32));
-                  ib.push_ssa(SHL, var_data.ty.into(), &[StackOp, StackOp], usize::MAX);
+                  ib.push_ssa(SHL, var_data.ty.into(), &[StackOp, StackOp], Default::default());
 
                   // Mask out unwanted bits
                   ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_mask as u32));
-                  ib.push_ssa(AND, Inherit, &[StackOp, StackOp], usize::MAX);
+                  ib.push_ssa(AND, Inherit, &[StackOp, StackOp], Default::default());
 
                   // Load the base value from the structure and mask out target bitfield
                   ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, !bit_mask as u32));
-                  ib.push_ssa(MEM_LOAD, var_data.ty.into(), &[var_data.store.into()], var_data.var_index);
-                  ib.push_ssa(AND, var_data.ty.into(), &[StackOp, StackOp], var_data.var_index);
+                  ib.push_ssa(MEM_LOAD, var_data.ty.into(), &[var_data.store.into()], var_data.id);
+                  ib.push_ssa(AND, var_data.ty.into(), &[StackOp, StackOp], var_data.id);
 
                   // Combine the original value and the new bitfield value.
-                  ib.push_ssa(OR, var_data.ty.into(), &[StackOp, StackOp], var_data.var_index);
+                  ib.push_ssa(OR, var_data.ty.into(), &[StackOp, StackOp], var_data.id);
 
                   // Store value back in the structure.
-                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.var_index);
+                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.id);
                   ib.pop_stack();
                 } else {
                   remap_primitive_type(*var_data.ty.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
-                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.var_index);
+                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.id);
                   ib.pop_stack();
                 }
               }
               _ => unreachable!(),
             }
           } else {
-            ib.push_ssa(STORE, var_data.ty.into(), &[var_data.decl.into(), expr_id.into()], var_data.var_index);
+            ib.push_ssa(STORE, var_data.ty.into(), &[var_data.decl.into(), expr_id.into()], var_data.id);
             ib.pop_stack();
           }
         } else if var_assign.var.members.len() == 1 {
@@ -730,7 +716,7 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
               let var = ib.push_variable(var_name, expr_ty);
               ib.pop_stack();
 
-              ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.var_index);
+              ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.id);
               ib.pop_stack();
             }
           }
@@ -757,7 +743,7 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
                   let var = ib.push_variable(var_name, expr_ty);
                   ib.pop_stack();
 
-                  ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.var_index);
+                  ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.id);
                   ib.pop_stack();
                 }
                 _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
@@ -766,7 +752,7 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
               let var = ib.push_variable(var_name, expr_ty);
               ib.pop_stack();
 
-              ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.var_index);
+              ib.push_ssa(STORE, var.ty.into(), &[var.decl.into(), expr_id.into()], var.id);
               ib.pop_stack();
             }
           }
