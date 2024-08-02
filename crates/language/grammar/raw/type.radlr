@@ -8,6 +8,8 @@ IMPORT ../common/primitive as prim
 
   | named_type
 
+  | reference_type
+
   | void_type
 
   | flag_type
@@ -27,6 +29,8 @@ IMPORT ../common/primitive as prim
   | "*" named_type :ast { t_Type_Pointer, base_type:$2 }
 
 <> named_type > prim::var^name :ast { t_NamedType, name }
+
+<> reference_type > "&" prim::var^name :ast { t_ReferenceType, name }
 
 <> primitive_type
   > primitive_uint

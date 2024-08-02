@@ -7,7 +7,7 @@ use std::fmt::{Debug, Display};
 #[derive(Debug)]
 pub enum ComplexType {
   Struct(StructType),
-  Procedure(RoutineType),
+  Routine(RoutineType),
   Union(UnionType),
   Enum(EnumType),
   BitField(BitFieldType),
@@ -18,7 +18,7 @@ impl std::fmt::Display for ComplexType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       Self::Struct(s) => f.write_fmt(format_args!("struct {}", s.name.to_str().as_str())),
-      Self::Procedure(s) => f.write_fmt(format_args!("{}(..)", s.name.to_str().as_str())),
+      Self::Routine(s) => f.write_fmt(format_args!("{}(..)", s.name.to_str().as_str())),
       Self::Union(s) => f.write_fmt(format_args!("union {}", s.name.to_str().as_str())),
       Self::Enum(s) => f.write_fmt(format_args!("enum {}", s.name.to_str().as_str())),
       Self::BitField(s) => f.write_fmt(format_args!("bf {}", s.name.to_str().as_str())),

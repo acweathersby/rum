@@ -4,7 +4,7 @@ use crate::{
     ir_build_module::process_types,
     ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   },
-  types::{ComplexType, ConstVal, PrimitiveType, RoutineBody, Type, TypeScopes},
+  types::{ComplexType, ConstVal, PrimitiveType, RoutineBody, Type, TypeContext},
 };
 pub use radlr_rust_runtime::types::Token;
 use rum_istring::{CachedString, IString};
@@ -28,12 +28,12 @@ pub struct IRBuilder<'a, 'ts> {
   pub variables:          Vec<InternalVData>,
   pub variable_scopes:    Vec<VecDeque<usize>>,
   pub unused_scope:       Vec<usize>,
-  pub type_scopes:        &'ts TypeScopes,
+  pub type_scopes:        &'ts TypeContext,
   pub type_context_index: usize,
 }
 
 impl<'f, 'ts> IRBuilder<'f, 'ts> {
-  pub fn new(body: &'f mut RoutineBody, type_ctx_index: usize, type_context: &'ts TypeScopes) -> Self {
+  pub fn new(body: &'f mut RoutineBody, type_ctx_index: usize, type_context: &'ts TypeContext) -> Self {
     let mut state_machine = Self {
       ssa_stack: Default::default(),
       body,
@@ -56,11 +56,12 @@ impl<'f, 'ts> IRBuilder<'f, 'ts> {
 
 #[derive(Debug)]
 pub struct InternalVData {
+  pub name:              IString,
   pub var_index:         usize,
   pub var_id:            VarId,
+  pub par_id:            VarId,
   pub block_index:       BlockId,
   pub offset:            u64,
-  pub name:              IString,
   pub ty:                Type,
   pub store:             IRGraphId,
   pub decl:              IRGraphId,
@@ -186,6 +187,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
       var_id: VarId::new(graph_id.0),
       offset: 0,
       var_index,
+      par_id: Default::default(),
       block_index: self.active_block_id,
       name,
       ty,
@@ -220,23 +222,23 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
     None
   }
 
-  pub fn get_variable_member(&mut self, var: &ExternalVData, sub_member_name: IString) -> Option<ExternalVData> {
+  pub fn get_variable_member(&mut self, par: &ExternalVData, sub_member_name: IString) -> Option<ExternalVData> {
     let var_index = self.variables.len();
-    let var = &mut self.variables[var.internal_var_index];
+    let par = &mut self.variables[par.internal_var_index];
 
-    match var.ty.base_type() {
+    match par.ty.base_type() {
       crate::types::BaseType::Prim(_) => None,
       crate::types::BaseType::Complex(cplx) => match cplx {
         ComplexType::Struct(strct) => {
           if let Some(ty) = strct.members.iter().find(|m| m.name == sub_member_name) {
-            match var.sub_members.entry(sub_member_name) {
+            match par.sub_members.entry(sub_member_name) {
               std::collections::hash_map::Entry::Occupied(entry) => {
                 let id = *entry.get();
                 Some((&self.variables[id]).into())
               }
               std::collections::hash_map::Entry::Vacant(entry) => {
                 let graph_id = IRGraphId::new(self.body.graph.len());
-                let name = (var.name.to_string() + "." + sub_member_name.to_str().as_str()).intern();
+                let name = (par.name.to_string() + "." + sub_member_name.to_str().as_str()).intern();
                 let offset = ty.offset;
                 let ty = ty.ty;
 
@@ -250,6 +252,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
                   block_index: self.active_block_id,
                   name,
                   ty,
+                  par_id: par.var_id,
                   store: graph_id,
                   decl: graph_id,
                   sub_members: Default::default(),
@@ -365,7 +368,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
     graph.push(node);
     self.ssa_stack.push(id);
 
-    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR) && var_id.is_valid() {
+    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR | IROp::PARAM_VAL) && var_id.is_valid() {
       if let IRGraphNode::VAR { var_index, .. } = self.body.graph[var_id] {
         self.variables[var_index].store = id;
       } else {
@@ -474,7 +477,7 @@ impl<'a, 'ts> IRBuilder<'a, 'ts> {
 
 #[test]
 fn variable_contexts() {
-  let mut type_scope = TypeScopes::new();
+  let mut type_scope = TypeContext::new();
 
   process_types(
     &crate::parser::script_parser::parse_raw_module(
@@ -513,7 +516,7 @@ Temp => [
 
 #[test]
 fn stores() {
-  let mut type_scope = TypeScopes::new();
+  let mut type_scope = TypeContext::new();
 
   process_types(
     &crate::parser::script_parser::parse_raw_module(
@@ -550,7 +553,7 @@ fn stores() {
 
 #[test]
 fn blocks() {
-  let mut type_scope = TypeScopes::new();
+  let mut type_scope = TypeContext::new();
 
   process_types(
     &crate::parser::script_parser::parse_raw_module(

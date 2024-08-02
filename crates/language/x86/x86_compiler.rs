@@ -336,7 +336,10 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         let [op1, op2] = operands;
         let CompileContext { routine: ctx, binary: bin, .. } = ctx;
 
+        debug_assert!(regs[0].is_valid());
         let dest_reg = regs[0].as_reg_op();
+
+        debug_assert!(regs[1].is_valid());
         let base_reg = regs[1].as_reg_op();
 
         let offset_is_const = ctx.graph[op2].is_const();
@@ -383,6 +386,9 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         let bit_size = out_ty.bit_size();
 
         encode(bin, &mov, bit_size, dst_reg, src_ptr, None);
+      }
+      IROp::PARAM_VAL => {
+        println!("Val set to {:?}", regs[0].as_reg_op());
       }
       /*
 

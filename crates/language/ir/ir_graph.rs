@@ -181,6 +181,8 @@ pub enum IROp {
   ZERO,
   /// Copies data from one type pointer to another type pointer.
   COPY,
+  /// Maps a registerable parameter
+  PARAM_VAL,
   CALL,
   CALL_ARG,
   CALL_RET,

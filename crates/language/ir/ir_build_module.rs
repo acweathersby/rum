@@ -40,19 +40,19 @@ use crate::{
     BIT_SL,
     BIT_SR,
   },
-  types::{BaseType, ComplexType, ConstVal, PrimitiveType, RoutineBody, RoutineType, StructMemberType, StructType, Type, TypeScopes},
+  types::{BaseType, ComplexType, ConstVal, PrimitiveType, RoutineBody, RoutineType, StructMemberType, StructType, Type, TypeContext},
   IString,
 };
 pub use radlr_rust_runtime::types::Token;
 use rum_container::{get_aligned_value, ArrayVec};
 use rum_istring::CachedString;
-use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
+use std::collections::{btree_map, BTreeMap};
 
 use IROp::*;
 use SMO::*;
 use SMT::*;
 
-pub fn process_types<'a>(module: &'a Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeScopes) -> Vec<&'a RawRoutine<Token>> {
+pub fn process_types<'a>(module: &'a Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeContext) -> Vec<&'a RawRoutine<Token>> {
   let mut routines = Vec::new();
 
   for mod_member in module {
@@ -162,46 +162,55 @@ pub fn process_types<'a>(module: &'a Vec<raw_module_Value<Token>>, type_scope_in
   routines
 }
 
-pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeScopes) -> () {
-  let mut routines = process_types(module, type_scope_index, type_scope);
+pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeContext) {
+  let routines = process_types(module, type_scope_index, type_scope);
   //let mut types = Vec::new();
 
   for routine in &routines {
     // Gather function type information.
-
-    let name = routine.name.id.intern();
-
-    let none = type_Value::None;
-
-    let (params, ret) = match &routine.ty {
-      routine_type_Value::RawFunctionType(fn_ty) => (&fn_ty.params, &fn_ty.return_type),
-      routine_type_Value::RawProcedureType(proc_ty) => (&proc_ty.params, &none),
-      _ => unreachable!(),
-    };
-
-    let body = process_function(routine, type_scope_index, &type_scope);
-
-    let ty = RoutineType { name, body, parameters: Default::default(), returns: Default::default() };
-
-    type_scope.set(type_scope_index, name, crate::types::ComplexType::Procedure(ty));
+    process_function(routine, type_scope_index, type_scope);
   }
-
-  ()
 }
 
-fn process_function(function: &RawRoutine<Token>, type_ctx_index: usize, type_context: &TypeScopes) -> RoutineBody {
-  // Ensure the return type is present in our type context.
-  println!("TODO: Ensure the return type is present in our type context");
+fn process_function(routine: &RawRoutine<Token>, type_scope_index: usize, type_scope: &mut TypeContext) {
+  let name = routine.name.id.intern();
 
-  let mut pb = RoutineBody { graph: Default::default(), blocks: Default::default() };
+  let none = type_Value::None;
 
-  let mut ir_builder = IRBuilder::new(&mut pb, type_ctx_index, type_context);
+  let (params, ret) = match &routine.ty {
+    routine_type_Value::RawFunctionType(fn_ty) => (fn_ty.params.as_ref(), &fn_ty.return_type),
+    routine_type_Value::RawProcedureType(proc_ty) => (proc_ty.params.as_ref(), &none),
+    _ => unreachable!(),
+  };
 
-  process_expression(&function.expression.expr, &mut ir_builder);
+  let mut body = RoutineBody { graph: Default::default(), blocks: Default::default() };
+  let mut ir_builder = IRBuilder::new(&mut body, type_scope_index, type_scope);
+
+  for param in &params.params {
+    let name = param.var.id.intern();
+    if let Some(ty) = get_type(&param.ty, type_scope_index, type_scope) {
+      let var = ir_builder.push_variable(name, ty);
+      ir_builder.push_ssa(PARAM_VAL, var.ty.into(), &[var.store.into()], var.id);
+    } else {
+      panic!("Could not find param type {}", name.to_str().as_str())
+    }
+  }
+
+  process_expression(&routine.expression.expr, &mut ir_builder);
 
   dbg!(ir_builder);
 
-  pb
+  let returns = match ret {
+    type_Value::None => vec![],
+    ty => {
+      let return_type = get_type(ty, type_scope_index, type_scope);
+      vec![return_type.unwrap()]
+    }
+  };
+
+  let ty = RoutineType { name, body, parameters: Default::default(), returns };
+
+  type_scope.set(type_scope_index, name, crate::types::ComplexType::Routine(ty));
 }
 
 fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
@@ -359,38 +368,6 @@ fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
   });
 }
 
-pub fn remap_primitive_type(desired_type: PrimitiveType, node_id: IRGraphId, sm: &mut IRBuilder) {
-  // Add some rules to say whether the type can be coerced or converted into the
-  // desired type.
-
-  if node_id.is_invalid() {
-    return;
-  }
-
-  return;
-  match &mut sm.body.graph[node_id] {
-    IRGraphNode::Const { val } => {
-      *val = val.convert(desired_type);
-    }
-    IRGraphNode::SSA { op, block_id, result_ty: out_ty, operands, .. } => {
-      if out_ty.is_primitive() {
-        if out_ty.is_pointer() {
-        } else {
-          *out_ty = desired_type.into();
-          let operands = *operands;
-
-          remap_primitive_type(desired_type, operands[0], sm);
-
-          remap_primitive_type(desired_type, operands[1], sm);
-        }
-      } else if *out_ty != desired_type.into() {
-        panic!("Can't convert type \n ",);
-      }
-    }
-    _ => {}
-  }
-}
-
 enum InitResult {
   /// A set of MEM_STORE or MPTR_CAL nodes that need to have their base ptr
   /// variable set.
@@ -440,7 +417,7 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
 
         if Some(member.ty) != ib.get_top_type() {
           if member.ty.is_primitive() {
-            remap_primitive_type(*member.ty.as_prim().unwrap(), ib.get_top_id().unwrap(), ib)
+            //
           } else {
             todo!("Handle non-primitive struct member");
           }
@@ -458,8 +435,6 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
           // bitfield initializers must be combined into one value and then
           // submitted at the end of this section. So we make or retrieve the
           // temporary variable for this field.
-
-          remap_primitive_type(*bf_type.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
 
           ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_offset as u32));
           ib.push_ssa(SHL, bf_type.into(), &[StackOp, StackOp], Default::default());
@@ -670,8 +645,6 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
                   // submitted at the end of this section. So we make or retrieve the
                   // temporary variable for this field.
 
-                  remap_primitive_type(*bf_type.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
-
                   // Offset variable
                   ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_offset as u32));
                   ib.push_ssa(SHL, var_data.ty.into(), &[StackOp, StackOp], Default::default());
@@ -692,8 +665,8 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
                   ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.id);
                   ib.pop_stack();
                 } else {
-                  remap_primitive_type(*var_data.ty.as_prim().unwrap(), ib.get_top_id().unwrap(), ib);
-                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), StackOp], var_data.id);
+                  dbg!(&ib);
+                  ib.push_ssa(MEM_STORE, var_data.ty.into(), &[var_data.store.into(), expr_id.into()], var_data.id);
                   ib.pop_stack();
                 }
               }
@@ -738,8 +711,6 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
             if expected_ty != expr_ty {
               match (expected_ty.base_type(), expr_ty.base_type()) {
                 (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
-                  remap_primitive_type(prim_ty, expr_id.into(), ib);
-
                   let var = ib.push_variable(var_name, expr_ty);
                   ib.pop_stack();
 
@@ -769,7 +740,7 @@ pub fn get_type_from_sm(ir_type: &type_Value<Token>, ib: &mut IRBuilder) -> Opti
   get_type(ir_type, ib.type_context_index, ib.type_scopes)
 }
 
-pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &TypeScopes) -> Option<crate::types::Type> {
+pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &TypeContext) -> Option<crate::types::Type> {
   match ir_type {
     type_Value::Type_Flag(_) => Some((PrimitiveType::Flag | PrimitiveType::b1).into()),
     type_Value::Type_u8(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b8).into()),
@@ -780,6 +751,15 @@ pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &
     type_Value::Type_i16(_) => Some((PrimitiveType::Signed | PrimitiveType::b16).into()),
     type_Value::Type_i32(_) => Some((PrimitiveType::Signed | PrimitiveType::b32).into()),
     type_Value::Type_i64(_) => Some((PrimitiveType::Signed | PrimitiveType::b64).into()),
+    type_Value::ReferenceType(name) => {
+      let type_name = name.name.id.intern();
+      if let Some(ty) = type_context.get(scope_index, name.name.id.intern()) {
+        let t: Type = ty.into();
+        Some(t.as_pointer())
+      } else {
+        panic!("{type_name:?} not found")
+      }
+    }
     type_Value::NamedType(name) => {
       let type_name = name.name.id.intern();
       if let Some(ty) = type_context.get(scope_index, name.name.id.intern()) {

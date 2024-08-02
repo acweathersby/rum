@@ -2,7 +2,7 @@ use super::build_module;
 
 #[test]
 fn test() {
-  let mut scope = crate::types::TypeScopes::new();
+  let mut scope = crate::types::TypeContext::new();
   build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"

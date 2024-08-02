@@ -23,12 +23,12 @@ pub enum VariableEntry {
 }
 
 #[derive(Debug)]
-pub struct TypeScopes {
+pub struct TypeContext {
   scopes:        Vec<TypeScopeEntry>,
   current_index: usize,
 }
 
-impl TypeScopes {
+impl TypeContext {
   pub fn new() -> Self {
     Self {
       scopes:        vec![TypeScopeEntry { entries: Default::default(), parent_index: None }],
@@ -79,13 +79,13 @@ struct TypeScopeEntry {
 
 struct VarScope<'v_scope> {
   t_scope_index: usize,
-  type_scope:    *mut TypeScopes,
+  type_scope:    *mut TypeContext,
   parent:        Option<&'v_scope mut VarScope<'v_scope>>,
   variables:     HashMap<IString, VariableEntry>,
 }
 
 impl<'v_scope> VarScope<'v_scope> {
-  pub fn new(type_scope: &mut TypeScopes, scope_index: usize) -> Self {
+  pub fn new(type_scope: &mut TypeContext, scope_index: usize) -> Self {
     Self {
       t_scope_index: scope_index,
       type_scope:    type_scope,
@@ -122,14 +122,14 @@ impl<'v_scope> VarScope<'v_scope> {
     t_scope.scopes[self.t_scope_index].entries.insert(name, Box::new(ty));
   }
 
-  fn ts(&self) -> &mut TypeScopes {
+  fn ts(&self) -> &mut TypeContext {
     unsafe { &mut *self.type_scope }
   }
 }
 
 #[test]
 fn test_type_scope() {
-  let mut t_scope = TypeScopes::new();
+  let mut t_scope = TypeContext::new();
 
   t_scope.set(t_scope.current_index, "test".to_token(), ComplexType::Struct(StructType { name: "test".intern(), members: Default::default(), size: 0, alignment: 0 }));
 
@@ -138,7 +138,7 @@ fn test_type_scope() {
 
 #[test]
 fn test_variable_scope() {
-  let mut t_scope = TypeScopes::new();
+  let mut t_scope = TypeContext::new();
   let mut v_scope = VarScope::new(&mut t_scope, 0);
 
   let mut c_v_scope = v_scope.create_child_scope();

@@ -19,6 +19,20 @@ pub struct StructMemberType {
   pub offset:         u64,
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CallConvention {
+  Rum,
+  C,
+  System,
+}
+
+pub struct ExternalRoutineType {
+  pub name:               IString,
+  pub parameters:         Vec<Type>,
+  pub returns:            Vec<Type>,
+  pub calling_convention: CallConvention,
+}
+
 pub struct RoutineType {
   pub name:       IString,
   pub parameters: Vec<Type>,
