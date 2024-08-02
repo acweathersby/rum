@@ -1,7 +1,7 @@
 use_small_heuristics = "Max"
 
 # Line Widths
-max_width = 140
+max_width = 180
 
 enum_discrim_align_threshold = 20
 struct_field_align_threshold = 20
@@ -32,6 +32,6 @@ overflow_delimited_expr = true
 
 reorder_impl_items = false
 
-struct_lit_width = 70
+struct_lit_width = 100
 
 

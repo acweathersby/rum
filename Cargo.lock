@@ -92,91 +92,13 @@ name = "radlr_rust_runtime"
 version = "1.0.1-beta1"
 
 [[package]]
-name = "rum_allocator"
-version = "0.0.0"
-dependencies = [
- "num-traits",
- "rum_container",
- "rum_profile",
-]
-
-[[package]]
-name = "rum_buffer"
-version = "0.0.0"
-
-[[package]]
-name = "rum_cli"
-version = "0.0.0"
-dependencies = [
- "rum_lang",
-]
-
-[[package]]
-name = "rum_concurrent"
-version = "0.0.0"
-dependencies = [
- "rum_logger",
-]
-
-[[package]]
-name = "rum_container"
-version = "0.0.0"
-dependencies = [
- "rum_math",
-]
-
-[[package]]
-name = "rum_hash"
-version = "0.0.0"
-
-[[package]]
-name = "rum_istring"
-version = "0.0.0"
-dependencies = [
- "once_cell",
- "rum_hash",
-]
-
-[[package]]
 name = "rum_lang"
 version = "0.0.0"
 dependencies = [
  "iced-x86",
  "libc",
  "num-traits",
+ "once_cell",
  "radlr_build",
  "radlr_rust_runtime",
- "rum_container",
- "rum_hash",
- "rum_istring",
- "rum_logger",
- "rum_profile",
 ]
-
-[[package]]
-name = "rum_logger"
-version = "0.0.0"
-
-[[package]]
-name = "rum_math"
-version = "0.0.0"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "rum_profile"
-version = "0.0.0"
-dependencies = [
- "libc",
- "rum_logger",
- "rum_profile_macro",
-]
-
-[[package]]
-name = "rum_profile_macro"
-version = "0.0.0"
-
-[[package]]
-name = "rum_window"
-version = "0.0.0"
