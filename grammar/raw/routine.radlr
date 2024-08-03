@@ -29,6 +29,6 @@ IMPORT ../common/comment as cmt
 
 <> param_binding 
   
-  > prim::var^var ":" ty::type^ty
+  > prim::var^var ":" ty::type^ty "?"?^inferred
 
-    :ast { t_RawParamBinding, var, ty, tok }
+    :ast { t_RawParamBinding, var, ty, inferred: bool($inferred), tok }

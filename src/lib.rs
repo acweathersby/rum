@@ -1,5 +1,7 @@
 #![feature(unsized_tuple_coercion)]
 #![feature(allocator_api)]
+#![feature(box_patterns)]
+
 pub mod bitfield;
 pub mod container;
 pub mod error;

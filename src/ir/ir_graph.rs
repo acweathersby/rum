@@ -5,7 +5,7 @@ use crate::{
 };
 use std::fmt::{Debug, Display};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VarId(u32);
 
 impl Default for VarId {
@@ -35,6 +35,10 @@ impl VarId {
   pub fn is_valid(self) -> bool {
     self.0 != u32::MAX
   }
+
+  pub fn usize(self) -> usize {
+    self.0 as usize
+  }
 }
 
 impl Display for VarId {
@@ -47,10 +51,16 @@ impl Display for VarId {
   }
 }
 
+impl Debug for VarId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self, f)
+  }
+}
+
 #[derive(Clone, Debug)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  VAR { ty: Type, name: IString, var_index: usize, var_id: VarId },
+  VAR { ty: Type, name: IString, var_index: usize, var_id: VarId, is_param: bool },
   PHI { result_ty: Type, var_id: VarId, operands: Vec<IRGraphId> },
   SSA { block_id: BlockId, operands: [IRGraphId; 2], result_ty: Type, var_id: VarId, op: IROp },
 }
@@ -123,7 +133,13 @@ impl Display for IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val)),
-      IRGraphNode::VAR { name, ty, var_index, var_id, .. } => f.write_fmt(format_args!("VAR   {} [{:03}]{:>23} = {:?}", var_id, var_index, name.to_str().as_str(), ty,)),
+      IRGraphNode::VAR { name, ty, var_index, var_id, is_param, .. } => {
+        if *is_param {
+          f.write_fmt(format_args!("PARAM {} [{:03}]{:>23} = {:?}", var_id, var_index, name.to_str().as_str(), ty,))
+        } else {
+          f.write_fmt(format_args!("VAR   {} [{:03}]{:>23} = {:?}", var_id, var_index, name.to_str().as_str(), ty,))
+        }
+      }
       IRGraphNode::PHI { result_ty: out_ty, operands, .. } => f.write_fmt(format_args!(
         "      {:28} = PHI {}",
         format!("{:?}", out_ty),

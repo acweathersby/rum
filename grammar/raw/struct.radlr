@@ -46,7 +46,7 @@ IMPORT ../common/comment as cmt
 
 <> bitfield_prop 
 
-  > tk:( 'bf' c:num+ )^base_type ":" bitfield_element(+"|")^props
+  > tk:( 'b' "f" c:num+ )^base_type ":" bitfield_element(+"|")^props
 
     :ast  { t_RawBitCompositeProp, bit_count: u32($base_type<2,0>), props  }
 

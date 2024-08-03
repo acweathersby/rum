@@ -433,6 +433,7 @@ fn get_register_set<'imm>(ty: crate::types::Type, reg_vars: &'imm RegisterVariab
         _ => None,
       },
       BaseType::Complex(_) => None,
+      BaseType::UNRESOLVED => unreachable!("All types should be resolved"),
     }
   }
 }

@@ -9,7 +9,7 @@ use crate::{
     ir_graph::{BlockId, IRBlock, IRGraphNode, IROp, VarId},
     ir_register_allocator::RegisterAssignement,
   },
-  types::{BaseType, RoutineBody},
+  types::{BaseType, ComplexType, RoutineBody, RoutineVariables},
   x86::{print_instructions, push_bytes},
 };
 
@@ -19,7 +19,8 @@ struct CompileContext<'a> {
   stack_size:   u64,
   jmp_resolver: JumpResolution,
   binary:       Vec<u8>,
-  routine:      &'a RoutineBody,
+  body:         &'a RoutineBody,
+  vars:         &'a RoutineVariables,
 }
 
 #[derive(Debug)]
@@ -73,7 +74,7 @@ impl Drop for x86Function {
   }
 }
 
-pub fn compile_from_ssa_fn(routine: &RoutineBody, regist_assignments: &[RegisterAssignement], spilled_variables: &[VarId]) -> RumResult<x86Function> {
+pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAssignement], spilled_variables: &[VarId], vars: &RoutineVariables) -> RumResult<x86Function> {
   const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
   const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
   const PTR_BYTE_SIZE: usize = 8;
@@ -82,7 +83,8 @@ pub fn compile_from_ssa_fn(routine: &RoutineBody, regist_assignments: &[Register
     stack_size: 0,
     jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
     binary: Vec::<u8>::with_capacity(PAGE_SIZE),
-    routine,
+    body,
+    vars,
   };
 
   // store pointers to free and malloc at base binaries
@@ -109,6 +111,9 @@ pub fn compile_from_ssa_fn(routine: &RoutineBody, regist_assignments: &[Register
       *rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
     } else {
       match ty.base_type() {
+        BaseType::UNRESOLVED => {
+          unreachable!("All types should be resolved!");
+        }
         BaseType::Prim(ty) => {
           offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
           *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
@@ -121,7 +126,7 @@ pub fn compile_from_ssa_fn(routine: &RoutineBody, regist_assignments: &[Register
     }
   }
 
-  for node in ctx.routine.graph.iter() {
+  for node in ctx.body.graph.iter() {
     if matches!(node, IRGraphNode::VAR { .. }) {
       fun_name(node, &mut offsets, &mut rsp_offset);
     }
@@ -129,7 +134,7 @@ pub fn compile_from_ssa_fn(routine: &RoutineBody, regist_assignments: &[Register
 
   for var_id in spilled_variables {
     if !offsets.contains_key(var_id) {
-      fun_name(&ctx.routine.graph[*var_id], &mut offsets, &mut rsp_offset);
+      fun_name(&ctx.body.graph[*var_id], &mut offsets, &mut rsp_offset);
     }
   }
 
@@ -137,12 +142,12 @@ pub fn compile_from_ssa_fn(routine: &RoutineBody, regist_assignments: &[Register
 
   funct_preamble(&mut ctx, rsp_offset);
 
-  for block in routine.blocks.iter() {
+  for block in body.blocks.iter() {
     ctx.jmp_resolver.block_offset.push(ctx.binary.len());
     println!("START_BLOCK {} ---------------- \n", block.id);
     for op_expr in &block.nodes {
       let index = op_expr.usize();
-      let node = &routine.graph[index];
+      let node = &body.graph[index];
       let assigns = &regist_assignments[index];
 
       println!("{index:8}: {node:}");
@@ -158,7 +163,7 @@ pub fn compile_from_ssa_fn(routine: &RoutineBody, regist_assignments: &[Register
     if let Some(block_id) = block.branch_succeed {
       use Arg::*;
       if block_id != BlockId(block.id.0 + 1) {
-        let CompileContext { stack_size, jmp_resolver, binary: bin, routine: ctx } = &mut ctx;
+        let CompileContext { stack_size, jmp_resolver, binary: bin, body: ctx, vars } = &mut ctx;
         encode(bin, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
         jmp_resolver.add_jump(bin, block_id.0 as usize);
         println!("JL BLOCK({block_id})");
@@ -223,7 +228,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     // Perform spills
     for (op_index, spill_var) in spills.iter().enumerate() {
       if spill_var.is_valid() {
-        let node = &ctx.routine.graph[*spill_var];
+        let node = &ctx.body.graph[*spill_var];
         let ty = node.ty();
         let bit_size = ty.bit_size();
         let offset = *so.get(spill_var).unwrap();
@@ -243,7 +248,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
       if need_load {
         let var_id = vars[load_index];
 
-        let node = &ctx.routine.graph[var_id];
+        let node = &ctx.body.graph[var_id];
 
         let ty = node.ty();
 
@@ -288,7 +293,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
        */
       IROp::STORE => {
         let [_, op2] = operands;
-        let CompileContext { routine: ctx, binary: bin, .. } = ctx;
+        let CompileContext { body: ctx, binary: bin, .. } = ctx;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -313,7 +318,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
       }
       IROp::ADDR => {
         let [op1, _] = operands;
-        let CompileContext { routine: ctx, binary: bin, .. } = ctx;
+        let CompileContext { body: ctx, binary: bin, .. } = ctx;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -333,8 +338,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         }
       }
       IROp::PTR_MEM_CALC => {
-        let [op1, op2] = operands;
-        let CompileContext { routine: ctx, binary: bin, .. } = ctx;
+        let CompileContext { body: ctx, binary: bin, vars: v, .. } = ctx;
 
         debug_assert!(regs[0].is_valid());
         let dest_reg = regs[0].as_reg_op();
@@ -342,18 +346,23 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         debug_assert!(regs[1].is_valid());
         let base_reg = regs[1].as_reg_op();
 
-        let offset_is_const = ctx.graph[op2].is_const();
-
-        let offset = if offset_is_const { Arg::from_const(ctx.graph[op2].constant().unwrap()) } else { regs[2].as_reg_op() };
+        let (offset) = match ctx.graph[vars[0]] {
+          IRGraphNode::VAR { var_index, .. } => match &v.entries[var_index].ty.base_type() {
+            BaseType::Complex(ComplexType::StructMember(mem)) => mem.offset,
+            _ => unreachable!(),
+          },
+          _ => unreachable!(),
+        };
 
         //debug_assert!(op1_node.ty().is_pointer(), "{}", op1_node.ty());
 
-        if offset_is_const {
+        if true {
           if base_reg != dest_reg {
             encode(bin, &mov, POINTER_SIZE, dest_reg, base_reg, None);
           }
-
-          encode(bin, &add, POINTER_SIZE, dest_reg, offset, None);
+          if offset > 0 {
+            encode(bin, &add, POINTER_SIZE, dest_reg, Arg::Imm_Int(offset as i64), None);
+          }
         } else {
           todo!()
         }
@@ -361,7 +370,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
       IROp::MEM_STORE => {
         let [op1, op2] = operands;
-        let CompileContext { routine: ctx, binary: bin, .. } = ctx;
+        let CompileContext { body: ctx, binary: bin, .. } = ctx;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -374,12 +383,14 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         let offset_is_const = ctx.graph[op2].is_const();
         let data = if offset_is_const { Arg::from_const(ctx.graph[op2].constant().unwrap()) } else { regs[2].as_reg_op() };
 
+        dbg!(out_ty);
+
         encode(bin, &mov, out_ty.as_deref().bit_size(), dest_ptr, data, None);
       }
 
       IROp::MEM_LOAD => {
         let [op1, _] = operands;
-        let CompileContext { routine: ctx, binary: bin, .. } = ctx;
+        let CompileContext { body: ctx, binary: bin, .. } = ctx;
 
         let dst_reg = regs[0].as_reg_op();
         let src_ptr = regs[1].as_mem_op();

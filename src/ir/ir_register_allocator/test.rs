@@ -59,8 +59,6 @@ fn register_allocator() {
     &mut ty_ctx,
   );
 
-  dbg!(&ty_ctx);
-
   if let Some(ComplexType::Routine(proc)) = ty_ctx.get(0, "main".intern()) {
     use crate::x86::x86_types::*;
     let reg_pack = RegisterVariables {
@@ -78,7 +76,7 @@ fn register_allocator() {
 
     dbg!(&spilled_variables);
 
-    let x86_fn = compile_from_ssa_fn(&proc.body, &assignments, &spilled_variables);
+    let x86_fn = compile_from_ssa_fn(&proc.body, &assignments, &spilled_variables, &proc.variables);
 
     let val = x86_fn.unwrap();
     let funct = val.access_as_call::<fn(&mut Temp02)>();
