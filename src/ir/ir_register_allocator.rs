@@ -426,6 +426,7 @@ fn get_register_set<'imm>(ty: crate::types::Type, reg_vars: &'imm RegisterVariab
       Some(&reg_vars.ptr_registers)
     }
   } else {
+    debug_assert!(!ty.is_unresolved(), "All types should be fully resolved");
     match ty.base_type() {
       BaseType::Prim(prim) => match prim.sub_type() {
         PrimitiveSubType::Signed | PrimitiveSubType::Unsigned => Some(&reg_vars.ptr_registers),
@@ -433,7 +434,6 @@ fn get_register_set<'imm>(ty: crate::types::Type, reg_vars: &'imm RegisterVariab
         _ => None,
       },
       BaseType::Complex(_) => None,
-      BaseType::UNRESOLVED => unreachable!("All types should be resolved"),
     }
   }
 }

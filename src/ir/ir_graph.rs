@@ -60,7 +60,7 @@ impl Debug for VarId {
 #[derive(Clone, Debug)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  VAR { ty: Type, name: IString, var_index: usize, var_id: VarId, is_param: bool },
+  VAR { ty: Type, name: IString, var_index: VarId, var_id: VarId, is_param: bool },
   PHI { result_ty: Type, var_id: VarId, operands: Vec<IRGraphId> },
   SSA { block_id: BlockId, operands: [IRGraphId; 2], result_ty: Type, var_id: VarId, op: IROp },
 }
@@ -88,9 +88,9 @@ impl IRGraphNode {
   pub fn ty(&self) -> Type {
     match self {
       IRGraphNode::Const { val, .. } => val.ty.into(),
-      IRGraphNode::SSA { result_ty: out_ty, .. } => *out_ty,
-      IRGraphNode::PHI { result_ty: out_ty, .. } => *out_ty,
-      IRGraphNode::VAR { ty: out_ty, .. } => *out_ty,
+      IRGraphNode::SSA { result_ty: out_ty, .. } => out_ty.clone(),
+      IRGraphNode::PHI { result_ty: out_ty, .. } => out_ty.clone(),
+      IRGraphNode::VAR { ty: out_ty, .. } => out_ty.clone(),
     }
   }
 

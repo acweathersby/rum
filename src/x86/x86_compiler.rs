@@ -19,7 +19,6 @@ struct CompileContext<'a> {
   jmp_resolver: JumpResolution,
   binary:       Vec<u8>,
   body:         &'a RoutineBody,
-  vars:         &'a RoutineVariables,
 }
 
 #[derive(Debug)]
@@ -73,7 +72,7 @@ impl Drop for x86Function {
   }
 }
 
-pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAssignement], spilled_variables: &[VarId], vars: &RoutineVariables) -> RumResult<x86Function> {
+pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAssignement], spilled_variables: &[VarId]) -> RumResult<x86Function> {
   const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
   const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
   const PTR_BYTE_SIZE: usize = 8;
@@ -83,7 +82,6 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
     jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
     binary: Vec::<u8>::with_capacity(PAGE_SIZE),
     body,
-    vars,
   };
 
   // store pointers to free and malloc at base binaries
@@ -109,10 +107,8 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
       offsets.insert(id, get_aligned_value(*rsp_offset, 8));
       *rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
     } else {
+      debug_assert!(!ty.is_unresolved(), "All types should be fully resolved");
       match ty.base_type() {
-        BaseType::UNRESOLVED => {
-          unreachable!("All types should be resolved!");
-        }
         BaseType::Prim(ty) => {
           offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
           *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
@@ -162,7 +158,7 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
     if let Some(block_id) = block.branch_succeed {
       use Arg::*;
       if block_id != BlockId(block.id.0 + 1) {
-        let CompileContext { stack_size, jmp_resolver, binary: bin, body: ctx, vars } = &mut ctx;
+        let CompileContext { stack_size, jmp_resolver, binary: bin, body: ctx } = &mut ctx;
         encode(bin, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
         jmp_resolver.add_jump(bin, block_id.0 as usize);
         println!("JL BLOCK({block_id})");
@@ -219,7 +215,7 @@ fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
 pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, ctx: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
   const POINTER_SIZE: u64 = 64;
   use Arg::*;
-  if let IRGraphNode::SSA { op, block_id, result_ty: out_ty, operands, .. } = *node {
+  if let IRGraphNode::SSA { op, block_id, result_ty: out_ty, operands, .. } = node {
     let regs = reg_data.reg;
     let vars = reg_data.vars;
     let spills = reg_data.spills;
@@ -305,8 +301,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
         let dst_arg = regs[0].as_reg_op();
 
-        if ctx.graph[op2].is_const() {
-          let const_ = ctx.graph[op2].constant().unwrap();
+        if ctx.graph[*op2].is_const() {
+          let const_ = ctx.graph[*op2].constant().unwrap();
           encode(bin, &mov, bit_size, dst_arg, Arg::from_const(const_), None);
         } else {
           let src_arg = regs[2].as_reg_op();
@@ -337,7 +333,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         }
       }
       IROp::PTR_MEM_CALC => {
-        let CompileContext { body: ctx, binary: bin, vars: v, .. } = ctx;
+        let CompileContext { body: ctx, binary: bin, .. } = ctx;
 
         debug_assert!(regs[0].is_valid());
         let dest_reg = regs[0].as_reg_op();
@@ -346,7 +342,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         let base_reg = regs[1].as_reg_op();
 
         let (offset) = match ctx.graph[vars[0]] {
-          IRGraphNode::VAR { var_index, .. } => match &v.entries[var_index].ty.base_type() {
+          IRGraphNode::VAR { var_index, .. } => match &ctx.variables.entries[var_index].ty.base_type() {
             BaseType::Complex(ComplexType::StructMember(mem)) => mem.offset,
             _ => unreachable!(),
           },
@@ -379,8 +375,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         // need to be stored to memory, and can be just preserved in the op1 register.
 
         let dest_ptr = regs[1].as_mem_op();
-        let offset_is_const = ctx.graph[op2].is_const();
-        let data = if offset_is_const { Arg::from_const(ctx.graph[op2].constant().unwrap()) } else { regs[2].as_reg_op() };
+        let offset_is_const = ctx.graph[*op2].is_const();
+        let data = if offset_is_const { Arg::from_const(ctx.graph[*op2].constant().unwrap()) } else { regs[2].as_reg_op() };
 
         dbg!(out_ty);
 

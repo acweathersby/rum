@@ -2,10 +2,11 @@ use super::ir_graph::{IRGraphId, VarId};
 use crate::{
   ir::ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   istring::*,
+  parser::script_parser::Var,
   types::{BaseType, ComplexType, ConstVal, ExternalVData, InternalVData, MemberName, PrimitiveType, RoutineBody, RoutineVariables, Type, TypeContext},
 };
 pub use radlr_rust_runtime::types::Token;
-use std::fmt::Debug;
+use std::{fmt::Debug, rc::Rc};
 
 pub enum SuccessorMode {
   Default,
@@ -13,36 +14,42 @@ pub enum SuccessorMode {
   Succeed,
 }
 
-pub struct IRBuilder<'body, 'vars, 'ts> {
-  pub body:               &'body mut RoutineBody,
-  pub vars:               &'vars mut RoutineVariables,
-  pub ssa_stack:          Vec<IRGraphId>,
-  pub loop_stack:         Vec<(IString, BlockId, BlockId)>,
-  pub active_block_id:    BlockId,
-  pub var_scope_stack:    Vec<usize>,
-  pub unused_scope:       Vec<usize>,
-  pub type_scopes:        &'ts TypeContext,
-  pub type_context_index: usize,
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LexicalScopeIds {
+  var_id: usize,
+  ty_id:  usize,
 }
 
-impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
-  pub fn new(body: &'body mut RoutineBody, vars: &'vars mut RoutineVariables, type_ctx_index: usize, type_context: &'types TypeContext) -> Self {
-    let mut state_machine = Self {
+pub struct IRBuilder<'body, 'ts> {
+  pub body:                &'body mut RoutineBody,
+  pub ssa_stack:           Vec<IRGraphId>,
+  pub loop_stack:          Vec<(IString, BlockId, BlockId)>,
+  pub active_block_id:     BlockId,
+  pub lexical_scope_stack: Vec<LexicalScopeIds>,
+  pub unused_scope:        Vec<usize>,
+  pub local_ty_ctx:        &'ts TypeContext,
+  pub global_ty_ctx:       &'ts TypeContext,
+  pub g_ty_ctx_index:      usize,
+}
+
+impl<'body, 'types> IRBuilder<'body, 'types> {
+  pub fn new(body: &'body mut RoutineBody, local_ty_ctx: &'types TypeContext, type_ctx_index: usize, type_context: &'types TypeContext) -> Self {
+    let mut ir_builder = Self {
       ssa_stack: Default::default(),
       body,
-      vars,
-      type_scopes: type_context,
-      type_context_index: type_ctx_index,
+      local_ty_ctx,
+      global_ty_ctx: type_context,
+      g_ty_ctx_index: type_ctx_index,
       active_block_id: Default::default(),
-      var_scope_stack: Default::default(),
+      lexical_scope_stack: vec![Default::default()],
       unused_scope: Default::default(),
       loop_stack: Default::default(),
     };
-    let block = state_machine.create_block();
-    state_machine.set_active(block);
-    state_machine.push_var_scope();
+    let block = ir_builder.create_block();
 
-    state_machine
+    ir_builder.set_active(block);
+
+    ir_builder
   }
 }
 
@@ -59,7 +66,7 @@ impl From<IRGraphId> for SMO {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum SMT {
   Type(Type),
   /// Inherits the type of the first operand
@@ -73,30 +80,36 @@ impl From<Type> for SMT {
   }
 }
 
-impl From<&ComplexType> for SMT {
-  fn from(ty: &ComplexType) -> Self {
+impl From<&Rc<ComplexType>> for SMT {
+  fn from(ty: &Rc<ComplexType>) -> Self {
     Self::Type(ty.into())
   }
 }
 
-impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
+impl<'body, 'types> IRBuilder<'body, 'types> {
   pub fn get_node_type(&self, node_id: IRGraphId) -> Option<Type> {
     self.body.graph.get(node_id.usize()).map(|t| t.ty())
   }
 
-  pub fn get_type(&self, type_name: IString) -> Option<&'types ComplexType> {
-    self.type_scopes.get(self.type_context_index, type_name)
+  /// Returns a type from either the local context or the global context.
+  pub fn get_type(&self, type_name: IString) -> Option<&'types Type> {
+    self.local_ty_ctx.get(self.get_active_ty_scope(), type_name).or_else(|| self.global_ty_ctx.get(self.g_ty_ctx_index, type_name))
+  }
+
+  /// Inserts type into the routine's local type scope.
+  pub fn set_type(&self, type_name: IString, ty: Type) -> Result<&Type, &Type> {
+    self.local_ty_ctx.set(self.get_active_ty_scope(), type_name, ty)
   }
 
   pub fn rename_var(&mut self, var_id: IRGraphId, name: MemberName) {
     let active_scope = self.get_active_var_scope();
     match &mut self.body.graph[var_id.usize()] {
       IRGraphNode::VAR { name: v_name, var_id, var_index, .. } => {
-        self.vars.entries[*var_index].name = name;
+        self.body.variables.entries[*var_index].name = name;
         *v_name = format!("{name}").intern();
 
-        if !self.vars.scopes[active_scope].contains(var_index) {
-          self.vars.scopes[active_scope].push_front(*var_index);
+        if !self.body.variables.lex_scopes[active_scope].contains(&var_index.usize()) {
+          self.body.variables.lex_scopes[active_scope].push_front(var_index.usize());
         }
       }
       _ => unreachable!(),
@@ -104,12 +117,16 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
   }
 
   fn get_active_var_scope(&self) -> usize {
-    *self.var_scope_stack.last().unwrap()
+    self.lexical_scope_stack.last().unwrap().var_id
   }
 
-  pub fn push_para_var(&mut self, name: MemberName, ty: Type, index: VarId) -> ExternalVData {
+  fn get_active_ty_scope(&self) -> usize {
+    self.lexical_scope_stack.last().unwrap().ty_id
+  }
+
+  pub fn push_para_var(&mut self, name: IString, ty: Type, index: VarId) -> ExternalVData {
     let data = self.push_variable(name, ty);
-    self.vars.entries[data.__internal_var_index].parameter_index = index;
+    self.body.variables.entries[data.__internal_var_index].parameter_index = index;
     match &mut self.body.graph[data.store] {
       IRGraphNode::VAR { is_param, .. } => *is_param = true,
       _ => {}
@@ -117,62 +134,12 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
     data
   }
 
-  pub fn push_variable(&mut self, name: MemberName, ty: Type) -> ExternalVData {
-    if matches!(ty.base_type(), BaseType::Complex(ComplexType::Routine(_))) {
-      if let Some(var) = self.get_variable(name) {
-        self.ssa_stack.push(var.store);
-        return var;
-      }
-    }
-
-    let active_scope = self.get_active_var_scope();
-    let variables = &mut self.vars.scopes[active_scope];
-
-    if ty.is_unresolved() {
-      self.body.resolved = false;
-    }
-
-    let var_index = self.vars.entries.len();
-
-    let graph_id = IRGraphId::new(self.body.graph.len());
-
-    let var = InternalVData {
-      var_id: VarId::new(graph_id.0),
-      var_index,
-      par_id: Default::default(),
-      block_index: self.active_block_id,
-      name,
-      ty,
-      store: graph_id,
-      decl: graph_id,
-      sub_members: Default::default(),
-      is_member_pointer: false,
-      parameter_index: Default::default(),
-    };
-
-    variables.push_front(var_index);
-
-    self.vars.entries.push(var);
-
-    self.body.graph.push(IRGraphNode::VAR {
-      var_id: VarId::new(self.body.graph.len() as u32),
-      ty,
-      name: format!("{name}").intern(),
-      var_index,
-      is_param: false,
-    });
-
-    self.ssa_stack.push(graph_id);
-
-    (&self.vars.entries[self.vars.entries.len() - 1]).into()
-  }
-
-  pub fn get_variable(&self, var_name: MemberName) -> Option<ExternalVData> {
-    for var_index in self.var_scope_stack.iter().rev() {
-      let var_ctx = &self.vars.scopes[*var_index];
+  pub fn get_variable_from_id(&self, var_name: MemberName) -> Option<ExternalVData> {
+    for var_index in self.lexical_scope_stack.iter().rev() {
+      let var_ctx = &self.body.variables.lex_scopes[var_index.var_id];
 
       for var in var_ctx.iter() {
-        let var = &self.vars.entries[*var];
+        let var = &self.body.variables.entries[*var];
         if var.name == var_name {
           return Some(var.into());
         }
@@ -182,20 +149,209 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
     None
   }
 
-  pub fn get_variable_member(&mut self, par: &ExternalVData, sub_member_name: MemberName) -> Option<ExternalVData> {
-    let var_index = self.vars.entries.len();
+  pub fn get_variable_from_node(&self, id: IRGraphId) -> Option<ExternalVData> {
+    if let Some(index) = self.get_variable_from_node_internal(id) {
+      Some((&self.body.variables.entries[index]).into())
+    } else {
+      None
+    }
+  }
 
-    let par = &mut self.vars.entries[par.__internal_var_index]; // Allowed
+  pub fn get_variable_from_var_id(&self, node: VarId) -> Option<ExternalVData> {
+    if let Some(index) = self.get_variable_from_var_id_internal(node) {
+      Some((&self.body.variables.entries[index]).into())
+    } else {
+      None
+    }
+  }
+
+  pub fn get_variable_from_node_mut<'a>(&'a mut self, id: IRGraphId) -> Option<&'a mut InternalVData> {
+    if let Some(index) = self.get_variable_from_node_internal(id) {
+      Some((&mut self.body.variables.entries[index]))
+    } else {
+      None
+    }
+  }
+
+  pub fn get_variable_from_var_id_mut(&mut self, node: VarId) -> Option<&mut InternalVData> {
+    if let Some(index) = self.get_variable_from_var_id_internal(node) {
+      Some((&mut self.body.variables.entries[index]))
+    } else {
+      None
+    }
+  }
+
+  pub fn get_base_variable_from_node_mut(&mut self, id: IRGraphId) -> Option<&mut InternalVData> {
+    match self.get_variable_from_node_internal(id) {
+      None => None,
+      Some(index) => {
+        let var = &self.body.variables.entries[index];
+        if var.is_pointer {
+          let id = var.par_id.usize();
+          Some(&mut self.body.variables.entries[id])
+        } else {
+          Some(&mut self.body.variables.entries[index])
+        }
+      }
+    }
+  }
+
+  pub fn get_variable_from_var_id_internal(&self, node: VarId) -> Option<usize> {
+    if node.is_valid() {
+      match self.body.graph.get(node.usize()) {
+        Some(IRGraphNode::SSA { var_id, .. }) => self.get_variable_from_var_id_internal(*var_id),
+        Some(IRGraphNode::VAR { var_index, .. }) => Some(var_index.usize()),
+        _ => None,
+      }
+    } else {
+      None
+    }
+  }
+
+  pub fn get_variable_from_node_internal(&self, id: IRGraphId) -> Option<usize> {
+    if !id.is_invalid() {
+      match self.body.graph.get(id.usize()) {
+        Some(IRGraphNode::SSA { var_id, .. }) => self.get_variable_from_var_id_internal(*var_id),
+        Some(IRGraphNode::VAR { var_index, .. }) => Some(var_index.usize()),
+        _ => None,
+      }
+    } else {
+      None
+    }
+  }
+
+  pub fn push_variable(&mut self, name: IString, ty: Type) -> ExternalVData {
+    if matches!(ty.base_type(), BaseType::Complex(ComplexType::Routine(_))) {
+      if let Some(var) = self.get_variable_from_id(MemberName::IdMember(name)) {
+        self.ssa_stack.push(var.store);
+        return var;
+      }
+    }
+
+    let active_scope = self.get_active_var_scope();
+    let variables = &mut self.body.variables.lex_scopes[active_scope];
+
+    if ty.is_unresolved() {
+      self.body.resolved = false;
+    }
+
+    let (base_type, base_name, graph_id) =
+      if ty.is_pointer() { (ty.as_deref(), "--".intern(), IRGraphId::default()) } else { (ty.clone(), name, IRGraphId::new(self.body.graph.len())) };
+
+    let var_index = VarId::new(self.body.variables.entries.len() as u32);
+
+    let var = InternalVData {
+      var_id: VarId::new(graph_id.0),
+      var_index,
+      par_id: Default::default(),
+      block_index: self.active_block_id,
+      name: MemberName::IdMember(base_name),
+      ty: base_type,
+      store: graph_id,
+      decl: graph_id,
+      sub_members: Default::default(),
+      is_member_pointer: false,
+      parameter_index: Default::default(),
+      is_pointer: false,
+      ptr_id: Default::default(),
+    };
+
+    variables.push_front(var_index.usize());
+
+    self.body.variables.entries.push(var);
+
+    if ty.is_pointer() {
+      let ptr_var = self.get_variable_ptr(&(&self.body.variables.entries[self.body.variables.entries.len() - 1]).into(), name).unwrap();
+
+      let ptr_index = ptr_var.__internal_var_index.usize();
+
+      self.body.variables.lex_scopes[active_scope].push_front(ptr_index);
+
+      self.body.variables.entries[ptr_index].name = MemberName::IdMember(name);
+
+      (&self.body.variables.entries[ptr_index]).into()
+    } else {
+      self.body.graph.push(IRGraphNode::VAR { var_id: VarId::new(self.body.graph.len() as u32), ty, name, var_index, is_param: false });
+
+      self.ssa_stack.push(graph_id);
+
+      (&self.body.variables.entries[self.body.variables.entries.len() - 1]).into()
+    }
+  }
+
+  pub fn get_variable_ptr(&mut self, par: &ExternalVData, name: IString) -> Option<ExternalVData> {
+    let new_var_index = VarId::new(self.body.variables.entries.len() as u32);
+
+    let par = &mut self.body.variables.entries[par.__internal_var_index]; // Allowed
+
+    if par.ptr_id.is_valid() {
+      let id = par.ptr_id;
+      self.get_variable_from_var_id(id)
+    } else {
+      par.ptr_id = new_var_index;
+
+      let ty = par.ty.as_pointer();
+
+      let graph_id = IRGraphId::new(self.body.graph.len());
+
+      let var = InternalVData {
+        var_id:            VarId::new(graph_id.0),
+        var_index:         new_var_index,
+        block_index:       self.active_block_id,
+        name:              MemberName::IndexMember(0),
+        ty:                par.ty.as_pointer(),
+        par_id:            par.var_index,
+        store:             graph_id,
+        decl:              graph_id,
+        sub_members:       Default::default(),
+        is_pointer:        true,
+        parameter_index:   Default::default(),
+        ptr_id:            Default::default(),
+        is_member_pointer: false,
+      };
+
+      self.body.variables.entries.push(var);
+
+      self.body.graph.push(IRGraphNode::VAR {
+        ty:        ty,
+        name:      name,
+        var_index: new_var_index,
+        var_id:    VarId::new(self.body.graph.len() as u32),
+        is_param:  false,
+      });
+
+      let mut val: ExternalVData = (&(self.body.variables.entries[new_var_index.usize()])).into();
+
+      val.is_member_pointer = true;
+
+      Some(val)
+    }
+  }
+
+  pub fn get_variable_member(&mut self, par: &ExternalVData, sub_member_name: MemberName) -> Option<ExternalVData> {
+    let var_index = VarId::new(self.body.variables.entries.len() as u32);
+
+    let par = &mut self.body.variables.entries[par.__internal_var_index]; // Allowed
     let ty = match par.ty.base_type() {
       crate::types::BaseType::Prim(_) => None,
-      crate::types::BaseType::UNRESOLVED => Some(Type::UNRESOLVED),
       crate::types::BaseType::Complex(cplx) => match cplx {
+        ComplexType::UNRESOLVED { .. } => {
+          let tmp_scope = self.local_ty_ctx.add_scope(0);
+          let name = match sub_member_name {
+            MemberName::IdMember(name) => name,
+            MemberName::IndexMember(i) => i.to_string().intern(),
+          };
+          match self.local_ty_ctx.set(tmp_scope, name, Rc::new(ComplexType::UNRESOLVED { name }).into()) {
+            Ok(ty) => Some(ty.clone()),
+            _ => unreachable!(),
+          }
+        }
         ComplexType::Struct(strct) => {
           if let Some(ty) = strct.members.iter().find(|m| match sub_member_name {
             MemberName::IndexMember(i) => m.index() == i,
             MemberName::IdMember(name) => m.name() == name,
           }) {
-            Some(ty.as_ref().into())
+            Some(ty.into())
           } else {
             None
           }
@@ -205,15 +361,23 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
     };
 
     if let Some(ty) = ty {
-      match par.sub_members.entry(sub_member_name) {
+      let sub_members = if !par.sub_members.is_valid() {
+        par.sub_members = VarId::new(self.body.variables.member_lookups.len() as u32);
+        self.body.variables.member_lookups.push(Default::default());
+        &mut self.body.variables.member_lookups[par.sub_members.usize()]
+      } else {
+        &mut self.body.variables.member_lookups[par.sub_members.usize()]
+      };
+
+      match sub_members.entry(sub_member_name) {
         std::collections::hash_map::Entry::Occupied(entry) => {
           let id = *entry.get();
-          Some((&self.vars.entries[id]).into())
+          Some((&self.body.variables.entries[id]).into())
         }
         std::collections::hash_map::Entry::Vacant(entry) => {
           let graph_id = IRGraphId::new(self.body.graph.len());
 
-          entry.insert(var_index);
+          entry.insert(var_index.usize());
 
           let _ = entry;
 
@@ -222,16 +386,18 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
             var_index,
             block_index: self.active_block_id,
             name: sub_member_name,
-            ty,
+            ty: ty.clone(),
             par_id: par.var_id,
             store: graph_id,
             decl: graph_id,
             sub_members: Default::default(),
             is_member_pointer: true,
             parameter_index: Default::default(),
+            is_pointer: false,
+            ptr_id: Default::default(),
           };
 
-          self.vars.entries.push(var);
+          self.body.variables.entries.push(var);
 
           self.body.graph.push(IRGraphNode::VAR {
             ty,
@@ -241,7 +407,7 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
             is_param: false,
           });
 
-          let mut val: ExternalVData = (&(self.vars.entries[var_index])).into();
+          let mut val: ExternalVData = (&(self.body.variables.entries[var_index])).into();
 
           val.is_member_pointer = true;
 
@@ -266,6 +432,10 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
     self.ssa_stack.last().cloned()
   }
 
+  pub fn get_top_var_id(&mut self) -> VarId {
+    self.ssa_stack.last().map(|v| self.body.graph[*v].var_id()).unwrap_or_default()
+  }
+
   fn get_operand(&mut self, op: SMO) -> IRGraphId {
     match op {
       SMO::IROp(op) => op,
@@ -273,16 +443,17 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
     }
   }
 
-  pub fn push_var_scope(&mut self) {
-    let index = if let Some(unused_scope_index) = self.unused_scope.pop() { unused_scope_index } else { self.vars.scopes.len() };
-    self.vars.scopes.push(Default::default());
-    self.var_scope_stack.push(index);
+  pub fn push_lexical_scope(&mut self) {
+    let var_id = if let Some(unused_scope_index) = self.unused_scope.pop() { unused_scope_index } else { self.body.variables.lex_scopes.len() };
+    self.body.variables.lex_scopes.push(Default::default());
+    let ty_id = self.local_ty_ctx.add_scope(self.get_active_ty_scope());
+    self.lexical_scope_stack.push(LexicalScopeIds { var_id, ty_id });
   }
 
-  pub fn pop_var_scope(&mut self) {
-    if let Some(index) = self.var_scope_stack.pop() {
-      if self.vars.scopes[index].is_empty() {
-        self.unused_scope.push(index);
+  pub fn pop_lexical_scope(&mut self) {
+    if let Some(LexicalScopeIds { var_id, ty_id }) = self.lexical_scope_stack.pop() {
+      if self.body.variables.lex_scopes[var_id].is_empty() {
+        self.unused_scope.push(var_id);
       }
     }
   }
@@ -343,7 +514,7 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
 
     if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR | IROp::PARAM_VAL) && var_id.is_valid() {
       if let IRGraphNode::VAR { var_index, .. } = self.body.graph[var_id] {
-        self.vars.entries[var_index].store = id;
+        self.body.variables.entries[var_index].store = id;
       } else {
         panic!("Invalid variable (mem)store. Variable id is invalid. {self:#?}")
       }
@@ -448,12 +619,15 @@ impl<'body, 'vars, 'types> IRBuilder<'body, 'vars, 'types> {
   }
 }
 
-impl<'body, 'vars, 'types> Debug for IRBuilder<'body, 'vars, 'types> {
+impl<'body, 'types> Debug for IRBuilder<'body, 'types> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut st = f.debug_struct("IRBuilder");
 
     st.field("body", self.body);
-    st.field("variables", &self.vars.entries.iter().map(|v| format!("{v}")).collect::<Vec<String>>());
+
+    if !self.local_ty_ctx.is_empty() {
+      st.field("types", &self.local_ty_ctx);
+    }
 
     st.finish()
   }

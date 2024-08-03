@@ -7,89 +7,19 @@ use std::{
   rc::Rc,
 };
 
-#[repr(align(16))]
-#[derive(Debug)]
-pub enum ComplexType {
-  Struct(StructType),
-  Routine(RoutineType),
-  Union(UnionType),
-  Enum(EnumType),
-  BitField(BitFieldType),
-  Array(ArrayType),
-  StructMember(StructMemberType),
-  Unresolved,
-}
-
-impl std::fmt::Display for ComplexType {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::Struct(s) => f.write_fmt(format_args!("struct {}", s.name.to_str().as_str())),
-      Self::Routine(s) => f.write_fmt(format_args!("{}(..)", s.name.to_str().as_str())),
-      Self::Union(s) => f.write_fmt(format_args!("union {}", s.name.to_str().as_str())),
-      Self::Enum(s) => f.write_fmt(format_args!("enum {}", s.name.to_str().as_str())),
-      Self::BitField(s) => f.write_fmt(format_args!("bf {}", s.name.to_str().as_str())),
-      Self::Array(s) => f.write_fmt(format_args!("{}[{}]", s.name.to_str().as_str(), s.element_type)),
-      Self::StructMember(mem) => f.write_fmt(format_args!(".{}[{}]:{}@{}", mem.name.to_str().as_str(), mem.original_index, mem.ty, mem.offset)),
-      _ => f.write_str("TODO"),
-    }
-  }
-}
-
-impl ComplexType {
-  pub fn alignment(&self) -> u64 {
-    match self {
-      Self::Struct(strct) => strct.alignment,
-      Self::StructMember(mem) => mem.ty.alignment(),
-      _ => unreachable!(),
-    }
-  }
-
-  pub fn byte_size(&self) -> u64 {
-    match self {
-      Self::Struct(strct) => strct.size,
-      Self::StructMember(mem) => mem.ty.byte_size(),
-      _ => unreachable!(),
-    }
-  }
-
-  pub fn name(&self) -> IString {
-    match self {
-      Self::Struct(s) => s.name,
-      Self::Routine(s) => s.name,
-      Self::Union(s) => s.name,
-      Self::Enum(s) => s.name,
-      Self::BitField(s) => s.name,
-      Self::Array(s) => s.name,
-      Self::StructMember(mem) => mem.name,
-      _ => Default::default(),
-    }
-  }
-
-  pub fn index(&self) -> usize {
-    match self {
-      Self::Struct(s) => 0,
-      Self::Routine(s) => 0,
-      Self::Union(s) => 0,
-      Self::Enum(s) => 0,
-      Self::BitField(s) => 0,
-      Self::Array(s) => 0,
-      Self::StructMember(mem) => mem.original_index,
-      _ => Default::default(),
-    }
-  }
-}
-
-#[derive(Clone, Copy)]
-pub union Type {
-  flags:      u64,
-  prim:       PrimitiveType,
-  cplx:       *const ComplexType,
-  unresolved: (),
+#[derive(Clone)]
+pub enum Type {
+  Primitive(bool, PrimitiveType),
+  Complex(bool, Rc<ComplexType>),
 }
 
 impl PartialEq for Type {
   fn eq(&self, other: &Self) -> bool {
-    unsafe { self.flags == other.flags }
+    match (self, other) {
+      (Type::Primitive(a, b), Type::Primitive(c, d)) => a == c && b == d,
+      (Type::Complex(a, b), Type::Complex(c, d)) => a == c && (b as *const _ as usize) == (d as *const _ as usize),
+      _ => false,
+    }
   }
 }
 
@@ -97,11 +27,7 @@ impl Eq for Type {}
 
 impl From<PrimitiveType> for Type {
   fn from(prim: PrimitiveType) -> Self {
-    unsafe {
-      let mut s = Self { prim };
-      s.flags |= Self::PRIM_MASK;
-      s
-    }
+    Self::Primitive(false, prim)
   }
 }
 
@@ -117,15 +43,15 @@ impl From<&mut PrimitiveType> for Type {
   }
 }
 
-impl From<&ComplexType> for Type {
-  fn from(cplx: &ComplexType) -> Self {
-    Self { cplx }
+impl From<Rc<ComplexType>> for Type {
+  fn from(cplx: Rc<ComplexType>) -> Self {
+    Self::Complex(false, cplx)
   }
 }
 
-impl From<&mut ComplexType> for Type {
-  fn from(cplx: &mut ComplexType) -> Self {
-    Self { cplx }
+impl From<&Rc<ComplexType>> for Type {
+  fn from(cplx: &Rc<ComplexType>) -> Self {
+    Self::Complex(false, cplx.clone())
   }
 }
 
@@ -133,49 +59,64 @@ impl From<&mut ComplexType> for Type {
 pub enum BaseType<'a> {
   Prim(PrimitiveType),
   Complex(&'a ComplexType),
-  UNRESOLVED,
 }
 
 impl Type {
-  const PTR_MASK: u64 = 0x1;
-  const PRIM_MASK: u64 = 0x2;
-  const FLAGS_MASK: u64 = Self::PTR_MASK | Self::PRIM_MASK;
-
-  pub const UNRESOLVED: Type = Type { unresolved: () };
-
   pub fn is_unresolved(&self) -> bool {
-    unsafe { (self.flags & !Self::PTR_MASK) == 0 }
+    match self {
+      Self::Complex(_, ty) => matches!(ty.as_ref(), ComplexType::UNRESOLVED { .. }),
+      _ => false,
+    }
   }
 
   pub fn is_pointer(&self) -> bool {
-    unsafe { (self.flags & Self::PTR_MASK) > 0 }
+    match self {
+      Self::Primitive(ptr, _) | Self::Complex(ptr, _) => *ptr,
+    }
   }
 
   pub fn is_primitive(&self) -> bool {
-    unsafe { (self.flags & Self::PRIM_MASK) > 0 }
+    matches!(self, Self::Primitive(..))
   }
 
   pub fn as_prim(&self) -> Option<&PrimitiveType> {
-    unsafe { self.is_primitive().then_some(&self.prim) }
+    match self {
+      Self::Primitive(ptr, ty) => Some(ty),
+      _ => None,
+    }
   }
 
-  pub fn as_cplx(&self) -> Option<&ComplexType> {
-    unsafe { (!self.is_primitive()).then_some(&*Self { flags: self.flags & !Self::FLAGS_MASK }.cplx) }
+  pub fn as_cplx(&self) -> Option<&Rc<ComplexType>> {
+    match self {
+      Self::Complex(ptr, ty) => Some(ty),
+      _ => None,
+    }
+  }
+
+  pub fn as_cplx_ref(&self) -> Option<&ComplexType> {
+    match self {
+      Self::Complex(ptr, ty) => Some(ty.as_ref()),
+      _ => None,
+    }
   }
 
   pub fn as_pointer(&self) -> Self {
-    unsafe { Self { flags: self.flags | Self::PTR_MASK } }
+    match self {
+      Self::Primitive(ptr, ty) => Self::Primitive(true, ty.clone()),
+      Self::Complex(ptr, ty) => Self::Complex(true, ty.clone()),
+    }
   }
 
   pub fn as_deref(&self) -> Self {
-    unsafe { Self { flags: self.flags & !Self::PTR_MASK } }
+    match self {
+      Self::Primitive(ptr, ty) => Self::Primitive(false, ty.clone()),
+      Self::Complex(ptr, ty) => Self::Complex(false, ty.clone()),
+    }
   }
 
   pub fn base_type(&self) -> BaseType {
     if self.is_primitive() {
       BaseType::Prim(*self.as_prim().unwrap())
-    } else if self.is_unresolved() {
-      BaseType::UNRESOLVED
     } else {
       BaseType::Complex(self.as_cplx().unwrap())
     }
@@ -185,7 +126,6 @@ impl Type {
     match self.base_type() {
       BaseType::Complex(cplx) => cplx.alignment(),
       BaseType::Prim(prim) => prim.alignment(),
-      BaseType::UNRESOLVED => 0,
     }
   }
 
@@ -193,7 +133,6 @@ impl Type {
     match self.base_type() {
       BaseType::Complex(cplx) => cplx.byte_size(),
       BaseType::Prim(prim) => prim.byte_size(),
-      BaseType::UNRESOLVED => 0,
     }
   }
 
@@ -201,7 +140,6 @@ impl Type {
     match self.base_type() {
       BaseType::Complex(cplx) => cplx.byte_size() * 8,
       BaseType::Prim(prim) => prim.bit_size(),
-      BaseType::UNRESOLVED => 0,
     }
   }
 }
@@ -220,17 +158,6 @@ impl Display for Type {
     match self.base_type() {
       BaseType::Prim(prim) => std::fmt::Display::fmt(&prim, f),
       BaseType::Complex(cplx) => f.write_fmt(format_args!("{}", cplx)),
-      BaseType::UNRESOLVED => f.write_str("[?]"),
     }
   }
-}
-
-#[test]
-fn test_type() {
-  assert_eq!(format!("{}", Type::from(PrimitiveType::f64).as_pointer()), "*f64");
-
-  let strct = StructType { name: "test".intern(), members: Default::default(), size: 0, alignment: 0 };
-  let cplx = ComplexType::Struct(strct);
-
-  assert_eq!(format!("{}", Type::from(&cplx).as_pointer()), "*f64");
 }

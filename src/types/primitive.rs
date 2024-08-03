@@ -1,5 +1,5 @@
 use super::*;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -17,12 +17,18 @@ impl Display for PrimitiveSubType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     const TYPE_NAMES: [&'static str; 6] = ["?", "u", "i", "f", "dsc", "flg"];
     let index = *self as usize;
-    TYPE_NAMES[index].fmt(f)
+    Display::fmt(&TYPE_NAMES[index], f)
+  }
+}
+
+impl Debug for PrimitiveType {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self, f)
   }
 }
 
 /// Stores information on the nature of a value
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialOrd, Ord, Hash)]
 pub struct PrimitiveType(u64);
 
 impl Default for PrimitiveType {
@@ -30,6 +36,14 @@ impl Default for PrimitiveType {
     Self(1)
   }
 }
+
+impl PartialEq for PrimitiveType {
+  fn eq(&self, other: &Self) -> bool {
+    (self.0 & !3) == (other.0 & !3)
+  }
+}
+
+impl Eq for PrimitiveType {}
 
 impl PrimitiveType {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
@@ -110,6 +124,8 @@ impl PrimitiveType {
 
   pub const f64: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b64.0);
   pub const f32: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b32.0);
+  pub const f32v2: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b32.0 | PrimitiveType::v2.0);
+  pub const f32v4: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b32.0 | PrimitiveType::v4.0);
 
   pub const flg1: PrimitiveType = PrimitiveType(PrimitiveType::Flag.0 | PrimitiveType::b1.0);
 }

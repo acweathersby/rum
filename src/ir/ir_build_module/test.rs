@@ -12,6 +12,9 @@ fn test() {
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
+
+
+
 Temp => [
   bf32 
   : #desc8 
@@ -27,7 +30,7 @@ Bent => [
   val: u32
 ]
 
-Union => Bent | Temp | u32
+Union => Bent | Temp | u32 
 
 main () =| { 
 
@@ -55,14 +58,14 @@ fn test_type_inference() {
 Temp => [ a:u32 b:u32 ]
 TempA => [ a:u32 b:u32 ]
 
-inferred_procedure ( test: &T? dest: &T? ) =| { 
-  test.a = 1
-  test.b = 3
+
+inferred_procedure ( test: &T? dest: &Temp? ) => &T? { 
+  test.a = 1 + 2
+  test.b = test.b << 4
 }
 
 main_procedure ( t: &TempA d: &Temp ) =| {
-  inferred_procedure(t, d) 
-  inferred_procedure(t, d) 
+  inferred_procedure(t, d)
 }
   "##,
     )
@@ -70,6 +73,8 @@ main_procedure ( t: &TempA d: &Temp ) =| {
     0,
     &mut scope,
   );
+
+  dbg!(scope);
 }
 
 #[test]
@@ -100,19 +105,20 @@ test_primitive_variables () =| {
     &mut scope,
   );
 
-  if let Some(ComplexType::Routine(r)) = scope.get(0, "test_primitive_variables".to_token()) {
-    assert_eq!(*r.variables.entries[0].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u8);
-    assert_eq!(*r.variables.entries[1].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u16);
-    assert_eq!(*r.variables.entries[2].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u32);
-    assert_eq!(*r.variables.entries[3].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u64);
-    assert_eq!(*r.variables.entries[4].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i8);
-    assert_eq!(*r.variables.entries[5].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i16);
-    assert_eq!(*r.variables.entries[6].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i32);
-    assert_eq!(*r.variables.entries[7].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i64);
-    assert_eq!(*r.variables.entries[8].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32);
-    assert_eq!(*r.variables.entries[9].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f64);
-    assert_eq!(*r.variables.entries[10].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v2);
-    assert_eq!(*r.variables.entries[11].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v4);
+  if let Some(ComplexType::Routine(r)) = scope.get(0, "test_primitive_variables".to_token()).and_then(|t| t.as_cplx_ref()) {
+    let r = r.lock().unwrap();
+    assert_eq!(*r.body.variables.entries[0].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u8);
+    assert_eq!(*r.body.variables.entries[1].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u16);
+    assert_eq!(*r.body.variables.entries[2].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u32);
+    assert_eq!(*r.body.variables.entries[3].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u64);
+    assert_eq!(*r.body.variables.entries[4].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i8);
+    assert_eq!(*r.body.variables.entries[5].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i16);
+    assert_eq!(*r.body.variables.entries[6].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i32);
+    assert_eq!(*r.body.variables.entries[7].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i64);
+    assert_eq!(*r.body.variables.entries[8].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32);
+    assert_eq!(*r.body.variables.entries[9].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f64);
+    assert_eq!(*r.body.variables.entries[10].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v2);
+    assert_eq!(*r.body.variables.entries[11].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v4);
   } else {
     panic!("Routine not correctly built");
   }
