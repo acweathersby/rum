@@ -1,5 +1,3 @@
-mod test;
-
 use super::{
   ir_builder::{IRBuilder, SuccessorMode},
   ir_graph::IRGraphId,
@@ -904,3 +902,6 @@ pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &
     _t => None,
   }
 }
+
+#[cfg(test)]
+mod test;

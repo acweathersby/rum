@@ -11,9 +11,6 @@ type InnerStringStore = HashMap<IString, String>;
 
 static GLOBAL_STORE: Lazy<IStringStore> = Lazy::new(|| IStringStore { _data: RwLock::new(InnerStringStore::new()) });
 
-#[cfg(test)]
-mod test;
-
 #[derive(Default)]
 struct IStringStore {
   _data: RwLock<InnerStringStore>,
@@ -320,3 +317,6 @@ impl CachedString for &Path {
     self.to_str().unwrap().to_owned()
   }
 }
+
+#[cfg(test)]
+mod test;

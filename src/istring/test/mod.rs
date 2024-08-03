@@ -1,4 +1,4 @@
-use super::{CachedString, IStringStore, GLOBAL_STORE};
+use super::{CachedString, GLOBAL_STORE};
 
 #[test]
 fn interning_empty_string() {
