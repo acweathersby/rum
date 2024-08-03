@@ -1,7 +1,5 @@
 #![allow(unused, non_upper_case_globals)]
 
-use crate::ir::ir_context::IRCallable;
-
 use super::{set_bytes, x86_types::*};
 
 use super::x86_encoder::*;

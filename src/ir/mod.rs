@@ -1,7 +1,6 @@
 // pub mod ir_block_optimizer;
 pub mod ir_build_module;
 pub mod ir_builder;
-pub mod ir_context;
 // pub mod ir_optimizer_induction;
 //pub mod ir_block_annotations;
 pub mod ir_graph;

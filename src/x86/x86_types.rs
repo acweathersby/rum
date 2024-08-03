@@ -1,9 +1,5 @@
 use crate::{
-  ir::{
-    ir_context::{IRCallable, OptimizerContext},
-    ir_graph::IRGraphId,
-    ir_register_allocator::Reg,
-  },
+  ir::{ir_graph::IRGraphId, ir_register_allocator::Reg},
   types::ConstVal,
 };
 use std::collections::BTreeMap;

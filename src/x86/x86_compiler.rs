@@ -5,7 +5,6 @@ use crate::{
   container::get_aligned_value,
   error::RumResult,
   ir::{
-    ir_context::{IRCallable, OptimizerContext},
     ir_graph::{BlockId, IRBlock, IRGraphNode, IROp, VarId},
     ir_register_allocator::RegisterAssignement,
   },
