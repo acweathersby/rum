@@ -1,0 +1,21 @@
+<> partial_url > protocol? address? port? "/" path
+
+<> address > dns_name | ipv6_address | ipv4_address 
+
+<> port > tk:(":" c:num+ )
+
+<> protocol > tk:( prim::id "://" )
+
+<> path > tk:( (prim::id | ".." | "." )(*"/") "/" ) 
+
+<> dns_name > tk:( prim::id(+".")  ) 
+
+<> ipv4_address > tk:( ipv4_num "." ipv4_num "." ipv4_num "." ipv4_num  )
+
+<> ipv4_num > c:num c:num? c:num? 
+
+<> ipv6_address > tk:( (ip6_num? ":")+ ip6_num  )
+
+<> ip6_num > (c:num | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F")+
+
+<> ipv4_num > c:num c:num? c:num? 

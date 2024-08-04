@@ -84,6 +84,11 @@ impl ComplexType {
   }
 }
 
+pub struct NamedPrimitive {
+  name: IString,
+  prim: PrimitiveType,
+}
+
 #[derive(Debug)]
 pub struct StructType {
   pub name:      IString,
@@ -149,7 +154,7 @@ pub struct RoutineBody {
   pub blocks:       Vec<Box<IRBlock>>,
   pub resolved:     bool,
   pub vars:         RoutineVariables,
-  pub type_context: TypeContext,
+  pub type_context: TypeScope,
 }
 
 impl RoutineBody {
@@ -159,7 +164,7 @@ impl RoutineBody {
       blocks:       Default::default(),
       resolved:     Default::default(),
       vars:         Default::default(),
-      type_context: TypeContext::new(),
+      type_context: TypeScope::new(),
     }
   }
 }
@@ -246,7 +251,7 @@ impl Default for RoutineVariables {
 }
 
 impl RoutineVariables {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>, type_context: &TypeContext) -> std::fmt::Result {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>, type_context: &TypeScope) -> std::fmt::Result {
     f.write_str("\nvariables:");
     for entry in 0..self.entries.len() {
       f.write_fmt(format_args!("\n{entry:5}: "))?;
@@ -255,7 +260,44 @@ impl RoutineVariables {
     Ok(())
   }
 
-  fn fmt_entries(&self, f: &mut std::fmt::Formatter<'_>, index: usize, type_context: &TypeContext) -> std::fmt::Result {
+  pub fn resolve_ty(&self, var_index: usize, type_context: &TypeScope) -> Type {
+    let entry = &self.entries[var_index];
+
+    if entry.is_member {
+      // Parent contains member type
+
+      match self.resolve_ty(entry.par_id.usize(), type_context).as_cplx_ref() {
+        Some(ComplexType::Struct(strct)) => match entry.name {
+          MemberName::IdMember(name) => {
+            if let Some(mem) = strct.members.iter().find(|m| m.name == name) {
+              mem.ty.clone()
+            } else {
+              PrimitiveType::Undefined.into()
+            }
+          }
+          MemberName::IndexMember(index) => {
+            if let Some(mem) = strct.members.iter().find(|m| m.original_index == index) {
+              mem.ty.clone()
+            } else {
+              PrimitiveType::Undefined.into()
+            }
+          }
+        },
+        _ => entry.ty.clone(),
+      }
+    } else if entry.is_pointer {
+      // resolve base and return type elevated to pointer type
+      self.resolve_ty(entry.par_id.usize(), type_context).as_pointer()
+    } else {
+      let ty = entry.ty.clone();
+      match ty.base_type() {
+        BaseType::Complex(ComplexType::UNRESOLVED { name }) => type_context.get(0, *name).cloned().unwrap_or(ty),
+        _ => ty,
+      }
+    }
+  }
+
+  fn fmt_entries(&self, f: &mut std::fmt::Formatter<'_>, index: usize, type_context: &TypeScope) -> std::fmt::Result {
     let entry = &self.entries[index];
 
     f.write_fmt(format_args!("{:<15}", entry.name))?;
@@ -263,15 +305,12 @@ impl RoutineVariables {
 
     if entry.is_pointer {
       let base = &self.entries[entry.par_id];
-      let ty = base.ty.clone();
-      let ty = get_resolved_type(ty, type_context);
-      f.write_fmt(format_args!("([{}]*){:>25}", entry.par_id, ty))?;
+      f.write_fmt(format_args!("([{}]*){:>25}", entry.par_id, self.resolve_ty(index, type_context)))?;
     } else if entry.is_member {
       let par = &self.entries[entry.par_id];
-      f.write_fmt(format_args!("{}.{}:{:>25}", par.name, entry.name, entry.ty))?;
+      f.write_fmt(format_args!("{}.{}:{:>25}", par.name, entry.name, self.resolve_ty(index, type_context)))?;
     } else {
-      let ty = get_resolved_type(entry.ty.clone(), type_context);
-      f.write_fmt(format_args!("{:>25}", ty))?;
+      f.write_fmt(format_args!("{:>25}", self.resolve_ty(index, type_context)))?;
     }
 
     if entry.sub_members.is_valid() {
@@ -282,14 +321,6 @@ impl RoutineVariables {
 
     Ok(())
   }
-}
-
-pub fn get_resolved_type(ty: Type, type_context: &TypeContext) -> Type {
-  let ty = match ty.base_type() {
-    BaseType::Complex(ComplexType::UNRESOLVED { name }) => type_context.get(0, *name).cloned().unwrap_or(ty),
-    _ => ty,
-  };
-  ty
 }
 
 #[derive(Clone, Debug)]

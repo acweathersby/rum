@@ -4,18 +4,20 @@ IGNORE { c:sp c:nl tk:cmt::comment }
 IMPORT routine as rt
 IMPORT statement as stmt
 IMPORT expression as expr
-IMPORT struct as struct
+IMPORT complex as complex
+IMPORT module as module
 IMPORT ../common/comment as cmt
 
 EXPORT raw_module as raw_module
 EXPORT raw_struct as raw_struct
-EXPORT raw_statement as raw_statement
 EXPORT raw_routine as raw_routine
 EXPORT raw_expression as raw_expression
 
-<> raw_enum > struct::enum
+<> raw_enum > complex::enum
 
-<> raw_struct > struct::structure
+<> raw_struct > complex::structure
+
+<> raw_array > complex::array
 
 <> raw_statement > stmt::statement
 
@@ -23,4 +25,4 @@ EXPORT raw_expression as raw_expression
 
 <> raw_routine > rt::routine
 
-<> raw_module > ( raw_struct | raw_enum | raw_routine )(+)
+<> raw_module > module::module

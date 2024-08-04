@@ -1,0 +1,47 @@
+IGNORE { c:sp c:nl tk:cmt::comment }
+
+IMPORT routine as rt
+IMPORT statement as stmt
+IMPORT expression as expr
+IMPORT complex as complex
+IMPORT annotation as anno
+IMPORT ../common/primitive as prim
+IMPORT ../common/comment as cmt
+
+<> module 
+
+  > module_members 
+
+    :ast { t_RawModule, members: $1 }
+
+
+<> module_members 
+
+  > ( annotated_module_member | anno::lifetime_variable | anno::annotation_declaration )(+)^members
+
+    :ast { t_RawModMembers, members }
+
+
+<> annotated_module_member 
+
+  > anno::annotation? module_member^member
+
+    :ast { t_AnnotatedModMember, annotation, member }
+
+
+<> module_member 
+  
+  > complex::structure 
+  | complex::enum 
+  | complex::array 
+  | rt::routine 
+  | scope
+
+<> scope 
+
+  > prim::var "{" module_members "}"
+
+    :ast { t_RawScope, name: $1, members: $3   }
+
+
+

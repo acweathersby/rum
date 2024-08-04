@@ -1,4 +1,5 @@
 IMPORT ../common/primitive as prim
+IMPORT annotation as anno
 
 <> type 
   
@@ -25,12 +26,11 @@ IMPORT ../common/primitive as prim
   | "*m32"   :ast { t_Type_32BitPointer }
   | "*m64"   :ast { t_Type_64BitPointer }
   | "*m128"  :ast { t_Type_128BitPointer }
-  | "*" primitive_type :ast { t_Type_Pointer, base_type:$2 }
-  | "*" named_type :ast { t_Type_Pointer, base_type:$2 }
+  //| "*" primitive_type :ast { t_PrimitivePointer, base_type:$2 }
 
 <> named_type > prim::var^name :ast { t_NamedType, name }
 
-<> reference_type > "&" prim::var^name :ast { t_ReferenceType, name }
+<> reference_type > ( anno::lifetime | "'" :ast { t_RawLifetime } )^ptr_type prim::var^name :ast { t_ComplexPtr, ptr_type, name }
 
 <> primitive_type
   > primitive_uint

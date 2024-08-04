@@ -2,7 +2,7 @@ use crate::create_u64_hash;
 use once_cell::sync::Lazy;
 use std::{
   collections::HashMap,
-  fmt::Debug,
+  fmt::{Debug, Display},
   path::{Path, PathBuf},
   sync::{LockResult, RwLock, RwLockReadGuard},
 };
@@ -88,6 +88,12 @@ pub struct IString(u64);
 impl Default for IString {
   fn default() -> Self {
     Self(0)
+  }
+}
+
+impl Display for IString {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.to_str().as_str())
   }
 }
 

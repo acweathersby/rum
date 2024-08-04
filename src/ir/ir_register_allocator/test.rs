@@ -30,7 +30,7 @@ use crate::{
 
 #[test]
 fn register_allocator() {
-  let mut ty_ctx = crate::types::TypeContext::new();
+  let mut ty_ctx = crate::types::TypeScope::new();
 
   #[repr(C)]
   struct Temp02 {

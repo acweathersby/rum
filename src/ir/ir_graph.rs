@@ -1,8 +1,7 @@
 use crate::{
   container::ArrayVec,
   istring::*,
-  parser::script_parser::Var,
-  types::{get_resolved_type, BaseType, ComplexType, ConstVal, PrimitiveType, RoutineBody, RoutineVariables, Type},
+  types::{BaseType, ComplexType, ConstVal, PrimitiveType, RoutineBody, RoutineVariables, Type},
 };
 use std::fmt::{Debug, Display};
 
@@ -126,7 +125,7 @@ impl TypeVar {
     if self.is_invalid() {
       Type::Primitive(false, PrimitiveType::Undefined)
     } else if self.is_custom_type() {
-      get_resolved_type(body.vars.entries[self.var].ty.clone(), &body.type_context)
+      body.vars.resolve_ty(self.var.usize(), &body.type_context)
     } else {
       Self::PRIM_TYPES[self.ty.usize()].into()
     }

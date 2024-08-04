@@ -8,13 +8,13 @@ use crate::istring::IString;
 
 use super::{ComplexType, Type};
 
-pub struct TypeContext {
+pub struct TypeScope {
   pub(crate) types:         std::cell::Cell<(Vec<(IString, Type)>)>,
   pub(crate) scopes:        std::cell::Cell<Vec<(usize, Vec<usize>)>>,
   pub(crate) current_index: usize,
 }
 
-impl Clone for TypeContext {
+impl Clone for TypeScope {
   fn clone(&self) -> Self {
     Self {
       types:         std::cell::Cell::new((unsafe { &*self.types.as_ptr() }).clone()),
@@ -24,7 +24,7 @@ impl Clone for TypeContext {
   }
 }
 
-impl Display for TypeContext {
+impl Display for TypeScope {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut st = f.debug_struct("TypeContext");
     let scopes = unsafe { &*self.scopes.as_ptr() };
@@ -38,13 +38,13 @@ impl Display for TypeContext {
   }
 }
 
-impl Debug for TypeContext {
+impl Debug for TypeScope {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(&self, f)
   }
 }
 
-impl TypeContext {
+impl TypeScope {
   pub fn new() -> Self {
     Self {
       types:         Default::default(),

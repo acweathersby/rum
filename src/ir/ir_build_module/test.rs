@@ -7,14 +7,14 @@ use super::build_module;
 
 #[test]
 fn test_bitfield_structs() {
-  let mut scope = crate::types::TypeContext::new();
+  let mut scope = crate::types::TypeScope::new();
   build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
 Bent => [
-  bf32: #desc6 | name: u16 
-  val: u32
+  bf32: #desc6 | name: u16,
+  val: u32,
 ]
 
 main () =| { 
@@ -33,20 +33,38 @@ main () =| {
 
 #[test]
 fn test_type_inference() {
-  let mut scope = crate::types::TypeContext::new();
+  let mut scope = crate::types::TypeScope::new();
   build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
+
+
+temp { 
+
+  A => Temp | TempA  
+  
+  temp { 
+    A => test/TempA | TempA 
+  }  
+} 
+
+
 Temp => [ a:u32 b:u32 ]
+
 TempA => [ a:u32 b:u32 ]
 
-inferred_procedure ( test: &T? dest: &Temp ) => &T? { 
+inferred_procedure ( test: &T? dest: &TempA ) => &T? { 
   test.a = 1 + 2
   test.b = test.b << 4
+  test
 }
 
-main_procedure ( t: &TempA d: &Temp? ) =| {
+main_procedure ( 
+  t:&TempA? 
+  d:&TempA? 
+) =| {
+  t.a = 2+2
   inferred_procedure(t, d) 
 }
   "##,
@@ -61,7 +79,7 @@ main_procedure ( t: &TempA d: &Temp? ) =| {
 
 #[test]
 fn test_primitive_resolution() {
-  let mut scope = crate::types::TypeContext::new();
+  let mut scope = crate::types::TypeScope::new();
   build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"

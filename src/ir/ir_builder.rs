@@ -3,7 +3,7 @@ use crate::{
   ir::ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   istring::*,
   parser::script_parser::Var,
-  types::{BaseType, ComplexType, ConstVal, ExternalVData, InternalVData, MemberName, PrimitiveType, RoutineBody, RoutineVariables, Type, TypeContext},
+  types::{BaseType, ComplexType, ConstVal, ExternalVData, InternalVData, MemberName, PrimitiveType, RoutineBody, RoutineVariables, Type, TypeScope},
 };
 pub use radlr_rust_runtime::types::Token;
 use std::{fmt::Debug, rc::Rc};
@@ -27,12 +27,12 @@ pub struct IRBuilder<'body, 'ts> {
   pub active_block_id:     BlockId,
   pub lexical_scope_stack: Vec<LexicalScopeIds>,
   pub unused_scope:        Vec<usize>,
-  pub global_ty_ctx:       &'ts TypeContext,
+  pub global_ty_ctx:       &'ts TypeScope,
   pub g_ty_ctx_index:      usize,
 }
 
 impl<'body, 'types> IRBuilder<'body, 'types> {
-  pub fn new(body: &'body mut RoutineBody, type_ctx_index: usize, type_context: &'types TypeContext) -> Self {
+  pub fn new(body: &'body mut RoutineBody, type_ctx_index: usize, type_context: &'types TypeScope) -> Self {
     let mut ir_builder = Self {
       ssa_stack: Default::default(),
       body,
@@ -178,6 +178,21 @@ impl<'body, 'types> IRBuilder<'body, 'types> {
           Some(&mut self.body.vars.entries[id])
         } else {
           Some(&mut self.body.vars.entries[index])
+        }
+      }
+    }
+  }
+
+  pub fn get_base_variable_from_node(&self, id: IRGraphId) -> Option<&InternalVData> {
+    match self.get_variable_from_node_internal(id) {
+      None => None,
+      Some(index) => {
+        let var = &self.body.vars.entries[index];
+        if var.is_pointer {
+          let id = var.par_id.usize();
+          Some(&self.body.vars.entries[id])
+        } else {
+          Some(&self.body.vars.entries[index])
         }
       }
     }

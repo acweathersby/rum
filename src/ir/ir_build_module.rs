@@ -12,14 +12,15 @@ use crate::{
   parser::script_parser::{
     assignment_var_Value,
     bitfield_element_Value,
-    block_expression_group_1_Value,
+    block_expression_group_3_Value,
     expression_Value,
     loop_statement_group_1_Value,
     match_clause_Value,
     match_expression_Value,
     match_scope_Value,
+    module_member_Value,
+    module_members_group_Value,
     property_Value,
-    raw_module_Value,
     routine_type_Value,
     statement_Value,
     type_Value,
@@ -33,9 +34,11 @@ use crate::{
     RawLoop,
     RawMatch,
     RawMember,
+    RawModMembers,
+    RawModule,
     RawNum,
     RawRoutine,
-    RawStructDeclaration,
+    RawStructInstantiation,
     Sub,
     BIT_SL,
     BIT_SR,
@@ -45,133 +48,18 @@ use crate::{
 use core::panic;
 pub use radlr_rust_runtime::types::Token;
 use std::{
-  collections::{btree_map, BTreeMap, HashMap, VecDeque},
+  collections::{btree_map, BTreeMap, VecDeque},
   rc::Rc,
   sync::{Arc, Mutex},
 };
 use IROp::*;
 use MemberName::*;
 use SMO::*;
-use SMT::{Inherit, Undef};
+use SMT::Inherit;
 
-pub fn process_types<'a>(module: &'a Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeContext) -> Vec<IString> {
-  let mut routines = Vec::new();
+pub fn build_module(module: &Arc<RawModule<Token>>, type_scope_index: usize, type_scope: &mut TypeScope) {
+  let routines = process_module_members(&module.members, type_scope_index, type_scope);
 
-  for mod_member in module {
-    match mod_member {
-      raw_module_Value::RawRoutine(routine) => {
-        process_routine_signature(routine, type_scope_index, type_scope);
-        let name = routine.name.id.intern();
-        routines.push(name);
-      }
-      raw_module_Value::RawUnion(union) => {
-        dbg!(union);
-        todo!("Build / Union");
-      }
-      raw_module_Value::RawStruct(strct) => {
-        let name = strct.name.id.intern();
-        let mut members = Vec::new();
-        let mut offset = 0;
-        let mut min_alignment = 1;
-
-        for (index, prop) in strct.properties.iter().enumerate() {
-          match prop {
-            property_Value::RawBitCompositeProp(bitfield) => {
-              let max_bit_size = bitfield.bit_count as u64;
-              let max_byte_size = max_bit_size.div_ceil(8) as u64;
-              let bit_field_size = max_byte_size << 3;
-              let mut bit_offset = 0;
-
-              let prop_offset = get_aligned_value(offset, max_byte_size);
-              offset = prop_offset + max_byte_size as u64;
-
-              for prop in &bitfield.props {
-                match prop {
-                  bitfield_element_Value::BitFieldDescriminator(desc) => {
-                    if bit_offset != 0 {
-                      panic!("A discriminator must be the first element of a bitfield.")
-                    }
-                    let bit_size = desc.bit_count as u64;
-
-                    debug_assert!(bit_size <= 128);
-
-                    members.push(StructMemberType {
-                      ty:             (PrimitiveType::Discriminant
-                        | PrimitiveType::new_bit_size(bit_size)
-                        | PrimitiveType::new_bitfield_data(bit_offset as u8, bit_field_size as u8))
-                      .into(),
-                      original_index: index,
-                      name:           "#desc".intern(),
-                      offset:         prop_offset,
-                    });
-
-                    bit_offset += bit_size;
-                  }
-                  bitfield_element_Value::BitFieldProp(prop) => {
-                    let ty = get_type(&prop.r#type, type_scope_index, type_scope).unwrap();
-
-                    let bit_size = ty.bit_size();
-                    let name = prop.name.id.intern();
-
-                    if members.iter().any(|m| m.name == name) {
-                      panic!("Name already taken {name:?}")
-                    }
-
-                    members.push(StructMemberType {
-                      ty: (*ty.as_prim().unwrap() | PrimitiveType::new_bitfield_data(bit_offset as u8, bit_field_size as u8)).into(),
-                      original_index: index,
-                      name,
-                      offset: prop_offset,
-                    });
-
-                    bit_offset += bit_size;
-                  }
-                  bitfield_element_Value::None => {}
-                }
-              }
-
-              if bit_offset > max_bit_size {
-                panic!("Bitfield element size {bit_offset} overflow bitfield size {max_bit_size}")
-              }
-            }
-            property_Value::RawProperty(raw_prop) => {
-              let ty = get_type(&raw_prop.r#type, type_scope_index, type_scope).unwrap();
-
-              let prop_offset = get_aligned_value(offset, ty.alignment() as u64);
-              offset = prop_offset + ty.byte_size() as u64;
-
-              min_alignment = min_alignment.max(ty.alignment() as u64);
-
-              let name = raw_prop.name.id.intern();
-
-              if members.iter().any(|m| m.name == name) {
-                panic!("Name already taken {name:?}")
-              }
-
-              members.push(StructMemberType { ty, original_index: index, name, offset: prop_offset })
-            }
-            _ => {}
-          }
-        }
-
-        let s = StructType {
-          name,
-          members: members,
-          alignment: min_alignment,
-          size: get_aligned_value(offset, min_alignment as u64),
-        };
-
-        let _ = type_scope.set(type_scope_index, name, Rc::new(ComplexType::Struct(s)).into());
-      }
-      _ => {}
-    }
-  }
-
-  routines
-}
-
-pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usize, type_scope: &mut TypeContext) {
-  let routines = process_types(module, type_scope_index, type_scope);
   //let mut types = Vec::new();
 
   for routine in &routines {
@@ -180,9 +68,225 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usi
   }
 }
 
+pub fn process_module_members<'a>(members: &'a RawModMembers<Token>, type_scope_index: usize, type_scope: &mut TypeScope) -> Vec<IString> {
+  let mut routines = Vec::new();
+  use module_members_group_Value::*;
+
+  // Step 1: Scan and reserve slots for types. Also do this for any scope, and so
+  // on and so forth.
+
+  declare_types(members, "./".intern()); // Todo: Insert types into type database
+
+  // Step 2: Build definitions for all types, in this order: 0:zero_types 1:arrays
+  // 2:structs 3:unions  4:routines
+
+  // Step 3: Build routine bodies.
+
+  // Step 4: Validate - All relaxed routines and types should have proper semantic
+  // behavior. This step may be deferred until such a time when either debug,
+  // reflection, or compiler information is needed for a given type.
+
+  for mod_member in &members.members {
+    match mod_member {
+      AnnotationVariable(anno_var) => {}
+      LifetimeVariable(anno_var) => {}
+      AnnotatedModMember(member) => {
+        let annotation = &member.annotation;
+        use module_member_Value::*;
+        match &member.member {
+          RawRoutine(routine) => {
+            process_routine_signature(routine, type_scope_index, type_scope);
+            let name = routine.name.id.intern();
+            routines.push(name);
+          }
+          RawScope(scope) => {
+            todo!("Build / Scope");
+          }
+          RawUnion(union) => {
+            todo!("Build / Union");
+          }
+          RawBitFlagEnum(flag_enum) => {
+            todo!("Build / BitFlagEnum");
+          }
+          RawEnum(prim_enum) => {
+            todo!("Build / Enum");
+          }
+          RawArray(array) => {
+            todo!("Build / Array");
+          }
+          RawStruct(strct) => {
+            let name = strct.name.id.intern();
+            let mut members = Vec::new();
+            let mut offset = 0;
+            let mut min_alignment = 1;
+
+            use property_Value::*;
+            for (index, prop) in strct.properties.iter().enumerate() {
+              match prop {
+                RawBitCompositeProp(bitfield) => {
+                  let max_bit_size = bitfield.bit_count as u64;
+                  let max_byte_size = max_bit_size.div_ceil(8) as u64;
+                  let bit_field_size = max_byte_size << 3;
+                  let mut bit_offset = 0;
+
+                  let prop_offset = get_aligned_value(offset, max_byte_size);
+                  offset = prop_offset + max_byte_size as u64;
+
+                  for prop in &bitfield.props {
+                    match prop {
+                      bitfield_element_Value::BitFieldDescriminator(desc) => {
+                        if bit_offset != 0 {
+                          panic!("A discriminator must be the first element of a bitfield.")
+                        }
+                        let bit_size = desc.bit_count as u64;
+
+                        debug_assert!(bit_size <= 128);
+
+                        members.push(StructMemberType {
+                          ty:             (PrimitiveType::Discriminant
+                            | PrimitiveType::new_bit_size(bit_size)
+                            | PrimitiveType::new_bitfield_data(bit_offset as u8, bit_field_size as u8))
+                          .into(),
+                          original_index: index,
+                          name:           "#desc".intern(),
+                          offset:         prop_offset,
+                        });
+
+                        bit_offset += bit_size;
+                      }
+                      bitfield_element_Value::BitFieldProp(prop) => {
+                        let ty = get_type(&prop.r#type, type_scope_index, type_scope).unwrap();
+
+                        let bit_size = ty.bit_size();
+                        let name = prop.name.id.intern();
+
+                        if members.iter().any(|m| m.name == name) {
+                          panic!("Name already taken {name:?}")
+                        }
+
+                        members.push(StructMemberType {
+                          ty: (*ty.as_prim().unwrap() | PrimitiveType::new_bitfield_data(bit_offset as u8, bit_field_size as u8)).into(),
+                          original_index: index,
+                          name,
+                          offset: prop_offset,
+                        });
+
+                        bit_offset += bit_size;
+                      }
+                      bitfield_element_Value::None => {}
+                    }
+                  }
+
+                  if bit_offset > max_bit_size {
+                    panic!("Bitfield element size {bit_offset} overflow bitfield size {max_bit_size}")
+                  }
+                }
+                RawProperty(raw_prop) => {
+                  let ty = get_type(&raw_prop.r#type, type_scope_index, type_scope).unwrap();
+
+                  let prop_offset = get_aligned_value(offset, ty.alignment() as u64);
+                  offset = prop_offset + ty.byte_size() as u64;
+
+                  min_alignment = min_alignment.max(ty.alignment() as u64);
+
+                  let name = raw_prop.name.id.intern();
+
+                  if members.iter().any(|m| m.name == name) {
+                    panic!("Name already taken {name:?}")
+                  }
+
+                  members.push(StructMemberType { ty, original_index: index, name, offset: prop_offset })
+                }
+                node => panic!("Unhandled property type {node:#?}"),
+              }
+            }
+
+            let s = StructType {
+              name,
+              members: members,
+              alignment: min_alignment,
+              size: get_aligned_value(offset, min_alignment as u64),
+            };
+
+            let _ = type_scope.set(type_scope_index, name, Rc::new(ComplexType::Struct(s)).into());
+          }
+          node => panic!("Unhandled node type {node:#?}"),
+          _ => {}
+        }
+      }
+      node => panic!("Unhandled node type {node:#?}"),
+      _ => {}
+    }
+  }
+
+  routines
+}
+
+fn declare_types(members: &RawModMembers<Token>, scope_name: IString) {
+  // TODO, get hash of node. If hash already exists in system there is no
+  // need to rebuild this node. Otherwise we evict any existing
+  // type mapped to this name and proceed to evaluate and proceed this
+  // node as a replacement type.
+  use module_members_group_Value::*;
+  for mod_member in &members.members {
+    match &mod_member {
+      AnnotationVariable(anno_var) => {
+        let name = anno_var.name.val.intern();
+        println!("Declaring ANNOTATION_VAR [{scope_name:<2}{name}]");
+      }
+      LifetimeVariable(lt_var) => {
+        let name = lt_var.name.val.intern();
+        println!("Declaring LIFETIME_VAR [{scope_name:<2}{name}]");
+      }
+      AnnotatedModMember(member) => {
+        use module_member_Value::*;
+        match &member.member {
+          RawScope(scope) => {
+            let name = scope.name.id.intern();
+            println!("Declaring SCOPE     [{scope_name:<2}{name}]");
+
+            declare_types(&scope.members, (scope_name.to_string() + name.to_str().as_str() + "/").intern());
+          }
+          RawEnum(array) => {
+            let name = array.name.id.intern();
+            println!("Declaring ENUM      [{scope_name:2}{name}]")
+          }
+          RawBitFlagEnum(flag) => {
+            let name = flag.name.id.intern();
+            println!("Declaring FLAG_ENUM [{scope_name:2}{name}]")
+          }
+          RawArray(array) => {
+            let name = array.name.id.intern();
+            println!("Declaring ARRAY     [{scope_name:2}{name}]")
+          }
+          RawUnion(union) => {
+            let name = union.name.id.intern();
+            println!("Declaring UNION     [{scope_name:2}{name}]")
+          }
+          RawStruct(strct) => {
+            let name = strct.name.id.intern();
+            println!("Declaring STRUCTURE [{scope_name:2}{name}]")
+          }
+          RawRoutine(routine) => {
+            let name = routine.name.id.intern();
+            use routine_type_Value::*;
+            match &routine.ty {
+              RawFunctionType(..) => println!("Declaring FUNCTION  [{scope_name:2}{name}]"),
+              RawProcedureType(..) => println!("Declaring PROCEDURE [{scope_name:2}{name}]",),
+              _ => {}
+            }
+          }
+          ty => unreachable!("Type not recognized {ty:#?}"),
+        }
+      }
+      ty => unreachable!("Type not recognized {ty:#?}"),
+    }
+  }
+}
+
 /// Processes the signature of a routine and stores the result into the type
 /// context.
-fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index: usize, type_scope: &mut TypeContext) {
+fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index: usize, type_scope: &mut TypeScope) {
   let name = routine.name.id.intern();
 
   let (params, ret) = match &routine.ty {
@@ -254,7 +358,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index:
   }
 }
 
-fn process_routine(routine_name: IString, type_scope_index: usize, type_scope: &TypeContext) {
+fn process_routine(routine_name: IString, type_scope_index: usize, type_scope: &TypeScope) {
   if let Some(ComplexType::Routine(old_rt)) = type_scope.get(type_scope_index, routine_name).and_then(|t| t.as_cplx_ref()) {
     let mut rt = old_rt.lock().unwrap();
 
@@ -308,7 +412,7 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
     expression_Value::RawCall(call) => process_call(call, ib),
     expression_Value::RawNum(num) => process_const_number(num, ib),
     expression_Value::AddressOf(addr) => process_address_of(ib, addr),
-    expression_Value::RawStructDeclaration(struct_decl) => process_struct_instantiation(struct_decl, ib),
+    expression_Value::RawStructInstantiation(struct_instance) => process_struct_instantiation(struct_instance, ib),
     expression_Value::RawMember(mem) => process_member_load(mem, ib),
     expression_Value::RawBlock(ast_block) => process_block(ast_block, ib),
     expression_Value::Add(add) => process_add(add, ib),
@@ -351,7 +455,6 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Extern
               let ptr_var = ib.get_variable_ptr(&sub_var, "000".intern()).unwrap();
               let ptr_par_var = ib.get_variable_ptr(&var_data, "000".intern()).unwrap();
               ib.push_ssa(PTR_MEM_CALC, ptr_var.ty_var.into(), &[SMO::IROp(ptr_par_var.store)]);
-              dbg!(&ib);
               sub_var.store = ib.pop_stack().unwrap();
 
               Some(sub_var)
@@ -514,7 +617,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
           let mut _new_name: String = routine.name.to_string();
           let mut generic_args = Vec::new();
 
-          let mut body = RoutineBody::new();
+          let mut routine_body = RoutineBody::new();
 
           let mut param_queue: VecDeque<(usize, usize)> = routine.body.vars.lex_scopes[0].iter().map(|i| (0, *i)).collect();
 
@@ -530,19 +633,20 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
             let param_index = param_pos.usize();
 
             if let Some(arg_id) = args.get(param_index) {
-              let arg_var = ib.get_base_variable_from_node_mut(*arg_id).expect("Could not extract variable data");
-              let MemberName::IdMember(param_name) = param_var.name else { unreachable!() };
+              let arg_var = ib.get_base_variable_from_node(*arg_id).expect("Could not extract variable data");
 
               let param_ty: Type = { param_var.ty.clone() };
 
               use BaseType::*;
               use ComplexType::*;
 
-              match (param_ty.base_type(), arg_var.ty.base_type()) {
+              let arg_var_ty = arg_var.ty_var.ty(&ib.body);
+
+              match (param_ty.base_type(), arg_var_ty.base_type()) {
                 (Complex(UNRESOLVED { name: param_type_name }), Complex(UNRESOLVED { name: own_name })) => {
                   let own_name = *own_name;
-                  if let Some(ty) = body.type_context.get(0, *param_type_name) {
-                    arg_var.ty = ty.clone();
+                  dbg!(&routine_body);
+                  if let Some(ty) = routine_body.type_context.get(0, *param_type_name) {
                     let _ = ib.body.type_context.replace(0, own_name, ty.clone());
                   } else if tries == 0 && !param_queue.is_empty() {
                     // Try to match this after other types have been defined.
@@ -554,16 +658,16 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
                 (_, Complex(UNRESOLVED { name: own_name })) => {
                   let own_name = *own_name;
                   let ty = param_ty;
-                  //arg_var.ty = ty.clone();
                   let _ = ib.body.type_context.replace(0, own_name, ty.clone());
                 }
                 (Complex(UNRESOLVED { name }), _) => {
-                  generic_args.push(name.to_string() + ":" + &arg_var.ty.to_string());
-                  let _ = body.type_context.set(0, *name, arg_var.ty.clone());
+                  generic_args.push(name.to_string() + ":" + &arg_var_ty.to_string());
+                  dbg!((name, &arg_var_ty));
+                  let _ = routine_body.type_context.set(0, *name, arg_var_ty.clone());
                 }
                 _ => {
-                  if arg_var.ty != param_ty {
-                    println!("Type missmatch {param_index} arg({}) != param({})", param_ty, arg_var.ty)
+                  if arg_var_ty != param_ty {
+                    println!("Type missmatch {param_index} arg({}) != param({})", param_ty, arg_var_ty)
                   }
                 }
               }
@@ -580,7 +684,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
             .map(|r| match r.base_type() {
               BaseType::Complex(cplx) => match cplx {
                 ComplexType::UNRESOLVED { name } => {
-                  if let Some(ty) = body.type_context.get(0, *name) {
+                  if let Some(ty) = routine_body.type_context.get(0, *name) {
                     if r.is_pointer() {
                       ty.as_pointer()
                     } else {
@@ -599,13 +703,21 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
           if let Some(_) = ib.global_ty_ctx.get(0, name) {
             ib.push_variable(name, ib.global_ty_ctx.get(0, name).unwrap().clone())
           } else {
-            let new_routine = RoutineType { name, parameters: routine.parameters.clone(), body, returns: _new_returns, ast: routine.ast.clone() };
+            dbg!(&routine_body);
+            let new_routine = RoutineType {
+              name,
+              parameters: routine.parameters.clone(),
+              body: routine_body,
+              returns: _new_returns,
+              ast: routine.ast.clone(),
+            };
 
             let _ = routine;
 
             let _ = ib.global_ty_ctx.set(0, name, Rc::new(ComplexType::Routine(Mutex::new(new_routine))).into());
 
             process_routine(name, 0, &ib.global_ty_ctx);
+            println!("-------------------");
 
             ib.push_variable(name, ib.global_ty_ctx.get(0, name).unwrap().clone())
           }
@@ -621,7 +733,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
   ib.pop_stack();
 }
 
-fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &mut IRBuilder) {
+fn process_struct_instantiation(struct_decl: &RawStructInstantiation<Token>, ib: &mut IRBuilder) {
   let struct_type_name = struct_decl.name.id.intern();
 
   if let Some(s_type) = ib.get_type(struct_type_name) {
@@ -734,9 +846,10 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
     process_statement(stmt, ib, i == len - 1);
   }
 
+  use block_expression_group_3_Value::*;
   let _returns = match &ast_block.exit {
-    block_expression_group_1_Value::None => false,
-    block_expression_group_1_Value::RawBreak(brk) => {
+    None => false,
+    RawBreak(brk) => {
       if !brk.label.id.is_empty() {
         let name = brk.label.id.to_token();
         if let Some((.., end_block)) = ib.loop_stack.iter().find(|(_, head, _)| ib.body.blocks[*head].name == name) {
@@ -761,12 +874,12 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
 }
 
 fn process_statement(stmt: &statement_Value<Token>, ib: &mut IRBuilder, last_value: bool) {
+  use statement_Value::*;
   match stmt {
-    statement_Value::RawAssignment(assign) => process_assign_statement(assign, ib),
-    statement_Value::Expression(expr) => process_expression_statement(expr, ib, last_value),
-    statement_Value::RawLoop(loop_) => process_loop(loop_, ib),
-    statement_Value::RawMatch(match_) => process_match(match_, ib),
-
+    RawAssignment(assign) => process_assign_statement(assign, ib),
+    Expression(expr) => process_expression_statement(expr, ib, last_value),
+    RawLoop(loop_) => process_loop(loop_, ib),
+    RawMatch(match_) => process_match(match_, ib),
     d => todo!("process statement: {d:#?}"),
   }
 }
@@ -989,60 +1102,62 @@ pub fn get_type_from_sm(ir_type: &type_Value<Token>, ib: &mut IRBuilder) -> Opti
   get_type(ir_type, ib.g_ty_ctx_index, ib.global_ty_ctx)
 }
 
-pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &TypeContext) -> Option<crate::types::Type> {
+pub fn get_type(ir_type: &type_Value<Token>, scope_index: usize, type_context: &TypeScope) -> Option<crate::types::Type> {
+  use type_Value::*;
   match ir_type {
-    type_Value::Type_Flag(_) => Some((PrimitiveType::Flag | PrimitiveType::b1).into()),
-    type_Value::Type_u8(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b8).into()),
-    type_Value::Type_u16(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b16).into()),
-    type_Value::Type_u32(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b32).into()),
-    type_Value::Type_u64(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b64).into()),
-    type_Value::Type_i8(_) => Some((PrimitiveType::Signed | PrimitiveType::b8).into()),
-    type_Value::Type_i16(_) => Some((PrimitiveType::Signed | PrimitiveType::b16).into()),
-    type_Value::Type_i32(_) => Some((PrimitiveType::Signed | PrimitiveType::b32).into()),
-    type_Value::Type_i64(_) => Some((PrimitiveType::Signed | PrimitiveType::b64).into()),
-    type_Value::Type_f32(_) => Some((PrimitiveType::Float | PrimitiveType::b32).into()),
-    type_Value::Type_f64(_) => Some((PrimitiveType::Float | PrimitiveType::b64).into()),
-    type_Value::Type_f32v2(_) => Some((PrimitiveType::Float | PrimitiveType::b32 | PrimitiveType::v2).into()),
-    type_Value::Type_f32v4(_) => Some((PrimitiveType::Float | PrimitiveType::b32 | PrimitiveType::v4).into()),
-    type_Value::Type_f64v2(_) => Some((PrimitiveType::Float | PrimitiveType::b64 | PrimitiveType::v2).into()),
-    type_Value::Type_f64v4(_) => Some((PrimitiveType::Float | PrimitiveType::b64 | PrimitiveType::v4).into()),
-    type_Value::ReferenceType(name) => {
-      if let Some(ty) = type_context.get(scope_index, name.name.id.intern()) {
+    Type_Flag(_) => Some((PrimitiveType::Flag | PrimitiveType::b1).into()),
+    Type_u8(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b8).into()),
+    Type_u16(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b16).into()),
+    Type_u32(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b32).into()),
+    Type_u64(_) => Some((PrimitiveType::Unsigned | PrimitiveType::b64).into()),
+    Type_i8(_) => Some((PrimitiveType::Signed | PrimitiveType::b8).into()),
+    Type_i16(_) => Some((PrimitiveType::Signed | PrimitiveType::b16).into()),
+    Type_i32(_) => Some((PrimitiveType::Signed | PrimitiveType::b32).into()),
+    Type_i64(_) => Some((PrimitiveType::Signed | PrimitiveType::b64).into()),
+    Type_f32(_) => Some((PrimitiveType::Float | PrimitiveType::b32).into()),
+    Type_f64(_) => Some((PrimitiveType::Float | PrimitiveType::b64).into()),
+    Type_f32v2(_) => Some((PrimitiveType::Float | PrimitiveType::b32 | PrimitiveType::v2).into()),
+    Type_f32v4(_) => Some((PrimitiveType::Float | PrimitiveType::b32 | PrimitiveType::v4).into()),
+    Type_f64v2(_) => Some((PrimitiveType::Float | PrimitiveType::b64 | PrimitiveType::v2).into()),
+    Type_f64v4(_) => Some((PrimitiveType::Float | PrimitiveType::b64 | PrimitiveType::v4).into()),
+    ComplexPtr(ptr) => {
+      if let Some(ty) = type_context.get(scope_index, ptr.name.id.intern()) {
         Some(ty.as_pointer())
       } else {
-        None
+        Option::None
       }
     }
-    type_Value::NamedType(name) => {
+    NamedType(name) => {
       if let Some(ty) = type_context.get(scope_index, name.name.id.intern()) {
         Some(ty.clone())
       } else {
-        None
+        Option::None
       }
     }
-    _t => None,
+    _t => Option::None,
   }
 }
 
 pub fn get_type_name(ir_type: &type_Value<Token>) -> IString {
+  use type_Value::*;
   match ir_type {
-    type_Value::Type_Flag(_) => "Flag".intern(),
-    type_Value::Type_u8(_) => "u8".intern(),
-    type_Value::Type_u16(_) => "u16".intern(),
-    type_Value::Type_u32(_) => "u32".intern(),
-    type_Value::Type_u64(_) => "u64".intern(),
-    type_Value::Type_i8(_) => "i8".intern(),
-    type_Value::Type_i16(_) => "i16".intern(),
-    type_Value::Type_i32(_) => "i32".intern(),
-    type_Value::Type_i64(_) => "i64".intern(),
-    type_Value::Type_f32(_) => "f32".intern(),
-    type_Value::Type_f64(_) => "f64".intern(),
-    type_Value::Type_f32v2(_) => "f32v2".intern(),
-    type_Value::Type_f32v4(_) => "f32v4".intern(),
-    type_Value::Type_f64v2(_) => "f64v2".intern(),
-    type_Value::Type_f64v4(_) => "f64v4".intern(),
-    type_Value::ReferenceType(name) => name.name.id.intern(),
-    type_Value::NamedType(name) => name.name.id.intern(),
+    Type_Flag(_) => "Flag".intern(),
+    Type_u8(_) => "u8".intern(),
+    Type_u16(_) => "u16".intern(),
+    Type_u32(_) => "u32".intern(),
+    Type_u64(_) => "u64".intern(),
+    Type_i8(_) => "i8".intern(),
+    Type_i16(_) => "i16".intern(),
+    Type_i32(_) => "i32".intern(),
+    Type_i64(_) => "i64".intern(),
+    Type_f32(_) => "f32".intern(),
+    Type_f64(_) => "f64".intern(),
+    Type_f32v2(_) => "f32v2".intern(),
+    Type_f32v4(_) => "f32v4".intern(),
+    Type_f64v2(_) => "f64v2".intern(),
+    Type_f64v4(_) => "f64v4".intern(),
+    ComplexPtr(name) => name.name.id.intern(),
+    NamedType(ptr) => ptr.name.id.intern(),
     _t => Default::default(),
   }
 }

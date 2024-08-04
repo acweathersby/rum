@@ -1,0 +1,38 @@
+IMPORT ../common/primitive as prim
+IGNORE { c:sp c:nl }
+
+<> annotation_declaration > annotation{1} "=>"{2} annotation_expression^expr
+
+  :ast { t_AnnotationVariable, name: $1, expr }
+
+
+<> annotation_expression >
+
+  annotation_expression "+"{2} annotation_expression{1}
+
+    :ast { t_AddAnnotation, left:$1, right:$3 }
+
+  | annotation_expression "-"{2} annotation_expression{1}
+
+    :ast { t_RemoveAnnotation, left:$1, right:$3 }
+
+  | prim::var
+
+
+<> annotation >  tk:( "#" ( c:id | "-" )(+) )
+
+  :ast { t_Annotation, val: str($1<1,0>) }
+
+
+<> lifetime_variable > lifetime "=>" prim::var(+"+")^lifetimes
+
+  :ast { t_LifetimeVariable, name: $1, lifetimes }
+
+
+<> lifetime 
+
+  > tk:( "'" ( c:id | "-" | "_" )(+) )
+
+    :ast { t_Lifetime, val: str($1<1,0>) }
+
+

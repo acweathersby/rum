@@ -1,6 +1,6 @@
 use crate::{
   ir::{
-    ir_build_module::process_types,
+    ir_build_module::process_module_members,
     ir_builder::{IRBuilder, SuccessorMode},
     ir_graph::*,
   },
@@ -10,9 +10,9 @@ use crate::{
 
 #[test]
 fn variable_contexts() {
-  let mut type_scope = TypeContext::new();
+  let mut type_scope = TypeScope::new();
 
-  process_types(
+  process_module_members(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 Temp => [
@@ -20,7 +20,8 @@ Temp => [
   val:u32
 ]"##,
     )
-    .unwrap(),
+    .unwrap()
+    .members,
     0,
     &mut type_scope,
   );
@@ -49,9 +50,9 @@ Temp => [
 
 #[test]
 fn stores() {
-  let mut type_scope = TypeContext::new();
+  let mut type_scope = TypeScope::new();
 
-  process_types(
+  process_module_members(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
@@ -59,7 +60,8 @@ fn stores() {
 
 "##,
     )
-    .unwrap(),
+    .unwrap()
+    .members,
     0,
     &mut type_scope,
   );
@@ -87,9 +89,9 @@ fn stores() {
 
 #[test]
 fn blocks() {
-  let mut type_scope = TypeContext::new();
+  let mut type_scope = TypeScope::new();
 
-  process_types(
+  process_module_members(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
@@ -97,7 +99,8 @@ fn blocks() {
 
 "##,
     )
-    .unwrap(),
+    .unwrap()
+    .members,
     0,
     &mut type_scope,
   );

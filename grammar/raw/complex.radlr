@@ -2,11 +2,17 @@ IGNORE { c:sp c:nl tk:cmt::comment }
 
 IMPORT type as ty
 IMPORT ./expression as expr
+IMPORT annotation as anno
 IMPORT ../common/primitive as prim
 IMPORT ../common/comment as cmt
 
 
-<> flag_val > tk:( "flag" c:num+ )
+<> array 
+  
+  > prim::var^name "=>" anno::lifetime?^allocator_binding "[" ty::type^ty ";" prim::int^size ? "]"
+
+      :ast  { t_RawArray, allocator_binding, name, ty, size, tok }
+
 
 <> enum 
   
@@ -30,11 +36,14 @@ IMPORT ../common/comment as cmt
     :ast  { t_EnumValue, name, expression  }
 
 
+<> flag_val > tk:( "flag" c:num+ )
+
+
 <> structure 
   
-  > prim::var^name "=>" "[" property(+)^properties "]"
+  > prim::var^name "=>" anno::lifetime?^allocator_binding "[" property(+",")^properties ","(*) "]"
 
-    :ast  { t_RawStruct, name, properties, tok }
+    :ast  { t_RawStruct, allocator_binding, name, properties, tok }
 
 
 <> property 
@@ -69,15 +78,18 @@ IMPORT ../common/comment as cmt
       :ast  { t_RawProperty, name, type, tok, optional: bool($optional)  }
 
 
-+> expr::expression_types > structural_declaration
++> expr::expression_types > structural_instantiation
+
 
 +> expr::term > region_access
 
-<> structural_declaration 
 
-  > prim::var^name "[" structure_member_initializer(*)^inits "]"
+<> structural_instantiation 
 
-    :ast  { t_RawStructDeclaration, name, inits, tok }
+  > ( "heap" anno::lifetime | "heap" :ast { t_GlobalHeapBinding })?^allocator_binding prim::var^name "[" structure_member_initializer(*",")^inits ","(*) "]"
+
+    :ast  { t_RawStructInstantiation, allocator_binding, name, inits, tok }
+
 
 <> region_access
 
@@ -92,46 +104,3 @@ IMPORT ../common/comment as cmt
 
     :ast  { t_RawStructMemberInit, name, expression  }
 
-
-/*
-
-Possible representation of the "inline grammar" form for the raw parser.
-
-() <- #parse structure(ctx) { 
-  name := #prim::id
-  
-  "["
-
-  properties := #properties(ctx)
-
-  "]"
-
-  ctx.add_property(Property = name, properties)
-}
-
-[*StructProperty] <- #parse properties(ctx) {
-  
-  array: [StructProperty]
-
-  for(prop : #property(+",")) {
-    array.push(prop)
-  }
-
-  <- array
-}
-
-<> properties > property(+",")
-
-
-StructProperty <- #parse property {
-
-}
-
-
-name :Structure { 
-  
-}
-
-t: u32[32] = 0 
-
-*/
