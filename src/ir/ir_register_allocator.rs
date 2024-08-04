@@ -101,27 +101,27 @@ impl Debug for RegisterAssignement {
 
 struct SelectionPack<'imm, 'vars, 'assigns> {
   reg_pack:    &'imm RegisterVariables,
-  graph:       &'imm [IRGraphNode],
+  body:        &'imm RoutineBody,
   reg_vars:    &'vars mut [RegisterAssignement],
   reg_assigns: &'assigns mut Vec<VarId>,
 }
 
-pub fn assign_registers(ctx: &RoutineBody, reg_pack: &RegisterVariables) -> (Vec<VarId>, Vec<RegisterAssignement>) {
-  let mut register_variables = vec![RegisterAssignement::default(); ctx.graph.len()];
+pub fn assign_registers(body: &RoutineBody, reg_pack: &RegisterVariables) -> (Vec<VarId>, Vec<RegisterAssignement>) {
+  let mut register_variables = vec![RegisterAssignement::default(); body.graph.len()];
   let reg_vars = &mut register_variables;
 
-  create_and_diffuse_temp_variables(ctx, reg_vars);
+  create_and_diffuse_temp_variables(body, reg_vars);
 
-  let block_ordering = create_block_ordering(ctx);
+  let block_ordering = create_block_ordering(body);
 
   // Assign registers to blocks.
 
-  let RoutineBody { graph, blocks, .. } = ctx;
+  let RoutineBody { graph, blocks, .. } = body;
 
   let mut spilled_variables = Vec::new();
   let mut assigned_registers = vec![VarId::default(); reg_pack.registers.len()];
 
-  let mut sp = SelectionPack { graph, reg_assigns: &mut assigned_registers, reg_vars, reg_pack };
+  let mut sp = SelectionPack { body, reg_assigns: &mut assigned_registers, reg_vars, reg_pack };
 
   enum AllocateResultReg {
     None,
@@ -158,7 +158,9 @@ pub fn assign_registers(ctx: &RoutineBody, reg_pack: &RegisterVariables) -> (Vec
     for block_node_index in 0..block_nodes.len() {
       let node_id = block_nodes[block_node_index];
 
-      let SelectionPack { reg_pack, graph, .. } = sp;
+      let SelectionPack { reg_pack, body: graph, .. } = sp;
+
+      let graph = &body.graph;
 
       match &graph[node_id.usize()] {
         IRGraphNode::SSA { op, operands, .. } => match op {
@@ -192,7 +194,7 @@ pub fn assign_registers(ctx: &RoutineBody, reg_pack: &RegisterVariables) -> (Vec
               AllocateResultReg::AllocateParameter => {
                 debug_assert_eq!(block_id.usize(), 0, "Can only assign param register in the root block");
 
-                let ty = graph[node_id.usize()].ty();
+                let ty = graph[node_id.usize()].ty(&body.vars);
                 let var_id = graph[node_id.usize()].var_id();
 
                 debug_assert!(var_id.is_valid());
@@ -223,11 +225,10 @@ pub fn assign_registers(ctx: &RoutineBody, reg_pack: &RegisterVariables) -> (Vec
             }
           }
         },
-        IRGraphNode::PHI { result_ty, operands, .. } => {
+        IRGraphNode::PHI { operands, .. } => {
           allocate_op_register(0, node_id, node_id, block_id, &mut sp, &mut None);
         }
         IRGraphNode::Const { .. } => {}
-        IRGraphNode::VAR { .. } => {}
       }
     }
   }
@@ -235,7 +236,7 @@ pub fn assign_registers(ctx: &RoutineBody, reg_pack: &RegisterVariables) -> (Vec
   dbg!(&reg_vars);
 
   for (index, (node, reg_var)) in graph.iter().zip(reg_vars.iter()).enumerate() {
-    println!("{index: >5} {node}");
+    println!("{index: >5}");
     if node.is_ssa() {
       print!("     ");
       println!("{reg_var}");
@@ -246,20 +247,20 @@ pub fn assign_registers(ctx: &RoutineBody, reg_pack: &RegisterVariables) -> (Vec
 }
 
 fn allocate_op_register(op_index: usize, op_node_id: IRGraphId, node_id: IRGraphId, block_id: BlockId, sp: &mut SelectionPack<'_, '_, '_>, blocked_register: &mut Option<Reg>) {
-  let SelectionPack { reg_vars: reg_data, graph, .. } = sp;
+  let SelectionPack { reg_vars: reg_data, body, .. } = sp;
 
-  let node = &graph[op_node_id.usize()];
+  let node = &body.graph[op_node_id.usize()];
   let var_id = reg_data[op_node_id.usize()].vars[0];
 
   if node_id.0 == 31 && op_index == 2 {
-    println!("{}", graph[node_id.usize()]);
+    //println!("{}", graph[node_id.usize()]);
   }
 
   if node.is_const() {
     // No need to assign a register to constants.
   } else if var_id.is_valid() {
     // see if this var_id is already loaded into a register.
-    if let Some(vals) = get_register_for_var(var_id, node_id, block_id, node.ty(), *blocked_register, sp) {
+    if let Some(vals) = get_register_for_var(var_id, node_id, block_id, node.ty(&body.vars), *blocked_register, sp) {
       set_register(vals, node_id, op_index, sp);
       // Prevent the next operand from stealing the reg assigned to this one.
       *blocked_register = Some(vals.0);
@@ -348,7 +349,7 @@ fn get_register_for_var(
     let mut candidates = vec![];
 
     for register_index in allowed_registers {
-      let SelectionPack { reg_vars: reg_data, graph, reg_pack, reg_assigns } = sp;
+      let SelectionPack { reg_vars: reg_data, body, reg_pack, reg_assigns } = sp;
 
       if Some(reg_pack.registers[*register_index]) == blocked_register {
         continue;
@@ -359,8 +360,8 @@ fn get_register_for_var(
       let mut spill = None;
 
       // Find the next use of this variable.
-      for node_index in (node_id.usize() + 1)..graph.len() {
-        let node = &graph[node_index];
+      for node_index in (node_id.usize() + 1)..body.graph.len() {
+        let node = &body.graph[node_index];
         let reg = &reg_data[node_index];
 
         if node.block_id() != block_id {
@@ -371,7 +372,7 @@ fn get_register_for_var(
           break;
         }
 
-        if node_index == graph.len() - 1 {
+        if node_index == body.graph.len() - 1 {
           // The variable is no longer accessed and the associated register can be freely
           // reused.
           score = 0;
@@ -457,22 +458,22 @@ fn create_and_diffuse_temp_variables(ctx: &RoutineBody, reg_data: &mut [Register
   // Unsure all non-const and non-var nodes have a variable id.
   for ((id, node), reg_data) in graph.iter().enumerate().zip(reg_data.iter_mut()) {
     match node {
-      IRGraphNode::PHI { var_id, .. } => {
-        if var_id.is_valid() {
-          reg_data.vars[0] = *var_id;
+      IRGraphNode::PHI { ty_var, .. } => {
+        if ty_var.var().is_valid() {
+          reg_data.vars[0] = ty_var.var();
         } else {
           reg_data.vars[0] = VarId::new(id as u32);
         }
       }
 
-      IRGraphNode::SSA { op, var_id, .. } => {
+      IRGraphNode::SSA { op, ty_var, .. } => {
         if matches!(op, IROp::GR | IROp::GE) {
           // Ignore nodes that aren't variable producing
           continue;
         }
 
-        if var_id.is_valid() {
-          reg_data.vars[0] = *var_id;
+        if ty_var.var().is_valid() {
+          reg_data.vars[0] = ty_var.var();
         } else {
           reg_data.vars[0] = VarId::new(id as u32);
         }

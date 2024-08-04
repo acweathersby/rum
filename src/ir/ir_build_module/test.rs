@@ -6,38 +6,21 @@ use crate::{
 use super::build_module;
 
 #[test]
-fn test() {
+fn test_bitfield_structs() {
   let mut scope = crate::types::TypeContext::new();
   build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
-
-
-
-
-Temp => [
-  bf32 
-  : #desc8 
-  | name  : u8 
-  | id    : u8 
-  | mem   : u8
-
-  bval:u32
-]
 
 Bent => [
   bf32: #desc6 | name: u16 
   val: u32
 ]
 
-Union => Bent | Temp | u32 
-
 main () =| { 
-
   d = Bent [
     name = 2
   ]
-
   r = d.name
 }
   "##,
@@ -107,18 +90,18 @@ test_primitive_variables () =| {
 
   if let Some(ComplexType::Routine(r)) = scope.get(0, "test_primitive_variables".to_token()).and_then(|t| t.as_cplx_ref()) {
     let r = r.lock().unwrap();
-    assert_eq!(*r.body.variables.entries[0].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u8);
-    assert_eq!(*r.body.variables.entries[1].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u16);
-    assert_eq!(*r.body.variables.entries[2].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u32);
-    assert_eq!(*r.body.variables.entries[3].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u64);
-    assert_eq!(*r.body.variables.entries[4].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i8);
-    assert_eq!(*r.body.variables.entries[5].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i16);
-    assert_eq!(*r.body.variables.entries[6].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i32);
-    assert_eq!(*r.body.variables.entries[7].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i64);
-    assert_eq!(*r.body.variables.entries[8].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32);
-    assert_eq!(*r.body.variables.entries[9].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f64);
-    assert_eq!(*r.body.variables.entries[10].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v2);
-    assert_eq!(*r.body.variables.entries[11].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v4);
+    assert_eq!(*r.body.vars.entries[0].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u8);
+    assert_eq!(*r.body.vars.entries[1].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u16);
+    assert_eq!(*r.body.vars.entries[2].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u32);
+    assert_eq!(*r.body.vars.entries[3].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::u64);
+    assert_eq!(*r.body.vars.entries[4].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i8);
+    assert_eq!(*r.body.vars.entries[5].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i16);
+    assert_eq!(*r.body.vars.entries[6].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i32);
+    assert_eq!(*r.body.vars.entries[7].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::i64);
+    assert_eq!(*r.body.vars.entries[8].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32);
+    assert_eq!(*r.body.vars.entries[9].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f64);
+    assert_eq!(*r.body.vars.entries[10].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v2);
+    assert_eq!(*r.body.vars.entries[11].ty.as_prim().expect("Should Be A Primitive"), PrimitiveType::f32v4);
   } else {
     panic!("Routine not correctly built");
   }

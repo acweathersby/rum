@@ -97,8 +97,8 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
   let mut offsets = BTreeMap::<VarId, u64>::new();
   let mut rsp_offset = 0;
 
-  fn fun_name(node: &IRGraphNode, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
-    let ty = node.ty();
+  fn fun_name(node: &IRGraphNode, body: &RoutineBody, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
+    let ty = node.ty(&body.vars);
     let id = node.var_id();
 
     debug_assert!(id.is_valid());
@@ -122,14 +122,14 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
   }
 
   for node in ctx.body.graph.iter() {
-    if matches!(node, IRGraphNode::VAR { .. }) {
+    /* if matches!(node, IRGraphNode::VAR { .. }) {
       fun_name(node, &mut offsets, &mut rsp_offset);
-    }
+    } */
   }
 
   for var_id in spilled_variables {
     if !offsets.contains_key(var_id) {
-      fun_name(&ctx.body.graph[*var_id], &mut offsets, &mut rsp_offset);
+      fun_name(&ctx.body.graph[*var_id], body, &mut offsets, &mut rsp_offset);
     }
   }
 
@@ -145,7 +145,7 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
       let node = &body.graph[index];
       let assigns = &regist_assignments[index];
 
-      println!("{index:8}: {node:}");
+      //println!("{index:8}: {node:}");
       println!("               {assigns:}");
 
       let old_offset = ctx.binary.len();
@@ -214,8 +214,9 @@ fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
 
 pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, ctx: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
   const POINTER_SIZE: u64 = 64;
+  let out_ty = node.ty(&ctx.body.vars);
   use Arg::*;
-  if let IRGraphNode::SSA { op, block_id, result_ty: out_ty, operands, .. } = node {
+  if let IRGraphNode::SSA { op, block_id, ty_var, operands, .. } = node {
     let regs = reg_data.reg;
     let vars = reg_data.vars;
     let spills = reg_data.spills;
@@ -224,7 +225,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     for (op_index, spill_var) in spills.iter().enumerate() {
       if spill_var.is_valid() {
         let node = &ctx.body.graph[*spill_var];
-        let ty = node.ty();
+        let ty = node.ty(&ctx.body.vars);
         let bit_size = ty.bit_size();
         let offset = *so.get(spill_var).unwrap();
         let reg = match op_index {
@@ -245,7 +246,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
         let node = &ctx.body.graph[var_id];
 
-        let ty = node.ty();
+        let ty = node.ty(&ctx.body.vars);
 
         let bit_size = ty.bit_size();
 
@@ -288,7 +289,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
        */
       IROp::STORE => {
         let [_, op2] = operands;
-        let CompileContext { body: ctx, binary: bin, .. } = ctx;
+        let CompileContext { binary: bin, .. } = ctx;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -301,8 +302,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
         let dst_arg = regs[0].as_reg_op();
 
-        if ctx.graph[*op2].is_const() {
-          let const_ = ctx.graph[*op2].constant().unwrap();
+        if ctx.body.graph[*op2].is_const() {
+          let const_ = ctx.body.graph[*op2].constant().unwrap();
           encode(bin, &mov, bit_size, dst_arg, Arg::from_const(const_), None);
         } else {
           let src_arg = regs[2].as_reg_op();
@@ -313,7 +314,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
       }
       IROp::ADDR => {
         let [op1, _] = operands;
-        let CompileContext { body: ctx, binary: bin, .. } = ctx;
+        let CompileContext { binary: bin, .. } = ctx;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -333,7 +334,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         }
       }
       IROp::PTR_MEM_CALC => {
-        let CompileContext { body: ctx, binary: bin, .. } = ctx;
+        let CompileContext { binary: bin, .. } = ctx;
 
         debug_assert!(regs[0].is_valid());
         let dest_reg = regs[0].as_reg_op();
@@ -341,11 +342,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         debug_assert!(regs[1].is_valid());
         let base_reg = regs[1].as_reg_op();
 
-        let (offset) = match ctx.graph[vars[0]] {
-          IRGraphNode::VAR { var_index, .. } => match &ctx.variables.entries[var_index].ty.base_type() {
-            BaseType::Complex(ComplexType::StructMember(mem)) => mem.offset,
-            _ => unreachable!(),
-          },
+        let (offset) = match out_ty.base_type() {
+          BaseType::Complex(ComplexType::StructMember(mem)) => mem.offset,
           _ => unreachable!(),
         };
 
@@ -365,7 +363,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
       IROp::MEM_STORE => {
         let [op1, op2] = operands;
-        let CompileContext { body: ctx, binary: bin, .. } = ctx;
+        let CompileContext { binary: bin, .. } = ctx;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -375,17 +373,15 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         // need to be stored to memory, and can be just preserved in the op1 register.
 
         let dest_ptr = regs[1].as_mem_op();
-        let offset_is_const = ctx.graph[*op2].is_const();
-        let data = if offset_is_const { Arg::from_const(ctx.graph[*op2].constant().unwrap()) } else { regs[2].as_reg_op() };
-
-        dbg!(out_ty);
+        let offset_is_const = ctx.body.graph[*op2].is_const();
+        let data = if offset_is_const { Arg::from_const(ctx.body.graph[*op2].constant().unwrap()) } else { regs[2].as_reg_op() };
 
         encode(bin, &mov, out_ty.as_deref().bit_size(), dest_ptr, data, None);
       }
 
       IROp::MEM_LOAD => {
         let [op1, _] = operands;
-        let CompileContext { body: ctx, binary: bin, .. } = ctx;
+        let CompileContext { binary: bin, .. } = ctx;
 
         let dst_reg = regs[0].as_reg_op();
         let src_ptr = regs[1].as_mem_op();

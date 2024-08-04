@@ -167,6 +167,10 @@ impl PrimitiveType {
     }
   }
 
+  pub const fn raw(&self) -> u64 {
+    self.0
+  }
+
   pub fn bit_size(&self) -> u64 {
     self.sub_type_bit_size() * self.vec_size()
   }

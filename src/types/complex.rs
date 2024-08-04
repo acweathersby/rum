@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-  ir::ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, VarId},
+  ir::ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, TypeVar, VarId},
   parser::script_parser::{RawRoutine, Token},
 };
 use std::{
@@ -155,35 +155,26 @@ impl Debug for RoutineType {
 
 #[derive(Default, Clone)]
 pub struct RoutineBody {
-  pub graph:     Vec<IRGraphNode>,
-  pub blocks:    Vec<Box<IRBlock>>,
-  pub resolved:  bool,
-  pub variables: RoutineVariables,
+  pub graph:    Vec<IRGraphNode>,
+  pub blocks:   Vec<Box<IRBlock>>,
+  pub resolved: bool,
+  pub vars:     RoutineVariables,
 }
 
 impl IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>, body: &RoutineBody) -> std::fmt::Result {
     match self {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val)),
-      IRGraphNode::VAR { name, ty, var_index, var_id, is_param, .. } => {
-        if *is_param {
-          f.write_fmt(format_args!("PARAM {} [{:03}]                       ", var_id, var_index))?;
-          body.variables.fmt(f, var_index.usize())
-        } else {
-          f.write_fmt(format_args!("VAR   {} [{:03}]                       ", var_id, var_index))?;
-          body.variables.fmt(f, var_index.usize())
-        }
-      }
-      IRGraphNode::PHI { result_ty: out_ty, operands, .. } => f.write_fmt(format_args!(
+      IRGraphNode::PHI { ty_var, operands, .. } => f.write_fmt(format_args!(
         "      {:28} = PHI {}",
-        format!("{:?}", out_ty),
+        format!("{:?}", ty_var.ty(&body.vars)),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  ")
       )),
-      IRGraphNode::SSA { block_id, result_ty: out_ty, op, operands, var_id, .. } => f.write_fmt(format_args!(
+      IRGraphNode::SSA { block_id, op, operands, ty_var, .. } => f.write_fmt(format_args!(
         "b{:03}  {} {:28} = {:15} {}",
         block_id,
-        var_id,
-        format!("{:?}", out_ty),
+        ty_var.var(),
+        format!("{:?}", ty_var.ty(&body.vars)),
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
@@ -197,7 +188,7 @@ impl Display for RoutineBody {
       f.write_fmt(format_args!("\n{index: >5}: "))?;
       node.fmt(f, self)?;
     }
-    Display::fmt(&self.variables, f);
+    Display::fmt(&self.vars, f);
 
     Ok(())
   }
@@ -289,46 +280,37 @@ impl RoutineVariables {
 
 #[derive(Clone)]
 pub struct InternalVData {
-  pub name:              MemberName,
-  pub ty:                Type,
-  pub var_index:         VarId,
-  pub var_id:            VarId,
-  pub par_id:            VarId,
-  pub parameter_index:   VarId,
-  pub sub_members:       VarId,
-  pub ptr_id:            VarId,
-  pub block_index:       BlockId,
-  pub store:             IRGraphId,
-  pub decl:              IRGraphId,
-  pub is_pointer:        bool,
-  pub is_member_pointer: bool,
+  pub name:            MemberName,
+  pub ty:              Type,
+  pub ty_var:          TypeVar,
+  pub par_id:          VarId,
+  pub parameter_index: VarId,
+  pub sub_members:     VarId,
+  pub ptr_id:          VarId,
+  pub store:           IRGraphId,
+  pub is_pointer:      bool,
+  pub is_member:       bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExternalVData {
-  pub __internal_var_index: VarId,
-  pub id:                   VarId,
-  pub block_index:          BlockId,
-  pub is_member_pointer:    bool,
-  pub name:                 MemberName,
-  pub ty:                   Type,
-  pub store:                IRGraphId,
-  pub decl:                 IRGraphId,
-  pub is_pointer:           bool,
+  pub ty_var:            TypeVar,
+  pub is_member_pointer: bool,
+  pub name:              MemberName,
+  pub ty:                Type,
+  pub store:             IRGraphId,
+  pub is_pointer:        bool,
 }
 
 impl From<&InternalVData> for ExternalVData {
   fn from(value: &InternalVData) -> Self {
     ExternalVData {
-      id:                   value.var_id,
-      block_index:          value.block_index,
-      __internal_var_index: value.var_index,
-      is_member_pointer:    value.is_member_pointer,
-      name:                 value.name,
-      ty:                   value.ty.clone(),
-      store:                value.store,
-      decl:                 value.decl,
-      is_pointer:           value.is_pointer,
+      ty_var:            value.ty_var,
+      is_member_pointer: value.is_member,
+      name:              value.name,
+      ty:                value.ty.clone(),
+      store:             value.store,
+      is_pointer:        value.is_pointer,
     }
   }
 }

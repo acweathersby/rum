@@ -1,7 +1,8 @@
 use crate::{
   container::ArrayVec,
   istring::*,
-  types::{ConstVal, Type},
+  parser::script_parser::Var,
+  types::{ConstVal, PrimitiveType, RoutineVariables, Type},
 };
 use std::fmt::{Debug, Display};
 
@@ -57,12 +58,90 @@ impl Debug for VarId {
   }
 }
 
+// Maps to a variable and or a type.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TypeVar {
+  pub ty:  VarId,
+  pub var: VarId,
+}
+
+impl TypeVar {
+  const PRIM_TYPES: [PrimitiveType; 10] = [
+    PrimitiveType::u8,
+    PrimitiveType::u16,
+    PrimitiveType::u32,
+    PrimitiveType::u64,
+    PrimitiveType::i8,
+    PrimitiveType::i16,
+    PrimitiveType::i32,
+    PrimitiveType::i64,
+    PrimitiveType::f32,
+    PrimitiveType::f64,
+  ];
+
+  fn match_prim(ty: PrimitiveType) -> VarId {
+    const _u8: u64 = PrimitiveType::u8.raw();
+    const _u16: u64 = PrimitiveType::u16.raw();
+    const _u32: u64 = PrimitiveType::u32.raw();
+    const _u64: u64 = PrimitiveType::u64.raw();
+    const _i8: u64 = PrimitiveType::i8.raw();
+    const _i16: u64 = PrimitiveType::i16.raw();
+    const _i32: u64 = PrimitiveType::i32.raw();
+    const _i64: u64 = PrimitiveType::i64.raw();
+    const _f32: u64 = PrimitiveType::f32.raw();
+    const _f64: u64 = PrimitiveType::f64.raw();
+
+    match ty.raw() {
+      _u8 => VarId::new(0),
+      _u16 => VarId::new(1),
+      _u32 => VarId::new(2),
+      _u64 => VarId::new(3),
+      _i8 => VarId::new(4),
+      _i16 => VarId::new(5),
+      _i32 => VarId::new(6),
+      _i64 => VarId::new(7),
+      _f32 => VarId::new(8),
+      _f64 => VarId::new(9),
+      _ => Default::default(),
+    }
+  }
+
+  pub fn from_prim(val: PrimitiveType) -> Self {
+    Self { ty: Self::match_prim(val), var: Default::default() }
+  }
+
+  pub fn from_const(val: &ConstVal) -> Self {
+    Self::from_prim(val.ty)
+  }
+
+  pub fn is_custom_type(&self) -> bool {
+    self.var == self.ty
+  }
+
+  pub fn is_invalid(&self) -> bool {
+    !(self.var.is_valid() || self.ty.is_valid())
+  }
+
+  pub fn ty(&self, vars: &RoutineVariables) -> Type {
+    if self.is_invalid() {
+      Type::Primitive(false, PrimitiveType::Undefined)
+    } else if self.is_custom_type() {
+      vars.entries[self.var].ty.clone()
+    } else {
+      Self::PRIM_TYPES[self.ty.usize()].into()
+    }
+  }
+
+  pub fn var(&self) -> VarId {
+    self.var
+  }
+}
+
 #[derive(Clone, Debug)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  VAR { ty: Type, name: IString, var_index: VarId, var_id: VarId, is_param: bool },
-  PHI { result_ty: Type, var_id: VarId, operands: Vec<IRGraphId> },
-  SSA { block_id: BlockId, operands: [IRGraphId; 2], result_ty: Type, var_id: VarId, op: IROp },
+  PHI { ty_var: TypeVar, operands: Vec<IRGraphId> },
+  SSA { block_id: BlockId, operands: [IRGraphId; 2], ty_var: TypeVar, op: IROp },
 }
 
 impl IRGraphNode {
@@ -85,18 +164,25 @@ impl IRGraphNode {
     }
   }
 
-  pub fn ty(&self) -> Type {
+  pub fn ty_var(&self) -> TypeVar {
+    match self {
+      IRGraphNode::Const { val, .. } => TypeVar::from_const(val),
+      IRGraphNode::SSA { ty_var, .. } => *ty_var,
+      IRGraphNode::PHI { ty_var, .. } => *ty_var,
+    }
+  }
+
+  pub fn ty(&self, vars: &RoutineVariables) -> Type {
     match self {
       IRGraphNode::Const { val, .. } => val.ty.into(),
-      IRGraphNode::SSA { result_ty: out_ty, .. } => out_ty.clone(),
-      IRGraphNode::PHI { result_ty: out_ty, .. } => out_ty.clone(),
-      IRGraphNode::VAR { ty: out_ty, .. } => out_ty.clone(),
+      IRGraphNode::SSA { ty_var, .. } => ty_var.ty(vars),
+      IRGraphNode::PHI { ty_var, .. } => ty_var.ty(vars),
     }
   }
 
   pub fn var_id(&self) -> VarId {
     match self {
-      IRGraphNode::SSA { var_id, .. } | IRGraphNode::PHI { var_id, .. } | IRGraphNode::VAR { var_id, .. } => *var_id,
+      IRGraphNode::SSA { ty_var, .. } | IRGraphNode::PHI { ty_var, .. } => ty_var.var(),
       _ => Default::default(),
     }
   }
@@ -107,7 +193,6 @@ impl IRGraphNode {
     } else {
       match self {
         IRGraphNode::Const { .. } => IRGraphId::INVALID,
-        IRGraphNode::VAR { .. } => IRGraphId::INVALID,
         IRGraphNode::PHI { operands, .. } => operands[index],
         IRGraphNode::SSA { operands, .. } => operands[index],
       }
@@ -129,34 +214,6 @@ impl IRGraphNode {
   }
 }
 
-impl Display for IRGraphNode {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val)),
-      IRGraphNode::VAR { name, ty, var_index, var_id, is_param, .. } => {
-        if *is_param {
-          f.write_fmt(format_args!("PARAM {} [{:03}]{:>23} = {:?}", var_id, var_index, name.to_str().as_str(), ty,))
-        } else {
-          f.write_fmt(format_args!("VAR   {} [{:03}]{:>23} = {:?}", var_id, var_index, name.to_str().as_str(), ty,))
-        }
-      }
-      IRGraphNode::PHI { result_ty: out_ty, operands, .. } => f.write_fmt(format_args!(
-        "      {:28} = PHI {}",
-        format!("{:?}", out_ty),
-        operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  ")
-      )),
-      IRGraphNode::SSA { block_id, result_ty: out_ty, op, operands, var_id, .. } => f.write_fmt(format_args!(
-        "b{:03}  {} {:28} = {:15} {}",
-        block_id,
-        var_id,
-        format!("{:?}", out_ty),
-        format!("{:?}", op),
-        operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
-      )),
-    }
-  }
-}
-
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IROp {
@@ -167,6 +224,7 @@ pub enum IROp {
   /// offset.
   PTR_MEM_CALC,
   // General use operators
+  VAR,
   ADD,
   SUB,
   MUL,
