@@ -2,7 +2,7 @@ use crate::{
   container::ArrayVec,
   istring::*,
   parser::script_parser::Var,
-  types::{ConstVal, PrimitiveType, RoutineVariables, Type},
+  types::{BaseType, ComplexType, ConstVal, PrimitiveType, RoutineVariables, Type},
 };
 use std::fmt::{Debug, Display};
 
@@ -129,6 +129,90 @@ impl TypeVar {
       vars.entries[self.var].ty.clone()
     } else {
       Self::PRIM_TYPES[self.ty.usize()].into()
+    }
+  }
+
+  pub fn alignment(&self, vars: &RoutineVariables) -> u64 {
+    if self.is_invalid() {
+      u64::MAX
+    } else if self.is_custom_type() {
+      let mut obj = &vars.entries[self.var];
+
+      if obj.is_pointer {
+        obj = &vars.entries[obj.par_id];
+      }
+
+      if obj.is_member {
+        let mut par = &vars.entries[obj.par_id];
+
+        if par.is_pointer {
+          par = &vars.entries[par.par_id];
+        }
+        dbg!((par, obj));
+
+        match par.ty.base_type() {
+          BaseType::Complex(cplx) => match cplx {
+            ComplexType::Struct(strct) => {
+              if let Some(mem) = strct.members.iter().find(|mem| match obj.name {
+                crate::types::MemberName::IdMember(name) => mem.name == name,
+                crate::types::MemberName::IndexMember(o) => mem.original_index == 0,
+              }) {
+                mem.ty.alignment()
+              } else {
+                panic!("Could not find member")
+              }
+            }
+            _ => panic!("invalid type for offset calculation"),
+          },
+          _ => unreachable!(),
+        }
+      } else {
+        obj.ty.alignment()
+      }
+    } else {
+      Self::PRIM_TYPES[self.ty.usize()].alignment()
+    }
+  }
+
+  pub fn offset(&self, vars: &RoutineVariables) -> u64 {
+    if self.is_invalid() {
+      u64::MAX
+    } else if self.is_custom_type() {
+      let mut obj = &vars.entries[self.var];
+
+      if obj.is_pointer {
+        obj = &vars.entries[obj.par_id];
+      }
+
+      if obj.is_member {
+        let mut par = &vars.entries[obj.par_id];
+
+        if par.is_pointer {
+          par = &vars.entries[par.par_id];
+        }
+        dbg!((par, obj));
+
+        match par.ty.base_type() {
+          BaseType::Complex(cplx) => match cplx {
+            ComplexType::Struct(strct) => {
+              if let Some(mem) = strct.members.iter().find(|mem| match obj.name {
+                crate::types::MemberName::IdMember(name) => mem.name == name,
+                crate::types::MemberName::IndexMember(o) => mem.original_index == 0,
+              }) {
+                mem.offset
+              } else {
+                panic!("Could not find member")
+              }
+            }
+            _ => panic!("invalid type for offset calculation"),
+          },
+          _ => unreachable!(),
+        }
+      } else {
+        panic!("Incorrect object for offset calculation");
+      }
+    } else {
+      0
     }
   }
 

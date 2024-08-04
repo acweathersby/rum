@@ -342,10 +342,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         debug_assert!(regs[1].is_valid());
         let base_reg = regs[1].as_reg_op();
 
-        let (offset) = match out_ty.base_type() {
-          BaseType::Complex(ComplexType::StructMember(mem)) => mem.offset,
-          _ => unreachable!(),
-        };
+        let offset = node.ty_var().offset(&ctx.body.vars);
 
         //debug_assert!(op1_node.ty().is_pointer(), "{}", op1_node.ty());
 

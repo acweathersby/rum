@@ -19,7 +19,6 @@ pub enum ComplexType {
   Enum(EnumType),
   BitField(BitFieldType),
   Array(ArrayType),
-  StructMember(StructMemberType),
   UNRESOLVED { name: IString },
 }
 
@@ -32,7 +31,6 @@ impl std::fmt::Display for ComplexType {
       Self::Enum(s) => f.write_fmt(format_args!("enum {}", s.name.to_str().as_str())),
       Self::BitField(s) => f.write_fmt(format_args!("bf {}", s.name.to_str().as_str())),
       Self::Array(s) => f.write_fmt(format_args!("{}[{}]", s.name.to_str().as_str(), s.element_type)),
-      Self::StructMember(mem) => f.write_fmt(format_args!(".{}[{}]:{}@{}", mem.name.to_str().as_str(), mem.original_index, mem.ty, mem.offset)),
       Self::UNRESOLVED { name } => f.write_fmt(format_args!("{}[?]", name.to_str().as_str())),
     }
   }
@@ -42,7 +40,6 @@ impl ComplexType {
   pub fn alignment(&self) -> u64 {
     match self {
       Self::Struct(strct) => strct.alignment,
-      Self::StructMember(mem) => mem.ty.alignment(),
       _ => unreachable!(),
     }
   }
@@ -50,7 +47,6 @@ impl ComplexType {
   pub fn byte_size(&self) -> u64 {
     match self {
       Self::Struct(strct) => strct.size,
-      Self::StructMember(mem) => mem.ty.byte_size(),
       _ => unreachable!(),
     }
   }
@@ -63,7 +59,6 @@ impl ComplexType {
       Self::Enum(s) => s.name,
       Self::BitField(s) => s.name,
       Self::Array(s) => s.name,
-      Self::StructMember(mem) => mem.name,
       Self::UNRESOLVED { name } => *name,
       _ => Default::default(),
     }
@@ -77,7 +72,6 @@ impl ComplexType {
       Self::Enum(s) => 0,
       Self::BitField(s) => 0,
       Self::Array(s) => 0,
-      Self::StructMember(mem) => mem.original_index,
       _ => Default::default(),
     }
   }
@@ -93,7 +87,7 @@ impl ComplexType {
 #[derive(Debug)]
 pub struct StructType {
   pub name:      IString,
-  pub members:   Vec<Rc<ComplexType>>,
+  pub members:   Vec<StructMemberType>,
   pub size:      u64,
   pub alignment: u64,
 }
@@ -264,6 +258,9 @@ impl RoutineVariables {
     if entry.is_pointer {
       let base = &self.entries[entry.par_id];
       f.write_fmt(format_args!("([{}]*){:>25}", entry.par_id, base.ty))?;
+    } else if entry.is_member {
+      let par = &self.entries[entry.par_id];
+      f.write_fmt(format_args!("{}.{}:{:>25}", par.name, entry.name, entry.ty))?;
     } else {
       f.write_fmt(format_args!("{:>25}", entry.ty))?;
     }
@@ -278,7 +275,7 @@ impl RoutineVariables {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct InternalVData {
   pub name:            MemberName,
   pub ty:              Type,

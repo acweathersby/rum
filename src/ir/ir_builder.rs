@@ -326,10 +326,10 @@ impl<'body, 'types> IRBuilder<'body, 'types> {
         }
         ComplexType::Struct(strct) => {
           if let Some(ty) = strct.members.iter().find(|m| match sub_member_name {
-            MemberName::IndexMember(i) => m.index() == i,
-            MemberName::IdMember(name) => m.name() == name,
+            MemberName::IndexMember(i) => m.original_index == i,
+            MemberName::IdMember(name) => m.name == name,
           }) {
-            Some(ty.into())
+            Some(ty.ty.clone())
           } else {
             None
           }
@@ -373,7 +373,7 @@ impl<'body, 'types> IRBuilder<'body, 'types> {
 
           let var_ptr = InternalVData {
             ty_var:          TypeVar { ty: mem_ptr_index, var: mem_ptr_index },
-            name:            sub_member_name,
+            name:            MemberName::IndexMember(0),
             ty:              ty.clone().as_pointer(),
             par_id:          base_mem_index,
             store:           Default::default(),

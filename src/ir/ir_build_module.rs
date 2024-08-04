@@ -34,10 +34,8 @@ use crate::{
     RawMatch,
     RawMember,
     RawNum,
-    RawParamType,
     RawRoutine,
     RawStructDeclaration,
-    ReferenceType,
     Sub,
     BIT_SL,
     BIT_SR,
@@ -158,7 +156,7 @@ pub fn process_types<'a>(module: &'a Vec<raw_module_Value<Token>>, type_scope_in
 
         let s = StructType {
           name,
-          members: members.into_iter().map(|s| Rc::new(ComplexType::StructMember(s))).collect(),
+          members: members,
           alignment: min_alignment,
           size: get_aligned_value(offset, min_alignment as u64),
         };
@@ -393,24 +391,18 @@ fn process_member_load(mem: &std::sync::Arc<RawMember<Token>>, ib: &mut IRBuilde
     if var.is_member_pointer {
       // Loading the variable into a register creates a temporary variable
       dbg!(&var);
-      match var.ty.as_cplx().map(|t| t.as_ref()) {
-        Some(ComplexType::UNRESOLVED { name }) => {
+      match var.ty.base_type() {
+        BaseType::Prim(prim) => {
+          let ty = prim;
+          if prim.bitfield_offset() > 0 {
+            ib.push_ssa(MEM_LOAD, TypeVar::from_prim(ty.mask_out_bitfield()).into(), &[var.store.into()]);
+          } else {
+            ib.push_ssa(MEM_LOAD, TypeVar::from_prim(ty).into(), &[var.store.into()]);
+          }
+        }
+        BaseType::Complex(ComplexType::UNRESOLVED { name }) => {
           ib.push_ssa(MEM_LOAD, var.ty_var.into(), &[var.store.into()]);
         }
-        Some(ComplexType::StructMember(mem)) => match mem.ty.base_type() {
-          BaseType::Prim(prim) => {
-            let ty = prim;
-            if prim.bitfield_offset() > 0 {
-              ib.push_ssa(MEM_LOAD, TypeVar::from_prim(ty.mask_out_bitfield()).into(), &[var.store.into()]);
-            } else {
-              ib.push_ssa(MEM_LOAD, TypeVar::from_prim(ty).into(), &[var.store.into()]);
-            }
-          }
-          d => {
-            dbg!(d);
-            ib.push_ssa(MEM_LOAD, var.ty_var.into(), &[var.store.into()]);
-          }
-        },
         _ => {
           panic!("Could not resolve type of member {}", var.ty)
         }
@@ -616,7 +608,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
               type_context: new_type_context,
             };
 
-            drop(routine);
+            let _ = routine;
 
             let _ = ib.global_ty_ctx.set(0, name, Rc::new(ComplexType::Routine(Mutex::new(new_routine))).into());
 
@@ -658,7 +650,7 @@ fn process_struct_instantiation(struct_decl: &RawStructDeclaration<Token>, ib: &
       for init_expression in &struct_decl.inits {
         let member_name = init_expression.name.id.intern();
 
-        if let Some(ComplexType::StructMember(member)) = members.iter().find(|i| i.name() == member_name).map(|t| t.as_ref()) {
+        if let Some(member) = members.iter().find(|i| i.name == member_name) {
           process_expression(&init_expression.expression.expr, ib);
 
           if Some(member.ty.clone()) != ib.get_top_type() {
@@ -920,10 +912,10 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
                   ib.pop_stack();
                 }
               }
-              BaseType::Complex(ComplexType::StructMember(mem)) => {
+              /*        BaseType::Complex(ComplexType::StructMember(mem)) => {
                 ib.push_ssa(MEM_STORE, var_data.ty_var.into(), &[var_data.store.into(), expr_id.into()]);
                 ib.pop_stack();
-              }
+              } */
               BaseType::Complex(ComplexType::UNRESOLVED { .. }) | _ => {
                 ib.push_ssa(MEM_STORE, var_data.ty_var.into(), &[var_data.store.into(), expr_id.into()]);
                 ib.pop_stack();

@@ -7,7 +7,7 @@ use crate::{
   istring::CachedString,
   types::*,
 };
-/*
+
 #[test]
 fn variable_contexts() {
   let mut type_scope = TypeContext::new();
@@ -40,7 +40,6 @@ Temp => [
 
   let var2 = sm.get_variable_member(&var, MemberName::IdMember("val".to_token())).expect("Variable \"test.name\" should exist");
 
-  assert_eq!(var1.block_index, var2.block_index);
   assert_eq!(var1.store, var2.store);
 
   dbg!(var);
@@ -75,7 +74,7 @@ fn stores() {
   sm.push_variable("test".to_token(), ty.clone());
 
   let var_id = VarId::new(0);
-  assert_eq!(sm.body.vars.entries[0].var_id, var_id);
+  assert_eq!(sm.body.vars.entries[0].ty_var.var, var_id);
 
   /*   sm.push_ssa(IROp::STORE, ty.clone().into(), &[], var_id);
   assert_eq!(sm.body.vars.entries[0].store, IRGraphId::new(1));
@@ -120,4 +119,3 @@ fn blocks() {
 
   dbg!(&sm.body.blocks);
 }
-*/
