@@ -194,7 +194,7 @@ pub fn assign_registers(body: &RoutineBody, reg_pack: &RegisterVariables) -> (Ve
               AllocateResultReg::AllocateParameter => {
                 debug_assert_eq!(block_id.usize(), 0, "Can only assign param register in the root block");
 
-                let ty = graph[node_id.usize()].ty(&body.vars);
+                let ty = graph[node_id.usize()].ty(&body);
                 let var_id = graph[node_id.usize()].var_id();
 
                 debug_assert!(var_id.is_valid());
@@ -260,7 +260,7 @@ fn allocate_op_register(op_index: usize, op_node_id: IRGraphId, node_id: IRGraph
     // No need to assign a register to constants.
   } else if var_id.is_valid() {
     // see if this var_id is already loaded into a register.
-    if let Some(vals) = get_register_for_var(var_id, node_id, block_id, node.ty(&body.vars), *blocked_register, sp) {
+    if let Some(vals) = get_register_for_var(var_id, node_id, block_id, node.ty(&body), *blocked_register, sp) {
       set_register(vals, node_id, op_index, sp);
       // Prevent the next operand from stealing the reg assigned to this one.
       *blocked_register = Some(vals.0);

@@ -25,9 +25,9 @@ Temp => [
     &mut type_scope,
   );
 
-  let mut body = RoutineBody::default();
+  let mut body = RoutineBody::new();
   let mut vars = RoutineVariables::default();
-  let mut sm = IRBuilder::new(&mut body, &type_scope, 0, &type_scope);
+  let mut sm = IRBuilder::new(&mut body, 0, &type_scope);
 
   // Get the type info of the Temp value.
   let ty = sm.get_type("Temp".to_token()).unwrap().clone();
@@ -64,9 +64,9 @@ fn stores() {
     &mut type_scope,
   );
 
-  let mut body = RoutineBody::default();
+  let mut body = RoutineBody::new();
   let mut vars = RoutineVariables::default();
-  let mut sm = IRBuilder::new(&mut body, &type_scope, 0, &type_scope);
+  let mut sm = IRBuilder::new(&mut body, 0, &type_scope);
 
   // Get the type info of the Temp value.
   let ty = sm.get_type("Temp".to_token()).unwrap().clone();
@@ -102,9 +102,9 @@ fn blocks() {
     &mut type_scope,
   );
 
-  let mut body = RoutineBody::default();
+  let mut body = RoutineBody::new();
   let mut vars = RoutineVariables::default();
-  let mut sm = IRBuilder::new(&mut body, &type_scope, 0, &type_scope);
+  let mut sm = IRBuilder::new(&mut body, 0, &type_scope);
 
   sm.push_variable("Test".to_token(), PrimitiveType::u32.into());
 

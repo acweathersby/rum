@@ -2,7 +2,7 @@ use crate::{
   container::ArrayVec,
   istring::*,
   parser::script_parser::Var,
-  types::{BaseType, ComplexType, ConstVal, PrimitiveType, RoutineVariables, Type},
+  types::{get_resolved_type, BaseType, ComplexType, ConstVal, PrimitiveType, RoutineBody, RoutineVariables, Type},
 };
 use std::fmt::{Debug, Display};
 
@@ -122,11 +122,11 @@ impl TypeVar {
     !(self.var.is_valid() || self.ty.is_valid())
   }
 
-  pub fn ty(&self, vars: &RoutineVariables) -> Type {
+  pub fn ty(&self, body: &RoutineBody) -> Type {
     if self.is_invalid() {
       Type::Primitive(false, PrimitiveType::Undefined)
     } else if self.is_custom_type() {
-      vars.entries[self.var].ty.clone()
+      get_resolved_type(body.vars.entries[self.var].ty.clone(), &body.type_context)
     } else {
       Self::PRIM_TYPES[self.ty.usize()].into()
     }
@@ -256,7 +256,7 @@ impl IRGraphNode {
     }
   }
 
-  pub fn ty(&self, vars: &RoutineVariables) -> Type {
+  pub fn ty(&self, vars: &RoutineBody) -> Type {
     match self {
       IRGraphNode::Const { val, .. } => val.ty.into(),
       IRGraphNode::SSA { ty_var, .. } => ty_var.ty(vars),

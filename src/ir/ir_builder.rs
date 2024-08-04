@@ -27,17 +27,15 @@ pub struct IRBuilder<'body, 'ts> {
   pub active_block_id:     BlockId,
   pub lexical_scope_stack: Vec<LexicalScopeIds>,
   pub unused_scope:        Vec<usize>,
-  pub local_ty_ctx:        &'ts TypeContext,
   pub global_ty_ctx:       &'ts TypeContext,
   pub g_ty_ctx_index:      usize,
 }
 
 impl<'body, 'types> IRBuilder<'body, 'types> {
-  pub fn new(body: &'body mut RoutineBody, local_ty_ctx: &'types TypeContext, type_ctx_index: usize, type_context: &'types TypeContext) -> Self {
+  pub fn new(body: &'body mut RoutineBody, type_ctx_index: usize, type_context: &'types TypeContext) -> Self {
     let mut ir_builder = Self {
       ssa_stack: Default::default(),
       body,
-      local_ty_ctx,
       global_ty_ctx: type_context,
       g_ty_ctx_index: type_ctx_index,
       active_block_id: Default::default(),
@@ -82,17 +80,17 @@ impl From<TypeVar> for SMT {
 
 impl<'body, 'types> IRBuilder<'body, 'types> {
   pub fn get_node_type(&self, node_id: IRGraphId) -> Option<Type> {
-    self.body.graph.get(node_id.usize()).map(|t| t.ty(&self.body.vars))
+    self.body.graph.get(node_id.usize()).map(|t| t.ty(&self.body))
   }
 
   /// Returns a type from either the local context or the global context.
-  pub fn get_type(&self, type_name: IString) -> Option<&'types Type> {
-    self.local_ty_ctx.get(self.get_active_ty_scope(), type_name).or_else(|| self.global_ty_ctx.get(self.g_ty_ctx_index, type_name))
+  pub fn get_type(&self, type_name: IString) -> Option<Type> {
+    self.body.type_context.get(self.get_active_ty_scope(), type_name).or_else(|| self.global_ty_ctx.get(self.g_ty_ctx_index, type_name)).map(|t| t.clone())
   }
 
   /// Inserts type into the routine's local type scope.
   pub fn set_type(&self, type_name: IString, ty: Type) -> Result<&Type, &Type> {
-    self.local_ty_ctx.set(self.get_active_ty_scope(), type_name, ty)
+    self.body.type_context.set(self.get_active_ty_scope(), type_name, ty)
   }
 
   pub fn rename_var(&mut self, var_id: TypeVar, name: MemberName) {
@@ -314,12 +312,12 @@ impl<'body, 'types> IRBuilder<'body, 'types> {
       crate::types::BaseType::Prim(_) => None,
       crate::types::BaseType::Complex(cplx) => match cplx {
         ComplexType::UNRESOLVED { .. } => {
-          let tmp_scope = self.local_ty_ctx.add_scope(0);
+          let tmp_scope = self.body.type_context.add_scope(0);
           let name = match sub_member_name {
             MemberName::IdMember(name) => name,
             MemberName::IndexMember(i) => i.to_string().intern(),
           };
-          match self.local_ty_ctx.set(tmp_scope, name, Rc::new(ComplexType::UNRESOLVED { name }).into()) {
+          match self.body.type_context.set(tmp_scope, name, Rc::new(ComplexType::UNRESOLVED { name }).into()) {
             Ok(ty) => Some(ty.clone()),
             _ => unreachable!(),
           }
@@ -402,7 +400,7 @@ impl<'body, 'types> IRBuilder<'body, 'types> {
   }
 
   pub fn get_top_type(&mut self) -> Option<Type> {
-    self.get_top_id().map(|s| self.body.graph[s.usize()].ty(&self.body.vars))
+    self.get_top_id().map(|s| self.body.graph[s.usize()].ty(&self.body))
   }
 
   pub fn get_top_id(&mut self) -> Option<IRGraphId> {
@@ -423,7 +421,7 @@ impl<'body, 'types> IRBuilder<'body, 'types> {
   pub fn push_lexical_scope(&mut self) {
     let var_id = if let Some(unused_scope_index) = self.unused_scope.pop() { unused_scope_index } else { self.body.vars.lex_scopes.len() };
     self.body.vars.lex_scopes.push(Default::default());
-    let ty_id = self.local_ty_ctx.add_scope(self.get_active_ty_scope());
+    let ty_id = self.body.type_context.add_scope(self.get_active_ty_scope());
     self.lexical_scope_stack.push(LexicalScopeIds { var_id, ty_id });
   }
 
@@ -594,8 +592,8 @@ impl<'body, 'types> Debug for IRBuilder<'body, 'types> {
 
     st.field("body", self.body);
 
-    if !self.local_ty_ctx.is_empty() {
-      st.field("types", &self.local_ty_ctx);
+    if !self.body.type_context.is_empty() {
+      st.field("types", &self.body.type_context);
     }
 
     st.finish()

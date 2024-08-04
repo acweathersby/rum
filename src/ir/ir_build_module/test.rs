@@ -41,14 +41,13 @@ fn test_type_inference() {
 Temp => [ a:u32 b:u32 ]
 TempA => [ a:u32 b:u32 ]
 
-
-inferred_procedure ( test: &T? dest: &Temp? ) => &T? { 
+inferred_procedure ( test: &T? dest: &Temp ) => &T? { 
   test.a = 1 + 2
   test.b = test.b << 4
 }
 
-main_procedure ( t: &TempA d: &Temp ) =| {
-  inferred_procedure(t, d)
+main_procedure ( t: &TempA d: &Temp? ) =| {
+  inferred_procedure(t, d) 
 }
   "##,
     )

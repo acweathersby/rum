@@ -31,7 +31,7 @@ impl std::fmt::Display for ComplexType {
       Self::Enum(s) => f.write_fmt(format_args!("enum {}", s.name.to_str().as_str())),
       Self::BitField(s) => f.write_fmt(format_args!("bf {}", s.name.to_str().as_str())),
       Self::Array(s) => f.write_fmt(format_args!("{}[{}]", s.name.to_str().as_str(), s.element_type)),
-      Self::UNRESOLVED { name } => f.write_fmt(format_args!("{}[?]", name.to_str().as_str())),
+      Self::UNRESOLVED { name, .. } => f.write_fmt(format_args!("{}[?]", name.to_str().as_str())),
     }
   }
 }
@@ -59,7 +59,7 @@ impl ComplexType {
       Self::Enum(s) => s.name,
       Self::BitField(s) => s.name,
       Self::Array(s) => s.name,
-      Self::UNRESOLVED { name } => *name,
+      Self::UNRESOLVED { name, .. } => *name,
       _ => Default::default(),
     }
   }
@@ -116,12 +116,11 @@ pub struct ExternalRoutineType {
 
 #[derive(Clone)]
 pub struct RoutineType {
-  pub name:         IString,
-  pub parameters:   Vec<(IString, usize, Type)>,
-  pub returns:      Vec<Type>,
-  pub body:         RoutineBody,
-  pub ast:          Arc<RawRoutine<Token>>,
-  pub type_context: TypeContext,
+  pub name:       IString,
+  pub parameters: Vec<(IString, usize, Type)>,
+  pub returns:    Vec<Type>,
+  pub body:       RoutineBody,
+  pub ast:        Arc<RawRoutine<Token>>,
 }
 
 impl Debug for RoutineType {
@@ -139,20 +138,30 @@ impl Debug for RoutineType {
     }
 
     st.field("body", &self.body);
-    if !self.type_context.is_empty() {
-      st.field("types", &self.type_context);
-    }
 
     st.finish()
   }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct RoutineBody {
-  pub graph:    Vec<IRGraphNode>,
-  pub blocks:   Vec<Box<IRBlock>>,
-  pub resolved: bool,
-  pub vars:     RoutineVariables,
+  pub graph:        Vec<IRGraphNode>,
+  pub blocks:       Vec<Box<IRBlock>>,
+  pub resolved:     bool,
+  pub vars:         RoutineVariables,
+  pub type_context: TypeContext,
+}
+
+impl RoutineBody {
+  pub fn new() -> RoutineBody {
+    RoutineBody {
+      graph:        Default::default(),
+      blocks:       Default::default(),
+      resolved:     Default::default(),
+      vars:         Default::default(),
+      type_context: TypeContext::new(),
+    }
+  }
 }
 
 impl IRGraphNode {
@@ -161,14 +170,14 @@ impl IRGraphNode {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val)),
       IRGraphNode::PHI { ty_var, operands, .. } => f.write_fmt(format_args!(
         "      {:28} = PHI {}",
-        format!("{:?}", ty_var.ty(&body.vars)),
+        format!("{:?}", ty_var.ty(&body)),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  ")
       )),
       IRGraphNode::SSA { block_id, op, operands, ty_var, .. } => f.write_fmt(format_args!(
         "b{:03}  {} {:28} = {:15} {}",
         block_id,
         ty_var.var(),
-        format!("{:?}", ty_var.ty(&body.vars)),
+        format!("{:?}", ty_var.ty(&body)),
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
@@ -182,7 +191,12 @@ impl Display for RoutineBody {
       f.write_fmt(format_args!("\n{index: >5}: "))?;
       node.fmt(f, self)?;
     }
-    Display::fmt(&self.vars, f);
+
+    /*     if !self.type_context.is_empty() {
+      st.field("types", &self.type_context);
+    } */
+
+    RoutineVariables::fmt(&self.vars, f, &self.type_context);
 
     Ok(())
   }
@@ -221,23 +235,6 @@ pub struct RoutineVariables {
   pub lex_scopes:     Vec<VecDeque<usize>>,
 }
 
-impl Display for RoutineVariables {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_str("\nvariables:");
-    for entry in 0..self.entries.len() {
-      f.write_fmt(format_args!("\n{entry:5}: "))?;
-      self.fmt(f, entry)?;
-    }
-    Ok(())
-  }
-}
-
-impl Debug for RoutineVariables {
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self, f)
-  }
-}
-
 impl Default for RoutineVariables {
   fn default() -> Self {
     Self {
@@ -249,7 +246,16 @@ impl Default for RoutineVariables {
 }
 
 impl RoutineVariables {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>, index: usize) -> std::fmt::Result {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>, type_context: &TypeContext) -> std::fmt::Result {
+    f.write_str("\nvariables:");
+    for entry in 0..self.entries.len() {
+      f.write_fmt(format_args!("\n{entry:5}: "))?;
+      self.fmt_entries(f, entry, type_context)?;
+    }
+    Ok(())
+  }
+
+  fn fmt_entries(&self, f: &mut std::fmt::Formatter<'_>, index: usize, type_context: &TypeContext) -> std::fmt::Result {
     let entry = &self.entries[index];
 
     f.write_fmt(format_args!("{:<15}", entry.name))?;
@@ -257,12 +263,15 @@ impl RoutineVariables {
 
     if entry.is_pointer {
       let base = &self.entries[entry.par_id];
-      f.write_fmt(format_args!("([{}]*){:>25}", entry.par_id, base.ty))?;
+      let ty = base.ty.clone();
+      let ty = get_resolved_type(ty, type_context);
+      f.write_fmt(format_args!("([{}]*){:>25}", entry.par_id, ty))?;
     } else if entry.is_member {
       let par = &self.entries[entry.par_id];
       f.write_fmt(format_args!("{}.{}:{:>25}", par.name, entry.name, entry.ty))?;
     } else {
-      f.write_fmt(format_args!("{:>25}", entry.ty))?;
+      let ty = get_resolved_type(entry.ty.clone(), type_context);
+      f.write_fmt(format_args!("{:>25}", ty))?;
     }
 
     if entry.sub_members.is_valid() {
@@ -273,6 +282,14 @@ impl RoutineVariables {
 
     Ok(())
   }
+}
+
+pub fn get_resolved_type(ty: Type, type_context: &TypeContext) -> Type {
+  let ty = match ty.base_type() {
+    BaseType::Complex(ComplexType::UNRESOLVED { name }) => type_context.get(0, *name).cloned().unwrap_or(ty),
+    _ => ty,
+  };
+  ty
 }
 
 #[derive(Clone, Debug)]

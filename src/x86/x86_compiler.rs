@@ -98,7 +98,7 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
   let mut rsp_offset = 0;
 
   fn fun_name(node: &IRGraphNode, body: &RoutineBody, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
-    let ty = node.ty(&body.vars);
+    let ty = node.ty(&body);
     let id = node.var_id();
 
     debug_assert!(id.is_valid());
@@ -214,7 +214,7 @@ fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
 
 pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, ctx: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
   const POINTER_SIZE: u64 = 64;
-  let out_ty = node.ty(&ctx.body.vars);
+  let out_ty = node.ty(&ctx.body);
   use Arg::*;
   if let IRGraphNode::SSA { op, block_id, ty_var, operands, .. } = node {
     let regs = reg_data.reg;
@@ -225,7 +225,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     for (op_index, spill_var) in spills.iter().enumerate() {
       if spill_var.is_valid() {
         let node = &ctx.body.graph[*spill_var];
-        let ty = node.ty(&ctx.body.vars);
+        let ty = node.ty(&ctx.body);
         let bit_size = ty.bit_size();
         let offset = *so.get(spill_var).unwrap();
         let reg = match op_index {
@@ -246,7 +246,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
         let node = &ctx.body.graph[var_id];
 
-        let ty = node.ty(&ctx.body.vars);
+        let ty = node.ty(&ctx.body);
 
         let bit_size = ty.bit_size();
 

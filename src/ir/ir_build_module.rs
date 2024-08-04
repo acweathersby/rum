@@ -184,7 +184,6 @@ pub fn build_module(module: &Vec<raw_module_Value<Token>>, type_scope_index: usi
 /// context.
 fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index: usize, type_scope: &mut TypeContext) {
   let name = routine.name.id.intern();
-  let type_context = TypeContext::new();
 
   let (params, ret) = match &routine.ty {
     routine_type_Value::RawFunctionType(fn_ty) => (fn_ty.params.as_ref(), Some(fn_ty.return_type.as_ref())),
@@ -193,6 +192,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index:
   };
 
   let mut parameters = Vec::new();
+  let mut body = RoutineBody::new();
 
   for (index, param) in params.params.iter().enumerate() {
     let param_name = param.var.id.intern();
@@ -200,7 +200,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index:
     if param_type.inferred {
       let type_name = get_type_name(&param_type.ty);
 
-      let ty = match type_context.set(0, type_name, Rc::new(ComplexType::UNRESOLVED { name: type_name }).into()) {
+      let ty = match body.type_context.set(0, type_name, Rc::new(ComplexType::UNRESOLVED { name: type_name }).into()) {
         Err(rt) => {
           debug_assert!(rt.is_unresolved());
           rt
@@ -226,7 +226,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index:
       if param_type.inferred {
         let type_name = get_type_name(&param_type.ty);
 
-        let ty = match type_context.set(0, type_name, Rc::new(ComplexType::UNRESOLVED { name: type_name }).into()) {
+        let ty = match body.type_context.set(0, type_name, Rc::new(ComplexType::UNRESOLVED { name: type_name }).into()) {
           Err(rt) => {
             debug_assert!(rt.is_unresolved());
             rt
@@ -247,7 +247,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, type_scope_index:
     _ => vec![],
   };
 
-  let ty = RoutineType { name, body: Default::default(), parameters, returns, ast: routine.clone(), type_context };
+  let ty = RoutineType { name, body, parameters, returns, ast: routine.clone() };
 
   if let Err(existing) = type_scope.set(type_scope_index, name, Rc::new(ComplexType::Routine(Mutex::new(ty))).into()) {
     panic!("Type name {name:?} has already been defined as [{existing}]\n{}", routine.name.tok.blame(1, 1, "", None))
@@ -262,9 +262,9 @@ fn process_routine(routine_name: IString, type_scope_index: usize, type_scope: &
 
     rt.body.resolved = false;
 
-    let RoutineType { name, parameters, returns, body, ast, type_context } = rt;
+    let RoutineType { name, parameters, returns, body, ast } = rt;
 
-    let mut ir_builder = IRBuilder::new(body, type_context, type_scope_index, type_scope);
+    let mut ir_builder = IRBuilder::new(body, type_scope_index, type_scope);
 
     for (name, index, ty) in parameters.iter() {
       match ty.base_type() {
@@ -514,7 +514,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
           let mut _new_name: String = routine.name.to_string();
           let mut generic_args = Vec::new();
 
-          let new_type_context = TypeContext::new();
+          let mut body = RoutineBody::new();
 
           let mut param_queue: VecDeque<(usize, usize)> = routine.body.vars.lex_scopes[0].iter().map(|i| (0, *i)).collect();
 
@@ -541,9 +541,9 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
               match (param_ty.base_type(), arg_var.ty.base_type()) {
                 (Complex(UNRESOLVED { name: param_type_name }), Complex(UNRESOLVED { name: own_name })) => {
                   let own_name = *own_name;
-                  if let Some(ty) = new_type_context.get(0, *param_type_name) {
+                  if let Some(ty) = body.type_context.get(0, *param_type_name) {
                     arg_var.ty = ty.clone();
-                    let _ = ib.local_ty_ctx.replace(0, own_name, ty.clone());
+                    let _ = ib.body.type_context.replace(0, own_name, ty.clone());
                   } else if tries == 0 && !param_queue.is_empty() {
                     // Try to match this after other types have been defined.
                     param_queue.push_back((tries + 1, param_var_index));
@@ -554,12 +554,12 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
                 (_, Complex(UNRESOLVED { name: own_name })) => {
                   let own_name = *own_name;
                   let ty = param_ty;
-                  arg_var.ty = ty.clone();
-                  let _ = ib.local_ty_ctx.replace(0, own_name, ty.clone());
+                  //arg_var.ty = ty.clone();
+                  let _ = ib.body.type_context.replace(0, own_name, ty.clone());
                 }
                 (Complex(UNRESOLVED { name }), _) => {
                   generic_args.push(name.to_string() + ":" + &arg_var.ty.to_string());
-                  let _ = new_type_context.set(0, *name, arg_var.ty.clone());
+                  let _ = body.type_context.set(0, *name, arg_var.ty.clone());
                 }
                 _ => {
                   if arg_var.ty != param_ty {
@@ -580,7 +580,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
             .map(|r| match r.base_type() {
               BaseType::Complex(cplx) => match cplx {
                 ComplexType::UNRESOLVED { name } => {
-                  if let Some(ty) = new_type_context.get(0, *name) {
+                  if let Some(ty) = body.type_context.get(0, *name) {
                     if r.is_pointer() {
                       ty.as_pointer()
                     } else {
@@ -599,14 +599,7 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
           if let Some(_) = ib.global_ty_ctx.get(0, name) {
             ib.push_variable(name, ib.global_ty_ctx.get(0, name).unwrap().clone())
           } else {
-            let new_routine = RoutineType {
-              name,
-              parameters: routine.parameters.clone(),
-              body: Default::default(),
-              returns: _new_returns,
-              ast: routine.ast.clone(),
-              type_context: new_type_context,
-            };
+            let new_routine = RoutineType { name, parameters: routine.parameters.clone(), body, returns: _new_returns, ast: routine.ast.clone() };
 
             let _ = routine;
 

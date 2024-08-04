@@ -81,7 +81,7 @@ IMPORT ../common/comment as cmt
     
     :ast { t_RawMatchClause, expr:$1, scope: $2 }
 
-  | ( "?" | "or" | "else" ) match_scope
+  | ( "?" | "or" | "else" | "otherwise" ) match_scope
 
     :ast { t_RawDefaultClause, scope: $2 }
 
