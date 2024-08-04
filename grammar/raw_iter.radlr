@@ -1,6 +1,0 @@
-<> loop > 
-
-
-<> iterator >
-
-<> range > var ":" source ( "[" num ".."  num "]" )?
