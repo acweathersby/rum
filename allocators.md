@@ -3,24 +3,26 @@ Allocator Bindings and Pointer semantics
 
 ### Primitive Attribute
     
-    - atomic - Operations on this value are atomic. Pair with memory ordering for lockless. Cannot point to 
+- atomic - Operations on this value are atomic. Pair with memory ordering for lockless. Cannot point to 
 
-    - immutable - The data of the pointer can't be changed
+- immutable - The data of the primitive cannot be changed
 
 ### Pointer Attributes
 
-    - destructible - This attribute enables destructor methods on objects. This requires type information to be preserved, increasing the size of the program.
+- destructible - This attribute enables destructor methods on objects. This requires type information to be preserved, increasing the size of the program.
 
-    - local-share - This attribute allows a pointer to be able to be shared between object.
+- local-share - This attribute allows a pointer to be shared between objects, without making copies or move semantics.
 
-    - thread-share - This attribute allows a pointer to be shared between threads. The allocator of the pointer must be declared global to allow this functionality.
+- thread-share - This attribute allows a pointer to be shared between threads. The allocator of the pointer must be declared global to allow this functionality.
 
-    - lockable - This attribute enables a lock, allowing the pointer to be shared between threads. This requires the pointer to be bound to a static allocator. This will increase the size of the allocation somewhat
+- lockable - This attribute enables a lock, allowing the pointer to be shared between threads. This requires the pointer to be bound to a static      allocator. This will increase the size of the allocation somewhat
 
-    - nullable - This attributes allows a pointer to be nullable, this enabling move semantics for pointers. This is in contrast to shared,
-                 which allows a pointer to be attached to any number of objects. Nullable pointer MUST be challenged before being accessed.
+- nullable - This attributes allows a pointer to be nullable, this enabling move semantics for pointers. This is in contrast to shared,
+              which allows a pointer to be attached to any number of objects. Nullable pointer MUST be challenged before being accessed.
 
-    - immutable - The data of the pointer can't be changed
+- immutable - The data of the pointed object cannot be mutated.
+
+- immobile - The pointer cannot be readdressed to another object.
 
 ## Allocators
 
@@ -53,19 +55,21 @@ Allocator Bindings and Pointer semantics
 
 - Lifetime are checked at compile time unless the protocol allows for ```ptr`lifetime == `allocator`lifetime```
 
+- An object can have multiple lifetimes, but they must follow several conventions to ensure compatible behiavor with
+
 
 ```rust
 
 
-'gc = static + typed 
+gc' = static + typed 
 
 
 Test = [
   name: str
 ]
 
-Bindable = 'gc [ // Forces heap allocation through the 'gc binding.
-  sub   : 'gc Bindable = 0
+Bindable = gc' [ // Forces heap allocation through the 'gc binding.
+  sub   : gc* Bindable = 0
   other : 'Test // Must be allocated or assigned from an outside scope since it is not nullable.
 ]
 
@@ -79,7 +83,7 @@ main () =| {
   
   member = { 
 
-    'gc = GarbageCollector('gc)
+    gc* = GarbageCollector('gc)
 
     auto_man = fn:test(&outside) 
 
