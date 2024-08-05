@@ -43,9 +43,9 @@ fn register_allocator() {
     &crate::parser::script_parser::parse_raw_module(
       &r##"
   02Temp => [
-    a: u32
-    b: u32
-    c: u32
+    a: u32,
+    b: u32,
+    c: u32,
   ]
   
   main (a: &02Temp) =| {

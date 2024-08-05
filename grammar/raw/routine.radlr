@@ -23,7 +23,7 @@ IMPORT ../common/comment as cmt
 
 <> params 
   
-  > "\(" param_binding(*) "\)" 
+  > "\(" param_binding(*",") "\)" 
     
     :ast { t_Params, params: $2 }
 

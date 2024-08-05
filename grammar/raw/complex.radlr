@@ -9,7 +9,7 @@ IMPORT ../common/comment as cmt
 
 <> array 
   
-  > prim::var^name "=>" anno::lifetime?^allocator_binding "[" ty::type^ty ";" prim::int^size ? "]"
+  > prim::var^name "=>" anno::lifetime?^allocator_binding "[" ty::type^ty (";" prim::int )?^size "]"
 
       :ast  { t_RawArray, allocator_binding, name, ty, size, tok }
 

@@ -18,14 +18,14 @@ IMPORT ../common/comment as cmt
 
 <> block_expression 
 
-  > "{" ( anno::annotation | allocator_binding )(*)^attributes statement(+)^statements ( block_exit_expressions | break_statement )?^exit "}"
+  > "{" ( anno::annotation | allocator_binding )(*)^attributes statement(*)^statements ( block_exit_expressions | break_statement )?^exit "}"
 
     :ast { t_RawBlock, statements, attributes, exit }
 
 
 <> allocator_binding 
   
-  > anno::lifetime^binding_name "=" prim::var^allocator_name "(" anno::lifetime?^parent_allocator ")"
+  > anno::lifetime^binding_name "=>" prim::var^allocator_name "(" anno::lifetime?^parent_allocator ")"
 
     :ast { t_RawAllocatorBinding, binding_name, allocator_name, parent_allocator }
 
@@ -102,7 +102,7 @@ IMPORT ../common/comment as cmt
 
 <> block_exit_expressions
 
-  > "<-" expr::expression^expression
+  > "ret" expr::expression^expression
 
     :ast { t_BlockExitExpressions, expression }
 

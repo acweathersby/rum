@@ -1,15 +1,14 @@
 IMPORT ../common/primitive as prim
 IMPORT annotation as anno
+IGNORE { c:sp c:nl }
 
 <> type 
   
   > primitive_type
 
-  | primitive_ptr_type
-
   | named_type
 
-  | reference_type
+  | pointer_type
 
   | void_type
 
@@ -19,25 +18,13 @@ IMPORT annotation as anno
 
 <> flag_type > "flag" :ast { t_Type_Flag }
 
-<> primitive_ptr_type
+<> named_type > prim::var^name :ast { t_Type_Variable, name }
 
-  > "*m8"    :ast { t_Type_8BitPointer }
-  | "*m16"   :ast { t_Type_16BitPointer }
-  | "*m32"   :ast { t_Type_32BitPointer }
-  | "*m64"   :ast { t_Type_64BitPointer }
-  | "*m128"  :ast { t_Type_128BitPointer }
-  //| "*" primitive_type :ast { t_PrimitivePointer, base_type:$2 }
-
-<> named_type > prim::var^name :ast { t_NamedType, name }
-
-<> reference_type > ( anno::lifetime | "'" :ast { t_RawLifetime } )^ptr_type prim::var^name :ast { t_ComplexPtr, ptr_type, name }
+<> pointer_type > ( anno::lifetime | "&" :ast { t_Reference } )^ptr_type ( named_type | primitive_type )^ty :ast { t_Type_Pointer, ptr_type, ty }
 
 <> primitive_type
   > primitive_uint
-  | "i8"    :ast { t_Type_i8 }
-  | "i16"   :ast { t_Type_i16 }
-  | "i32"   :ast { t_Type_i32 }
-  | "i64"   :ast { t_Type_i64 }
+  | primitive_int
   | "f32"   :ast { t_Type_f32 }
   | "f64"   :ast { t_Type_f64 }
   | "f128"  :ast { t_Type_f128 }
@@ -48,6 +35,12 @@ IMPORT annotation as anno
   | "f64v2" :ast { t_Type_f64v2 }
   | "f64v4" :ast { t_Type_f64v4 }
 
+
+<> primitive_int 
+  > "i8"    :ast { t_Type_i8 }
+  | "i16"   :ast { t_Type_i16 }
+  | "i32"   :ast { t_Type_i32 }
+  | "i64"   :ast { t_Type_i64 }
 
 <> primitive_uint 
   > "u8"    :ast { t_Type_u8 }

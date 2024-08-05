@@ -599,3 +599,6 @@ A register need not be allocated of the result of an expression between a var an
 Transient vars are those whose value is already defined and is not used in a subsequent basic block (is dead after the define).
 
 If all registers are used and there need's to be allocation for a new variable, stores in all previous blocks need to be created for that variable.
+
+
+

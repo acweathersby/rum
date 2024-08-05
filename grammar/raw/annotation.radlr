@@ -12,16 +12,18 @@ IGNORE { c:sp c:nl }
 
     :ast { t_AddAnnotation, left:$1, right:$3 }
 
-  | annotation_expression "-"{2} annotation_expression{1}
+  | annotation_expression "\\"{2} annotation_expression{1}
 
     :ast { t_RemoveAnnotation, left:$1, right:$3 }
 
-  | prim::var
+  | bindable_name
+
+    
 
 
-<> annotation >  tk:( "#" ( c:id | "-" )(+) )
+<> annotation >  tk:( "#" bindable_name )
 
-  :ast { t_Annotation, val: str($1<1,0>) }
+  :ast { t_Annotation, val: str($1<1,1>) }
 
 
 <> lifetime_variable > lifetime "=>" prim::var(+"+")^lifetimes
@@ -31,8 +33,17 @@ IGNORE { c:sp c:nl }
 
 <> lifetime 
 
-  > tk:( "'" ( c:id | "-" | "_" )(+) )
+  > tk:( bindable_name "*" )
 
-    :ast { t_Lifetime, val: str($1<1,0>) }
+    :ast { t_ScopedLifetime, val: str($1<0,1>) }
+
+  | "*"
+  
+    :ast { t_GlobalLifetime }
 
 
+<> bindable_name 
+
+  > tk:(( c:id | "-" | "_" | c:num )(+))
+
+    :ast { t_BindableName, val:$1 }
