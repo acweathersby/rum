@@ -29,7 +29,7 @@ impl Debug for PrimitiveType {
 
 /// Stores information on the nature of a value
 #[derive(Clone, Copy, PartialOrd, Ord, Hash)]
-pub struct PrimitiveType(u64);
+pub struct PrimitiveType(u32);
 
 impl Default for PrimitiveType {
   fn default() -> Self {
@@ -47,20 +47,20 @@ impl Eq for PrimitiveType {}
 
 impl PrimitiveType {
   #![allow(unused, non_camel_case_types, non_upper_case_globals)]
-  const SUBTYPE_MASK: u64 = 0x0000_00F0;
-  const SUBTYPE_BIT_OFFSET: u64 = 4;
+  const SUBTYPE_MASK: u32 = 0x0000_000F;
+  const SUBTYPE_BIT_OFFSET: u32 = 0;
 
-  const BITSIZE_MASK: u64 = 0x00FF_FF00;
-  const BITSIZE_BIT_OFFSET: u64 = 8;
+  const BITSIZE_MASK: u32 = 0x0000_0FF0;
+  const BITSIZE_BIT_OFFSET: u32 = 4;
 
-  const VECTSIZE_MASK: u64 = 0xFF00_0000;
-  const VECTSIZE_BIT_OFFSET: u64 = 24;
+  const VECTSIZE_MASK: u32 = 0x0000_F000;
+  const VECTSIZE_BIT_OFFSET: u32 = 12;
 
-  const BITFIELD_OFFSET_MASK: u64 = 0xFF_0000_0000;
-  const BITFIELD_OFFSET_OFFSET: u64 = 32;
+  const BITFIELD_OFFSET_MASK: u32 = 0xFF00_0000;
+  const BITFIELD_OFFSET_OFFSET: u32 = 24;
 
-  const BITFIELD_BASE_SIZE_MASK: u64 = 0xFF00_0000_0000;
-  const BITFIELD_BASE_SIZE_OFFSET: u64 = 40;
+  const BITFIELD_BASE_SIZE_MASK: u32 = 0x00FF_0000;
+  const BITFIELD_BASE_SIZE_OFFSET: u32 = 16;
 }
 
 impl From<PrimitiveType> for BitSize {
@@ -90,12 +90,12 @@ impl PrimitiveType {
 
   /// This value represents a register storing an unsigned integer scalar or
   /// vector
-  pub const Signed: PrimitiveType = PrimitiveType((PrimitiveSubType::Signed as u64) << PrimitiveType::SUBTYPE_BIT_OFFSET);
-  pub const Unsigned: PrimitiveType = PrimitiveType((PrimitiveSubType::Unsigned as u64) << PrimitiveType::SUBTYPE_BIT_OFFSET);
-  pub const Float: PrimitiveType = PrimitiveType((PrimitiveSubType::Float as u64) << PrimitiveType::SUBTYPE_BIT_OFFSET);
-  pub const Flag: PrimitiveType = PrimitiveType((PrimitiveSubType::Flag as u64) << PrimitiveType::SUBTYPE_BIT_OFFSET);
-  pub const Discriminant: PrimitiveType = PrimitiveType((PrimitiveSubType::Descriminant as u64) << PrimitiveType::SUBTYPE_BIT_OFFSET);
-  pub const Undefined: PrimitiveType = PrimitiveType((PrimitiveSubType::Undefined as u64) << PrimitiveType::SUBTYPE_BIT_OFFSET);
+  pub const Signed: PrimitiveType = PrimitiveType((PrimitiveSubType::Signed as u32) << PrimitiveType::SUBTYPE_BIT_OFFSET);
+  pub const Unsigned: PrimitiveType = PrimitiveType((PrimitiveSubType::Unsigned as u32) << PrimitiveType::SUBTYPE_BIT_OFFSET);
+  pub const Float: PrimitiveType = PrimitiveType((PrimitiveSubType::Float as u32) << PrimitiveType::SUBTYPE_BIT_OFFSET);
+  pub const Flag: PrimitiveType = PrimitiveType((PrimitiveSubType::Flag as u32) << PrimitiveType::SUBTYPE_BIT_OFFSET);
+  pub const Discriminant: PrimitiveType = PrimitiveType((PrimitiveSubType::Descriminant as u32) << PrimitiveType::SUBTYPE_BIT_OFFSET);
+  pub const Undefined: PrimitiveType = PrimitiveType((PrimitiveSubType::Undefined as u32) << PrimitiveType::SUBTYPE_BIT_OFFSET);
 
   pub const v1: PrimitiveType = PrimitiveType(1 << PrimitiveType::VECTSIZE_BIT_OFFSET);
   pub const v2: PrimitiveType = PrimitiveType(2 << PrimitiveType::VECTSIZE_BIT_OFFSET);
@@ -127,18 +127,21 @@ impl PrimitiveType {
   pub const f32v2: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b32.0 | PrimitiveType::v2.0);
   pub const f32v4: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b32.0 | PrimitiveType::v4.0);
 
+  pub const f64v2: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b64.0 | PrimitiveType::v2.0);
+  pub const f64v4: PrimitiveType = PrimitiveType(PrimitiveType::Float.0 | PrimitiveType::b64.0 | PrimitiveType::v4.0);
+
   pub const flg1: PrimitiveType = PrimitiveType(PrimitiveType::Flag.0 | PrimitiveType::b1.0);
 }
 
 impl PrimitiveType {
   pub fn new_bit_size(size: u64) -> PrimitiveType {
-    Self(((size as u64) << Self::BITSIZE_BIT_OFFSET) & Self::BITSIZE_MASK)
+    Self(((size as u32) << Self::BITSIZE_BIT_OFFSET) & Self::BITSIZE_MASK)
   }
 
   pub fn new_bitfield_data(bitfield_offset: u8, bitfield_base_size: u8) -> Self {
     Self(
-      (((bitfield_offset as u64) << Self::BITFIELD_OFFSET_OFFSET) & Self::BITFIELD_OFFSET_MASK)
-        | (((bitfield_base_size as u64) << Self::BITFIELD_BASE_SIZE_OFFSET) & Self::BITFIELD_BASE_SIZE_MASK),
+      (((bitfield_offset as u32) << Self::BITFIELD_OFFSET_OFFSET) & Self::BITFIELD_OFFSET_MASK)
+        | (((bitfield_base_size as u32) << Self::BITFIELD_BASE_SIZE_OFFSET) & Self::BITFIELD_BASE_SIZE_MASK),
     )
   }
 
@@ -168,7 +171,7 @@ impl PrimitiveType {
   }
 
   pub const fn raw(&self) -> u64 {
-    self.0
+    self.0 as u64
   }
 
   pub fn bit_size(&self) -> u64 {
@@ -176,15 +179,15 @@ impl PrimitiveType {
   }
 
   pub fn sub_type_bit_size(&self) -> u64 {
-    ((self.0 & PrimitiveType::BITSIZE_MASK) >> PrimitiveType::BITSIZE_BIT_OFFSET).max(0)
+    ((self.0 & PrimitiveType::BITSIZE_MASK) >> PrimitiveType::BITSIZE_BIT_OFFSET).max(0) as u64
   }
 
   pub fn bitfield_offset(&self) -> u64 {
-    ((self.0 & PrimitiveType::BITFIELD_OFFSET_MASK) >> PrimitiveType::BITFIELD_OFFSET_OFFSET).max(0)
+    ((self.0 & PrimitiveType::BITFIELD_OFFSET_MASK) >> PrimitiveType::BITFIELD_OFFSET_OFFSET).max(0) as u64
   }
 
   pub fn bitfield_size(&self) -> u64 {
-    ((self.0 & PrimitiveType::BITFIELD_BASE_SIZE_MASK) >> PrimitiveType::BITFIELD_BASE_SIZE_OFFSET).max(0)
+    ((self.0 & PrimitiveType::BITFIELD_BASE_SIZE_MASK) >> PrimitiveType::BITFIELD_BASE_SIZE_OFFSET).max(0) as u64
   }
 
   pub fn bitfield_mask(&self) -> u64 {
@@ -222,7 +225,7 @@ impl std::ops::BitOr<BitSize> for PrimitiveType {
   type Output = PrimitiveType;
 
   fn bitor(self, rhs: BitSize) -> Self::Output {
-    Self((self.0 & !Self::BITSIZE_MASK) | (Self::BITSIZE_MASK & (rhs.u64() << Self::BITSIZE_BIT_OFFSET)))
+    Self((self.0 & !Self::BITSIZE_MASK) | (Self::BITSIZE_MASK & ((rhs.u64() as u32) << Self::BITSIZE_BIT_OFFSET)))
   }
 }
 

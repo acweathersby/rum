@@ -419,7 +419,8 @@ fn get_register_for_var(
 
 fn get_register_set<'imm>(ty: crate::types::Type, reg_vars: &'imm RegisterVariables, use_calling_convention: bool) -> Option<&'imm Vec<usize>> {
   // Acquire the set of register indices that can store the given type.
-
+  todo!("Handle pointer semantics");
+  /*
   if ty.is_pointer() {
     if use_calling_convention {
       Some(&reg_vars.call_ptr_registers)
@@ -428,7 +429,7 @@ fn get_register_set<'imm>(ty: crate::types::Type, reg_vars: &'imm RegisterVariab
     }
   } else {
     debug_assert!(!ty.is_unresolved(), "All types should be fully resolved");
-    match ty.base_type() {
+    match ty.ty_enum() {
       BaseType::Prim(prim) => match prim.sub_type() {
         PrimitiveSubType::Signed | PrimitiveSubType::Unsigned => Some(&reg_vars.ptr_registers),
         PrimitiveSubType::Float => Some(&reg_vars.float_registers),
@@ -436,7 +437,7 @@ fn get_register_set<'imm>(ty: crate::types::Type, reg_vars: &'imm RegisterVariab
       },
       BaseType::Complex(_) => None,
     }
-  }
+  }*/
 }
 
 fn get_node<'a>(graph_ptr: *mut IRGraphNode, i: usize) -> &'a mut IRGraphNode {

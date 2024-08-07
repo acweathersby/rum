@@ -24,6 +24,8 @@ Allocator Bindings and Pointer semantics
 
 - immobile - The pointer cannot be readdressed to another object.
 
+- clonable - The data of this pointer can be copied into another memory space
+
 ## Allocators
 
 - Defines a lifetime and pointer protocol for heap objects. An allocator can be declared and bound to a binding to service all subsequent
@@ -61,14 +63,14 @@ Allocator Bindings and Pointer semantics
 ```rust
 
 
-gc' = static + typed 
+gc* = exclusive + thread-share + nullable + clonable
 
 
 Test = [
   name: str
 ]
 
-Bindable = gc' [ // Forces heap allocation through the 'gc binding.
+Bindable = gc* [ // Forces heap allocation through the 'gc binding. 
   sub   : gc* Bindable = 0
   other : 'Test // Must be allocated or assigned from an outside scope since it is not nullable.
 ]
@@ -117,6 +119,62 @@ main () =| {
 ### Allocator Declaration
 
 
+
+
+
+```
+
+
+Temporary { 
+  tmp* Data
+}
+
+```
+
+
+A resolution oft he path to specific variable member to is restricted by the resolution semantics of each membership dereferenceing step.
+
+A base type is either a stack value or a pointer. For convincer, all stack values are referenced through pointer semantics as a refernce value. 
+
+A direct member is one which an offset from a base type pointer is sufficient to resolve the memory location of the member value. The reference pointer
+derived from such an operation takes on the type characteristics of the direct member type.
+
+An indirect member, in which the member is a pointer,  requires an extra step to gain access to the actual data of the member value. The seconds step
+proceeds from the first step of generating a pointer offset from the base pointer as it works for a direct member, after which the pointer can either
+be assigned a new address value (assuming the pointer semantics allows for such an action), or can be further dereferenced to gain actual pointer to the 
+memory location that contains inderict member's data. 
+
+Given the extra condition of a dereference of the pointer value to gain the data, it should be obvious that to make this process work for all member types, 
+the steps to gain a reference to a member type should work as follows: 
+
+```
+memberish_ptr = base_ptr + member_offset("NAME")
+(member_reference, Optional<member_pointer, pointer_semantics>) = deref(memberish_ptr)  // A null op of memberish pointer is a direct pointer
+member_reference             // This can receive a new value or be used in further submember references.
+Optional<member_pointer>     // This can be assigned to a new member location if it is not None and pointer_semantics invariants are honored
+
+```
+
+
+member.d ( d = *d || d ) => {
+  d = 0 // Works for (d) but would be error for (*d)
+  d = Struct { } // Works for (d), not for (*d)
+  d = * Struct { } // Does not work for (d), does work for (*d), assuming d semantics is resolved.
+  d.r = 0 // Works for both (d) and (*d) because: 
+
+  ----
+
+  var(d.r) = d + r:offset = 
+  (member_reference(var(d.r), Maybe<ptr(var(d.r): type), ptr'pointer_semantics>)
+
+  member_reference(var) = 0
+
+
+  ----
+
+
+
+}
 
 
 

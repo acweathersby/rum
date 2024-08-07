@@ -6,11 +6,12 @@ pub mod bitfield;
 pub mod container;
 pub mod error;
 pub mod ir;
+pub mod ir_interpreter;
 mod istring;
 mod log;
 pub mod parser;
 pub mod types;
-pub mod x86;
+//pub mod x86;
 
 use std::{
   collections::{HashMap, VecDeque},

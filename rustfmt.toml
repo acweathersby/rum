@@ -17,7 +17,7 @@ blank_lines_upper_bound = 1
 
 # Comments
 #format_code_in_doc_comments = true
-wrap_comments = true
+#wrap_comments = true
 normalize_comments = false
 
 condense_wildcard_suffixes = true

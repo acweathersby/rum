@@ -56,7 +56,19 @@ impl ConstVal {
   pub fn unstacked(&self) -> ConstVal {
     ConstVal { ty: self.ty, val: self.val }
   }
-
+/***
+ * 1 0    = 0 << 0
+ * 2 1    = 1 << 1   
+ * 3 2    = 1 << 2
+ * 4 4    = 1 << 3 
+ * 5 8    = 1 << 4
+ * 6 16   = 1 << 5
+ * 7 32   
+ * 8 64   
+ * 9 128   
+ *10 256   
+ *11 512   
+ */
   pub fn load<T>(&self) -> T {
     let bytes = &self.val;
     let mut val: T = unsafe { std::mem::MaybeUninit::uninit().assume_init() };

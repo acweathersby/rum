@@ -60,7 +60,6 @@ fn register_allocator() {
   );
 
   if let Some(ComplexType::Routine(proc)) = ty_ctx.get(0, "main".intern()).and_then(|t| t.as_cplx_ref()) {
-    let proc = proc.lock().unwrap();
     use crate::x86::x86_types::*;
     let reg_pack = RegisterVariables {
       call_ptr_registers: vec![7, 6, 3, 1, 8, 9],

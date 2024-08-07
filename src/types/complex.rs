@@ -10,78 +10,13 @@ use std::{
   sync::Arc,
 };
 
-#[repr(align(16))]
+// 1b[u8<<1]
+// 1b[u8<<2]
+
 #[derive(Debug)]
-pub enum ComplexType {
-  Struct(StructType),
-  Routine(std::sync::Mutex<RoutineType>),
-  Union(UnionType),
-  Enum(EnumType),
-  BitField(BitFieldType),
-  Array(ArrayType),
-  UNRESOLVED { name: IString },
-}
-
-impl std::fmt::Display for ComplexType {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::Struct(s) => f.write_fmt(format_args!("struct {}", s.name.to_str().as_str())),
-      Self::Routine(s) => f.write_fmt(format_args!("{}(..)", s.lock().unwrap().name.to_str().as_str())),
-      Self::Union(s) => f.write_fmt(format_args!("union {}", s.name.to_str().as_str())),
-      Self::Enum(s) => f.write_fmt(format_args!("enum {}", s.name.to_str().as_str())),
-      Self::BitField(s) => f.write_fmt(format_args!("bf {}", s.name.to_str().as_str())),
-      Self::Array(s) => f.write_fmt(format_args!("{}[{}]", s.name.to_str().as_str(), s.element_type)),
-      Self::UNRESOLVED { name, .. } => f.write_fmt(format_args!("{}[?]", name.to_str().as_str())),
-    }
-  }
-}
-
-impl ComplexType {
-  pub fn alignment(&self) -> u64 {
-    match self {
-      Self::Struct(strct) => strct.alignment,
-      _ => unreachable!(),
-    }
-  }
-
-  pub fn byte_size(&self) -> u64 {
-    match self {
-      Self::Struct(strct) => strct.size,
-      _ => unreachable!(),
-    }
-  }
-
-  pub fn name(&self) -> IString {
-    match self {
-      Self::Struct(s) => s.name,
-      Self::Routine(s) => s.lock().unwrap().name,
-      Self::Union(s) => s.name,
-      Self::Enum(s) => s.name,
-      Self::BitField(s) => s.name,
-      Self::Array(s) => s.name,
-      Self::UNRESOLVED { name, .. } => *name,
-      _ => Default::default(),
-    }
-  }
-
-  pub fn index(&self) -> usize {
-    match self {
-      Self::Struct(s) => 0,
-      Self::Routine(s) => 0,
-      Self::Union(s) => 0,
-      Self::Enum(s) => 0,
-      Self::BitField(s) => 0,
-      Self::Array(s) => 0,
-      _ => Default::default(),
-    }
-  }
-
-  pub fn is_unresolved(&self) -> bool {
-    match self {
-      ComplexType::UNRESOLVED { .. } => true,
-      _ => false,
-    }
-  }
+pub struct ScopeType {
+  pub name: IString,
+  pub ctx:  TypeVarContext,
 }
 
 pub struct NamedPrimitive {
@@ -100,7 +35,7 @@ pub struct StructType {
 #[derive(Debug)]
 pub struct StructMemberType {
   pub name:           IString,
-  pub ty:             Type,
+  pub ty:             TypeSlot,
   pub original_index: usize,
   pub offset:         u64,
 }
@@ -114,16 +49,15 @@ pub enum CallConvention {
 
 pub struct ExternalRoutineType {
   pub name:               IString,
-  pub parameters:         Vec<Type>,
-  pub returns:            Vec<Type>,
+  pub parameters:         Vec<TypeSlot>,
+  pub returns:            Vec<TypeSlot>,
   pub calling_convention: CallConvention,
 }
 
-#[derive(Clone)]
 pub struct RoutineType {
   pub name:       IString,
-  pub parameters: Vec<(IString, usize, Type)>,
-  pub returns:    Vec<Type>,
+  pub parameters: Vec<(IString, usize, TypeSlot)>,
+  pub returns:    Vec<TypeSlot>,
   pub body:       RoutineBody,
   pub ast:        Arc<RawRoutine<Token>>,
 }
@@ -148,44 +82,45 @@ impl Debug for RoutineType {
   }
 }
 
-#[derive(Clone)]
-pub struct RoutineBody {
-  pub graph:        Vec<IRGraphNode>,
-  pub blocks:       Vec<Box<IRBlock>>,
-  pub resolved:     bool,
-  pub vars:         RoutineVariables,
-  pub type_context: TypeScope,
-}
-
-impl RoutineBody {
-  pub fn new() -> RoutineBody {
-    RoutineBody {
-      graph:        Default::default(),
-      blocks:       Default::default(),
-      resolved:     Default::default(),
-      vars:         Default::default(),
-      type_context: TypeScope::new(),
-    }
-  }
-}
-
 impl IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>, body: &RoutineBody) -> std::fmt::Result {
     match self {
-      IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val)),
-      IRGraphNode::PHI { ty_var, operands, .. } => f.write_fmt(format_args!(
-        "      {:28} = PHI {}",
-        format!("{:?}", ty_var.ty(&body)),
-        operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  ")
-      )),
-      IRGraphNode::SSA { block_id, op, operands, ty_var, .. } => f.write_fmt(format_args!(
-        "b{:03}  {} {:28} = {:15} {}",
-        block_id,
-        ty_var.var(),
-        format!("{:?}", ty_var.ty(&body)),
-        format!("{:?}", op),
-        operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
-      )),
+      IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val))?,
+      IRGraphNode::SSA { block_id, op, operands, ty, .. } => {
+        let val = ty.ty_slot(&body.context);
+        let var = ty.var_id();
+        let is_deref = ty.is_deref();
+        let ptr = if ty.is_inline_ptr() || is_deref { "*" } else { " " };
+
+        let ty = if is_deref { val.ty_dereferenced(&body.context) } else { val.ty(&body.context) };
+
+        f.write_fmt(format_args!(
+          "b{:03} {:34} = {:15} {}",
+          block_id,
+          format!("{var:5} {ptr}{}", ty),
+          format!("{:?}", op),
+          operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
+        ))?;
+      }
+    };
+    Ok(())
+  }
+}
+
+pub struct RoutineBody {
+  pub graph:    Vec<IRGraphNode>,
+  pub blocks:   Vec<Box<IRBlock>>,
+  pub resolved: bool,
+  pub context:  TypeVarContext,
+}
+
+impl RoutineBody {
+  pub fn new(db: &mut TypeDatabase) -> RoutineBody {
+    RoutineBody {
+      graph:    Default::default(),
+      blocks:   Default::default(),
+      resolved: Default::default(),
+      context:  TypeVarContext::new(db),
     }
   }
 }
@@ -201,7 +136,7 @@ impl Display for RoutineBody {
       st.field("types", &self.type_context);
     } */
 
-    RoutineVariables::fmt(&self.vars, f, &self.type_context);
+    Display::fmt(&self.context, f)?;
 
     Ok(())
   }
@@ -210,153 +145,6 @@ impl Display for RoutineBody {
 impl Debug for RoutineBody {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(&self, f)
-  }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum MemberName {
-  IdMember(IString),
-  IndexMember(usize),
-}
-
-impl Display for MemberName {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      MemberName::IndexMember(id) => f.write_fmt(format_args!("[{id}]")),
-      MemberName::IdMember(str) => f.write_str(str.to_str().as_str()),
-    }
-  }
-}
-
-impl Debug for MemberName {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self, f)
-  }
-}
-#[derive(Clone)]
-pub struct RoutineVariables {
-  pub entries:        Vec<InternalVData>,
-  pub member_lookups: Vec<HashMap<MemberName, usize>>,
-  pub lex_scopes:     Vec<VecDeque<usize>>,
-}
-
-impl Default for RoutineVariables {
-  fn default() -> Self {
-    Self {
-      entries:        Default::default(),
-      lex_scopes:     vec![Default::default()],
-      member_lookups: Default::default(),
-    }
-  }
-}
-
-impl RoutineVariables {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>, type_context: &TypeScope) -> std::fmt::Result {
-    f.write_str("\nvariables:");
-    for entry in 0..self.entries.len() {
-      f.write_fmt(format_args!("\n{entry:5}: "))?;
-      self.fmt_entries(f, entry, type_context)?;
-    }
-    Ok(())
-  }
-
-  pub fn resolve_ty(&self, var_index: usize, type_context: &TypeScope) -> Type {
-    let entry = &self.entries[var_index];
-
-    if entry.is_member {
-      // Parent contains member type
-
-      match self.resolve_ty(entry.par_id.usize(), type_context).as_cplx_ref() {
-        Some(ComplexType::Struct(strct)) => match entry.name {
-          MemberName::IdMember(name) => {
-            if let Some(mem) = strct.members.iter().find(|m| m.name == name) {
-              mem.ty.clone()
-            } else {
-              PrimitiveType::Undefined.into()
-            }
-          }
-          MemberName::IndexMember(index) => {
-            if let Some(mem) = strct.members.iter().find(|m| m.original_index == index) {
-              mem.ty.clone()
-            } else {
-              PrimitiveType::Undefined.into()
-            }
-          }
-        },
-        _ => entry.ty.clone(),
-      }
-    } else if entry.is_pointer {
-      // resolve base and return type elevated to pointer type
-      self.resolve_ty(entry.par_id.usize(), type_context).as_pointer()
-    } else {
-      let ty = entry.ty.clone();
-      match ty.base_type() {
-        BaseType::Complex(ComplexType::UNRESOLVED { name }) => type_context.get(0, *name).cloned().unwrap_or(ty),
-        _ => ty,
-      }
-    }
-  }
-
-  fn fmt_entries(&self, f: &mut std::fmt::Formatter<'_>, index: usize, type_context: &TypeScope) -> std::fmt::Result {
-    let entry = &self.entries[index];
-
-    f.write_fmt(format_args!("{:<15}", entry.name))?;
-    f.write_str(": ")?;
-
-    if entry.is_pointer {
-      let base = &self.entries[entry.par_id];
-      f.write_fmt(format_args!("([{}]*){:>25}", entry.par_id, self.resolve_ty(index, type_context)))?;
-    } else if entry.is_member {
-      let par = &self.entries[entry.par_id];
-      f.write_fmt(format_args!("{}.{}:{:>25}", par.name, entry.name, self.resolve_ty(index, type_context)))?;
-    } else {
-      f.write_fmt(format_args!("{:>25}", self.resolve_ty(index, type_context)))?;
-    }
-
-    if entry.sub_members.is_valid() {
-      for (name, index) in &self.member_lookups[entry.sub_members.usize()] {
-        f.write_fmt(format_args!(" {name} {index}"))?;
-      }
-    }
-
-    Ok(())
-  }
-}
-
-#[derive(Clone, Debug)]
-pub struct InternalVData {
-  pub name:            MemberName,
-  pub ty:              Type,
-  pub ty_var:          TypeVar,
-  pub par_id:          VarId,
-  pub parameter_index: VarId,
-  pub sub_members:     VarId,
-  pub ptr_id:          VarId,
-  pub store:           IRGraphId,
-  pub is_pointer:      bool,
-  pub is_member:       bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExternalVData {
-  pub ty_var:            TypeVar,
-  pub is_member_pointer: bool,
-  pub name:              MemberName,
-  pub ty:                Type,
-  pub store:             IRGraphId,
-  pub is_pointer:        bool,
-}
-
-impl From<&InternalVData> for ExternalVData {
-  fn from(value: &InternalVData) -> Self {
-    ExternalVData {
-      ty_var:            value.ty_var,
-      is_member_pointer: value.is_member,
-      name:              value.name,
-      ty:                value.ty.clone(),
-      store:             value.store,
-      is_pointer:        value.is_pointer,
-    }
   }
 }
 
@@ -396,19 +184,8 @@ pub struct BitFieldMember {
 #[derive(Debug)]
 pub struct ArrayType {
   pub name:         IString,
-  pub element_type: Type,
+  pub element_type: TypeSlot,
   pub size:         usize,
-}
-
-pub struct PolymorphicParameter {
-  pub name:  IString,
-  pub index: u64,
-}
-
-pub struct PolymorphicType {
-  pub name:       IString,
-  pub paramaters: Vec<PolymorphicParameter>,
-  pub base_type:  ComplexType,
 }
 
 /// Represents member types accessed within a struct. Can be used to track

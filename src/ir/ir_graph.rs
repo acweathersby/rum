@@ -1,7 +1,7 @@
 use crate::{
   container::ArrayVec,
   istring::*,
-  types::{BaseType, ComplexType, ConstVal, PrimitiveType, RoutineBody, RoutineVariables, Type},
+  types::{ConstVal, PrimitiveType, TypeSlot, TypeVarContext},
 };
 use std::fmt::{Debug, Display};
 
@@ -39,6 +39,14 @@ impl VarId {
   pub fn usize(self) -> usize {
     self.0 as usize
   }
+
+  /*   pub fn ty(&self, body: &RoutineBody) -> Option<Ref<'_, Type>> {
+    if !self.is_valid() {
+      None
+    } else {
+      Some(body.type_context_scope.vars[self.0 as usize].ty())
+    }
+  } */
 }
 
 impl Display for VarId {
@@ -121,110 +129,80 @@ impl TypeVar {
     !(self.var.is_valid() || self.ty.is_valid())
   }
 
-  pub fn ty(&self, body: &RoutineBody) -> Type {
-    if self.is_invalid() {
-      Type::Primitive(false, PrimitiveType::Undefined)
-    } else if self.is_custom_type() {
-      body.vars.resolve_ty(self.var.usize(), &body.type_context)
-    } else {
-      Self::PRIM_TYPES[self.ty.usize()].into()
-    }
-  }
-
-  pub fn alignment(&self, vars: &RoutineVariables) -> u64 {
-    if self.is_invalid() {
-      u64::MAX
-    } else if self.is_custom_type() {
-      let mut obj = &vars.entries[self.var];
-
-      if obj.is_pointer {
-        obj = &vars.entries[obj.par_id];
-      }
-
-      if obj.is_member {
-        let mut par = &vars.entries[obj.par_id];
-
-        if par.is_pointer {
-          par = &vars.entries[par.par_id];
-        }
-        dbg!((par, obj));
-
-        match par.ty.base_type() {
-          BaseType::Complex(cplx) => match cplx {
-            ComplexType::Struct(strct) => {
-              if let Some(mem) = strct.members.iter().find(|mem| match obj.name {
-                crate::types::MemberName::IdMember(name) => mem.name == name,
-                crate::types::MemberName::IndexMember(o) => mem.original_index == 0,
-              }) {
-                mem.ty.alignment()
-              } else {
-                panic!("Could not find member")
-              }
-            }
-            _ => panic!("invalid type for offset calculation"),
-          },
-          _ => unreachable!(),
-        }
-      } else {
-        obj.ty.alignment()
-      }
-    } else {
-      Self::PRIM_TYPES[self.ty.usize()].alignment()
-    }
-  }
-
-  pub fn offset(&self, vars: &RoutineVariables) -> u64 {
-    if self.is_invalid() {
-      u64::MAX
-    } else if self.is_custom_type() {
-      let mut obj = &vars.entries[self.var];
-
-      if obj.is_pointer {
-        obj = &vars.entries[obj.par_id];
-      }
-
-      if obj.is_member {
-        let mut par = &vars.entries[obj.par_id];
-
-        if par.is_pointer {
-          par = &vars.entries[par.par_id];
-        }
-        dbg!((par, obj));
-
-        match par.ty.base_type() {
-          BaseType::Complex(cplx) => match cplx {
-            ComplexType::Struct(strct) => {
-              if let Some(mem) = strct.members.iter().find(|mem| match obj.name {
-                crate::types::MemberName::IdMember(name) => mem.name == name,
-                crate::types::MemberName::IndexMember(o) => mem.original_index == 0,
-              }) {
-                mem.offset
-              } else {
-                panic!("Could not find member")
-              }
-            }
-            _ => panic!("invalid type for offset calculation"),
-          },
-          _ => unreachable!(),
-        }
-      } else {
-        panic!("Incorrect object for offset calculation");
-      }
-    } else {
-      0
-    }
-  }
-
+  /*   pub fn ty(&self, body: &RoutineBody) -> Option<Ref<'_, Type>> {
+     if self.is_invalid() {
+       None
+     } else {
+       Some(body.type_context_scope.vars[self.var()].ty.ty())
+     }
+   }
+  */
   pub fn var(&self) -> VarId {
     self.var
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TyData {
+  Undefined,
+  Var(VarId),
+  Slot(TypeSlot),
+  PtrVar(VarId),
+  PtrSlot(TypeSlot),
+  DerefVar(VarId),
+  DerefSlot(TypeSlot),
+}
+
+impl TyData {
+  pub fn is_named_ptr(&self, ctx: &TypeVarContext) -> bool {
+    match self {
+      TyData::PtrSlot(_) | TyData::PtrVar(_) => false,
+      ty => match ty.ty_slot(ctx).ty(ctx) {
+        crate::types::TypeRef::Pointer(..) => true,
+        _ => false,
+      },
+    }
+  }
+
+  pub fn is_inline_ptr(&self) -> bool {
+    match self {
+      TyData::PtrSlot(_) | TyData::PtrVar(_) => true,
+      _ => false,
+    }
+  }
+
+  pub fn is_pointer(&self, ctx: &TypeVarContext) -> bool {
+    self.is_inline_ptr() || self.is_named_ptr(ctx)
+  }
+
+  pub fn is_deref(&self) -> bool {
+    match self {
+      TyData::DerefVar(_) | TyData::DerefSlot(_) => true,
+      _ => false,
+    }
+  }
+
+  pub fn var_id(&self) -> VarId {
+    match self {
+      TyData::Var(var_id) => *var_id,
+      TyData::PtrVar(var_id) => *var_id,
+      _ => VarId::default(),
+    }
+  }
+
+  pub fn ty_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
+    match self {
+      TyData::DerefVar(var_id) | TyData::Var(var_id) | TyData::PtrVar(var_id) => ctx.vars[var_id.usize()].ty_slot,
+      TyData::DerefSlot(slot) | TyData::Slot(slot) | TyData::PtrSlot(slot) => *slot,
+      _ => TypeSlot::None,
+    }
   }
 }
 
 #[derive(Clone, Debug)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  PHI { ty_var: TypeVar, operands: Vec<IRGraphId> },
-  SSA { block_id: BlockId, operands: [IRGraphId; 2], ty_var: TypeVar, op: IROp },
+  SSA { block_id: BlockId, operands: [IRGraphId; 2], ty: TyData, op: IROp },
 }
 
 impl IRGraphNode {
@@ -247,25 +225,32 @@ impl IRGraphNode {
     }
   }
 
-  pub fn ty_var(&self) -> TypeVar {
+  pub fn ty_var(&self) -> VarId {
     match self {
-      IRGraphNode::Const { val, .. } => TypeVar::from_const(val),
-      IRGraphNode::SSA { ty_var, .. } => *ty_var,
-      IRGraphNode::PHI { ty_var, .. } => *ty_var,
+      IRGraphNode::Const { val, .. } => VarId::default(),
+      IRGraphNode::SSA { ty, .. } => ty.var_id(),
     }
   }
 
-  pub fn ty(&self, vars: &RoutineBody) -> Type {
+  pub fn ty_data(&self) -> TyData {
     match self {
+      IRGraphNode::Const { val, .. } => TyData::Slot(TypeSlot::Primitive(val.ty)),
+      IRGraphNode::SSA { ty, .. } => *ty,
+    }
+  }
+
+  /*   pub fn ty(&self, vars: &RoutineBody) -> Type {
+    todo!("Get type")
+    /*   match self {
       IRGraphNode::Const { val, .. } => val.ty.into(),
       IRGraphNode::SSA { ty_var, .. } => ty_var.ty(vars),
       IRGraphNode::PHI { ty_var, .. } => ty_var.ty(vars),
-    }
-  }
+    } */
+  } */
 
   pub fn var_id(&self) -> VarId {
     match self {
-      IRGraphNode::SSA { ty_var, .. } | IRGraphNode::PHI { ty_var, .. } => ty_var.var(),
+      IRGraphNode::SSA { ty, .. } => ty.var_id(),
       _ => Default::default(),
     }
   }
@@ -276,7 +261,6 @@ impl IRGraphNode {
     } else {
       match self {
         IRGraphNode::Const { .. } => IRGraphId::INVALID,
-        IRGraphNode::PHI { operands, .. } => operands[index],
         IRGraphNode::SSA { operands, .. } => operands[index],
       }
     }
@@ -305,7 +289,8 @@ pub enum IROp {
   /// and a const offset. This is also used to get the address of a stack
   /// variable, by taking address of the difference between the sp and stack
   /// offset.
-  PTR_MEM_CALC,
+  MEMB_PTR_CALC,
+  MEMB_PTR_LOAD,
   // General use operators
   VAR,
   ADD,
@@ -335,7 +320,7 @@ pub enum IROp {
   /// Store of a primitive value in op(2) to memory at pointer in op(1)
   MEM_STORE,
   /// Loads a primitive value into a suitable register.
-  MEM_LOAD,
+  LOAD,
   /// Zeroes all bytes of a type pointer or an array pointer.
   ZERO,
   /// Copies data from one type pointer to another type pointer.

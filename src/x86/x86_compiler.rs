@@ -102,23 +102,23 @@ pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAss
     let id = node.var_id();
 
     debug_assert!(id.is_valid());
-
-    if ty.is_pointer() {
+    todo!("Handle Pointer Semantics");
+    /*     if ty.is_pointer() {
       offsets.insert(id, get_aligned_value(*rsp_offset, 8));
       *rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
-    } else {
-      debug_assert!(!ty.is_unresolved(), "All types should be fully resolved");
-      match ty.base_type() {
-        BaseType::Prim(ty) => {
-          offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
-          *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
-        }
-        BaseType::Complex(ty) => {
-          offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
-          *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
-        }
+    } else { */
+    debug_assert!(!ty.is_unresolved(), "All types should be fully resolved");
+    match ty.ty_enum() {
+      BaseType::Prim(ty) => {
+        offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
+        *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
+      }
+      BaseType::Complex(ty) => {
+        offsets.insert(id, get_aligned_value(*rsp_offset, ty.as_ref().alignment() as u64));
+        *rsp_offset = offsets.get(&id).unwrap() + ty.as_ref().byte_size() as u64;
       }
     }
+    // /}
   }
 
   for node in ctx.body.graph.iter() {
@@ -323,7 +323,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         // Otherwise, the store will be made to stack slot, which may not actually
         // need to be stored to memory, and can be just preserved in the op1 register.
 
-        if out_ty.is_pointer() {
+        todo!("Handle pointer semantics");
+        /*    if out_ty.is_pointer() {
           let dst = regs[0].as_reg_op();
           //Ensure op1 resolves to pointer value.
 
@@ -331,7 +332,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           encode(bin, &lea, POINTER_SIZE, dst, RSP_REL(offset), None);
         } else {
           unreachable!()
-        }
+        } */
       }
       IROp::PTR_MEM_CALC => {
         let CompileContext { binary: bin, .. } = ctx;
@@ -373,7 +374,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         let offset_is_const = ctx.body.graph[*op2].is_const();
         let data = if offset_is_const { Arg::from_const(ctx.body.graph[*op2].constant().unwrap()) } else { regs[2].as_reg_op() };
 
-        encode(bin, &mov, out_ty.as_deref().bit_size(), dest_ptr, data, None);
+        encode(bin, &mov, out_ty.bit_size(), dest_ptr, data, None);
       }
 
       IROp::MEM_LOAD => {
