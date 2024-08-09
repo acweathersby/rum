@@ -59,6 +59,8 @@ IMPORT ../common/comment as cmt
 
     :ast  { t_RawBitCompositeProp, bit_count: u32($base_type<2,0>), props  }
 
+  
+
 
 <> bitfield_element
 

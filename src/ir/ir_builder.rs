@@ -87,9 +87,13 @@ impl<'body> IRBuilder<'body> {
     //self.get_top_id().map(|s| self.body.graph[s.usize()].ty(&self.body))
   }
 
+  pub fn get_node_ty(&mut self, node_id: IRGraphId) -> Option<TyData> {
+    self.body.graph.get(node_id.usize()).map(|t| t.ty_data())
+  }
+
   pub fn get_node_variable(&mut self, node_id: IRGraphId) -> Option<&mut Variable> {
     self.body.graph.get(node_id.usize()).and_then(|t| match t.var_id().is_valid() {
-      true => Some(&mut self.body.context.vars[t.var_id()]),
+      true => Some(&mut self.body.ctx.vars[t.var_id()]),
       false => None,
     })
   }
@@ -120,11 +124,11 @@ impl<'body> IRBuilder<'body> {
   }
 
   pub fn push_lexical_scope(&mut self) {
-    self.body.context.push_scope()
+    self.body.ctx.push_scope()
   }
 
   pub fn pop_lexical_scope(&mut self) {
-    self.body.context.pop_scope()
+    self.body.ctx.pop_scope()
   }
 
   pub fn push_const(&mut self, val: ConstVal) {
@@ -145,6 +149,16 @@ impl<'body> IRBuilder<'body> {
     let node = IRGraphNode::Const { val };
     graph.push(node);
     self.ssa_stack.push(id);
+  }
+
+  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot) -> &mut Variable {
+    let var = self.body.ctx.insert_var(var_name, ty).clone();
+
+    self.push_ssa(IROp::VAR_DECL, var.id.into(), &[]);
+
+    self.body.ctx.vars[var.id].store = self.pop_stack().unwrap();
+
+    &mut self.body.ctx.vars[var.id]
   }
 
   pub fn push_ssa(&mut self, op: IROp, ty: SMT, operands: &[SMO]) {
@@ -172,8 +186,8 @@ impl<'body> IRBuilder<'body> {
     graph.push(node);
     self.ssa_stack.push(id);
 
-    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR | IROp::PARAM_VAL) && ty.var_id().is_valid() {
-      self.body.context.vars[ty.var_id()].store = id;
+    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR | IROp::PARAM_DECL) && ty.var_id().is_valid() {
+      self.body.ctx.vars[ty.var_id()].store = id;
     }
 
     match op {
@@ -182,11 +196,11 @@ impl<'body> IRBuilder<'body> {
   }
 
   pub fn get_variable(&mut self, name: IString) -> Option<&mut Variable> {
-    self.body.context.get_var(name)
+    self.body.ctx.get_var(name)
   }
 
   pub fn get_var_member(&mut self, var: &Variable, name: IString) -> Option<&mut Variable> {
-    self.body.context.get_var_member(var, name)
+    self.body.ctx.get_var_member(var, name)
   }
 
   pub fn set_active(&mut self, block: BlockId) {

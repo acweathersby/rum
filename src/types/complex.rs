@@ -87,12 +87,12 @@ impl IRGraphNode {
     match self {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val))?,
       IRGraphNode::SSA { block_id, op, operands, ty, .. } => {
-        let val = ty.ty_slot(&body.context);
+        let val = ty.ty_slot(&body.ctx);
         let var = ty.var_id();
         let is_deref = ty.is_deref();
         let ptr = if ty.is_inline_ptr() || is_deref { "*" } else { " " };
 
-        let ty = if is_deref { val.ty_dereferenced(&body.context) } else { val.ty(&body.context) };
+        let ty = if is_deref { val.ty_dereferenced(&body.ctx) } else { val.ty(&body.ctx) };
 
         f.write_fmt(format_args!(
           "b{:03} {:34} = {:15} {}",
@@ -109,18 +109,20 @@ impl IRGraphNode {
 
 pub struct RoutineBody {
   pub graph:    Vec<IRGraphNode>,
+  pub tokens:   Vec<Token>,
   pub blocks:   Vec<Box<IRBlock>>,
   pub resolved: bool,
-  pub context:  TypeVarContext,
+  pub ctx:      TypeVarContext,
 }
 
 impl RoutineBody {
   pub fn new(db: &mut TypeDatabase) -> RoutineBody {
     RoutineBody {
       graph:    Default::default(),
+      tokens:   Default::default(),
       blocks:   Default::default(),
       resolved: Default::default(),
-      context:  TypeVarContext::new(db),
+      ctx:      TypeVarContext::new(db),
     }
   }
 }
@@ -136,7 +138,7 @@ impl Display for RoutineBody {
       st.field("types", &self.type_context);
     } */
 
-    Display::fmt(&self.context, f)?;
+    Display::fmt(&self.ctx, f)?;
 
     Ok(())
   }

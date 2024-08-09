@@ -8,12 +8,13 @@ fn test_bitfield_structs() {
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
-Bent => [
+Bent => 
+[
   bf32: #desc6 | name: u16,
   val: u32,
 ]
 
-main () =| { 
+main () =|  { 
   d = Bent [
     name = 2
   ]
@@ -35,17 +36,26 @@ fn test_type_inference() {
 Temp => [ a:u32, b:u32 ]
 
 #test
-TempA => [ a:u32, b: u64 ]
+TempA   => [ a:u32, b: Ptr  ]
+Ptr     => [ d: u32 ]
+Message => [ u32; 1 ]
 
-inferred_procedure ( test: gc* T?, dest: gc* TempA ) => const* T? { 
-  test.a = 1 + 2
-  test.b = test.b << 4
+c_str => [ data: static* u8 ]
+
+HWLCMessage => [ test: c_str,  ]
+
+best ( test: gc* U?, dest: gc* U? ) => *U? {}
+
+inferred_procedure ( test: gc* T?, dest: gc* TempA ) => *T? { 
+  a = 200000
+  test.a = 1 + 2 * a
+  test.b = test.b.d << 4
   test
 }
 
 main_procedure ( 
-  t:* TempA?,
-  d:* TempA? 
+  t: *TempA?,
+  d: *TempA? 
 ) =| {
   inferred_procedure(t, d) 
 }

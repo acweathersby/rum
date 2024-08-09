@@ -291,8 +291,14 @@ pub enum IROp {
   /// offset.
   MEMB_PTR_CALC,
   MEMB_PTR_LOAD,
-  // General use operators
-  VAR,
+  // Declares a variable and its type
+  VAR_DECL,
+  /// Declares a parameter variable and its type
+  PARAM_DECL,
+  /// Declares a constant and its type
+  CONST_DECL,
+  /// Declares and sets a return value
+  RET_VAL,
   ADD,
   SUB,
   MUL,
@@ -325,12 +331,9 @@ pub enum IROp {
   ZERO,
   /// Copies data from one type pointer to another type pointer.
   COPY,
-  /// Maps a registerable parameter
-  PARAM_VAL,
   CALL,
   CALL_ARG,
   CALL_RET,
-  RET_VAL,
   // Deliberate movement of data from one location to another
   MOVE,
 }

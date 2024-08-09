@@ -332,10 +332,14 @@ mod type_slot {
 
   #[derive(Clone, Copy)]
   pub enum TypeSlot {
+    // Mapping to a global type. Stores index to a user type.
     GlobalIndex(u32),
-    CtxIndex(u32),            // Mapping to a global type. Stores index to a user type.
-    Primitive(PrimitiveType), // Mapping to a primitive type. Stores the primitive type.
-    UNRESOLVED(IString, u32), // Slot is unresolved. Stores the index to the local type_slot,
+    // Mapping to a local context's type table.
+    CtxIndex(u32),
+    // Mapping to a primitive type. Stores the primitive type.
+    Primitive(PrimitiveType),
+    // Slot is unresolved. Stores the index to the local ctx's type_slot,
+    UNRESOLVED(IString, u32),
     None,
   }
 
