@@ -145,18 +145,13 @@ impl TypeVar {
 #[derive(Clone, Copy, Debug)]
 pub enum TyData {
   Undefined,
-  Var(VarId),
-  Slot(TypeSlot),
-  PtrVar(VarId),
-  PtrSlot(TypeSlot),
-  DerefVar(VarId),
-  DerefSlot(TypeSlot),
+  Var(u8, VarId),
+  Slot(u8, TypeSlot),
 }
 
 impl TyData {
   pub fn is_named_ptr(&self, ctx: &TypeVarContext) -> bool {
     match self {
-      TyData::PtrSlot(_) | TyData::PtrVar(_) => false,
       ty => match ty.ty_slot(ctx).ty(ctx) {
         crate::types::TypeRef::Pointer(..) => true,
         _ => false,
@@ -164,9 +159,16 @@ impl TyData {
     }
   }
 
+  pub fn inline_depth(&self) -> u32 {
+    match self {
+      TyData::Var(ptr_depth, _) | TyData::Var(ptr_depth, _) => *ptr_depth as u32,
+      _ => 0,
+    }
+  }
+
   pub fn is_inline_ptr(&self) -> bool {
     match self {
-      TyData::PtrSlot(_) | TyData::PtrVar(_) => true,
+      TyData::Var(ptr_depth, _) | TyData::Var(ptr_depth, _) => *ptr_depth > 0,
       _ => false,
     }
   }
@@ -175,25 +177,17 @@ impl TyData {
     self.is_inline_ptr() || self.is_named_ptr(ctx)
   }
 
-  pub fn is_deref(&self) -> bool {
-    match self {
-      TyData::DerefVar(_) | TyData::DerefSlot(_) => true,
-      _ => false,
-    }
-  }
-
   pub fn var_id(&self) -> VarId {
     match self {
-      TyData::Var(var_id) => *var_id,
-      TyData::PtrVar(var_id) => *var_id,
+      TyData::Var(_, var_id) => *var_id,
       _ => VarId::default(),
     }
   }
 
   pub fn ty_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
     match self {
-      TyData::DerefVar(var_id) | TyData::Var(var_id) | TyData::PtrVar(var_id) => ctx.vars[var_id.usize()].ty_slot,
-      TyData::DerefSlot(slot) | TyData::Slot(slot) | TyData::PtrSlot(slot) => *slot,
+      TyData::Var(_, var_id) => ctx.vars[var_id.usize()].ty_slot,
+      TyData::Slot(_, slot) => *slot,
       _ => TypeSlot::None,
     }
   }
@@ -234,7 +228,7 @@ impl IRGraphNode {
 
   pub fn ty_data(&self) -> TyData {
     match self {
-      IRGraphNode::Const { val, .. } => TyData::Slot(TypeSlot::Primitive(val.ty)),
+      IRGraphNode::Const { val, .. } => TyData::Slot(0, TypeSlot::Primitive(val.ty)),
       IRGraphNode::SSA { ty, .. } => *ty,
     }
   }
@@ -336,6 +330,9 @@ pub enum IROp {
   CALL_RET,
   // Deliberate movement of data from one location to another
   MOVE,
+  // Clone one memory structure to another memory structure. Operands MUST be pointer values.
+  // Depending on type, may require deep cloning, which will probably be handled through a dynamically generated function.
+  CLONE,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]

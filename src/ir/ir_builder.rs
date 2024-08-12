@@ -72,7 +72,7 @@ impl From<TyData> for SMT {
 
 impl From<VarId> for SMT {
   fn from(ty: VarId) -> Self {
-    Self::Data(TyData::Var(ty))
+    Self::Data(TyData::Var(0, ty))
   }
 }
 
@@ -131,7 +131,7 @@ impl<'body> IRBuilder<'body> {
     self.body.ctx.pop_scope()
   }
 
-  pub fn push_const(&mut self, val: ConstVal) {
+  pub fn push_const(&mut self, val: ConstVal, tok: Token) {
     for (id, node) in self.body.graph.iter().enumerate() {
       match node {
         IRGraphNode::Const { val: v } => {
@@ -148,20 +148,21 @@ impl<'body> IRBuilder<'body> {
     let id = IRGraphId::new(graph.len());
     let node = IRGraphNode::Const { val };
     graph.push(node);
+    self.body.tokens.push(tok);
     self.ssa_stack.push(id);
   }
 
-  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot) -> &mut Variable {
+  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot, tok: Token) -> &mut Variable {
     let var = self.body.ctx.insert_var(var_name, ty).clone();
 
-    self.push_ssa(IROp::VAR_DECL, var.id.into(), &[]);
+    self.push_ssa(IROp::VAR_DECL, var.id.into(), &[], tok);
 
     self.body.ctx.vars[var.id].store = self.pop_stack().unwrap();
 
     &mut self.body.ctx.vars[var.id]
   }
 
-  pub fn push_ssa(&mut self, op: IROp, ty: SMT, operands: &[SMO]) {
+  pub fn push_ssa(&mut self, op: IROp, ty: SMT, operands: &[SMO], tok: Token) {
     let operands = match (operands.get(0), operands.get(1)) {
       (Some(op1), Some(op2)) => {
         let (b, a) = (self.get_operand(*op2), self.get_operand(*op1));
@@ -184,6 +185,7 @@ impl<'body> IRBuilder<'body> {
     let node = IRGraphNode::SSA { op, block_id: self.active_block_id, ty, operands };
 
     graph.push(node);
+    self.body.tokens.push(tok);
     self.ssa_stack.push(id);
 
     if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR | IROp::PARAM_DECL) && ty.var_id().is_valid() {

@@ -1,3 +1,5 @@
+use radlr_rust_runtime::types::TokenRange;
+
 use super::*;
 use crate::{
   ir::ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, TypeVar, VarId},
@@ -87,17 +89,17 @@ impl IRGraphNode {
     match self {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val))?,
       IRGraphNode::SSA { block_id, op, operands, ty, .. } => {
-        let val = ty.ty_slot(&body.ctx);
+        let ctx = &body.ctx;
+        let val = ty.ty_slot(ctx);
         let var = ty.var_id();
-        let is_deref = ty.is_deref();
-        let ptr = if ty.is_inline_ptr() || is_deref { "*" } else { " " };
-
-        let ty = if is_deref { val.ty_dereferenced(&body.ctx) } else { val.ty(&body.ctx) };
+        let ptr = "*".repeat(ty.inline_depth() as usize);
+        let named_ptr = if let Some(name) = val.ty_pointer_name(ctx) { format!("{name}*") } else { Default::default() };
+        let base = val.ty_base(ctx);
 
         f.write_fmt(format_args!(
           "b{:03} {:34} = {:15} {}",
           block_id,
-          format!("{var:5} {ptr}{}", ty),
+          format!("{var:5} {ptr}{named_ptr}{base}"),
           format!("{:?}", op),
           operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
         ))?;
@@ -108,7 +110,9 @@ impl IRGraphNode {
 }
 
 pub struct RoutineBody {
+  /// An append only list of SSA and CONST IR nodes
   pub graph:    Vec<IRGraphNode>,
+  /// Maps a token range to a graph node.
   pub tokens:   Vec<Token>,
   pub blocks:   Vec<Box<IRBlock>>,
   pub resolved: bool,
@@ -132,6 +136,9 @@ impl Display for RoutineBody {
     for (index, node) in self.graph.iter().enumerate() {
       f.write_fmt(format_args!("\n{index: >5}: "))?;
       node.fmt(f, self)?;
+      if let Some(tok) = self.tokens.get(index) {
+        f.write_fmt(format_args!("\n{}", tok.blame(0, 0, "", None)));
+      }
     }
 
     /*     if !self.type_context.is_empty() {

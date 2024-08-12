@@ -1,4 +1,4 @@
-use crate::{istring::CachedString, types::PrimitiveType};
+use crate::{ir::ir_type_analysis::assert_good_types, istring::CachedString, types::PrimitiveType};
 
 use super::build_module;
 
@@ -28,7 +28,7 @@ main () =|  {
 
 #[test]
 fn test_type_inference() {
-  build_module(
+  let mut db = build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
@@ -36,7 +36,7 @@ fn test_type_inference() {
 Temp => [ a:u32, b:u32 ]
 
 #test
-TempA   => [ a:u32, b: Ptr  ]
+TempA   => [ a: u32, b: Ptr  ]
 Ptr     => [ d: u32 ]
 Message => [ u32; 1 ]
 
@@ -48,7 +48,7 @@ best ( test: gc* U?, dest: gc* U? ) => *U? {}
 
 inferred_procedure ( test: gc* T?, dest: gc* TempA ) => *T? { 
   a = 200000
-  test.a = 1 + 2 * a
+  test.a = 1 + 2 * test.a
   test.b = test.b.d << 4
   test
 }
@@ -57,12 +57,15 @@ main_procedure (
   t: *TempA?,
   d: *TempA? 
 ) =| {
+  d.a = t // Invalid assignment of 2 to d. Should use := syntax to declare a new type for d
   inferred_procedure(t, d) 
 }
   "##,
     )
     .unwrap(),
   );
+
+  assert_good_types("main_procedure".intern(), &mut db);
 }
 
 /* #[test]

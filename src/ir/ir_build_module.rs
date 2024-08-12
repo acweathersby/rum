@@ -50,16 +50,54 @@ use crate::{
 };
 use core::panic;
 pub use radlr_rust_runtime::types::Token;
-use std::{
-  collections::VecDeque,
-  ops::{Deref, DerefMut},
-  sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 use IROp::*;
 use SMO::*;
 use SMT::Inherit;
 
-pub fn build_module(module: &Arc<RawModule<Token>>) {
+type TypeIndex = u32;
+
+struct PTR {
+  t:   TypeIndex,
+  ptr: *mut u8,
+}
+
+/*
+
+let type_info: TypeInfo = TypeDB[t];
+
+
+type_info->type_index
+type_info->size
+type_info->uniform
+type_info->source_location
+type_info->heap_compatibility
+type_info->members.enumerate
+  (Name, Offset, Index, TypeIndex)
+
+
+rules'ptr?  (TypeIndex, rules* Address)         (nullable)* [  capacity:32, len: u32; data: T[...] ]
+                                               [  #len: u32; (nullable)* data: T[...] ]
+
+match ptr to:
+"""
+  let ty_index = ptr.0;
+  branch to Manager if ty_index == Manager#index
+  branch to Employee if ty_index == Manager#index
+  branch end
+"""
+
+  Manager: {
+    ptr.department
+  }
+  Employee: {
+    ptr.desk
+  }
+  end
+
+*/
+
+pub fn build_module(module: &Arc<RawModule<Token>>) -> Box<TypeDatabase> {
   // Step 1: Scan and reserve slots for types. Also do this for any scope, and so
   // on and so forth.
   // Step 2: Build definitions for all types, in this order: 0:zero_types
@@ -72,7 +110,7 @@ pub fn build_module(module: &Arc<RawModule<Token>>) {
   // either debug, reflection, or compiler information is needed for a given
   // type.
 
-  let mut ty_db = TypeDatabase::new();
+  let mut ty_db = Box::new(TypeDatabase::new());
 
   let routines = process_module_members(&module.members, &mut ty_db);
 
@@ -80,6 +118,8 @@ pub fn build_module(module: &Arc<RawModule<Token>>) {
     // Gather function type information.
     process_routine(*routine, &mut ty_db);
   }
+
+  ty_db
 }
 
 pub fn process_module_members<'a>(members: &'a RawModMembers<Token>, ty_db: &mut TypeDatabase) -> Vec<IString> {
@@ -278,7 +318,6 @@ fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
                   bit_offset += bit_size;
                 }
                 bitfield_element_Value::BitFieldProp(prop) => {
-                  todo!("AAAA");
                   /*         use type_Value::*;
                   match &prop.r#type {
                     Type_u32(_) => {
@@ -332,7 +371,7 @@ fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
 fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeDatabase) {
   let name = routine.name.id.intern();
 
-  let Some(mut ty_ref) = ty_db.get_type_mut(name) else {
+  let Some(ty_ref) = ty_db.get_type_mut(name) else {
     panic!("Could not find Struct type: {name}",);
   };
 
@@ -403,16 +442,16 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
       for (name, index, ty) in parameters.iter() {
         let mut var = ib.body.ctx.insert_var(*name, *ty).clone();
 
-        ib.push_ssa(PARAM_DECL, var.id.into(), &[]);
+        ib.push_ssa(PARAM_DECL, var.id.into(), &[], Default::default());
         let var_data = ib.pop_stack().unwrap();
         var.store = var_data;
 
-        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::PtrVar(var.id.into())), &[SMO::IROp(var.store)]);
+        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(var.store)], Default::default());
         var.reference = ib.pop_stack().unwrap();
 
-        let reference = var.reference;
-        ib.push_ssa(IROp::MEMB_PTR_LOAD, SMT::Data(TyData::DerefVar(var.id.into())), &[SMO::IROp(reference)]);
-        var.pointer = ib.pop_stack().unwrap();
+        /*         let reference = var.reference;
+        ib.push_ssa(IROp::MEMB_PTR_LOAD, SMT::Data(TyData::DerefVar(var.id.into())), &[SMO::IROp(reference)], Default::default());
+        var.pointer = ib.pop_stack().unwrap(); */
 
         ib.body.ctx.vars[var.id] = var;
       }
@@ -422,8 +461,6 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
       if returns.len() > 0 {
         // todo!("Check that return types match!");
       }
-
-      dbg!(ib);
     }
     _ => unreachable!(),
   }
@@ -476,12 +513,12 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Variab
       if let Some(var) = ib.get_var_member(&var_data, name) {
         let mut var = var.clone();
 
-        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::PtrVar(var.id.into())), &[SMO::IROp(var_data.store)]);
+        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(var_data.store)], var_name.tok.clone());
         var.reference = ib.pop_stack().unwrap();
 
-        let reference = var.reference;
-        ib.push_ssa(IROp::MEMB_PTR_LOAD, SMT::Data(TyData::DerefVar(var.id.into())), &[SMO::IROp(reference)]);
-        var.pointer = ib.pop_stack().unwrap();
+        /*         let reference = var.reference;
+        ib.push_ssa(IROp::MEMB_PTR_LOAD, SMT::Data(TyData::DerefVar(var.id.into())), &[SMO::IROp(reference)], var_name.tok.clone());
+        var.pointer = ib.pop_stack().unwrap(); */
 
         ib.body.ctx.vars[var.id.usize()] = var;
 
@@ -500,68 +537,71 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Variab
 fn process_member_load(mem: &std::sync::Arc<RawMember<Token>>, ib: &mut IRBuilder<'_>) {
   //todo!("Handle Member Load");
   if let Some(var) = resolve_variable(mem, ib) {
-    ib.push_ssa(LOAD, var.id.into(), &[var.reference.into()]);
+    ib.push_ssa(LOAD, var.id.into(), &[var.reference.into()], mem.tok.clone());
   }
 }
 
 fn process_add(add: &Add<Token>, ib: &mut IRBuilder) {
   process_expression(&(add.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(add.right.clone().to_ast().into_expression_Value().unwrap()), ib);
-  ib.push_ssa(ADD, Inherit, &[StackOp, StackOp]);
+  ib.push_ssa(ADD, Inherit, &[StackOp, StackOp], add.tok.clone());
 }
 
 fn process_sub(sub: &Sub<Token>, ib: &mut IRBuilder) {
   process_expression(&(sub.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sub.right.clone().to_ast().into_expression_Value().unwrap()), ib);
-  ib.push_ssa(SUB, Inherit, &[StackOp, StackOp]);
+  ib.push_ssa(SUB, Inherit, &[StackOp, StackOp], sub.tok.clone());
 }
 
 fn process_mul(mul: &Mul<Token>, ib: &mut IRBuilder) {
   process_expression(&(mul.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(mul.right.clone().to_ast().into_expression_Value().unwrap()), ib);
-  ib.push_ssa(MUL, Inherit, &[StackOp, StackOp]);
+  ib.push_ssa(MUL, Inherit, &[StackOp, StackOp], mul.tok.clone());
 }
 
 fn process_div(div: &Div<Token>, ib: &mut IRBuilder) {
   process_expression(&(div.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(div.right.clone().to_ast().into_expression_Value().unwrap()), ib);
-  ib.push_ssa(DIV, Inherit, &[StackOp, StackOp]);
+  ib.push_ssa(DIV, Inherit, &[StackOp, StackOp], div.tok.clone());
 }
 
 fn process_pow(pow: &Pow<Token>, ib: &mut IRBuilder) {
   process_expression(&(pow.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(pow.right.clone().to_ast().into_expression_Value().unwrap()), ib);
-  ib.push_ssa(POW, Inherit, &[StackOp, StackOp]);
+  ib.push_ssa(POW, Inherit, &[StackOp, StackOp], pow.tok.clone());
 }
 
 fn process_sl(sl: &BIT_SL<Token>, ib: &mut IRBuilder) {
   process_expression(&(sl.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sl.right.clone().to_ast().into_expression_Value().unwrap()), ib);
-  ib.push_ssa(SHL, Inherit, &[StackOp, StackOp]);
+  ib.push_ssa(SHL, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_sr(sr: &BIT_SR<Token>, ib: &mut IRBuilder) {
   process_expression(&(sr.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sr.right.clone().to_ast().into_expression_Value().unwrap()), ib);
-  ib.push_ssa(SHR, Inherit, &[StackOp, StackOp]);
+  ib.push_ssa(SHR, Inherit, &[StackOp, StackOp], Default::default());
 }
 
 fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
   let string_val = num.tok.to_string();
 
-  ib.push_const(if string_val.contains(".") {
-    ConstVal::new(PrimitiveType::Float | PrimitiveType::b64, num.val)
-  } else {
-    ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64, string_val.parse::<u64>().unwrap())
-  });
+  ib.push_const(
+    if string_val.contains(".") {
+      ConstVal::new(PrimitiveType::Float | PrimitiveType::b64, num.val)
+    } else {
+      ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b64, string_val.parse::<u64>().unwrap())
+    },
+    num.tok.clone(),
+  );
 }
 
-fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
+fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
   // Member call resolution may involve lookup on compatible functions in the
   // type scope stack.
 
-  let name = if call.member.members.len() == 1 {
-    let name = call.member.members[0].clone();
+  let name = if call_node.member.members.len() == 1 {
+    let name = call_node.member.members[0].clone();
     name.id.intern()
   } else {
     todo!("Handle multi member call");
@@ -570,12 +610,12 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
   let call = if let Some(routine_entry) = ib.body.ctx.db_mut().get_type_mut(name).as_ref() {
     let mut args = Vec::new();
 
-    for arg in &call.args {
+    for arg in &call_node.args {
       process_expression(&arg.expr, ib);
 
       let var_id = ib.get_top_var_id();
 
-      ib.push_ssa(CALL_ARG, Inherit, &[StackOp]);
+      ib.push_ssa(CALL_ARG, Inherit, &[StackOp], Default::default());
 
       args.push(ib.pop_stack().unwrap());
     }
@@ -599,11 +639,8 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
             if let Some(arg_id) = args.get(param_index) {
               let arg_var = ib.get_node_variable(*arg_id).expect("Could not extract variable data").clone();
 
-              dbg!(arg_var.ty_slot);
               let arg_var_ty = arg_var.ty_slot.ty_base(&ib.body.ctx);
               let param_ty = param_ty_slot.ty_base(&routine.body.ctx);
-
-              println!("\n ---  {} {} \n --- {ib:#?} \n ---", param_ty, arg_var_ty);
 
               match (param_ty, arg_var_ty) {
                 (TypeRef::UNRESOLVED(p_name, p_index), TypeRef::UNRESOLVED(a_name, a_index)) => {
@@ -668,7 +705,6 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
           if let Some(ty) = ib.body.ctx.get_type(name) {
             ib.body.ctx.insert_var(name, ty).clone()
           } else {
-            dbg!(&routine_body);
             let new_routine = RoutineType {
               name,
               parameters: routine.parameters.clone(),
@@ -683,6 +719,8 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
 
             process_routine(name, ib.body.ctx.db_mut());
 
+            println!("{name}");
+
             ib.body.ctx.insert_var(name, TypeSlot::GlobalIndex(entry as u32)).clone()
           }
         }
@@ -694,13 +732,12 @@ fn process_call(call: &RawCall<Token>, ib: &mut IRBuilder) {
     //panic!("Could not find routine {}", call_name.to_str().as_str())
   };
 
-  ib.push_ssa(CALL, call.id.into(), &[]);
+  ib.push_ssa(CALL, call.id.into(), &[], Default::default());
   ib.pop_stack();
-
-  dbg!(ib);
 }
 
 fn process_struct_instantiation(struct_decl: &RawStructInstantiation<Token>, ib: &mut IRBuilder) {
+  todo!("process_struct_instantiation");
   /*  let struct_type_name = struct_decl.name.id.intern();
 
   if let Some(s_type) = ib.get_type(struct_type_name) {
@@ -800,8 +837,6 @@ fn process_struct_instantiation(struct_decl: &RawStructInstantiation<Token>, ib:
   } else {
     panic!("Could not find struct definition for {struct_type_name:?}")
   } */
-
-  dbg!(ib);
 }
 
 fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
@@ -877,7 +912,7 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
               _ => unreachable!(),
             };
 
-            ib.push_ssa(op, Inherit, &[expr_id.into(), StackOp]);
+            ib.push_ssa(op, Inherit, &[expr_id.into(), StackOp], expr_match.tok.clone());
             ib.pop_stack();
           }
           _ => todo!(),
@@ -950,8 +985,7 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
       }
       RawAssignmentVariable(var_assign) => {
         if let Some(var_data) = resolve_variable(&var_assign.var, ib) {
-          dbg!(&var_data);
-          ib.push_ssa(STORE, Inherit, &[var_data.reference.into(), expr_id.into()]);
+          ib.push_ssa(STORE, Inherit, &[var_data.reference.into(), expr_id.into()], var_assign.tok.clone());
           ib.pop_stack();
         } else if var_assign.var.members.len() == 1 {
           // Create and assign a new variable based on the expression.
@@ -964,9 +998,9 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
             }
           }
 
-          let var = ib.declare_variable(var_name, expr_ty_slot).clone();
+          let var = ib.declare_variable(var_name, expr_ty_slot, Default::default()).clone();
 
-          ib.push_ssa(STORE, var.id.into(), &[var.reference.into(), expr_id.into()]);
+          ib.push_ssa(STORE, var.id.into(), &[var.reference.into(), expr_id.into()], var_assign.tok.clone());
 
           ib.pop_stack();
         } else {

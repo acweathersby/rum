@@ -230,7 +230,6 @@ mod ctx {
         ctx:       self as *const _ as *mut _,
         id:        VarId::new(index as u32),
         par:       Default::default(),
-        pointer:   Default::default(),
         reference: Default::default(),
         store:     Default::default(),
         ty_slot:   slot_index,
@@ -251,21 +250,21 @@ mod ctx {
       }
     }
 
-    pub fn get_var_member(&mut self, var: &Variable, member_name: IString) -> Option<&mut Variable> {
+    pub fn get_var_member(&mut self, par_var: &Variable, member_name: IString) -> Option<&mut Variable> {
       let host = self as *mut _;
 
-      debug_assert!(var.ctx as usize == host as usize);
+      debug_assert!(par_var.ctx as usize == host as usize);
 
       let member_index = self.vars.len();
 
-      let par_index = var.id.usize();
+      let par_index = par_var.id.usize();
 
-      if var.mem_scope > 0 {
-        let (_, scope) = &self.var_scopes.scopes[var.mem_scope];
+      if par_var.mem_scope > 0 {
+        let (_, scope) = &self.var_scopes.scopes[par_var.mem_scope];
         if let Some((_, index)) = scope.iter().find(|(name, _)| *name == member_name) {
           return Some(&mut self.vars[*index]);
         }
-        self.var_scopes.scopes[var.mem_scope].1.push((member_name, member_index));
+        self.var_scopes.scopes[par_var.mem_scope].1.push((member_name, member_index));
       } else {
         self.var_scopes.push_scope();
         self.vars[par_index].mem_scope = self.var_scopes.current_scope;
@@ -273,29 +272,12 @@ mod ctx {
         self.var_scopes.pop_scope();
       }
 
-      let entry = match var.ty_slot.ty_base(self) {
-        TypeRef::Undefined | TypeRef::UNRESOLVED(..) => {
-          self.ty_var_scopes.push_scope();
-          let entry = self.insert_generic(member_name);
-          self.ty_var_scopes.pop_scope();
-          entry
-        }
-        TypeRef::Struct(strct) => {
-          dbg!(strct);
-          if let Some(mem) = strct.members.iter().find(|m| m.name == member_name) {
-            mem.ty
-          } else {
-            panic!("Could not find member {member_name}");
-          }
-        }
-        tr => panic!("invalid operation on {tr}"),
-      };
+      let entry = self.get_member_type(par_var.id, member_name);
 
       let var = Variable {
         ctx:       self as *const _ as *mut _,
         id:        VarId::new(member_index as u32),
         par:       VarId::new(par_index as u32),
-        pointer:   Default::default(),
         reference: Default::default(),
         store:     Default::default(),
         ty_slot:   entry,
@@ -306,6 +288,27 @@ mod ctx {
       self.vars.push(var);
 
       Some(&mut self.vars[member_index])
+    }
+
+    pub fn get_member_type(&mut self, par_var_id: VarId, member_name: IString) -> TypeSlot {
+      let par_var = &self.vars[par_var_id];
+      let entry = match par_var.ty_slot.ty_base(self) {
+        TypeRef::Undefined | TypeRef::UNRESOLVED(..) => {
+          self.ty_var_scopes.push_scope();
+          let entry = self.insert_generic(member_name);
+          self.ty_var_scopes.pop_scope();
+          entry
+        }
+        TypeRef::Struct(strct) => {
+          if let Some(mem) = strct.members.iter().find(|m| m.name == member_name) {
+            mem.ty
+          } else {
+            panic!("Could not find member {member_name}");
+          }
+        }
+        tr => panic!("invalid operation on {tr}"),
+      };
+      entry
     }
 
     pub fn push_scope(&mut self) {
@@ -358,10 +361,10 @@ mod type_slot {
       }
     }
 
-    pub fn ty_dereferenced<'a>(&'a self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
+    pub fn ty_pointer_name<'a>(&'a self, ctx: &'a TypeVarContext) -> Option<IString> {
       match self.ty(ctx) {
-        TypeRef::Pointer(_, slot) => slot.ty_base(ctx),
-        ty => TypeRef::Undefined,
+        TypeRef::Pointer(name, slot) => Some(name),
+        ty => None,
       }
     }
 
@@ -418,11 +421,8 @@ mod variable {
     pub ty_slot:   TypeSlot,
     pub id:        VarId,
     pub par:       VarId,
-    /// Can be assigned a !* value if ty is !* or if ty  is * and * semantics
-    /// allow for the assignment
-    pub reference: IRGraphId,
     /// Can be assigned a * value if ty is *
-    pub pointer:   IRGraphId,
+    pub reference: IRGraphId,
     pub store:     IRGraphId,
     pub mem_name:  IString,
     pub mem_scope: usize,
@@ -492,6 +492,8 @@ mod scope {
         if self.scopes[old_scope].1.is_empty() {
           self.free_scopes.push(old_scope);
         }
+
+        self.current_scope = self.scope_stack[self.scope_stack.len() - 1];
       }
     }
   }

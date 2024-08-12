@@ -7,11 +7,11 @@ IMPORT ../common/comment as cmt
 
 <> expression > expression_types
     
-    :ast { t_Expression, expr: $1 }
+    :ast { t_Expression, expr: $1, tok }
 
   | address_of
 
-    :ast { t_Expression, expr: $1 }
+    :ast { t_Expression, expr: $1, tok }
 
 <> expression_types
 
@@ -20,7 +20,7 @@ IMPORT ../common/comment as cmt
 
 <> address_of > "&" prim::var^id
 
-    :ast { t_AddressOf, id }
+    :ast { t_AddressOf, id, tok }
 
 
 <> mem_expr 
@@ -94,23 +94,23 @@ IMPORT ../common/comment as cmt
 
   > bitwise^left  ">>"{5}  bitwise{4}^right
     
-    :ast { t_BIT_SR, left, right } 
+    :ast { t_BIT_SR, left, right, tok } 
 
   | bitwise^left  "<<"{5}  bitwise{4}^right
     
-    :ast { t_BIT_SL, left, right } 
+    :ast { t_BIT_SL, left, right, tok } 
 
   | bitwise^left "&"{3}  bitwise{2}^right
     
-    :ast { t_BIT_AND, left, right } 
+    :ast { t_BIT_AND, left, right, tok } 
 
   | bitwise^left "|"{3}  bitwise{2}^right
     
-    :ast { t_BIT_OR, left, right } 
+    :ast { t_BIT_OR, left, right, tok } 
 
   | bitwise^left "~|"{3}  bitwise{2}^right
     
-    :ast { t_BIT_XOR, left, right } 
+    :ast { t_BIT_XOR, left, right, tok } 
 
   | arithmetic
 
@@ -219,11 +219,11 @@ IMPORT ../common/comment as cmt
 
   > prim::uint
 
-    :ast { t_RawUint, val:i64($1) }
+    :ast { t_RawUint, val:i64($1), tok }
 
 
 <> primitive_integer 
 
   > prim::int
 
-    :ast { t_RawInt, val:i64($1) }
+    :ast { t_RawInt, val:i64($1), tok }
