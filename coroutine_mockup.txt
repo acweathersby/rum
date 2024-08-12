@@ -1,0 +1,71 @@
+Temp 
+  => [ a:u32, b:u32 ]
+
+#test
+TempA       
+  => [ a:u32, b: Ptr                    ]
+
+Ptr         
+  => [ d: u32                           ]
+
+Message     
+  => [ u32; 1                           ]
+
+C_STR       
+  => [ data: static* u8                 ]
+
+HCLWMessage => [ test: C_STR ]
+
+Best        
+  => ( test: gc* U?, dest: gc* U? ) *U? {}
+
+Dallas      
+  : u32 = 100 
+
+Inferred_Procedure 
+  => ( test: gc* T?, dest: gc* TempA ) *T? { 
+
+  a = 200000
+  
+  test.a = 1 + 2 * a
+  
+  test.b = test.b.d << 4
+  
+  test
+}
+
+
+
+coSTATE => u8: INITIAL, ACTIVE, FINAL
+
+
+
+co => [ 
+  #STATE: coSTATE = INITIAL,
+  t: *TempA?,
+  d: *TempA?,
+  
+  #co-routine
+  main_procedure => ( 
+    t: *TempA?,
+    d: *TempA? 
+  ) {
+    
+    d = 2 // Invalid assignment of 2 to d. Should use := syntax to declare a new type for d
+    
+    #STATE = ACTIVE
+    1
+  }
+
+  #next => () u32 {
+    t.time += 1
+    
+    if (t.time, dog) is
+      (== 1, Mongoose)    : meow(dog),
+      (>= 1, KaullaBear)  : claw(dog),
+      (<= 1, Chiwawa)     : bark(dog),
+      otherwise {  STATE = FINAL 0  } 
+  }
+
+  #end () => u32 { 0 }
+]
