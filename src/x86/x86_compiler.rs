@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use radlr_rust_runtime::types::NodeTraits;
+
 use super::{x86_encoder::*, x86_instructions::*, x86_types::*};
 use crate::{
   container::get_aligned_value,
@@ -8,7 +10,9 @@ use crate::{
     ir_graph::{BlockId, IRBlock, IRGraphNode, IROp, VarId},
     ir_register_allocator::RegisterAssignement,
   },
-  types::{BaseType, ComplexType, RoutineBody, RoutineVariables},
+  istring::IString,
+  linker::{LinkableBinary, RetargetingLink},
+  types::{RoutineBody, Type, TypeDatabase, TypeRef},
   x86::{print_instructions, push_bytes},
 };
 
@@ -17,7 +21,7 @@ const PAGE_SIZE: usize = 4096;
 struct CompileContext<'a> {
   stack_size:   u64,
   jmp_resolver: JumpResolution,
-  binary:       Vec<u8>,
+  link:         &'a mut LinkableBinary,
   body:         &'a RoutineBody,
 }
 
@@ -35,157 +39,124 @@ impl JumpResolution {
   }
 }
 
-pub struct x86Function {
-  binary:       *const u8,
-  binary_size:  usize,
-  entry_offset: usize,
-}
-
-impl x86Function {
-  pub fn new(binary: &[u8], entry_offset: usize) -> x86Function {
-    let allocation_size = binary.len();
-
-    let prot = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
-    let flags: i32 = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
-
-    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), allocation_size, prot, flags, -1, 0) as *mut u8 };
-
-    let data = unsafe { std::slice::from_raw_parts_mut(ptr, allocation_size) };
-
-    data.copy_from_slice(&binary);
-
-    Self { binary: ptr, binary_size: allocation_size, entry_offset }
-  }
-
-  pub fn access_as_call<'a, F>(&'a self) -> &'a F {
-    unsafe {
-      let entry_point = &self.binary.offset(self.entry_offset as isize);
-      std::mem::transmute(entry_point)
-    }
-  }
-}
-
-impl Drop for x86Function {
-  fn drop(&mut self) {
-    let result = unsafe { libc::munmap(self.binary as *mut _, self.binary_size) };
-    debug_assert_eq!(result, 0);
-  }
-}
-
-pub fn compile_from_ssa_fn(body: &RoutineBody, regist_assignments: &[RegisterAssignement], spilled_variables: &[VarId]) -> RumResult<x86Function> {
-  const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
-  const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
-  const PTR_BYTE_SIZE: usize = 8;
-
-  let mut ctx = CompileContext {
-    stack_size: 0,
-    jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
-    binary: Vec::<u8>::with_capacity(PAGE_SIZE),
-    body,
+pub fn compile_from_ssa_fn(
+  routine_name: IString,
+  type_scope: &TypeDatabase,
+  register_assignments: &[RegisterAssignement],
+  spilled_variables: &[VarId],
+) -> RumResult<LinkableBinary> {
+  let Some((ty_ref, _)) = type_scope.get_type(routine_name) else {
+    panic!("Could not find routine type: {routine_name}",);
   };
 
-  // store pointers to free and malloc at base binaries
-  let mut offset = 0;
-  push_bytes(&mut ctx.binary, MALLOC);
-  push_bytes(&mut ctx.binary, FREE);
+  match ty_ref {
+    Type::Routine(rt) => {
+      let body = &rt.body;
 
-  // Move stack by needed bytes to allocate memory for our stack elements
-  // and local pointer references
+      let mut binary = LinkableBinary { binary: Default::default(), name: routine_name, link_map: Default::default() };
 
-  // Create area on the stack for local declarations
+      let mut cc = CompileContext {
+        stack_size: 0,
+        jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
+        link: &mut binary,
+        body,
+      };
 
-  let mut offsets = BTreeMap::<VarId, u64>::new();
-  let mut rsp_offset = 0;
+      // store pointers to free and malloc at base binaries
+      let mut offset = 0;
 
-  fn fun_name(node: &IRGraphNode, body: &RoutineBody, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
-    let ty = node.ty(&body);
-    let id = node.var_id();
+      // Move stack by needed bytes to allocate memory for our stack elements
+      // and local pointer references
 
-    debug_assert!(id.is_valid());
-    todo!("Handle Pointer Semantics");
-    /*     if ty.is_pointer() {
-      offsets.insert(id, get_aligned_value(*rsp_offset, 8));
-      *rsp_offset = offsets.get(&id).unwrap() + PTR_BYTE_SIZE as u64;
-    } else { */
-    debug_assert!(!ty.is_unresolved(), "All types should be fully resolved");
-    match ty.ty_enum() {
-      BaseType::Prim(ty) => {
-        offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
-        *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
+      // Create area on the stack for local declarations
+
+      let mut offsets = BTreeMap::<VarId, u64>::new();
+      let mut rsp_offset = 0;
+
+      fn fun_name(node: &IRGraphNode, body: &RoutineBody, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
+        let slot = node.ty_data().ty_slot(&body.ctx);
+        let node_ty = slot.ty(&body.ctx);
+        let id = node.var_id();
+
+        debug_assert!(id.is_valid());
+
+        todo!("Handle Pointer Semantics");
+
+        match node_ty {
+          TypeRef::Primitive(ty) => {
+            offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
+            *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
+          }
+          _ => todo!("Handle this??"),
+        }
+        // /}
       }
-      BaseType::Complex(ty) => {
-        offsets.insert(id, get_aligned_value(*rsp_offset, ty.as_ref().alignment() as u64));
-        *rsp_offset = offsets.get(&id).unwrap() + ty.as_ref().byte_size() as u64;
+
+      for var_id in spilled_variables {
+        if !offsets.contains_key(var_id) {
+          fun_name(&cc.body.graph[*var_id], body, &mut offsets, &mut rsp_offset);
+        }
       }
-    }
-    // /}
-  }
 
-  for node in ctx.body.graph.iter() {
-    /* if matches!(node, IRGraphNode::VAR { .. }) {
-      fun_name(node, &mut offsets, &mut rsp_offset);
-    } */
-  }
+      rsp_offset = get_aligned_value(rsp_offset, 16);
 
-  for var_id in spilled_variables {
-    if !offsets.contains_key(var_id) {
-      fun_name(&ctx.body.graph[*var_id], body, &mut offsets, &mut rsp_offset);
-    }
-  }
+      funct_preamble(&mut cc, rsp_offset);
 
-  rsp_offset = get_aligned_value(rsp_offset, 16);
+      for block in body.blocks.iter() {
+        if block.nodes.is_empty() {
+          continue;
+        }
+        cc.jmp_resolver.block_offset.push(cc.link.binary.len());
+        println!("START_BLOCK {} ---------------- \n", block.id);
+        for op_expr in &block.nodes {
+          let index = op_expr.usize();
+          let node = &body.graph[index];
+          let assigns = &register_assignments[index];
 
-  funct_preamble(&mut ctx, rsp_offset);
+          //println!("{index:8}: {node:}");
+          println!("               {assigns:}");
 
-  for block in body.blocks.iter() {
-    ctx.jmp_resolver.block_offset.push(ctx.binary.len());
-    println!("START_BLOCK {} ---------------- \n", block.id);
-    for op_expr in &block.nodes {
-      let index = op_expr.usize();
-      let node = &body.graph[index];
-      let assigns = &regist_assignments[index];
+          let old_offset = cc.link.binary.len();
+          compile_op(node, assigns, &block, &mut cc, &offsets, rsp_offset);
+          offset = print_instructions(&cc.link.binary[old_offset..], offset);
 
-      //println!("{index:8}: {node:}");
-      println!("               {assigns:}");
+          println!("\n")
+        }
 
-      let old_offset = ctx.binary.len();
-      compile_op(node, assigns, &block, &mut ctx, &offsets, rsp_offset);
-      offset = print_instructions(&ctx.binary[old_offset..], offset);
+        if let Some(block_id) = block.branch_succeed {
+          use Arg::*;
+          if block_id != BlockId(block.id.0 + 1) {
+            let CompileContext { stack_size, jmp_resolver, link, body: ctx } = &mut cc;
+            encode(&mut link.binary, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut link.binary, block_id.0 as usize);
+            println!("JL BLOCK({block_id})");
+          }
+        }
 
-      println!("\n")
-    }
-
-    if let Some(block_id) = block.branch_succeed {
-      use Arg::*;
-      if block_id != BlockId(block.id.0 + 1) {
-        let CompileContext { stack_size, jmp_resolver, binary: bin, body: ctx } = &mut ctx;
-        encode(bin, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
-        jmp_resolver.add_jump(bin, block_id.0 as usize);
-        println!("JL BLOCK({block_id})");
+        if !block.branch_fail.is_some() && !block.branch_succeed.is_some() {
+          funct_postamble(&mut cc, rsp_offset);
+          encode(&mut cc.link.binary, &ret, 64, Arg::None, Arg::None, Arg::None);
+        }
       }
+
+      for (instruction_index, block_id) in &cc.jmp_resolver.jump_points {
+        let block_address = cc.jmp_resolver.block_offset[*block_id];
+        let instruction_end_point = *instruction_index;
+        let relative_offset = block_address as i32 - instruction_end_point as i32;
+        let ptr = cc.link.binary[instruction_end_point - 4..].as_mut_ptr();
+        unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
+      }
+
+      print_instructions(&cc.link.binary[0..], 0);
+
+      Ok(binary)
     }
-
-    if !block.branch_fail.is_some() && !block.branch_succeed.is_some() {
-      funct_postamble(&mut ctx, rsp_offset);
-      encode(&mut ctx.binary, &ret, 64, Arg::None, Arg::None, Arg::None);
-    }
+    _ => unreachable!(),
   }
-
-  for (instruction_index, block_id) in &ctx.jmp_resolver.jump_points {
-    let block_address = ctx.jmp_resolver.block_offset[*block_id];
-    let instruction_end_point = *instruction_index;
-    let relative_offset = block_address as i32 - instruction_end_point as i32;
-    let ptr = ctx.binary[instruction_end_point - 4..].as_mut_ptr();
-    unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
-  }
-
-  print_instructions(&ctx.binary[16..], 0);
-
-  Ok(x86Function::new(&ctx.binary, 16))
 }
 
-fn funct_preamble(ctx: &mut CompileContext, rsp_offset: u64) {
-  let bin = &mut ctx.binary;
+fn funct_preamble(cc: &mut CompileContext, rsp_offset: u64) {
+  let bin = &mut cc.link.binary;
   encode_unary(bin, &push, 64, Arg::Reg(RBX));
   encode_unary(bin, &push, 64, Arg::Reg(RBP));
   encode_unary(bin, &push, 64, Arg::Reg(R12));
@@ -199,8 +170,8 @@ fn funct_preamble(ctx: &mut CompileContext, rsp_offset: u64) {
   }
 }
 
-fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
-  let bin = &mut ctx.binary;
+fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
+  let bin = &mut cc.link.binary;
   if rsp_offset > 0 {
     encode_binary(bin, &add, 64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset as i64));
   }
@@ -212,11 +183,15 @@ fn funct_postamble(ctx: &mut CompileContext, rsp_offset: u64) {
   encode_unary(bin, &pop, 64, Arg::Reg(RBX));
 }
 
-pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, ctx: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
+pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, cc: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
   const POINTER_SIZE: u64 = 64;
-  let out_ty = node.ty(&ctx.body);
+
+  let slot = node.ty_data().ty_slot(&cc.body.ctx);
+  let node_ty = slot.ty(&cc.body.ctx);
+  let node_ty_is_pointer = node.ty_data().is_pointer(&cc.body.ctx);
+
   use Arg::*;
-  if let IRGraphNode::SSA { op, block_id, ty_var, operands, .. } = node {
+  if let IRGraphNode::SSA { op, block_id, operands, .. } = node {
     let regs = reg_data.reg;
     let vars = reg_data.vars;
     let spills = reg_data.spills;
@@ -224,9 +199,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     // Perform spills
     for (op_index, spill_var) in spills.iter().enumerate() {
       if spill_var.is_valid() {
-        let node = &ctx.body.graph[*spill_var];
-        let ty = node.ty(&ctx.body);
-        let bit_size = ty.bit_size();
+        let node = &cc.body.graph[*spill_var];
+        let bit_size = node_ty.bit_size();
         let offset = *so.get(spill_var).unwrap();
         let reg = match op_index {
           0 => regs[0].as_reg_op(),
@@ -234,7 +208,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           2 => regs[2].as_reg_op(),
           _ => unreachable!(),
         };
-        encode(&mut ctx.binary, &mov, bit_size, RSP_REL(offset), reg, None);
+        encode(&mut cc.link.binary, &mov, bit_size, RSP_REL(offset), reg, None);
       }
     }
 
@@ -244,37 +218,19 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
       if need_load {
         let var_id = vars[load_index];
 
-        let node = &ctx.body.graph[var_id];
+        let node = &cc.body.graph[var_id];
 
-        let ty = node.ty(&ctx.body);
-
-        let bit_size = ty.bit_size();
+        let bit_size = node_ty.bit_size();
 
         let offset = *so.get(&var_id).unwrap();
 
         let reg = regs[load_index].as_reg_op();
 
-        encode(&mut ctx.binary, &mov, bit_size, reg, RSP_REL(offset), None);
+        encode(&mut cc.link.binary, &mov, bit_size, reg, RSP_REL(offset), None);
       }
     }
 
     match op {
-      /*       IROp::RET_VAL => {
-        let op1 = operands[0];
-
-        if !op1.is_invalid() {
-          let CompileContext { ctx, binary: bin, .. } = ctx;
-          let bit_size = out_ty.into();
-
-          if !op1.is_register() || op1.to_pure_register() != RAX {
-            encode(bin, &mov, bit_size, RAX.as_op(ctx, so), op1.as_op(ctx, so), None);
-          }
-        }
-
-        funct_postamble(ctx, rsp_offset);
-        encode(&mut ctx.binary, &ret, b64, None, None, None);
-      } */
-
       /*
        * Store represents a move of a primitive value into either a stack slot, or a memory
        * location.
@@ -289,7 +245,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
        */
       IROp::STORE => {
         let [_, op2] = operands;
-        let CompileContext { binary: bin, .. } = ctx;
+        let CompileContext { link: bin, .. } = cc;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -298,23 +254,25 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         // Otherwise, the store will be made to stack slot, which may not actually
         // need to be stored to memory, and can be just preserved in the op1 register.
 
-        let bit_size = out_ty.bit_size();
+        let bit_size = node_ty.bit_size();
 
-        let dst_arg = regs[0].as_reg_op();
+        let dst_arg = if node_ty_is_pointer { regs[0].as_mem_op() } else { regs[0].as_reg_op() };
 
-        if ctx.body.graph[*op2].is_const() {
-          let const_ = ctx.body.graph[*op2].constant().unwrap();
-          encode(bin, &mov, bit_size, dst_arg, Arg::from_const(const_), None);
+        println!("STORE: {bit_size} {}", node_ty);
+
+        if cc.body.graph[*op2].is_const() {
+          let const_ = cc.body.graph[*op2].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, dst_arg, Arg::from_const(const_), None);
         } else {
           let src_arg = regs[2].as_reg_op();
           if dst_arg != src_arg {
-            encode(bin, &mov, bit_size, dst_arg, src_arg, None);
+            encode(&mut cc.link.binary, &mov, bit_size, dst_arg, src_arg, None);
           }
         }
       }
       IROp::ADDR => {
         let [op1, _] = operands;
-        let CompileContext { binary: bin, .. } = ctx;
+        let CompileContext { link: bin, .. } = cc;
 
         // operand 1 and the return type determines the type of store to be
         // made. If the return type is a pointer value, the store will made to
@@ -334,8 +292,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           unreachable!()
         } */
       }
-      IROp::PTR_MEM_CALC => {
-        let CompileContext { binary: bin, .. } = ctx;
+      IROp::MEMB_PTR_CALC => {
+        let CompileContext { link: bin, .. } = cc;
 
         debug_assert!(regs[0].is_valid());
         let dest_reg = regs[0].as_reg_op();
@@ -343,249 +301,294 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         debug_assert!(regs[1].is_valid());
         let base_reg = regs[1].as_reg_op();
 
-        let offset = node.ty_var().offset(&ctx.body.vars);
+        let var_id = node.var_id();
+
+        debug_assert!(var_id.is_valid());
+
+        let var = &cc.body.ctx.vars[var_id];
+        let par = &cc.body.ctx.vars[var.par];
+
+        let offset = match par.ty().base_type(&cc.body.ctx.db()) {
+          TypeRef::Struct(ty) => {
+            if let Some(mem) = ty.members.iter().find(|m| m.name == var.mem_name) {
+              mem.offset
+            } else {
+              unreachable!()
+            }
+          }
+          ty => unreachable!("Unrecognized base type for MEMB_PTR_CALC: {ty}"),
+        };
 
         //debug_assert!(op1_node.ty().is_pointer(), "{}", op1_node.ty());
 
         if true {
           if base_reg != dest_reg {
-            encode(bin, &mov, POINTER_SIZE, dest_reg, base_reg, None);
+            encode(&mut cc.link.binary, &mov, POINTER_SIZE, dest_reg, base_reg, None);
           }
           if offset > 0 {
-            encode(bin, &add, POINTER_SIZE, dest_reg, Arg::Imm_Int(offset as i64), None);
+            encode(&mut cc.link.binary, &add, POINTER_SIZE, dest_reg, Arg::Imm_Int(offset as i64), None);
           }
         } else {
           todo!()
         }
       }
 
-      IROp::MEM_STORE => {
-        let [op1, op2] = operands;
-        let CompileContext { binary: bin, .. } = ctx;
-
-        // operand 1 and the return type determines the type of store to be
-        // made. If the return type is a pointer value, the store will made to
-        // an address determined by op1, which should resolve to a pointer.
-
-        // Otherwise, the store will be made to stack slot, which may not actually
-        // need to be stored to memory, and can be just preserved in the op1 register.
-
-        let dest_ptr = regs[1].as_mem_op();
-        let offset_is_const = ctx.body.graph[*op2].is_const();
-        let data = if offset_is_const { Arg::from_const(ctx.body.graph[*op2].constant().unwrap()) } else { regs[2].as_reg_op() };
-
-        encode(bin, &mov, out_ty.bit_size(), dest_ptr, data, None);
-      }
-
-      IROp::MEM_LOAD => {
+      IROp::LOAD => {
         let [op1, _] = operands;
-        let CompileContext { binary: bin, .. } = ctx;
+        let CompileContext { link: bin, .. } = cc;
 
         let dst_reg = regs[0].as_reg_op();
         let src_ptr = regs[1].as_mem_op();
-        let bit_size = out_ty.bit_size();
+        let bit_size = node_ty.bit_size();
 
-        encode(bin, &mov, bit_size, dst_reg, src_ptr, None);
+        encode(&mut cc.link.binary, &mov, bit_size, dst_reg, src_ptr, None);
       }
-      IROp::PARAM_VAL => {
+      IROp::RET_VAL => {
+        let [op1, _] = operands;
+        let CompileContext { link: bin, .. } = cc;
+
+        let dst_reg = regs[0].as_reg_op();
+        let src_reg = regs[1].as_reg_op();
+        let bit_size = node_ty.bit_size();
+
+        if dst_reg != src_reg {
+          encode(&mut cc.link.binary, &mov, bit_size, dst_reg, src_reg, None);
+        }
+      }
+      IROp::PARAM_DECL => {
         println!("Val set to {:?}", regs[0].as_reg_op());
       }
-      /*
+      IROp::CALL_ARG => {
+        let [op1, _] = operands;
+        let CompileContext { link: bin, .. } = cc;
 
-      IROp::MOVE | IROp::CALL_ARG => {
-        let CompileContext { routine: ctx, binary: bin, .. } = ctx;
-        let op1 = out_id;
-        let op2 = operands[0];
-        let bit_size = out_ty.bit_size();
+        let bit_size = node_ty.bit_size();
 
-        encode(bin, &mov, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
-      }
-      IROp::CALL => {
-        // Fudging this for calling syswrite. Rax needs to be set to the system call id
-        // and then we make a syscall.
+        let dst_arg = if node_ty_is_pointer { regs[0].as_mem_op() } else { regs[0].as_reg_op() };
 
-        let CompileContext { routine: ctx, binary: bin, .. } = ctx;
+        println!("STORE: {}", node_ty);
 
-        let op1 = operands[0];
-
-        encode(bin, &mov, 64, RAX.as_op(ctx, so), op1.as_op(ctx, so), None);
-
-        encode_zero(bin, &syscall, 32);
-      }
-          IROp::STORE => {
-                  let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
-                  if let SSAExpr::BinaryOp(op, val, op1, op2) = node {
-                    debug_assert!(op1.ll_val().info.stack_id().is_some());
-                    let bit_size = op1.ll_val().info.deref().into();
-                    if op1.ll_val().info.is_ptr() {
-                      encode(bin, &mov, bit_size, op1.arg(so).to_mem(), op2.arg(so), None);
-                    } else {
-                      let stack_id =
-                        op1.ll_val().info.stack_id().expect("Loads should have an associated stack id");
-
-                      let offset = (so[stack_id] as isize);
-
-                      encode(bin, &mov, bit_size, Mem(RSP_REL(offset as u64)), op2.arg(so), None);
-                    }
-                  } else {
-                    panic!()
-                  }
-                } */
-      /*
-            IROp::ADD => {
-              let CompileContext { ctx, binary: bin, .. } = ctx;
-              let mut op1 = operands[0];
-              let mut op2 = operands[1];
-              let t_reg = out_id;
-              let bit_size = out_ty.into();
-
-              //debug_assert!(op1.is_register() && t_reg.is_register());
-
-              if op1 != t_reg {
-                if t_reg == op2 {
-                  op2 = op1;
-                  op1 = t_reg;
-                } else {
-                  encode(bin, &mov, bit_size, t_reg.as_op(ctx, so), op1.as_op(ctx, so), None);
-                  op1 = t_reg;
-                }
-              }
-
-              encode(bin, &add, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
-            }
-            IROp::SUB => {
-              let CompileContext { ctx, binary: bin, .. } = ctx;
-              let mut op1 = operands[0];
-              let op2 = operands[1];
-              let t_reg = out_id;
-              let bit_size = out_ty.into();
-
-              debug_assert!(op1.is_register() && t_reg.is_register());
-
-              if op1.reg_id() != t_reg.reg_id() {
-                encode(bin, &mov, bit_size, t_reg.as_op(ctx, so), op1.as_op(ctx, so), None);
-                op1 = t_reg;
-              }
-
-              encode(bin, &sub, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
-            }
-            IROp::MUL => {
-              let CompileContext { ctx, binary: bin, .. } = ctx;
-              let mut op1 = operands[0];
-              let mut op2 = operands[1];
-              let t_reg = out_id;
-              let bit_size = out_ty.into();
-
-              //debug_assert!(op1.is_register() && t_reg.is_register(), "{op1}, {t_reg}");
-
-              if op1 != t_reg {
-                if t_reg == op2 {
-                  op2 = op1;
-                  op1 = t_reg;
-                } else {
-                  encode(bin, &mov, bit_size, t_reg.as_op(ctx, so), op1.as_op(ctx, so), None);
-                  op1 = t_reg;
-                }
-              }
-
-              encode(bin, &imul, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
-            }
-            IROp::GR => {
-              let CompileContext { jmp_resolver, binary: bin, ctx, .. } = ctx;
-
-              let op1 = operands[0];
-              let op2 = operands[1];
-              let bit_size = out_ty.into();
-
-              if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_default) {
-                encode(bin, &cmp, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
-                let next_block = BlockId(block.id.0 + 1);
-                if pass == next_block {
-                  encode(bin, &jle, b32, Imm_Int(fail.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, fail.0 as usize);
-                  println!("JL BLOCK({fail})");
-                } else if fail == next_block {
-                  encode(bin, &jg, b32, Imm_Int(pass.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, pass.0 as usize);
-                  println!("JGE BLOCK({pass})");
-                } else {
-                  encode(bin, &jg, b32, Imm_Int(pass.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, pass.0 as usize);
-                  encode(bin, &jmp, b32, Imm_Int(fail.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, fail.0 as usize);
-                  println!("JGE BLOCK({pass})");
-                  println!("JMP BLOCK({fail})");
-                }
-              }
-            }
-            IROp::GE => {
-              let CompileContext { jmp_resolver, binary: bin, ctx, .. } = ctx;
-
-              let op1 = operands[0];
-              let op2 = operands[1];
-              let bit_size = out_ty.into();
-
-              if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_default) {
-                encode(bin, &cmp, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
-                let next_block = BlockId(block.id.0 + 1);
-                if pass == next_block {
-                  encode(bin, &js, b32, Imm_Int(fail.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, fail.0 as usize);
-                  println!("JL BLOCK({fail})");
-                } else if fail == next_block {
-                  encode(bin, &jge, b32, Imm_Int(pass.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, pass.0 as usize);
-                  println!("JGE BLOCK({pass})");
-                } else {
-                  encode(bin, &jge, b32, Imm_Int(pass.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, pass.0 as usize);
-                  encode(bin, &jmp, b32, Imm_Int(fail.0 as i64), None, None);
-                  jmp_resolver.add_jump(bin, fail.0 as usize);
-                  println!("JGE BLOCK({pass})");
-                  println!("JMP BLOCK({fail})");
-                }
-              }
-            }
-            IROp::NE => todo!("TODO: {node:?}"),
-            IROp::EQ => todo!("TODO: {node:?}"),
-      */
-            /*
-            IROp::LOAD => {
-                  let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
-                  if let SSAExpr::UnaryOp(op, val, op1) = op_expr {
-                    debug_assert!(op1.ll_val().info.stack_id().is_some());
-                    if op1.ll_val().info.is_ptr() {
-                      let bit_size = op1.ll_val().info.into();
-                      dbg!(bit_size);
-                      encode(bin, &mov, bit_size, val.arg(so), op1.arg(so).to_mem(), None);
-                    } else {
-                      let bit_size = op1.ll_val().info.deref().into();
-                      let stack_id =
-                        op1.ll_val().info.stack_id().expect("Loads should have an associated stack id");
-
-                      let offset = so[stack_id] as isize;
-
-                      encode(bin, &mov, bit_size, val.arg(so), Mem(RSP_REL(offset as u64)), None);
-                    }
-                  } else {
-                    panic!()
-                  }
-                }
-
-      IROp::CALL => {
-        dbg!(&node);
-        // Match the calling name to an offset
-        let CompileContext { ctx, binary: bin, .. } = ctx;
-        let fn_id = operands[0];
-        let ir_call = &ctx.calls[fn_id.var_id()];
-
-        match ir_call.name.to_str().as_str() {
-          "malloc" => {
-            encode_unary(bin, &call, b64, RIP_REL(0)).displace_too(0);
+        if cc.body.graph[*op1].is_const() {
+          let const_ = cc.body.graph[*op1].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, dst_arg, Arg::from_const(const_), None);
+        } else {
+          let src_arg = regs[1].as_reg_op();
+          if dst_arg != src_arg {
+            encode(&mut cc.link.binary, &mov, bit_size, dst_arg, src_arg, None);
           }
-          _ => {}
         }
-      }     */
+      }
+      IROp::CALL_RET => {
+        //todo!("Call Return");
+      }
+      IROp::CALL | IROp::DBG_CALL => {
+        // Match the calling name to an offset
+
+        println!("todo(Anthony): handle caller saved registers");
+
+        use crate::linker::*;
+        match node_ty {
+          TypeRef::DebugCall(name) => {
+            debug_assert!(matches!(op, IROp::DBG_CALL));
+
+            let index = encode_unary(&mut cc.link.binary, &call, 64, RIP_REL(0)).displacement_index;
+            cc.link.link_map.push(RetargetingLink {
+              binary_offset: index,
+              byte_size:     4,
+              endianess:     Endianess::Little,
+              link_type:     LinkType::DBGRoutine(name.clone()),
+            });
+          }
+          TypeRef::Routine(rt) => {
+            let index = encode_unary(&mut cc.link.binary, &call, 32, Imm_Int(0)).displacement_index;
+            cc.link.link_map.push(RetargetingLink {
+              binary_offset: index,
+              byte_size:     4,
+              endianess:     Endianess::Little,
+              link_type:     LinkType::Routine(rt.name.clone()),
+            });
+          }
+          TypeRef::Syscall(name) => {
+            todo!("Sys calls");
+          }
+          _ => unreachable!(),
+        };
+      }
+      /*
+
+
+       IROp::CALL => {
+         // Fudging this for calling syswrite. Rax needs to be set to the system call id
+         // and then we make a syscall.
+
+         let CompileContext { routine: ctx, binary: bin, .. } = ctx;
+
+         let op1 = operands[0];
+
+         encode(bin, &mov, 64, RAX.as_op(ctx, so), op1.as_op(ctx, so), None);
+
+         encode_zero(bin, &syscall, 32);
+       }
+           IROp::STORE => {
+                   let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
+                   if let SSAExpr::BinaryOp(op, val, op1, op2) = node {
+                     debug_assert!(op1.ll_val().info.stack_id().is_some());
+                     let bit_size = op1.ll_val().info.deref().into();
+                     if op1.ll_val().info.is_ptr() {
+                       encode(bin, &mov, bit_size, op1.arg(so).to_mem(), op2.arg(so), None);
+                     } else {
+                       let stack_id =
+                         op1.ll_val().info.stack_id().expect("Loads should have an associated stack id");
+
+                       let offset = (so[stack_id] as isize);
+
+                       encode(bin, &mov, bit_size, Mem(RSP_REL(offset as u64)), op2.arg(so), None);
+                     }
+                   } else {
+                     panic!()
+                   }
+                 } */
+       /*
+             IROp::ADD => {
+               let CompileContext { ctx, binary: bin, .. } = ctx;
+               let mut op1 = operands[0];
+               let mut op2 = operands[1];
+               let t_reg = out_id;
+               let bit_size = out_ty.into();
+
+               //debug_assert!(op1.is_register() && t_reg.is_register());
+
+               if op1 != t_reg {
+                 if t_reg == op2 {
+                   op2 = op1;
+                   op1 = t_reg;
+                 } else {
+                   encode(bin, &mov, bit_size, t_reg.as_op(ctx, so), op1.as_op(ctx, so), None);
+                   op1 = t_reg;
+                 }
+               }
+
+               encode(bin, &add, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
+             }
+             IROp::SUB => {
+               let CompileContext { ctx, binary: bin, .. } = ctx;
+               let mut op1 = operands[0];
+               let op2 = operands[1];
+               let t_reg = out_id;
+               let bit_size = out_ty.into();
+
+               debug_assert!(op1.is_register() && t_reg.is_register());
+
+               if op1.reg_id() != t_reg.reg_id() {
+                 encode(bin, &mov, bit_size, t_reg.as_op(ctx, so), op1.as_op(ctx, so), None);
+                 op1 = t_reg;
+               }
+
+               encode(bin, &sub, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
+             }
+             IROp::MUL => {
+               let CompileContext { ctx, binary: bin, .. } = ctx;
+               let mut op1 = operands[0];
+               let mut op2 = operands[1];
+               let t_reg = out_id;
+               let bit_size = out_ty.into();
+
+               //debug_assert!(op1.is_register() && t_reg.is_register(), "{op1}, {t_reg}");
+
+               if op1 != t_reg {
+                 if t_reg == op2 {
+                   op2 = op1;
+                   op1 = t_reg;
+                 } else {
+                   encode(bin, &mov, bit_size, t_reg.as_op(ctx, so), op1.as_op(ctx, so), None);
+                   op1 = t_reg;
+                 }
+               }
+
+               encode(bin, &imul, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
+             }
+             IROp::GR => {
+               let CompileContext { jmp_resolver, binary: bin, ctx, .. } = ctx;
+
+               let op1 = operands[0];
+               let op2 = operands[1];
+               let bit_size = out_ty.into();
+
+               if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_default) {
+                 encode(bin, &cmp, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
+                 let next_block = BlockId(block.id.0 + 1);
+                 if pass == next_block {
+                   encode(bin, &jle, b32, Imm_Int(fail.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, fail.0 as usize);
+                   println!("JL BLOCK({fail})");
+                 } else if fail == next_block {
+                   encode(bin, &jg, b32, Imm_Int(pass.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, pass.0 as usize);
+                   println!("JGE BLOCK({pass})");
+                 } else {
+                   encode(bin, &jg, b32, Imm_Int(pass.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, pass.0 as usize);
+                   encode(bin, &jmp, b32, Imm_Int(fail.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, fail.0 as usize);
+                   println!("JGE BLOCK({pass})");
+                   println!("JMP BLOCK({fail})");
+                 }
+               }
+             }
+             IROp::GE => {
+               let CompileContext { jmp_resolver, binary: bin, ctx, .. } = ctx;
+
+               let op1 = operands[0];
+               let op2 = operands[1];
+               let bit_size = out_ty.into();
+
+               if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_default) {
+                 encode(bin, &cmp, bit_size, op1.as_op(ctx, so), op2.as_op(ctx, so), None);
+                 let next_block = BlockId(block.id.0 + 1);
+                 if pass == next_block {
+                   encode(bin, &js, b32, Imm_Int(fail.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, fail.0 as usize);
+                   println!("JL BLOCK({fail})");
+                 } else if fail == next_block {
+                   encode(bin, &jge, b32, Imm_Int(pass.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, pass.0 as usize);
+                   println!("JGE BLOCK({pass})");
+                 } else {
+                   encode(bin, &jge, b32, Imm_Int(pass.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, pass.0 as usize);
+                   encode(bin, &jmp, b32, Imm_Int(fail.0 as i64), None, None);
+                   jmp_resolver.add_jump(bin, fail.0 as usize);
+                   println!("JGE BLOCK({pass})");
+                   println!("JMP BLOCK({fail})");
+                 }
+               }
+             }
+             IROp::NE => todo!("TODO: {node:?}"),
+             IROp::EQ => todo!("TODO: {node:?}"),
+       */
+             /*
+             IROp::LOAD => {
+                   let CompileContext { stack_size, registers, jmp_resolver, binary: bin } = ctx;
+                   if let SSAExpr::UnaryOp(op, val, op1) = op_expr {
+                     debug_assert!(op1.ll_val().info.stack_id().is_some());
+                     if op1.ll_val().info.is_ptr() {
+                       let bit_size = op1.ll_val().info.into();
+                       dbg!(bit_size);
+                       encode(bin, &mov, bit_size, val.arg(so), op1.arg(so).to_mem(), None);
+                     } else {
+                       let bit_size = op1.ll_val().info.deref().into();
+                       let stack_id =
+                         op1.ll_val().info.stack_id().expect("Loads should have an associated stack id");
+
+                       let offset = so[stack_id] as isize;
+
+                       encode(bin, &mov, bit_size, val.arg(so), Mem(RSP_REL(offset as u64)), None);
+                     }
+                   } else {
+                     panic!()
+                   }
+                 }
+      */
       IROp::OR | IROp::XOR | IROp::AND | IROp::NOT | IROp::DIV | IROp::LOG | IROp::POW | IROp::LS | IROp::LE => todo!("TODO: {node:?}"),
       op => todo!("Handle {op:?}"),
     }

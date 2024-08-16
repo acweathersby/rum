@@ -46,11 +46,21 @@ impl TypeDatabase {
     }
   }
 
-  pub fn get_type_mut<'a>(&mut self, name: IString) -> Option<&'a mut Type> {
+  pub fn get_type_mut<'a>(&mut self, name: IString) -> Option<(&'a mut Type, TypeSlot)> {
     if let Some(index) = self.get_type_index(name) {
       let ptr = self.types.as_mut_ptr();
       let val = unsafe { ptr.offset(index as isize) };
-      Some(unsafe { &mut *val })
+      Some((unsafe { &mut *val }, TypeSlot::GlobalIndex(index as u32)))
+    } else {
+      None
+    }
+  }
+
+  pub fn get_type<'a>(&self, name: IString) -> Option<(&'a Type, TypeSlot)> {
+    if let Some(index) = self.get_type_index(name) {
+      let ptr = self.types.as_ptr();
+      let val = unsafe { ptr.offset(index as isize) };
+      Some((unsafe { &*val }, TypeSlot::GlobalIndex(index as u32)))
     } else {
       None
     }
@@ -105,9 +115,9 @@ mod ctx {
 
       for (index, var) in self.vars.iter().enumerate() {
         if var.par.is_valid() {
-          f.write_fmt(format_args!("  {index:5}: {}{}({})", var.par, var.mem_name, var.ty_slot.ty(self)))?;
+          f.write_fmt(format_args!("  {index:5}: {}.{}({})", var.par, var.mem_name, var.ty_slot.ty(self)))?;
         } else {
-          f.write_fmt(format_args!("  {index:5}:{} {} ", var.mem_name, var.ty_slot.ty(self)))?;
+          f.write_fmt(format_args!("  {index:5}: {} {} ", var.mem_name, var.ty_slot.ty(self)))?;
         }
         f.write_str("\n")?;
       }
@@ -137,6 +147,22 @@ mod ctx {
         ty_var_scopes: ScopeLookup::new(),
         var_scopes:    ScopeLookup::new(),
       }
+    }
+
+    pub fn rename_var(&mut self, old: IString, new: IString) -> bool {
+      for scope_id in self.var_scopes.scope_stack.iter().rev() {
+        let scope_id = *scope_id;
+        for (scope_var_index, (name, var_index)) in self.var_scopes.scopes[scope_id].1.iter().enumerate() {
+          if *name == old {
+            let var_index = *var_index;
+            self.var_scopes.scopes[scope_id].1[scope_var_index].0 = new;
+            self.vars[var_index].mem_name = new;
+            return true;
+          }
+        }
+      }
+
+      return false;
     }
 
     pub fn db_mut<'a>(&self) -> &'a mut TypeDatabase {
@@ -347,6 +373,10 @@ mod type_slot {
   }
 
   impl TypeSlot {
+    pub fn is_primitive(&self) -> bool {
+      matches!(self, TypeSlot::Primitive(..))
+    }
+
     pub fn resolve_to_outer_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
       match *self {
         Self::CtxIndex(index) => ctx.type_slots[index as usize],
@@ -507,14 +537,16 @@ mod ty {
     types::{ArrayType, BitFieldType, EnumType, PrimitiveType, RoutineType, ScopeType, StructType, UnionType},
   };
 
-  use super::TypeSlot;
+  use super::{TypeDatabase, TypeSlot};
 
   pub enum Type {
     Pointer(IString, TypeSlot),
     Scope(ScopeType),
-    Struct(StructType),
+    Structure(StructType),
     Union(UnionType),
     Routine(RoutineType),
+    Syscall(IString),
+    DebugCall(IString),
     Enum(EnumType),
     BitField(BitFieldType),
     Array(ArrayType),
@@ -532,6 +564,8 @@ mod ty {
     Enum(&'a EnumType),
     BitField(&'a BitFieldType),
     Array(&'a ArrayType),
+    Syscall(IString),
+    DebugCall(IString),
     Undefined,
   }
 
@@ -540,15 +574,18 @@ mod ty {
       match value {
         Type::Pointer(name, ty) => TypeRef::Pointer(*name, ty),
         Type::Scope(ty) => TypeRef::Scope(ty),
-        Type::Struct(ty) => TypeRef::Struct(ty),
+        Type::Structure(ty) => TypeRef::Struct(ty),
         Type::Union(ty) => TypeRef::Union(ty),
         Type::Routine(ty) => TypeRef::Routine(ty),
         Type::Enum(ty) => TypeRef::Enum(ty),
         Type::BitField(ty) => TypeRef::BitField(ty),
         Type::Array(ty) => TypeRef::Array(ty),
+        Type::Syscall(name) => TypeRef::Syscall(*name),
+        Type::DebugCall(name) => TypeRef::DebugCall(*name),
       }
     }
   }
+
   impl From<ScopeType> for Type {
     fn from(value: ScopeType) -> Self {
       Self::Scope(value)
@@ -557,7 +594,7 @@ mod ty {
 
   impl From<StructType> for Type {
     fn from(value: StructType) -> Self {
-      Self::Struct(value)
+      Self::Structure(value)
     }
   }
 
@@ -588,6 +625,41 @@ mod ty {
   impl From<ArrayType> for Type {
     fn from(value: ArrayType) -> Self {
       Self::Array(value)
+    }
+  }
+
+  impl<'a> TypeRef<'a> {
+    pub fn is_pointer(&self) -> bool {
+      matches!(self, TypeRef::Pointer(..))
+    }
+
+    pub fn byte_alignment(&self) -> u64 {
+      match self {
+        TypeRef::Struct(struc) => struc.alignment,
+        TypeRef::Primitive(prim) => prim.alignment(),
+        TypeRef::Pointer(..) => 8,
+        _ => todo!(),
+      }
+    }
+
+    pub fn byte_size(&self) -> u64 {
+      match self {
+        TypeRef::Struct(struc) => struc.size,
+        TypeRef::Primitive(prim) => prim.byte_size(),
+        TypeRef::Pointer(..) => 8,
+        _ => todo!(),
+      }
+    }
+
+    pub fn bit_size(&self) -> u64 {
+      self.byte_size() * 8
+    }
+
+    pub fn base_type<'b>(&'b self, ctx: &'b TypeDatabase) -> TypeRef<'b> {
+      match self {
+        TypeRef::Pointer(_, ty) => ty.ty_gb(ctx),
+        _ => *self,
+      }
     }
   }
 
@@ -630,7 +702,7 @@ mod ty {
 
           if s.returns.len() > 0 {
             f.write_str(" => ");
-            for (ty) in &s.returns {
+            for ((ty, _)) in &s.returns {
               f.write_fmt(format_args!("{ty} "));
             }
           }
@@ -643,6 +715,8 @@ mod ty {
         Self::Array(s) => f.write_fmt(format_args!("{}[{}]", s.name.to_str().as_str(), s.element_type)),
         Self::UNRESOLVED(name, index) => f.write_fmt(format_args!("({}?)", name)),
         Self::Primitive(prim) => Display::fmt(prim, f),
+        Self::Syscall(name) => f.write_fmt(format_args!("sys::{}()", name)),
+        Self::DebugCall(name) => f.write_fmt(format_args!("dbg::{}()", name)),
         Self::Undefined => f.write_str("undef"),
       }
     }

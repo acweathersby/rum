@@ -23,17 +23,17 @@ IMPORT ../common/comment as cmt
     :ast { t_AddressOf, id, tok }
 
 
-<> mem_expr 
+<> pointer_offset 
 
-  > mem_expr^left "+"{1} mem_expr{0}^right
+  > pointer_offset^left "+"{1} pointer_offset{0}^right
 
     :ast { t_RawMemAdd, left, right, tok }
 
-  | mem_expr^left "*"{3} mem_expr{2}^right
+  | pointer_offset^left "*"{3} pointer_offset{2}^right
 
     :ast { t_RawMemMul, left, right, tok }
 
-  | prim::var
+  | member
 
   | primitive_integer
 
@@ -173,20 +173,13 @@ IMPORT ../common/comment as cmt
 
   > member "("{1} expression(*",")^args ")"
 
-    :ast { t_RawCall, member, args }
+    :ast { t_RawCall, member, args, tok }
 
 <> member 
   
   > prim::var(+".")^members
 
     :ast { t_RawMember, members, tok }
-
-
-<> pointer_offset 
-
-  > mem_expr^expression
-
-    :ast { t_RawMemLocation, expression, tok }
 
 
 <> primitive_bool 
@@ -205,7 +198,7 @@ IMPORT ../common/comment as cmt
 
   | prim::string^val
 
-    :ast { t_RawStr, val:str($val)  }
+    :ast { t_RawStr, val:str($val), tok  }
 
 
 <> primitive_number 

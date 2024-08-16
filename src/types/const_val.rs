@@ -56,19 +56,19 @@ impl ConstVal {
   pub fn unstacked(&self) -> ConstVal {
     ConstVal { ty: self.ty, val: self.val }
   }
-/***
- * 1 0    = 0 << 0
- * 2 1    = 1 << 1   
- * 3 2    = 1 << 2
- * 4 4    = 1 << 3 
- * 5 8    = 1 << 4
- * 6 16   = 1 << 5
- * 7 32   
- * 8 64   
- * 9 128   
- *10 256   
- *11 512   
- */
+  /***
+   * 1 0    = 0 << 0
+   * 2 1    = 1 << 1
+   * 3 2    = 1 << 2
+   * 4 4    = 1 << 3
+   * 5 8    = 1 << 4
+   * 6 16   = 1 << 5
+   * 7 32
+   * 8 64
+   * 9 128
+   *10 256
+   *11 512
+   */
   pub fn load<T>(&self) -> T {
     let bytes = &self.val;
     let mut val: T = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
@@ -292,10 +292,10 @@ fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
 fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
   debug_assert!(l_val.ty.sub_type() == PrimitiveSubType::Signed);
   match (l_val.ty.bit_size()) {
-    8 => l_val.store(val.to_i8()),
-    16 => l_val.store(val.to_i16()),
-    32 => l_val.store(val.to_i32()),
-    64 => l_val.store(val.to_i64()),
+    8 => l_val.store(val.to_i8().unwrap()),
+    16 => l_val.store(val.to_i16().unwrap()),
+    32 => l_val.store(val.to_i32().unwrap()),
+    64 => l_val.store(val.to_i64().unwrap()),
     val => unreachable!("{val:?}"),
   }
 }
@@ -303,10 +303,10 @@ fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
 fn to_uint<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
   debug_assert!(l_val.ty.sub_type() == PrimitiveSubType::Unsigned);
   match (l_val.ty.bit_size()) {
-    8 => l_val.store(val.to_u8()),
-    16 => l_val.store(val.to_u16()),
-    32 => l_val.store(val.to_u32()),
-    64 => l_val.store(val.to_u64()),
+    8 => l_val.store(val.to_u8().unwrap()),
+    16 => l_val.store(val.to_u16().unwrap()),
+    32 => l_val.store(val.to_u32().unwrap()),
+    64 => l_val.store(val.to_u64().unwrap()),
     val => unreachable!("{val:?}"),
   }
 }

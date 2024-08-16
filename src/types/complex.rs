@@ -58,8 +58,8 @@ pub struct ExternalRoutineType {
 
 pub struct RoutineType {
   pub name:       IString,
-  pub parameters: Vec<(IString, usize, TypeSlot)>,
-  pub returns:    Vec<TypeSlot>,
+  pub parameters: Vec<(IString, usize, TypeSlot, Token)>,
+  pub returns:    Vec<(TypeSlot, Token)>,
   pub body:       RoutineBody,
   pub ast:        Arc<RawRoutine<Token>>,
 }
@@ -92,7 +92,7 @@ impl IRGraphNode {
         let ctx = &body.ctx;
         let val = ty.ty_slot(ctx);
         let var = ty.var_id();
-        let ptr = "*".repeat(ty.inline_depth() as usize);
+        let ptr = "*".repeat(ty.ptr_depth() as usize);
         let named_ptr = if let Some(name) = val.ty_pointer_name(ctx) { format!("{name}*") } else { Default::default() };
         let base = val.ty_base(ctx);
 
@@ -133,11 +133,27 @@ impl RoutineBody {
 
 impl Display for RoutineBody {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("\nconstants: \n"));
     for (index, node) in self.graph.iter().enumerate() {
-      f.write_fmt(format_args!("\n{index: >5}: "))?;
-      node.fmt(f, self)?;
-      if let Some(tok) = self.tokens.get(index) {
-        f.write_fmt(format_args!("\n{}", tok.blame(0, 0, "", None)));
+      if node.is_const() {
+        f.write_fmt(format_args!("\n  {index: >5}: "))?;
+        node.fmt(f, self)?;
+        if let Some(tok) = self.tokens.get(index) {
+          f.write_fmt(format_args!("\n{}", tok.blame(0, 0, "", None)));
+        }
+      }
+    }
+
+    for (index, block) in self.blocks.iter().enumerate() {
+      f.write_fmt(format_args!("\nblock_{index:0>5}: \n"));
+      for node_id in &block.nodes {
+        let index = node_id.usize();
+        let node = &self.graph[node_id.usize()];
+        f.write_fmt(format_args!("\n  {index: >5}: "))?;
+        node.fmt(f, self)?;
+        if let Some(tok) = self.tokens.get(index) {
+          f.write_fmt(format_args!("\n\n\u{001b}[31m{}\u{001b}[0m", tok.blame(0, 0, "", None)));
+        }
       }
     }
 

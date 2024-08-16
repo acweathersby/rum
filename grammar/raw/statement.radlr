@@ -52,6 +52,8 @@ IMPORT ../common/comment as cmt
 
   | complex::region_access
 
+  | complex::pointer_arithmetic
+
 
 <> break_statement 
 

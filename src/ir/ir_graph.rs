@@ -5,6 +5,8 @@ use crate::{
 };
 use std::fmt::{Debug, Display};
 
+use super::ir_builder::{SMO, SMT};
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VarId(u32);
 
@@ -149,6 +151,24 @@ pub enum TyData {
   Slot(u8, TypeSlot),
 }
 
+impl Default for TyData {
+  fn default() -> Self {
+    Self::Undefined
+  }
+}
+
+impl From<PrimitiveType> for TyData {
+  fn from(value: PrimitiveType) -> Self {
+    Self::Slot(0, TypeSlot::Primitive(value))
+  }
+}
+
+impl From<TypeSlot> for TyData {
+  fn from(value: TypeSlot) -> Self {
+    Self::Slot(0, value)
+  }
+}
+
 impl TyData {
   pub fn is_named_ptr(&self, ctx: &TypeVarContext) -> bool {
     match self {
@@ -159,7 +179,7 @@ impl TyData {
     }
   }
 
-  pub fn inline_depth(&self) -> u32 {
+  pub fn ptr_depth(&self) -> u32 {
     match self {
       TyData::Var(ptr_depth, _) | TyData::Var(ptr_depth, _) => *ptr_depth as u32,
       _ => 0,
@@ -196,10 +216,24 @@ impl TyData {
 #[derive(Clone, Debug)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  SSA { block_id: BlockId, operands: [IRGraphId; 2], ty: TyData, op: IROp },
+  SSA { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], ty: TyData },
 }
 
 impl IRGraphNode {
+  pub fn create_ssa(op: IROp, ty: TyData, operands: &[IRGraphId]) -> Self {
+    let operands = match (operands.get(0), operands.get(1)) {
+      (Some(op1), Some(op2)) => {
+        let (b, a) = (*op2, *op1);
+        [a, b]
+      }
+      (Some(op1), None) => [*op1, IRGraphId::default()],
+      (None, None) => [IRGraphId::default(), IRGraphId::default()],
+      _ => unreachable!(),
+    };
+
+    IRGraphNode::SSA { op, block_id: Default::default(), ty, operands }
+  }
+
   pub fn create_const(const_val: ConstVal) -> IRGraphNode {
     IRGraphNode::Const { val: const_val }
   }
@@ -283,10 +317,13 @@ pub enum IROp {
   /// and a const offset. This is also used to get the address of a stack
   /// variable, by taking address of the difference between the sp and stack
   /// offset.
+  VAR_PTR,
   MEMB_PTR_CALC,
   MEMB_PTR_LOAD,
-  // Declares a variable and its type
-  VAR_DECL,
+  // Declaras a heap allocated object and it's pointer type
+  HEAP_DECL,
+  // Declares a stack variable and its type
+  STACK_DECL,
   /// Declares a parameter variable and its type
   PARAM_DECL,
   /// Declares a constant and its type
@@ -317,8 +354,6 @@ pub enum IROp {
   /// Stores the primitive or register in op2 into the stack slot assigned to
   /// the var of op1.
   STORE,
-  /// Store of a primitive value in op(2) to memory at pointer in op(1)
-  MEM_STORE,
   /// Loads a primitive value into a suitable register.
   LOAD,
   /// Zeroes all bytes of a type pointer or an array pointer.
@@ -326,6 +361,7 @@ pub enum IROp {
   /// Copies data from one type pointer to another type pointer.
   COPY,
   CALL,
+  DBG_CALL,
   CALL_ARG,
   CALL_RET,
   // Deliberate movement of data from one location to another

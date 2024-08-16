@@ -21,17 +21,16 @@
 use crate::{
   ir::{
     ir_build_module::build_module,
-    ir_register_allocator::{assign_registers, RegisterVariables},
+    ir_lowering::lower_iops,
+    ir_register_allocator::{generate_register_assignments, CallRegisters, RegisterVariables},
+    ir_type_analysis::{resolve_routine, resolve_struct_offset},
   },
   istring::*,
-  types::ComplexType,
-  x86::compile_from_ssa_fn,
+  x86::{compile_from_ssa_fn, x86_eval::x86Function},
 };
 
 #[test]
 fn register_allocator() {
-  let mut ty_ctx = crate::types::TypeScope::new();
-
   #[repr(C)]
   struct Temp02 {
     a: u32,
@@ -39,7 +38,7 @@ fn register_allocator() {
     c: u32,
   }
 
-  build_module(
+  let mut db = build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
   02Temp => [
@@ -47,46 +46,57 @@ fn register_allocator() {
     b: u32,
     c: u32,
   ]
-  
-  main (a: &02Temp) =| {
+
+  main (a: *02Temp) =| {
     a.a = 1
     a.b = 2
     a.c = 3
   }"##,
     )
     .unwrap(),
-    0,
-    &mut ty_ctx,
   );
 
-  if let Some(ComplexType::Routine(proc)) = ty_ctx.get(0, "main".intern()).and_then(|t| t.as_cplx_ref()) {
-    use crate::x86::x86_types::*;
-    let reg_pack = RegisterVariables {
-      call_ptr_registers: vec![7, 6, 3, 1, 8, 9],
-      ptr_registers:      vec![8, 9, 10, 11, 12, 14, 15, 7, 6, 3, 1, 8, 9, 0, 13],
-      int_registers:      vec![8, 9, 10, 11, 12, 14, 15, 7, 6, 3, 1, 8, 9, 0, 13],
-      float_registers:    vec![],
-      registers:          vec![
-        RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13,
-        XMM14, XMM15,
-      ],
-    };
+  resolve_struct_offset("02Temp".intern(), &mut db);
 
-    let (spilled_variables, assignments) = assign_registers(&proc.body, &reg_pack);
+  resolve_routine("main".intern(), &mut db);
 
-    dbg!(&spilled_variables);
+  lower_iops("main".intern(), &mut db);
 
-    let x86_fn = compile_from_ssa_fn(&proc.body, &assignments, &spilled_variables);
+  use crate::x86::x86_types::*;
+  let reg_pack = RegisterVariables {
+    call_register_list: vec![CallRegisters {
+      policy_name:         "default".intern(),
+      arg_int_registers:   vec![7, 6, 3, 1, 8, 9],
+      arg_float_registers: vec![],
+      arg_ptr_registers:   vec![],
+      ret_int_registers:   vec![1, 2, 3, 4, 5, 6],
+      ret_float_registers: vec![],
+      ret_ptr_registers:   vec![],
+    }],
+    ptr_registers:      vec![],
+    int_registers:      vec![8, 9, 10, 11, 12, 14, 15, 7, 6, 3, 1, 8, 9, 0, 13],
+    float_registers:    vec![],
+    registers:          vec![
+      RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
+      XMM15,
+    ],
+  };
 
-    let val = x86_fn.unwrap();
-    let funct = val.access_as_call::<fn(&mut Temp02)>();
+  let (spilled_variables, assignments) = generate_register_assignments("main".intern(), &mut db, &reg_pack);
 
-    let mut temp = Temp02 { a: 0, b: 0, c: 0 };
+  dbg!(&spilled_variables, &assignments);
 
-    funct(&mut temp);
+  let linkable_x86 = compile_from_ssa_fn("main".intern(), &mut db, &assignments, &spilled_variables).expect("Could not create linkable");
 
-    assert_eq!(temp.a, 1);
-    assert_eq!(temp.b, 2);
-    assert_eq!(temp.c, 3);
-  }
+  let x86_fn = x86Function::from(linkable_x86);
+
+  let funct = x86_fn.access_as_call::<fn(&mut Temp02)>();
+
+  let mut temp = Temp02 { a: 0, b: 0, c: 0 };
+
+  funct(&mut temp);
+
+  assert_eq!(temp.a, 1);
+  assert_eq!(temp.b, 2);
+  assert_eq!(temp.c, 3);
 }

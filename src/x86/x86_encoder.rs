@@ -5,10 +5,10 @@ pub type OpSignature = (u16, OperandType, OperandType, OperandType);
 pub type OpEncoder = fn(binary: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, op2: Arg, op3: Arg, ext: u8);
 
 pub(super) struct InstructionProps<'bin> {
-  instruction_name:      &'static str,
-  bin:                   &'bin mut Vec<u8>,
-  displacement_index:    usize,
-  displacement_bit_size: usize,
+  instruction_name:       &'static str,
+  bin:                    &'bin mut Vec<u8>,
+  pub displacement_index: usize,
+  displacement_bit_size:  usize,
 }
 
 impl<'bin> InstructionProps<'bin> {
@@ -20,6 +20,7 @@ impl<'bin> InstructionProps<'bin> {
 
       match self.displacement_bit_size {
         8 => set_bytes(self.bin, self.displacement_index, dis as i8),
+        16 => set_bytes(self.bin, self.displacement_index, dis as i16),
         32 => set_bytes(self.bin, self.displacement_index, dis as i32),
         64 => set_bytes(self.bin, self.displacement_index, dis as i64),
         size => panic!("Invalid displacement size {size}. {}", self.instruction_name),
@@ -86,6 +87,12 @@ pub(super) fn encode<'bin>(
   op3: Arg,
 ) -> InstructionProps<'bin> {
   debug_assert!(bit_size <= 512);
+
+  if bit_size == 16 {
+    // 16bit encoding requires the 0x66 prefix
+    binary.push(0x66);
+  }
+
   let signature = (bit_size as u16, op1.ty(), op2.ty(), op3.ty());
 
   for (sig, (op_code, ext, encoding, encoder)) in &table.1 {
@@ -156,6 +163,7 @@ pub(super) fn gen_unary_op(props: &mut InstructionProps, op_code: u32, bit_size:
     }
     D => {
       insert_op_code_bytes(props.bin, op_code);
+      props.displacement_index = props.bin.len();
       match op1 {
         Arg::Imm_Int(imm) => match bit_size {
           8 => push_bytes(props.bin, imm as i8),

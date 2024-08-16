@@ -84,11 +84,12 @@ IMPORT ../common/comment as cmt
 
 
 +> expr::term > region_access
++> expr::term > pointer_arithmetic
 
 
 <> structural_instantiation 
 
-  > ( "heap" anno::lifetime | "heap" :ast { t_GlobalHeapBinding })?^allocator_binding prim::var^name "[" structure_member_initializer(*",")^inits ","(*) "]"
+  > anno::lifetime?^allocator_binding prim::var^name "[" structure_member_initializer(*",")^inits ","(*) "]"
 
     :ast  { t_RawStructInstantiation, allocator_binding, name, inits, tok }
 
@@ -100,9 +101,16 @@ IMPORT ../common/comment as cmt
     :ast  { t_RawArrayAccess, name, expression, tok }
 
 
+<> pointer_arithmetic 
+
+  > "[*" prim::var^type_name ":" prim::var^base ( "+" + expr::pointer_offset^expression)?^offset_expression "]"
+
+    :ast  { t_RawPointerArithmetic, type_name, base, offset_expression, tok }
+
+
 <> structure_member_initializer 
 
   > prim::var^name "=" expr::expression
 
-    :ast  { t_RawStructMemberInit, name, expression  }
+    :ast  { t_RawStructMemberInit, name, expression, tok  }
 

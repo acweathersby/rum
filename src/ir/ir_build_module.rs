@@ -6,7 +6,7 @@ use crate::{
   container::{get_aligned_value, ArrayVec},
   ir::{
     ir_builder::{SMO, SMT},
-    ir_graph::IROp,
+    ir_graph::{IRGraphId, IROp},
   },
   istring::*,
   parser::script_parser::{
@@ -31,6 +31,7 @@ use crate::{
     Expression,
     Mul,
     Pow,
+    RawArray,
     RawBlock,
     RawCall,
     RawLoop,
@@ -50,7 +51,10 @@ use crate::{
 };
 use core::panic;
 pub use radlr_rust_runtime::types::Token;
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+  collections::{BTreeMap, VecDeque},
+  sync::Arc,
+};
 use IROp::*;
 use SMO::*;
 use SMT::Inherit;
@@ -275,12 +279,12 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
 
 fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
   let name = strct.name.id.intern();
-  let Some(mut ty_ref) = ty_db.get_type_mut(name) else {
+  let Some((mut ty_ref, _)) = ty_db.get_type_mut(name) else {
     panic!("Could not find Struct type: {name}",);
   };
 
   match ty_ref {
-    Type::Struct(st) => {
+    Type::Structure(st) => {
       let name = strct.name.id.intern();
       let mut offset = 0;
       let mut min_alignment = 1;
@@ -371,7 +375,7 @@ fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
 fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeDatabase) {
   let name = routine.name.id.intern();
 
-  let Some(ty_ref) = ty_db.get_type_mut(name) else {
+  let Some((ty_ref, _)) = ty_db.get_type_mut(name) else {
     panic!("Could not find Struct type: {name}",);
   };
 
@@ -393,9 +397,9 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
           let gen_ty_name = get_type_name(&param.ty.ty);
           let slot = body.ctx.insert_generic(gen_ty_name);
           debug_assert!(!matches!(slot, TypeSlot::UNRESOLVED(..)));
-          parameters.push((param_name, index, slot));
+          parameters.push((param_name, index, slot, param.tok.clone()));
         } else if let Some(ty) = get_type(&param_type.ty, ty_db, false) {
-          parameters.push((param_name, index, ty));
+          parameters.push((param_name, index, ty, param.tok.clone()));
         } else {
           panic!("Could not resolve type! {param_name}");
         }
@@ -409,9 +413,9 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
           if ret_type.inferred {
             let gen_ty_name = get_type_name(&ret_type.ty);
             let slot = body.ctx.insert_generic(gen_ty_name);
-            vec![slot.clone().into()]
+            vec![(slot.clone().into(), ret_type.tok.clone())]
           } else if let Some(ty) = get_type(&ret_type.ty, ty_db, false) {
-            vec![ty.into()]
+            vec![(ty.into(), ret_type.tok.clone())]
           } else {
             panic!("Could not resolve return type")
           }
@@ -427,7 +431,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
 }
 
 fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
-  let Some(mut ty_ref) = type_scope.get_type_mut(routine_name) else {
+  let Some((ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find Struct type: {routine_name}",);
   };
 
@@ -439,15 +443,13 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
 
       let mut ib = IRBuilder::new(body);
 
-      for (name, index, ty) in parameters.iter() {
+      for (name, index, ty, tok) in parameters.iter() {
         let mut var = ib.body.ctx.insert_var(*name, *ty).clone();
 
-        ib.push_ssa(PARAM_DECL, var.id.into(), &[], Default::default());
+        ib.push_ssa(PARAM_DECL, var.id.into(), &[], tok.clone());
         let var_data = ib.pop_stack().unwrap();
         var.store = var_data;
-
-        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(var.store)], Default::default());
-        var.reference = ib.pop_stack().unwrap();
+        var.reference = var_data;
 
         /*         let reference = var.reference;
         ib.push_ssa(IROp::MEMB_PTR_LOAD, SMT::Data(TyData::DerefVar(var.id.into())), &[SMO::IROp(reference)], Default::default());
@@ -459,7 +461,13 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
       process_expression(&ast.expression.expr, &mut ib);
 
       if returns.len() > 0 {
-        // todo!("Check that return types match!");
+        dbg!(&returns);
+        debug_assert_eq!(ib.ssa_stack.len(), returns.len(), "Invalid number of return expression {} in {routine_name}. Expected {}", ib.ssa_stack.len(), returns.len());
+
+        while let Some(stack) = ib.pop_stack() {
+          ib.push_ssa(RET_VAL, Inherit, &[stack.into()], Default::default());
+          ib.pop_stack().unwrap();
+        }
       }
     }
     _ => unreachable!(),
@@ -537,7 +545,8 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Variab
 fn process_member_load(mem: &std::sync::Arc<RawMember<Token>>, ib: &mut IRBuilder<'_>) {
   //todo!("Handle Member Load");
   if let Some(var) = resolve_variable(mem, ib) {
-    ib.push_ssa(LOAD, var.id.into(), &[var.reference.into()], mem.tok.clone());
+    // ib.push_ssa(LOAD, var.id.into(), &[var.reference.into()], mem.tok.clone());
+    ib.push_node(var.reference);
   }
 }
 
@@ -596,6 +605,9 @@ fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
   );
 }
 
+const SYS_CALL_TARGETS: [&'static str; 2] = ["_sys_allocate", "_sys_free"];
+const DBG_CALL_TARGETS: [&'static str; 1] = ["_malloc"];
+
 fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
   // Member call resolution may involve lookup on compatible functions in the
   // type scope stack.
@@ -604,157 +616,196 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
     let name = call_node.member.members[0].clone();
     name.id.intern()
   } else {
-    todo!("Handle multi member call");
+    todo!("Handle member call");
   };
 
-  let call = if let Some(routine_entry) = ib.body.ctx.db_mut().get_type_mut(name).as_ref() {
-    let mut args = Vec::new();
+  let mut args = Vec::new();
+  for arg in &call_node.args {
+    process_expression(&arg.expr, ib);
 
-    for arg in &call_node.args {
-      process_expression(&arg.expr, ib);
+    ib.push_ssa(CALL_ARG, Inherit, &[StackOp], Default::default());
 
-      let var_id = ib.get_top_var_id();
+    args.push(ib.pop_stack().unwrap());
+  }
 
-      ib.push_ssa(CALL_ARG, Inherit, &[StackOp], Default::default());
+  if let Some(sys_call_name) = SYS_CALL_TARGETS.iter().find(|d| (**d).cmp(name.to_str().as_str()).is_eq()) {
+    let call = sys_call_name.intern();
+    let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Syscall(call));
+    let call_slot = TypeSlot::GlobalIndex(call_target_id as u32);
 
-      args.push(ib.pop_stack().unwrap());
-    }
+    ib.push_ssa(CALL, TyData::from(call_slot).into(), &[], Default::default());
+    ib.pop_stack();
 
-    match routine_entry {
-      Type::Routine(routine) => {
-        if routine.body.resolved {
-          todo!("call resolved routine")
-          //ib.push_var(routine.name, routine_entry);
-        } else {
-          let mut _new_name: String = routine.name.to_string();
-          let mut generic_args = Vec::new();
+    let call = format!("*u8").intern();
+    let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Pointer("".intern(), TypeSlot::Primitive(PrimitiveType::u8)));
+    let call_ret_arg = TypeSlot::GlobalIndex(call_target_id as u32);
 
-          let mut routine_body = RoutineBody::new(&mut ib.body.ctx.db_mut());
+    ib.push_ssa(CALL_RET, TyData::from(call_ret_arg).into(), &[], Default::default());
+  } else if let Some(sys_call_name) = DBG_CALL_TARGETS.iter().find(|d| (**d).cmp(name.to_str().as_str()).is_eq()) {
+    let call = sys_call_name.intern();
+    let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::DebugCall(call));
+    let call_slot = TypeSlot::GlobalIndex(call_target_id as u32);
 
-          let mut param_queue: VecDeque<_> = routine.parameters.iter().enumerate().map(|(index, (.., ty))| (0, index, ty)).collect();
-          let mut return_queue: VecDeque<_> = routine.body.ctx.ty_var_scopes.scopes[1].1.iter().enumerate().map(|(index, i)| (0, index, i.0, i.1)).collect();
+    ib.push_ssa(DBG_CALL, TyData::from(call_slot).into(), &[], Default::default());
+    ib.pop_stack();
 
-          // Find matching resolved types.
-          while let Some((tries, param_index, param_ty_slot)) = param_queue.pop_front() {
-            if let Some(arg_id) = args.get(param_index) {
-              let arg_var = ib.get_node_variable(*arg_id).expect("Could not extract variable data").clone();
+    let call = format!("*u8").intern();
+    let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Pointer("".intern(), TypeSlot::Primitive(PrimitiveType::u8)));
+    let call_ret_arg = TypeSlot::GlobalIndex(call_target_id as u32);
 
-              let arg_var_ty = arg_var.ty_slot.ty_base(&ib.body.ctx);
-              let param_ty = param_ty_slot.ty_base(&routine.body.ctx);
-
-              match (param_ty, arg_var_ty) {
-                (TypeRef::UNRESOLVED(p_name, p_index), TypeRef::UNRESOLVED(a_name, a_index)) => {
-                  if let Some(ty) = routine_body.ctx.get_type_local(p_name) {
-                    debug_assert!(!matches!(ty, TypeSlot::CtxIndex(_)));
-                    let _ = ib.body.ctx.type_slots[a_index as usize] = ty;
-                  } else if tries == 0 && !param_queue.is_empty() {
-                    // Try to match this after other types have been defined.
-                    param_queue.push_back((tries + 1, param_index, param_ty_slot));
-                  } else {
-                    panic!("Could not resolve this type {arg_var_ty}");
-                  }
-                }
-                (ty @ TypeRef::UNRESOLVED(p_name, p_index), _) => {
-                  generic_args.push(p_name.to_string() + ":" + &arg_var_ty.to_string());
-                  if let TypeSlot::CtxIndex(index) = routine_body.ctx.insert_generic(p_name) {
-                    let slot = arg_var.ty_slot.resolve_to_outer_slot(&ib.body.ctx);
-                    debug_assert!(!matches!(slot, TypeSlot::CtxIndex(_)));
-                    routine_body.ctx.type_slots[index as usize] = slot;
-                  }
-                  // routine
-                }
-                (ty, TypeRef::UNRESOLVED(a_name, a_index)) => {
-                  debug_assert!(!matches!(param_ty_slot, TypeSlot::CtxIndex(_)));
-                  ib.body.ctx.type_slots[a_index as usize] = *param_ty_slot;
-                  println!("AAAAAA\n {ty} \n {ib:#?} \n ---");
-                }
-
-                _ => {
-                  //  if arg_var_ty != param_ty {
-                  println!("Is type matching? {param_index} arg({}) != param({})", param_ty, arg_var_ty)
-                  //  }
-                }
-              }
-            } else {
-              panic!("No matching argument for parameter [{param_index}] in function ");
-            };
-          }
-
-          let name = (_new_name + "<" + &generic_args.join(", ") + ">").intern();
-
-          /*          let mut _new_returns = routine
-          .returns
-          .iter()
-          .map(|r| match r.ty_enum() {
-            Type::Complex(cplx) => match &cplx.as_ref().ty {
-              ComplexType::UNRESOLVED { name } => {
-                if let Some(ty) = routine_body.type_context.get(0, *name) {
-                  ty.clone()
-                } else {
-                  r.clone()
-                }
-              }
-              _ => r.clone(),
-            },
-            _ => r.clone(),
-          })
-          .collect(); */
-
-          let mut _new_returns = Default::default();
-
-          if let Some(ty) = ib.body.ctx.get_type(name) {
-            ib.body.ctx.insert_var(name, ty).clone()
+    ib.push_ssa(CALL_RET, TyData::from(call_ret_arg).into(), &[], Default::default());
+  } else {
+    let call = if let Some((routine_entry, _)) = ib.body.ctx.db_mut().get_type_mut(name).as_ref() {
+      match routine_entry {
+        Type::Routine(routine) => {
+          if routine.body.resolved {
+            todo!("call resolved routine")
+            //ib.push_var(routine.name, routine_entry);
           } else {
-            let new_routine = RoutineType {
-              name,
-              parameters: routine.parameters.clone(),
-              body: routine_body,
-              returns: _new_returns,
-              ast: routine.ast.clone(),
-            };
+            let mut _new_name: String = routine.name.to_string();
+            let mut generic_args = Vec::new();
 
-            let _ = routine;
+            let mut routine_body = RoutineBody::new(&mut ib.body.ctx.db_mut());
 
-            let entry = ib.body.ctx.db_mut().insert_type(name, Type::Routine(new_routine));
+            let mut param_queue: VecDeque<_> = routine.parameters.iter().enumerate().map(|(index, (.., ty, _))| (0, index, ty)).collect();
+            let mut return_queue: VecDeque<_> = routine.body.ctx.ty_var_scopes.scopes[1].1.iter().enumerate().map(|(index, i)| (0, index, i.0, i.1)).collect();
 
-            process_routine(name, ib.body.ctx.db_mut());
+            // Find matching resolved types.
+            while let Some((tries, param_index, param_ty_slot)) = param_queue.pop_front() {
+              if let Some(arg_id) = args.get(param_index) {
+                let arg_var = ib.get_node_variable(*arg_id).expect("Could not extract variable data").clone();
 
-            println!("{name}");
+                let arg_var_ty = arg_var.ty_slot.ty_base(&ib.body.ctx);
+                let param_ty = param_ty_slot.ty_base(&routine.body.ctx);
 
-            ib.body.ctx.insert_var(name, TypeSlot::GlobalIndex(entry as u32)).clone()
+                match (param_ty, arg_var_ty) {
+                  (TypeRef::UNRESOLVED(p_name, p_index), TypeRef::UNRESOLVED(a_name, a_index)) => {
+                    if let Some(ty) = routine_body.ctx.get_type_local(p_name) {
+                      debug_assert!(!matches!(ty, TypeSlot::CtxIndex(_)));
+
+                      let _ = ib.body.ctx.type_slots[a_index as usize] = ty;
+                    } else if tries == 0 && !param_queue.is_empty() {
+                      // Try to match this after other types have been defined.
+                      param_queue.push_back((tries + 1, param_index, param_ty_slot));
+                    } else {
+                      panic!("Could not resolve this type {arg_var_ty}");
+                    }
+                  }
+                  (ty @ TypeRef::UNRESOLVED(p_name, p_index), _) => {
+                    generic_args.push(p_name.to_string() + ":" + &arg_var_ty.to_string());
+                    if let TypeSlot::CtxIndex(index) = routine_body.ctx.insert_generic(p_name) {
+                      let slot = arg_var.ty_slot.resolve_to_outer_slot(&ib.body.ctx);
+                      debug_assert!(!matches!(slot, TypeSlot::CtxIndex(_)));
+                      routine_body.ctx.type_slots[index as usize] = slot;
+                    }
+                    // routine
+                  }
+                  (ty, TypeRef::UNRESOLVED(a_name, a_index)) => {
+                    debug_assert!(!matches!(param_ty_slot, TypeSlot::CtxIndex(_)));
+                    ib.body.ctx.type_slots[a_index as usize] = *param_ty_slot;
+                  }
+
+                  _ => {
+                    //  if arg_var_ty != param_ty {
+                    println!("Is type matching? {param_index} arg({}) != param({})", param_ty, arg_var_ty)
+                    //  }
+                  }
+                }
+              } else {
+                panic!("No matching argument for parameter [{param_index}] in function ");
+              };
+            }
+
+            let name = (_new_name + "<" + &generic_args.join(", ") + ">").intern();
+
+            /*          let mut _new_returns = routine
+            .returns
+            .iter()
+            .map(|r| match r.ty_enum() {
+              Type::Complex(cplx) => match &cplx.as_ref().ty {
+                ComplexType::UNRESOLVED { name } => {
+                  if let Some(ty) = routine_body.type_context.get(0, *name) {
+                    ty.clone()
+                  } else {
+                    r.clone()
+                  }
+                }
+                _ => r.clone(),
+              },
+              _ => r.clone(),
+            })
+            .collect(); */
+
+            let mut _new_returns = Default::default();
+
+            if let Some(ty) = ib.body.ctx.get_type(name) {
+              ib.body.ctx.insert_var(name, ty).clone()
+            } else {
+              let new_routine = RoutineType {
+                name,
+                parameters: routine.parameters.clone(),
+                body: routine_body,
+                returns: _new_returns,
+                ast: routine.ast.clone(),
+              };
+
+              let _ = routine;
+
+              let entry = ib.body.ctx.db_mut().insert_type(name, Type::Routine(new_routine));
+
+              process_routine(name, ib.body.ctx.db_mut());
+
+              println!("{name}");
+
+              ib.body.ctx.insert_var(name, TypeSlot::GlobalIndex(entry as u32)).clone()
+            }
           }
         }
+        _ => panic!("Invalid type for calling"),
       }
-      _ => panic!("Invalid type for calling"),
-    }
-  } else {
-    todo!("Report call resolution error")
-    //panic!("Could not find routine {}", call_name.to_str().as_str())
-  };
-
-  ib.push_ssa(CALL, call.id.into(), &[], Default::default());
-  ib.pop_stack();
+    } else {
+      todo!("Report call resolution error")
+      //panic!("Could not find routine {}", call_name.to_str().as_str())
+    };
+    ib.push_ssa(CALL, call.id.into(), &[], Default::default());
+    ib.pop_stack();
+  }
 }
 
-fn process_struct_instantiation(struct_decl: &RawStructInstantiation<Token>, ib: &mut IRBuilder) {
-  todo!("process_struct_instantiation");
-  /*  let struct_type_name = struct_decl.name.id.intern();
+fn proces_array_instantiation(struct_decl: &RawArray<Token>, ib: &mut IRBuilder) {}
 
-  if let Some(s_type) = ib.get_type(struct_type_name) {
-    if let Some(ComplexType::Struct(StructType { name, members, size, alignment })) = s_type.as_cplx_ref() {
-      let struct_var = ib.push_variable(struct_type_name, s_type.clone());
-      let s_type = struct_var.ty_var;
+fn process_struct_instantiation(struct_decl: &RawStructInstantiation<Token>, ib: &mut IRBuilder) {
+  // note(Anthony): All struct instantiations should be on known types. If the struct to be instantiate is incomplete, this should signal that
+  // downstream processing of this routine should not continue.
+
+  let struct_type_name = struct_decl.name.id.intern();
+
+  if let Some((struct_entry, struct_slot)) = ib.body.ctx.db_mut().get_type_mut(struct_type_name).as_ref() {
+    if let Type::Structure(StructType { name, members, size, alignment }) = &struct_entry {
+      let base_type = *struct_slot;
+
+      let type_db = ib.body.ctx.db_mut();
+
+      let (slot, is_ptr) = match &struct_decl.allocator_binding {
+        lifetime_Value::GlobalLifetime(_) => {
+          (TypeSlot::GlobalIndex(type_db.get_or_add_type_index(format!("*{}", name).intern(), Type::Pointer(Default::default(), base_type)) as u32), true)
+        }
+        lifetime_Value::ScopedLifetime(scope) => {
+          (TypeSlot::GlobalIndex(type_db.get_or_add_type_index(format!("{}*{}", scope.val, name).intern(), Type::Pointer(scope.val.intern(), base_type)) as u32), true)
+        }
+        lifetime_Value::None => (base_type, false),
+      };
+
+      let mut struct_var = ib.declare_variable("TEMPORARY".intern(), slot, struct_decl.tok.clone(), is_ptr).clone();
 
       struct StructEntry {
-        ty:    Type,
+        ty:    TypeSlot,
         value: IRGraphId,
         name:  IString,
+        tok:   Token,
       }
 
-      let mut value_maps = BTreeMap::<u64, StructEntry>::new();
-
-      //var_ctx.set_variable(struct_type_name, s_type, struct_id,
-      // struct_id.graph_id());
+      let mut value_maps = BTreeMap::<IString, StructEntry>::new();
 
       for init_expression in &struct_decl.inits {
         let member_name = init_expression.name.id.intern();
@@ -762,81 +813,48 @@ fn process_struct_instantiation(struct_decl: &RawStructInstantiation<Token>, ib:
         if let Some(member) = members.iter().find(|i| i.name == member_name) {
           process_expression(&init_expression.expression.expr, ib);
 
-          if Some(member.ty.clone()) != ib.get_top_type() {
-            if member.ty.is_primitive() {
-              //
-            } else {
-              todo!("Handle non-primitive struct member");
-            }
-          }
-
-          if member.ty.is_primitive() && member.ty.as_prim().unwrap().bitfield_size() > 0 {
-            let ty: &PrimitiveType = member.ty.as_prim().unwrap();
-            let bit_size = ty.bit_size();
-            let bit_offset = ty.bitfield_offset();
-            let bit_field_size = ty.bitfield_size();
-            let bit_mask = ((1 << bit_size) - 1) << bit_offset;
-
-            let bf_type: Type = (PrimitiveType::Unsigned | PrimitiveType::new_bit_size(bit_field_size)).into();
-
-            let var_id = TypeVar::from_prim((PrimitiveType::Unsigned | PrimitiveType::new_bit_size(bit_field_size)));
-
-            // bitfield initializers must be combined into one value and then
-            // submitted at the end of this section. So we make or retrieve the
-            // temporary variable for this field.
-
-            ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_offset as u32));
-            ib.push_ssa(SHL, var_id.into(), &[StackOp, StackOp]);
-
-            ib.push_const(ConstVal::new(PrimitiveType::Unsigned | PrimitiveType::b32, bit_mask as u32));
-            ib.push_ssa(AND, var_id.into(), &[StackOp, StackOp]);
-
-            match value_maps.entry(member.offset) {
-              btree_map::Entry::Occupied(mut entry) => {
-                let val = entry.get_mut().value;
-                ib.push_ssa(OR, var_id.into(), &[val.into(), StackOp]);
-                entry.get_mut().value = ib.pop_stack().unwrap();
-              }
-              btree_map::Entry::Vacant(val) => {
-                val.insert(StructEntry { ty: bf_type, value: ib.pop_stack().unwrap(), name: member_name });
-              }
-            }
-
-            // Depending the scope invariants, may need to throw error if value
-            // is truncated.
-
-            // Mask out the expression.
-          } else {
-            value_maps.insert(member.offset, StructEntry { ty: member.ty.clone(), value: ib.pop_stack().unwrap(), name: member_name });
-          };
+          value_maps.insert(member_name, StructEntry {
+            ty:    member.ty.clone(),
+            value: ib.pop_stack().unwrap(),
+            name:  member_name,
+            tok:   init_expression.tok.clone(),
+          });
 
           // Calculate the offset to the member within the struct
         } else {
-          panic!("Member name not found.");
+          panic!("Member name not found. ");
         }
       }
 
-      let ptr_var = ib.get_variable_ptr(&struct_var, "---".intern()).unwrap();
+      println!("todo(anthony): Handle the default initialization of other members");
 
-      ib.push_ssa(ADDR, ptr_var.ty_var.into(), &[struct_var.store.into()]);
+      if !is_ptr {
+        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, struct_var.id.into())), &[SMO::IROp(struct_var.store)], struct_decl.tok.clone());
+        struct_var.reference = ib.pop_stack().unwrap();
+      } else {
+        struct_var.reference = struct_var.store;
+      }
 
-      let ptr_id = ib.pop_stack().unwrap();
+      ib.body.ctx.vars[struct_var.id] = struct_var;
 
-      for (_, StructEntry { ty, value, name }) in value_maps {
-        if let Some(var) = ib.get_variable_member(&struct_var, IdMember(name)) {
-          ib.push_ssa(PTR_MEM_CALC, var.ty_var.into(), &[ptr_id.into()]);
-          ib.push_ssa(MEM_STORE, Inherit, &[StackOp, value.into()]);
+      for (_, StructEntry { ty, value, name, tok }) in value_maps {
+        if let Some(mut var) = ib.get_var_member(&struct_var, name).cloned() {
+          ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(struct_var.reference)], tok.clone());
+          var.reference = ib.get_top_id().unwrap();
+          ib.body.ctx.vars[var.id] = var;
+
+          ib.push_ssa(STORE, Inherit, &[StackOp, value.into()], tok);
           ib.pop_stack();
         } else {
           todo!("TBD");
         }
       }
 
-      ib.push_ssa(IROp::VAR, struct_var.ty_var.into(), &[]);
+      ib.push_node(struct_var.reference);
     }
   } else {
     panic!("Could not find struct definition for {struct_type_name:?}")
-  } */
+  }
 }
 
 fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
@@ -990,15 +1008,15 @@ fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser
         } else if var_assign.var.members.len() == 1 {
           // Create and assign a new variable based on the expression.
           let var_name = var_assign.var.members[0].id.intern();
-          let var_id = ib.body.graph[expr_id].ty_var();
 
-          if let Some(var) = ib.get_node_variable(expr_id) {
+          if let Some(var) = ib.get_node_variable(expr_id).cloned() {
             if let TypeRef::Struct(_) = var.clone().ty_slot.ty_base(&ib.body.ctx) {
-              //ib.rename_var(var.id, IdMember(var_name));
+              ib.body.ctx.rename_var(var.mem_name, var_name);
+              return;
             }
           }
 
-          let var = ib.declare_variable(var_name, expr_ty_slot, Default::default()).clone();
+          let var = ib.declare_variable(var_name, expr_ty_slot, Default::default(), true).clone();
 
           ib.push_ssa(STORE, var.id.into(), &[var.reference.into(), expr_id.into()], var_assign.tok.clone());
 
@@ -1062,20 +1080,6 @@ pub enum PtrType {
   Reference,
   Global,
   Name(IString),
-}
-
-pub fn get_pointer_type(ir_type: &type_Value<Token>) -> PtrType {
-  use pointer_type_group_Value::*;
-  use type_Value::*;
-  match ir_type {
-    Type_Pointer(ptr) => match &ptr.ptr_type {
-      GlobalLifetime(_) => PtrType::Global,
-      ScopedLifetime(name) => PtrType::Name(name.val.intern()),
-      Reference(_) => PtrType::Reference,
-      _ => unreachable!(),
-    },
-    _t => PtrType::None,
-  }
 }
 
 pub fn get_type(ir_type: &type_Value<Token>, type_db: &mut TypeDatabase, insert_unresolved: bool) -> Option<TypeSlot> {

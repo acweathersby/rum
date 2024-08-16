@@ -1,4 +1,13 @@
-use crate::{ir::ir_type_analysis::assert_good_types, istring::CachedString, types::PrimitiveType};
+use crate::{
+  ir::{
+    ir_lowering::lower_iops,
+    ir_register_allocator::{generate_register_assignments, CallRegisters, RegisterVariables},
+    ir_type_analysis::{resolve_routine, resolve_struct_offset},
+  },
+  istring::CachedString,
+  types::PrimitiveType,
+  x86::{compile_from_ssa_fn, x86_eval::x86Function},
+};
 
 use super::build_module;
 
@@ -27,22 +36,169 @@ main () =|  {
 }
 
 #[test]
+fn struct_instantiation() {
+  let mut db = build_module(
+    &crate::parser::script_parser::parse_raw_module(
+      &r##"
+
+// * =: nullable + movable
+
+
+StackFrame => [ 
+  data:   *u8, // 8
+  params: u16, // 2
+  name:   u32, // 4
+]
+
+heap_allocate ( size: u64, alignment: u64 ) => *u8  {  
+  _malloc ( size )
+}
+
+start () => g*StackFrame {
+  sf = gc*StackFrame [  name = 2.0, 
+                        params = 30.1456,
+                        data = 0  ]
+  sf
+}
+  "##,
+    )
+    .unwrap(),
+  );
+
+  resolve_struct_offset("StackFrame".intern(), &mut db);
+
+  resolve_routine("start".intern(), &mut db);
+
+  resolve_routine("heap_allocate".intern(), &mut db);
+
+  lower_iops("start".intern(), &mut db);
+
+  lower_iops("heap_allocate".intern(), &mut db);
+
+  use crate::x86::x86_types::*;
+  let reg_pack = RegisterVariables {
+    call_register_list: vec![CallRegisters {
+      policy_name:         "default".intern(),
+      arg_int_registers:   vec![7, 6, 3, 1, 8, 9],
+      arg_float_registers: vec![],
+      arg_ptr_registers:   vec![],
+      ret_int_registers:   vec![0],
+      ret_float_registers: vec![],
+      ret_ptr_registers:   vec![],
+    }],
+    ptr_registers:      vec![],
+    int_registers:      vec![8, 9, 10, 11, 12, 14, 15, 7, 6, 3, 1, 8, 9, 0, 13],
+    float_registers:    vec![],
+    registers:          vec![
+      RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
+      XMM15,
+    ],
+  };
+
+  let heap_allocate_linkable = {
+    let (spilled_variables, assignments) = generate_register_assignments("heap_allocate".intern(), &mut db, &reg_pack);
+
+    dbg!(&spilled_variables, &assignments);
+
+    compile_from_ssa_fn("heap_allocate".intern(), &mut db, &assignments, &spilled_variables).expect("Could not create linkable")
+  };
+
+  let start_linkable = {
+    let (spilled_variables, assignments) = generate_register_assignments("start".intern(), &mut db, &reg_pack);
+
+    dbg!(&spilled_variables, &assignments);
+
+    compile_from_ssa_fn("start".intern(), &mut db, &assignments, &spilled_variables).expect("Could not create linkable")
+  };
+
+  // Now we link
+
+  let mut parts = vec![(0, start_linkable), (0, heap_allocate_linkable)];
+
+  let mut out_binary = vec![];
+
+  const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
+  const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
+
+  use crate::x86::*;
+
+  push_bytes(&mut out_binary, MALLOC);
+  push_bytes(&mut out_binary, FREE);
+
+  for (offset, link) in &mut parts {
+    *offset = out_binary.len();
+    out_binary.extend(link.binary.clone());
+  }
+
+  for (offset, link) in &parts {
+    for rt in &link.link_map {
+      match rt.link_type {
+        crate::linker::LinkType::DBGRoutine(name) => match name.to_str().as_str() {
+          "_malloc" => {
+            let diff = (0 as i32) - ((rt.binary_offset + *offset + 4) as i32);
+            rt.replace(unsafe { out_binary.as_mut_ptr().offset(*offset as isize) }, diff);
+          }
+          name => panic!("could not recognize binary debug function: {name}"),
+        },
+        crate::linker::LinkType::Routine(name) => {
+          if let Some((target_offset, _)) = parts.iter().find(|(_, l)| l.name == name) {
+            let diff = (*target_offset as i32) - ((rt.binary_offset + *offset + 4) as i32);
+            rt.replace(unsafe { out_binary.as_mut_ptr().offset(*offset as isize) }, diff);
+          } else {
+            panic!("Could not find target {name}");
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+  println!("\n\n\n");
+  print_instructions(&out_binary, 0);
+
+  let fn_ = x86Function::new(&out_binary, 16);
+
+  #[derive(Debug)]
+  #[repr(C)]
+  struct OutStruct {
+    data:   *const u8,
+    params: u16,
+    name:   u32,
+  }
+
+  let funct = fn_.access_as_call::<fn() -> *const OutStruct>();
+
+  let out = funct();
+  let out = unsafe { &*out };
+  dbg!(out);
+}
+
+#[test]
 fn test_type_inference() {
   let mut db = build_module(
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
-      #test
+#test
 Temp => [ a:u32, b:u32 ]
 
 #test
-TempA   => [ a: u32, b: Ptr  ]
+TempA   => [ a: harkness* u64, b: Ptr  ]
 Ptr     => [ d: u32 ]
 Message => [ u32; 1 ]
 
 c_str => [ data: static* u8 ]
 
-HWLCMessage => [ test: c_str,  ]
+
+HPARAM => [ val: u64 ]          WPARAM => [ val: u64 ]
+
+WNDPROC => [
+  unnamedParam1: u64,           unnamedParam2: u32,
+  unnamedParam3: WPARAM,        unnamedParam4: HPARAM
+]
+
+WNDCLASSA => [ 
+  style: u32,                   lpfnWndProc: WNDPROC,
+]
 
 best ( test: gc* U?, dest: gc* U? ) => *U? {}
 
@@ -54,10 +210,10 @@ inferred_procedure ( test: gc* T?, dest: gc* TempA ) => *T? {
 }
 
 main_procedure ( 
-  t: *TempA?,
-  d: *TempA? 
+  t: gen* TempA?,
+  d: gen* TempA? 
 ) =| {
-  d.a = t // Invalid assignment of 2 to d. Should use := syntax to declare a new type for d
+  d.a = 2 // Invalid assignment of 2 to d. Should use := syntax to declare a new type for d
   inferred_procedure(t, d) 
 }
   "##,
@@ -65,7 +221,9 @@ main_procedure (
     .unwrap(),
   );
 
-  assert_good_types("main_procedure".intern(), &mut db);
+  resolve_routine("main_procedure".intern(), &mut db);
+
+  lower_iops("main_procedure".intern(), &mut db);
 }
 
 /* #[test]

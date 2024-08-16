@@ -1,23 +1,16 @@
-use super::ir_graph::{IRGraphId, TyData, TypeVar, VarId};
+use super::ir_graph::{IRGraphId, TyData, VarId};
 use crate::{
   ir::ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   istring::*,
-  parser::script_parser::Var,
-  types::{ConstVal, PrimitiveType, RoutineBody, TypeSlot, Variable},
+  types::{ConstVal, RoutineBody, TypeSlot, Variable},
 };
 pub use radlr_rust_runtime::types::Token;
-use std::{fmt::Debug, rc::Rc};
+use std::fmt::Debug;
 
 pub enum SuccessorMode {
   Default,
   Fail,
   Succeed,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LexicalScopeIds {
-  var_id: usize,
-  ty_id:  usize,
 }
 
 pub struct IRBuilder<'body> {
@@ -98,6 +91,25 @@ impl<'body> IRBuilder<'body> {
     })
   }
 
+  pub fn get_variable(&mut self, name: IString) -> Option<&mut Variable> {
+    self.body.ctx.get_var(name)
+  }
+
+  pub fn get_var_member(&mut self, var: &Variable, name: IString) -> Option<&mut Variable> {
+    self.body.ctx.get_var_member(var, name)
+  }
+
+  pub fn get_node_from_id(&self, node_id: IRGraphId) -> &IRGraphNode {
+    self.body.graph.get(node_id.usize()).unwrap()
+  }
+
+  pub fn get_node(&self, node_id: usize) -> &IRGraphNode {
+    self.body.graph.get(node_id).unwrap()
+  }
+}
+
+/// Methods for the creation of a new routine body.
+impl<'body> IRBuilder<'body> {
   #[inline]
   pub fn pop_stack(&mut self) -> Option<IRGraphId> {
     self.ssa_stack.pop()
@@ -132,18 +144,18 @@ impl<'body> IRBuilder<'body> {
   }
 
   pub fn push_const(&mut self, val: ConstVal, tok: Token) {
-    for (id, node) in self.body.graph.iter().enumerate() {
-      match node {
-        IRGraphNode::Const { val: v } => {
-          if val == *v {
-            self.ssa_stack.push(IRGraphId::new(id));
-            return;
-          }
-        }
-        _ => {}
-      }
-    }
-
+    /*    for (id, node) in self.body.graph.iter().enumerate() {
+         match node {
+           IRGraphNode::Const { val: v } => {
+             if val == *v {
+               self.ssa_stack.push(IRGraphId::new(id));
+               return;
+             }
+           }
+           _ => {}
+         }
+       }
+    */
     let graph = &mut self.body.graph;
     let id = IRGraphId::new(graph.len());
     let node = IRGraphNode::Const { val };
@@ -152,10 +164,14 @@ impl<'body> IRBuilder<'body> {
     self.ssa_stack.push(id);
   }
 
-  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot, tok: Token) -> &mut Variable {
+  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot, tok: Token, heap: bool) -> &mut Variable {
     let var = self.body.ctx.insert_var(var_name, ty).clone();
 
-    self.push_ssa(IROp::VAR_DECL, var.id.into(), &[], tok);
+    if heap {
+      self.push_ssa(IROp::HEAP_DECL, var.id.into(), &[], tok);
+    } else {
+      self.push_ssa(IROp::STACK_DECL, var.id.into(), &[], tok);
+    }
 
     self.body.ctx.vars[var.id].store = self.pop_stack().unwrap();
 
@@ -188,21 +204,13 @@ impl<'body> IRBuilder<'body> {
     self.body.tokens.push(tok);
     self.ssa_stack.push(id);
 
-    if matches!(op, IROp::STORE | IROp::MEM_STORE | IROp::ADDR | IROp::PARAM_DECL) && ty.var_id().is_valid() {
+    if matches!(op, IROp::STORE | IROp::ADDR | IROp::PARAM_DECL) && ty.var_id().is_valid() {
       self.body.ctx.vars[ty.var_id()].store = id;
     }
 
     match op {
       _ => self.body.blocks[self.active_block_id].nodes.push(id),
     }
-  }
-
-  pub fn get_variable(&mut self, name: IString) -> Option<&mut Variable> {
-    self.body.ctx.get_var(name)
-  }
-
-  pub fn get_var_member(&mut self, var: &Variable, name: IString) -> Option<&mut Variable> {
-    self.body.ctx.get_var_member(var, name)
   }
 
   pub fn set_active(&mut self, block: BlockId) {
@@ -295,6 +303,98 @@ impl<'body> IRBuilder<'body> {
   pub fn pop_loop(&mut self) {
     if let Some((.., tail)) = self.loop_stack.pop() {
       self.active_block_id = tail;
+    }
+  }
+}
+
+/// Methods for optimization and transformation of an already built routine body
+impl<'body> IRBuilder<'body> {
+  pub fn replace_node(&mut self, target: IRGraphId, mut node: IRGraphNode, tok: Token) -> IRGraphId {
+    let existing = self.get_node_from_id(target);
+
+    match (&mut node, existing) {
+      (IRGraphNode::SSA { block_id, .. }, IRGraphNode::SSA { op, block_id: b_id, operands, ty }) => {
+        *block_id = *b_id;
+      }
+      _ => unreachable!("Invalid node combination"),
+    }
+
+    self.body.graph[target] = node;
+    self.body.tokens[target] = tok;
+
+    target
+  }
+
+  pub fn remove_node(&mut self, target: IRGraphId) {
+    let block_id = self.get_node_from_id(target).block_id();
+
+    let block = &mut self.body.blocks[block_id];
+
+    for i in 0..block.nodes.len() {
+      if block.nodes[i] == target {
+        block.nodes.remove(i);
+        return;
+      }
+    }
+
+    panic!("Node insertion point not found");
+  }
+
+  pub fn insert_before(&mut self, target: IRGraphId, mut node: IRGraphNode, tok: Token) -> IRGraphId {
+    match &mut node {
+      IRGraphNode::Const { .. } => {
+        let node_id = IRGraphId::new(self.body.graph.len());
+        self.body.graph.push(node);
+        return node_id;
+      }
+      IRGraphNode::SSA { block_id: target_block_id, .. } => {
+        let block_id = self.get_node_from_id(target).block_id();
+        *target_block_id = block_id;
+
+        let node_id = IRGraphId::new(self.body.graph.len());
+        self.body.graph.push(node);
+        self.body.tokens.push(tok);
+
+        let block = &mut self.body.blocks[block_id];
+
+        for i in 0..block.nodes.len() {
+          if block.nodes[i] == target {
+            block.nodes.insert(i, node_id);
+            return node_id;
+          }
+        }
+
+        panic!("Node insertion point not found");
+      }
+    }
+  }
+
+  pub fn insert_after(&mut self, target: IRGraphId, mut node: IRGraphNode, tok: Token) -> IRGraphId {
+    match &mut node {
+      IRGraphNode::Const { .. } => {
+        let node_id = IRGraphId::new(self.body.graph.len());
+        self.body.graph.push(node);
+        return node_id;
+      }
+      IRGraphNode::SSA { block_id: target_block_id, .. } => {
+        let block_id = self.get_node_from_id(target).block_id();
+        *target_block_id = block_id;
+
+        let node_id = IRGraphId::new(self.body.graph.len());
+        self.body.graph.push(node);
+        self.body.tokens.push(tok);
+
+        let block = &mut self.body.blocks[block_id];
+
+        for i in 0..block.nodes.len() {
+          if block.nodes[i] == target {
+            block.nodes.insert(i + 1, node_id);
+            return node_id;
+          }
+        }
+
+        panic!("Node insertion point not found");
+      }
     }
   }
 }
