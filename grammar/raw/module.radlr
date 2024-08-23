@@ -4,13 +4,14 @@ IMPORT routine as rt
 IMPORT statement as stmt
 IMPORT expression as expr
 IMPORT complex as complex
+IMPORT type as ty
 IMPORT annotation as anno
 IMPORT ../common/primitive as prim
 IMPORT ../common/comment as cmt
 
 <> module 
 
-  > module_members 
+  > module_members $
 
     :ast { t_RawModule, members: $1 }
 
@@ -28,14 +29,19 @@ IMPORT ../common/comment as cmt
 
     :ast { t_AnnotatedModMember, annotation, member }
 
-
 <> module_member 
   
-  > complex::structure 
-  | complex::enum 
-  | complex::array 
+  > bound_type
   | rt::routine 
   | scope
+
+
+<> bound_type 
+
+  > prim::var^name "=>" ty::type^ty
+
+    :ast { t_RawBoundType, name, ty, tok }
+
 
 <> scope 
 

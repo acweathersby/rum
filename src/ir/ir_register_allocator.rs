@@ -1,4 +1,4 @@
-use super::ir_graph::{BlockId, IRGraphId, VarId};
+use super::ir_graph::{BlockId, IRGraphId, TyData, VarId};
 use crate::{
   ir::{
     ir_build_module::build_module,
@@ -168,7 +168,6 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
       #[inline]
       fn get_op_allocation_policy(op: IROp) -> (AllocateResultReg, AllocateOp1Reg, AllocateOp2Reg) {
         use AllocateResultReg::*;
-        use IROp::*;
         match op {
           IROp::PARAM_DECL => (Parameter, false, false),
           IROp::MEMB_PTR_CALC => (Allocate, true, true),
@@ -180,7 +179,7 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
           IROp::DBG_CALL => (Allocate, false, false),
           IROp::CALL_RET => (CallRet, false, false),
           IROp::RET_VAL => (Return, true, false),
-          IROp::HEAP_DECL => panic!("virtual op HEAP_DECL is not valid in the register allocation context"),
+          IROp::ADD => (Allocate, true, true),
           op => todo!("Create allocation policy for {op:?}"),
         }
       }
@@ -276,8 +275,6 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
         }
       }
 
-      dbg!(&reg_vars);
-
       for (index, (node, reg_var)) in graph.iter().zip(reg_vars.iter()).enumerate() {
         println!("{index: >5}");
         if node.is_ssa() {
@@ -298,15 +295,11 @@ fn allocate_op_register(op_index: usize, op_node_id: IRGraphId, node_id: IRGraph
   let node = &body.graph[op_node_id.usize()];
   let var_id = reg_data[op_node_id.usize()].vars[0];
 
-  if node_id.0 == 31 && op_index == 2 {
-    //println!("{}", graph[node_id.usize()]);
-  }
-
   if node.is_const() {
     // No need to assign a register to constants.
   } else if var_id.is_valid() {
     // see if this var_id is already loaded into a register.
-    if let Some(vals) = get_register_for_var(var_id, node_id, block_id, node.ty_data().ty_slot(sp.ctx).ty(sp.ctx), *blocked_register, sp) {
+    if let Some(vals) = get_register_for_var(var_id, node_id, block_id, node.ty_data(), *blocked_register, sp) {
       set_register(vals, node_id, op_index, sp);
       // Prevent the next operand from stealing the reg assigned to this one.
       *blocked_register = Some(vals.reg_index);
@@ -346,7 +339,7 @@ fn get_register_for_var(
   incoming_var_id: VarId,
   node_id: IRGraphId,
   block_id: BlockId,
-  ty: TypeRef<'_>,
+  ty: TyData,
   blocked_register: Option<usize>,
   sp: &mut SelectionPack<'_, '_, '_>,
 ) -> Option<RegAssignResult> {
@@ -365,7 +358,7 @@ fn get_register_for_var(
     }
   }
 
-  let Some(allowed_registers) = get_register_set(ty, sp.reg_pack) else {
+  let Some(allowed_registers) = get_register_set(ty, sp.reg_pack, sp.ctx) else {
     panic!("Could not find register set for type [ty:?]");
   };
 
@@ -519,17 +512,16 @@ fn get_ret_register_set<'imm>(ty: TypeRef<'_>, reg_vars: &'imm RegisterVariables
   }
 }
 
-fn get_register_set<'imm>(ty: TypeRef<'_>, reg_vars: &'imm RegisterVariables) -> Option<&'imm Vec<usize>> {
+fn get_register_set<'imm>(ty: TyData, reg_vars: &'imm RegisterVariables, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>> {
   // Acquire the set of register indices that can store the given type.
-
-  if ty.is_pointer() {
+  if ty.is_pointer(ctx) {
     if reg_vars.ptr_registers.is_empty() {
       Some(&reg_vars.int_registers)
     } else {
       Some(&reg_vars.ptr_registers)
     }
   } else {
-    match ty {
+    match ty.ty_slot(ctx).ty(ctx) {
       TypeRef::DebugCall(_) => Some(&reg_vars.int_registers),
       TypeRef::Primitive(prim) => match prim.sub_type() {
         PrimitiveSubType::Signed | PrimitiveSubType::Unsigned => Some(&reg_vars.int_registers),

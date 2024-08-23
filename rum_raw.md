@@ -601,4 +601,19 @@ Transient vars are those whose value is already defined and is not used in a sub
 If all registers are used and there need's to be allocation for a new variable, stores in all previous blocks need to be created for that variable.
 
 
+# "Method" matching and naive Currying
 
+  TODO
+
+# Block passing -> Inlining  
+
+  A block context can be passed to special "routines" that run within the context of the block. These routines
+  are inlined during IR lowering, allowing for a flexible way to define iterators, generators, and even concurrent
+  abstractions.
+
+
+
+# References
+
+ Allen C. Kay (1969) - The Reactive Engine
+  http://www.chilton-computing.org.uk/inf/pdfs/kay. htm#annotations:11TuOt4oEeie8AsNFbhCaw

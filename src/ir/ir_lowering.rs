@@ -21,7 +21,7 @@ use SMO::*;
 use SMT::Inherit;
 
 /// Lowers high level IR ops such as copy into lower level operations.
-pub fn lower_iops(routine_name: IString, type_scope: &mut Box<TypeDatabase>) {
+pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
   // load the target routine
   let Some((mut ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find Struct type: {routine_name}",);
@@ -44,38 +44,40 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut Box<TypeDatabase>) {
 
         match node {
           IRGraphNode::SSA { block_id, operands, ty, op } => match op {
-            IROp::HEAP_DECL => {
+            IROp::VAR_DECL => {
               // Lookup up or create the allocator function for the given pointer type.
               let node_id = IRGraphId::new(node_index);
               let slot = ty.ty_slot(&ib.body.ctx);
 
-              // Create arguments for allocation
-              {
-                let ty = slot.ty_base(&ib.body.ctx);
-                let alignment = ty.byte_alignment();
-                let size = ty.byte_size();
+              if slot.ty(&ib.body.ctx).is_pointer() {
+                // Create arguments for allocation
+                {
+                  let ty = slot.ty_base(&ib.body.ctx);
+                  let alignment = ty.byte_alignment();
+                  let size = ty.byte_size();
 
-                let u64 = PrimitiveType::u64;
+                  let u64 = PrimitiveType::u64;
 
-                // Size argument
-                ib.push_const(ConstVal::new(u64, size as u64), Default::default());
-                let size_id = ib.pop_stack().unwrap();
-                ib.insert_before(node_id, IRGraphNode::create_ssa(CALL_ARG, u64.into(), &[size_id]), tok.clone());
+                  // Size argument
+                  ib.push_const(ConstVal::new(u64, size as u64), Default::default());
+                  let size_id = ib.pop_stack().unwrap();
+                  ib.insert_before(node_id, IRGraphNode::create_ssa(CALL_ARG, u64.into(), &[size_id]), tok.clone());
 
-                // Alignment argument
-                ib.push_const(ConstVal::new(u64, alignment as u64), Default::default());
-                let align_id = ib.pop_stack().unwrap();
-                ib.insert_before(node_id, IRGraphNode::create_ssa(CALL_ARG, u64.into(), &[align_id]), tok.clone());
+                  // Alignment argument
+                  ib.push_const(ConstVal::new(u64, alignment as u64), Default::default());
+                  let align_id = ib.pop_stack().unwrap();
+                  ib.insert_before(node_id, IRGraphNode::create_ssa(CALL_ARG, u64.into(), &[align_id]), tok.clone());
 
-                // todo(Anthony): add arguments for pointer type, for context based allocation, and type information.
+                  // todo(Anthony): add arguments for pointer type, for context based allocation, and type information.
+                }
+
+                let call = format!("heap_allocate").intern();
+                let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Syscall(call));
+                let call_slot = TypeSlot::GlobalIndex(call_target_id as u32);
+
+                ib.insert_before(node_id, IRGraphNode::create_ssa(CALL, call_slot.into(), &[]), tok.clone());
+                ib.replace_node(node_id, IRGraphNode::create_ssa(CALL_RET, ty, &[]), tok);
               }
-
-              let call = format!("heap_allocate").intern();
-              let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Syscall(call));
-              let call_slot = TypeSlot::GlobalIndex(call_target_id as u32);
-
-              ib.insert_before(node_id, IRGraphNode::create_ssa(CALL, call_slot.into(), &[]), tok.clone());
-              ib.replace_node(node_id, IRGraphNode::create_ssa(CALL_RET, ty, &[]), tok);
             }
             IROp::COPY => {
               todo!("Handle copy lowering");
@@ -85,8 +87,6 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut Box<TypeDatabase>) {
           _ => {}
         }
       }
-
-      dbg!(ib);
     }
     _ => unreachable!(),
   }

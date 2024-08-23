@@ -10,7 +10,7 @@ use std::{
 use crate::{
   ir::ir_graph::{IRGraphId, VarId},
   istring::{CachedString, IString},
-  parser::script_parser::{Reference, Var},
+  parser::script_parser::Var,
 };
 
 use super::{ArrayType, BitFieldType, EnumType, PrimitiveType, RoutineType, ScopeType, StructType, UnionType};
@@ -56,3 +56,6 @@ impl VariableType {
     matches!(self, VariableType::InternalPointer { .. })
   }
 }
+
+
+

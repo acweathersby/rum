@@ -44,22 +44,78 @@ fn struct_instantiation() {
 // * =: nullable + movable
 
 
+EMPTY_NAME => []
+
+// ARRAY_TYPE => [u32; 2, 3]
+
+LNX_MATH_CONSTS => f64 >
+  : PI => 3.14567890
+  : E  => 2.3344556677
+
+
+LNX_MATH_CONSTS => u32 >
+  : CONTINUE
+  : NEW_GAME
+  : OPTIONS
+  : QUIT
+  : SFX_VOL
+  : MUSIC_VOL
+  : FULLSCREEN
+  : BACK
+
+
+LNX_Clone_Flags => flag32 >
+  : CLONE_CHILD_CLEARTID 
+  : CLONE_CHILD_SETTID 
+  : CLONE_CLEAR_SIGHAND
+  : CLONE_DETACHED
+  : CLONE_FILES
+  : CLONE_FS
+  : CLONE_INTO_CGROUP
+  : CLONE_IO
+  : CLONE_NEWCGROUP
+  : CLONE_NEWIPC
+  : CLONE_NEWNET
+  : CLONE_NEWNS
+  : CLONE_NEWPID
+  : CLONE_NEWUSER
+  : CLONE_NEWUTS
+  : CLONE_PARENT
+  : CLONE_PARENT_SETTID
+  : CLONE_PID
+  : CLONE_PIDFD
+  : CLONE_PTRACE
+  : CLONE_SETTLS
+  : CLONE_SIGHAND
+  : CLONE_THREAD
+  : CLONE_SYSVSEM
+  : CLONE_UNTRACED
+  : CLONE_VFORK
+  : CLONE_VM
+
+
 StackFrame => [ 
   data:   *u8, // 8
   params: u16, // 2
-  name:   u32, // 4
+  name:   f32, // 4
+] 
+
+#internal-str
+str => [
+  data: flag32 > :TRUE :FALSE
 ]
 
-heap_allocate ( size: u64, alignment: u64 ) => *u8  {  
-  _malloc ( size )
-}
+#internal-Type
+Type => [
+  name: str,
+]
 
-start () => g*StackFrame {
-  sf = gc*StackFrame [  name = 2.0, 
-                        params = 30.1456,
-                        data = 0  ]
-  sf
-}
+douglas => Type | str
+
+heap_allocate ( size: u64, alignment: u64 ) => *u8 _malloc( size )
+
+start () => g*StackFrame [ name = 1234.934, params = 22 ]
+
   "##,
     )
     .unwrap(),
@@ -88,7 +144,7 @@ start () => g*StackFrame {
     }],
     ptr_registers:      vec![],
     int_registers:      vec![8, 9, 10, 11, 12, 14, 15, 7, 6, 3, 1, 8, 9, 0, 13],
-    float_registers:    vec![],
+    float_registers:    vec![16, 17],
     registers:          vec![
       RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
       XMM15,

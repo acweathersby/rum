@@ -9,18 +9,9 @@ IMPORT ../common/comment as cmt
     
     :ast { t_Expression, expr: $1, tok }
 
-  | address_of
-
-    :ast { t_Expression, expr: $1, tok }
-
 <> expression_types
 
   > bitwise
-
-
-<> address_of > "&" prim::var^id
-
-    :ast { t_AddressOf, id, tok }
 
 
 <> pointer_offset 
@@ -162,7 +153,7 @@ IMPORT ../common/comment as cmt
 
   | primitive_value
 
-  | member
+  | region_access
 
   | "(" expression_types(+",")^expressions ")"
     
@@ -171,9 +162,18 @@ IMPORT ../common/comment as cmt
 
 <> call 
 
-  > member "("{1} expression(*",")^args ")"
+  > region_access^member "("{1} expression(*",")^args ")"
 
     :ast { t_RawCall, member, args, tok }
+
+
+<> region_access
+
+  > member
+
+  | member^name{1} "["{2} pointer_offset^expression "]"
+
+    :ast  { t_RawArrayAccess, name, expression, tok }
 
 <> member 
   
@@ -220,3 +220,7 @@ IMPORT ../common/comment as cmt
   > prim::int
 
     :ast { t_RawInt, val:i64($1), tok }
+
+
+
+

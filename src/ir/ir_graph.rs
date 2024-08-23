@@ -317,19 +317,17 @@ pub enum IROp {
   /// and a const offset. This is also used to get the address of a stack
   /// variable, by taking address of the difference between the sp and stack
   /// offset.
-  VAR_PTR,
   MEMB_PTR_CALC,
-  MEMB_PTR_LOAD,
-  // Declaras a heap allocated object and it's pointer type
-  HEAP_DECL,
-  // Declares a stack variable and its type
-  STACK_DECL,
+  /// Declares a stack or heap variable and its type
+  VAR_DECL,
   /// Declares a parameter variable and its type
   PARAM_DECL,
   /// Declares a constant and its type
   CONST_DECL,
   /// Declares and sets a return value
   RET_VAL,
+
+  // Arithmetic & Logic functions - MATH
   ADD,
   SUB,
   MUL,
@@ -349,6 +347,7 @@ pub enum IROp {
   NEG,
   SHL,
   SHR,
+  // End MATH --------------------------
   /// Returns the address of op1 as a pointer
   ADDR,
   /// Stores the primitive or register in op2 into the stack slot assigned to

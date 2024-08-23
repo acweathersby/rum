@@ -149,6 +149,7 @@ pub(super) fn gen_unary_op(props: &mut InstructionProps, op_code: u32, bit_size:
         insert_op_code_bytes(props.bin, op_code as u32);
         match bit_size {
           8 => push_bytes(props.bin, imm as u8),
+          16 => push_bytes(props.bin, imm as u16),
           32 => push_bytes(props.bin, imm as u32),
           64 => push_bytes(props.bin, imm as u64),
           size => panic!("Invalid immediate size {size:?} for OI encoding"),
@@ -167,6 +168,7 @@ pub(super) fn gen_unary_op(props: &mut InstructionProps, op_code: u32, bit_size:
       match op1 {
         Arg::Imm_Int(imm) => match bit_size {
           8 => push_bytes(props.bin, imm as i8),
+          16 => push_bytes(props.bin, imm as i16),
           _ => push_bytes(props.bin, imm as i32),
         },
         _ => unreachable!(),
@@ -229,6 +231,7 @@ pub(super) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
         encode_mod_rm_reg(props, op1, OpExt(ext));
         match bit_size {
           8 => push_bytes(props.bin, imm as u8),
+          16 => push_bytes(props.bin, imm as u16),
           _ => push_bytes(props.bin, imm as u32),
         }
       }
@@ -240,6 +243,7 @@ pub(super) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
         insert_op_code_bytes(props.bin, op_code | op1.reg_index() as u32);
         match bit_size {
           8 => push_bytes(props.bin, imm as u8),
+          16 => push_bytes(props.bin, imm as u16),
           32 => push_bytes(props.bin, imm as u32),
           64 => push_bytes(props.bin, imm as u64),
           size => panic!("Invalid immediate size of {size:?} for OI encoding"),
@@ -253,6 +257,7 @@ pub(super) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
         insert_op_code_bytes(props.bin, op_code);
         match bit_size {
           8 => push_bytes(props.bin, imm as u8),
+          16 => push_bytes(props.bin, imm as u16),
           64 | 32 => push_bytes(props.bin, 3 as u32),
           size => panic!("Invalid immediate size of {size:?} for OI encoding"),
         }

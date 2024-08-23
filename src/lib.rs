@@ -3,6 +3,7 @@
 #![feature(box_patterns)]
 
 pub mod bitfield;
+pub mod compiler;
 pub mod container;
 pub mod error;
 pub mod ir;

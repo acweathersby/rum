@@ -1,0 +1,145 @@
+use crate::{
+  ir::{
+    ir_lowering::lower_iops,
+    ir_register_allocator::{generate_register_assignments, CallRegisters, RegisterVariables},
+    ir_type_analysis::{resolve_routine, resolve_struct_offset},
+  },
+  istring::{CachedString, IString},
+  types::{Type, TypeDatabase},
+  x86::compile_from_ssa_fn,
+};
+use std::collections::{HashSet, VecDeque};
+
+#[cfg(test)]
+mod test;
+
+mod module {
+  use crate::{istring::IString, types::TypeDatabase};
+
+  struct RumModule {
+    resolved: bool,
+    path:     IString,
+    types:    TypeDatabase,
+  }
+}
+
+use crate::x86::x86_types::*;
+
+pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, db: &mut TypeDatabase) -> (usize, Vec<u8>) {
+  // extract routine tree from entry routine, and setup a queue to build routine binaries
+
+  let struct_names = get_struct_names(db);
+
+  for struct_name in struct_names {
+    resolve_struct_offset(struct_name, db)
+  }
+
+  let mut seen = HashSet::<IString>::new();
+  let mut pending_routines = VecDeque::from_iter(vec![entry_routine, "heap_allocate".intern()]);
+  let mut processed_routines = Vec::new();
+
+  let x86_REG_PACK: RegisterVariables = RegisterVariables {
+    call_register_list: vec![CallRegisters {
+      policy_name:         "default".to_token(),
+      arg_int_registers:   vec![7, 6, 3, 1, 8, 9],
+      arg_float_registers: vec![],
+      arg_ptr_registers:   vec![],
+      ret_int_registers:   vec![0], // (([ 0 ], len(1)) : address)  => (address, len(1))
+      ret_float_registers: vec![],
+      ret_ptr_registers:   vec![],
+    }],
+    ptr_registers:      vec![],
+    int_registers:      vec![8, 9, 10, 11, 12, 14, 15, 7, 6, 3, 1, 8, 9, 0, 13],
+    float_registers:    vec![16, 17],
+    registers:          vec![
+      RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
+      XMM15,
+    ],
+  };
+
+  while let Some(pending) = pending_routines.pop_front() {
+    println!("#### Building routine {pending}");
+    let Some((ty_ref, _)) = db.get_type_mut(pending) else {
+      panic!("Could not find Structured Memory type: {pending}",);
+    };
+
+    match ty_ref {
+      Type::Routine(routine) => {
+        for var in &routine.body.ctx.vars {
+          match var.ty() {
+            crate::types::TypeRef::Routine(r) => {
+              if seen.insert(r.name) {
+                pending_routines.push_back(r.name);
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+      _ => unreachable!("Internal error: type is not a routine."),
+    }
+
+    resolve_routine(pending, db);
+
+    lower_iops(pending, db);
+
+    // optimize_routine(pending, db);
+
+    let (spilled_variables, assignments) = generate_register_assignments(pending, db, &x86_REG_PACK);
+
+    dbg!(&spilled_variables, &assignments);
+
+    let linkable = compile_from_ssa_fn(pending, db, &assignments, &spilled_variables).expect("Could not create linkable");
+
+    processed_routines.push((0, linkable));
+  }
+
+  use crate::x86::*;
+
+  let mut binary: Vec<u8> = vec![];
+
+  const MALLOC: unsafe extern "C" fn(usize) -> *mut libc::c_void = libc::malloc;
+  const FREE: unsafe extern "C" fn(*mut libc::c_void) = libc::free;
+  push_bytes(&mut binary, MALLOC);
+  push_bytes(&mut binary, FREE);
+
+  for (offset, link) in &mut processed_routines {
+    *offset = binary.len();
+    binary.extend(link.binary.clone());
+  }
+
+  for (offset, link) in &processed_routines {
+    for rt in &link.link_map {
+      match rt.link_type {
+        crate::linker::LinkType::DBGRoutine(name) => match name.to_str().as_str() {
+          "_malloc" => {
+            let diff = (0 as i32) - ((rt.binary_offset + *offset + 4) as i32);
+            rt.replace(unsafe { binary.as_mut_ptr().offset(*offset as isize) }, diff);
+          }
+          name => panic!("could not recognize binary debug function: {name}"),
+        },
+        crate::linker::LinkType::Routine(name) => {
+          if let Some((target_offset, ..)) = processed_routines.iter().find(|(.., l)| l.name == name) {
+            let diff = (*target_offset as i32) - ((rt.binary_offset + *offset + 4) as i32);
+            rt.replace(unsafe { binary.as_mut_ptr().offset(*offset as isize) }, diff);
+          } else {
+            panic!("Could not find target {name}");
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+
+  (processed_routines.iter().find(|(.., l)| l.name == entry_routine).map(|(offset, ..)| *offset).unwrap(), binary)
+}
+
+fn get_struct_names(db: &mut TypeDatabase) -> Vec<IString> {
+  db.types
+    .iter()
+    .filter_map(|d| match d.as_ref() {
+      Type::Structure(s) => Some(s.name),
+      _ => None,
+    })
+    .collect()
+}

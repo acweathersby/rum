@@ -1,26 +1,29 @@
+IGNORE { c:sp c:nl tk:cmt::comment }
+
 IMPORT ../common/primitive as prim
+IMPORT ./expression as expr
 IMPORT annotation as anno
+IMPORT ../common/comment as cmt
+
 IGNORE { c:sp c:nl }
 
-<> type 
+<> type > base_type | pointer_type
+
+<> pointer_type > anno::lifetime^ptr_type base_type^ty :ast { t_Type_Pointer, ptr_type, ty }
+
+<> base_type 
   
   > primitive_type
 
   | named_type
 
-  | pointer_type
+  | complex_type
 
   | void_type
 
-  | flag_type
-
 <> void_type > "_" :ast { t_Type_Void }
 
-<> flag_type > "flag" :ast { t_Type_Flag }
-
 <> named_type > prim::var^name :ast { t_Type_Variable, name }
-
-<> pointer_type > ( anno::lifetime | "&" :ast { t_Reference } )^ptr_type ( named_type | primitive_type )^ty :ast { t_Type_Pointer, ptr_type, ty }
 
 <> primitive_type
   > primitive_uint
@@ -47,3 +50,90 @@ IGNORE { c:sp c:nl }
   | "u16"   :ast { t_Type_u16 }
   | "u32"   :ast { t_Type_u32 }
   | "u64"   :ast { t_Type_u64 }
+
+
+<> complex_type > structure_type | array_type | empty_type | union_type | enum_type | flag_type
+
+<> structure_type
+  
+  > "[" property(+",")^properties ","(*) "]"
+
+    :ast { t_Type_Struct, properties, tok }
+
+
+<> property 
+
+  > single_prop | bitfield_type
+
+
+<> single_prop 
+
+  > prim::var^name ":" type^ty
+
+      :ast  { t_Property, name, ty, tok  }
+
+
+<> array_type
+
+  > "[" type^base_type (";" prim::int )?^size "]"
+
+    :ast { t_Type_Array, base_type, size: u32($size), tok }
+
+
+<> empty_type
+
+  > "[""]"
+
+    :ast { t_Type_Empty, tok }
+
+
+<> union_type 
+
+  > prim::var "|" prim::var(+"|")^ids
+
+    :ast  { t_Type_Union, ids: $1 + $3, tok }
+
+
+<> enum_type 
+
+  > primitive_type^base_type ">" ":" enum_value(+":")^values
+
+    :ast  { t_Type_Enum, base_type, values, tok }
+
+
+<> enum_value 
+
+  > prim::var^name ( "=>" expr::expression )?^expression
+
+    :ast  { t_EnumValue, name, expression  }
+
+
+<> flag_type 
+
+  > flag_val^flag_val ">" ":" prim::var(+":")^values
+
+    :ast  { t_Type_Flag, flag_size: u32($flag_val<4, 0>), values, tok }
+
+
+<> flag_val > tk:( "flag" c:num+ )
+
+
+<> bitfield_type 
+
+  > tk:( 'b' "f" c:num+ )^base_type  ">" "+" bitfield_element(+"+")^props
+
+    :ast  { t_RawBitCompositeProp, bit_count: u32($base_type<2,0>), props  }
+
+  
+<> bitfield_element
+
+  > prim::var^name ":" (primitive_type | discriminator_type)^type
+
+      :ast  { t_BitFieldProp, name, type, tok  }
+
+
+<> discriminator_type > 
+
+  tk:( "#desc" c:num+ )
+
+      :ast  { t_Discriminator, bit_count: u32($1<5,0>)  }

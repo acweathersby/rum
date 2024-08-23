@@ -84,6 +84,10 @@ impl<'body> IRBuilder<'body> {
     self.body.graph.get(node_id.usize()).map(|t| t.ty_data())
   }
 
+  pub fn is_node_unresolved(&mut self, node_id: IRGraphId) -> Option<TyData> {
+    self.body.graph.get(node_id.usize()).map(|t| t.ty_data())
+  }
+
   pub fn get_node_variable(&mut self, node_id: IRGraphId) -> Option<&mut Variable> {
     self.body.graph.get(node_id.usize()).and_then(|t| match t.var_id().is_valid() {
       true => Some(&mut self.body.ctx.vars[t.var_id()]),
@@ -91,11 +95,15 @@ impl<'body> IRBuilder<'body> {
     })
   }
 
+  pub fn set_variable(&mut self, var: Variable) {
+    self.body.ctx.vars[var.id] = var;
+  }
+
   pub fn get_variable(&mut self, name: IString) -> Option<&mut Variable> {
     self.body.ctx.get_var(name)
   }
 
-  pub fn get_var_member(&mut self, var: &Variable, name: IString) -> Option<&mut Variable> {
+  pub fn get_var_member(&mut self, var: VarId, name: IString) -> Option<&mut Variable> {
     self.body.ctx.get_var_member(var, name)
   }
 
@@ -164,14 +172,16 @@ impl<'body> IRBuilder<'body> {
     self.ssa_stack.push(id);
   }
 
+  pub fn declare_generic(&mut self, var_name: IString, tok: Token, heap: bool) -> &mut Variable {
+    let var = self.body.ctx.insert_generic(var_name).clone();
+
+    self.declare_variable(var_name, var, tok, heap)
+  }
+
   pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot, tok: Token, heap: bool) -> &mut Variable {
     let var = self.body.ctx.insert_var(var_name, ty).clone();
 
-    if heap {
-      self.push_ssa(IROp::HEAP_DECL, var.id.into(), &[], tok);
-    } else {
-      self.push_ssa(IROp::STACK_DECL, var.id.into(), &[], tok);
-    }
+    self.push_ssa(IROp::VAR_DECL, var.id.into(), &[], tok);
 
     self.body.ctx.vars[var.id].store = self.pop_stack().unwrap();
 

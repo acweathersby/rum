@@ -2,7 +2,7 @@ use super::{ArrayType, BitFieldType, EnumType, PrimitiveType, RoutineType, Scope
 use crate::{
   ir::ir_graph::{IRGraphId, VarId},
   istring::{CachedString, IString},
-  parser::script_parser::{Reference, Var},
+  parser::script_parser::Var,
 };
 use std::{
   borrow::BorrowMut,
@@ -20,9 +20,9 @@ pub use type_slot::*;
 pub use variable::*;
 
 pub struct TypeDatabase {
-  types:  Vec<Box<Type>>,
+  pub types: Vec<Box<Type>>,
   /// Maps a typename to a to a databese type type.
-  lookup: BTreeMap<IString, usize>,
+  lookup:    BTreeMap<IString, usize>,
 }
 
 impl TypeDatabase {
@@ -276,8 +276,10 @@ mod ctx {
       }
     }
 
-    pub fn get_var_member(&mut self, par_var: &Variable, member_name: IString) -> Option<&mut Variable> {
+    pub fn get_var_member(&mut self, par_var: VarId, member_name: IString) -> Option<&mut Variable> {
       let host = self as *mut _;
+
+      let par_var = self.vars[par_var];
 
       debug_assert!(par_var.ctx as usize == host as usize);
 
@@ -298,7 +300,7 @@ mod ctx {
         self.var_scopes.pop_scope();
       }
 
-      let entry = self.get_member_type(par_var.id, member_name);
+      let entry = self.get_member_type(par_var.id, member_name).unwrap();
 
       let var = Variable {
         ctx:       self as *const _ as *mut _,
@@ -316,7 +318,7 @@ mod ctx {
       Some(&mut self.vars[member_index])
     }
 
-    pub fn get_member_type(&mut self, par_var_id: VarId, member_name: IString) -> TypeSlot {
+    pub fn get_member_type(&mut self, par_var_id: VarId, member_name: IString) -> Option<TypeSlot> {
       let par_var = &self.vars[par_var_id];
       let entry = match par_var.ty_slot.ty_base(self) {
         TypeRef::Undefined | TypeRef::UNRESOLVED(..) => {
@@ -329,12 +331,12 @@ mod ctx {
           if let Some(mem) = strct.members.iter().find(|m| m.name == member_name) {
             mem.ty
           } else {
-            panic!("Could not find member {member_name}");
+            return None;
           }
         }
         tr => panic!("invalid operation on {tr}"),
       };
-      entry
+      Some(entry)
     }
 
     pub fn push_scope(&mut self) {
@@ -373,6 +375,10 @@ mod type_slot {
   }
 
   impl TypeSlot {
+    pub fn is_unresolved(&self) -> bool {
+      matches!(self, TypeSlot::UNRESOLVED(..))
+    }
+
     pub fn is_primitive(&self) -> bool {
       matches!(self, TypeSlot::Primitive(..))
     }
@@ -534,7 +540,7 @@ mod ty {
 
   use crate::{
     istring::IString,
-    types::{ArrayType, BitFieldType, EnumType, PrimitiveType, RoutineType, ScopeType, StructType, UnionType},
+    types::{ArrayType, BitFieldType, EnumType, FlagEnumType, PrimitiveType, RoutineType, ScopeType, StructType, UnionType},
   };
 
   use super::{TypeDatabase, TypeSlot};
@@ -550,6 +556,7 @@ mod ty {
     Enum(EnumType),
     BitField(BitFieldType),
     Array(ArrayType),
+    Flag(FlagEnumType),
   }
 
   #[derive(Clone, Copy)]
@@ -566,6 +573,7 @@ mod ty {
     Array(&'a ArrayType),
     Syscall(IString),
     DebugCall(IString),
+    Flag(&'a FlagEnumType),
     Undefined,
   }
 
@@ -582,6 +590,7 @@ mod ty {
         Type::Array(ty) => TypeRef::Array(ty),
         Type::Syscall(name) => TypeRef::Syscall(*name),
         Type::DebugCall(name) => TypeRef::DebugCall(*name),
+        Type::Flag(ty) => TypeRef::Flag(ty),
       }
     }
   }
@@ -682,6 +691,7 @@ mod ty {
         }
         Self::Scope(s) => f.write_fmt(format_args!("scope {}", s.name.to_str().as_str())),
         Self::Struct(s) => f.write_fmt(format_args!("struct {}", s.name.to_str().as_str())),
+        Self::Flag(s) => f.write_fmt(format_args!("flag {}", s.name.to_str().as_str())),
         Self::Routine(s) => {
           if s.returns.is_empty() {
             f.write_str("proc ")?;

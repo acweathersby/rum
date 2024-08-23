@@ -190,7 +190,16 @@ pub enum DiscriminantType {
 
 #[derive(Debug)]
 pub struct EnumType {
-  pub name: IString,
+  pub name:      IString,
+  pub base_type: TypeSlot,
+  pub members:   Vec<IString>,
+}
+
+#[derive(Debug)]
+pub struct FlagEnumType {
+  pub name:     IString,
+  pub bit_size: u64,
+  pub members:  Vec<IString>,
 }
 
 #[derive(Debug)]

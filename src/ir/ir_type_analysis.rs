@@ -36,10 +36,10 @@ pub enum LifeTimeRuleset {
   IMMU = 0x008,
   /// The pointer data is atomically accessed. Can only be applied to pointer that target primitive values.
   ATOM = 0x010,
-  /// The pointer data is allocated with a tracker that allows the pointer to shared between multiple
+  /// The pointer data is allocated with tracking data (such as a ref count) that allows the pointer to be shared between multiple
   /// objects. Implies IMMUT unless also LOCK
   SHAR = 0x020,
-  /// The pointer data is allocated with an atomic tracker to allow access to it in other
+  /// The pointer data is allocated with an atomic tracker (such as an atomic ref count) to allow access to it in other
   /// threads. Implies IMMUT unless also LOCK
   TSHR = 0x040,
   /// The pointer data is allocated with a mutex lock that MUST be used to gain access to
@@ -50,7 +50,7 @@ pub enum LifeTimeRuleset {
   DSTR = 0x100,
 }
 
-pub fn resolve_struct_offset(struct_name: IString, type_scope: &mut Box<TypeDatabase> /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */) {
+pub fn resolve_struct_offset(struct_name: IString, type_scope: &mut TypeDatabase /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */) {
   let Some((ty_ref, _)) = type_scope.get_type_mut(struct_name) else {
     panic!("Could not find Structured Memory type: {struct_name}",);
   };
@@ -78,11 +78,13 @@ pub fn resolve_struct_offset(struct_name: IString, type_scope: &mut Box<TypeData
 }
 
 /// Reports errors in type resolution, and adds type conversion instruction where necessary
-pub fn resolve_routine(routine_name: IString, type_scope: &mut Box<TypeDatabase> /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */) {
+pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */) {
   // load the target routine
   let Some((ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find routine type: {routine_name}",);
   };
+
+  // Resolve types members
 
   // Resolve generices
 
@@ -130,8 +132,6 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut Box<TypeDatabase>
 
                 // Load the type of the right node
                 let r_var_id = graph[right_node_id].ty_data();
-
-                dbg!(l_var_id, r_var_id);
 
                 // True if the target variable is an inline pointer to a named pointer
                 let t_is_ptr_ptr = false;
@@ -215,7 +215,12 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut Box<TypeDatabase>
                       }
 
                       (2, 0) => {
-                        println!("TODO: Setup stack prim to ptr to mem prim copy");
+                        panic!(
+                          "\n\nCannot assign a primitive r-value type {}{s_ty} to an l-value type unless #pointer-arithmetic is active {}{t_ty}: \n{}\n\n",
+                          "*".repeat((s_ptr_size as isize - 1).max(0) as usize),
+                          "*".repeat((t_ptr_size as isize - 1).max(0) as usize),
+                          tok.blame(1, 1, &format!("maybe place a hint here?",), BlameColor::RED)
+                        );
                       }
                       (2, 1) => {
                         println!("TODO: Setup named prim ptr to named prim pointer move (MOVABLE), pointer clone (SHARABLE), or prim clone (COPYABLE)");
@@ -392,9 +397,14 @@ fn resolve_generic_members(rt: &mut RoutineType) {
       if var.par.is_valid() {
         // todo(Anthony): Rebuild the type using parent information. This should be recursive process, as the
         // parent may be undefined until it is resolved with its own parent, and SOSF.
-        let c_ty = rt.body.ctx.get_member_type(var.par, var.mem_name);
-
-        rt.body.ctx.vars[var_index].ty_slot = c_ty;
+        match rt.body.ctx.get_member_type(var.par, var.mem_name) {
+          None => {
+            panic!("Could not locate the member [{}]", var.mem_name);
+          }
+          Some(c_ty) => {
+            rt.body.ctx.vars[var_index].ty_slot = c_ty;
+          }
+        }
       } else {
         panic!("Unresolved ty {ty}");
       }

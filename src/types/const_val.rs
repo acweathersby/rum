@@ -283,8 +283,8 @@ pub fn from_flt(val: ConstVal) -> f64 {
 fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
   debug_assert!(l_val.ty.sub_type() == PrimitiveSubType::Float);
   match (l_val.ty.bit_size()) {
-    32 => l_val.store(val.to_f32()),
-    64 => l_val.store(val.to_f64()),
+    32 => l_val.store(val.to_f32().unwrap()),
+    64 => l_val.store(val.to_f64().unwrap()),
     val => unreachable!("{val:?}"),
   }
 }

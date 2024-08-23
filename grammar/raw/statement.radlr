@@ -1,5 +1,5 @@
-IGNORE { c:sp c:nl tk:cmt::comment }
 
+IGNORE { c:sp c:nl tk:cmt::comment }
 IMPORT ./expression as expr
 IMPORT ./complex as complex
 IMPORT ./annotation as anno
@@ -35,9 +35,13 @@ IMPORT ../common/comment as cmt
 
 <> assignment_statement 
 
-  > assignment_var(+",")^vars "=" expr::expression(+","){2}^expressions
+  > assignment_var^var "=" expr::expression{2}^expression
 
-    :ast { t_RawAssignment, vars, expressions, tok  }
+    :ast { t_RawAssignment, var, expression, tok  }
+
+  | ( assignment_var "," assignment_var(+",") :ast $1 + $3  )^vars  "=" expr::call{2}^call_expression
+
+    :ast { t_CallAssignment, vars, call_expression, tok  }
 
 
 <> assignment_var 
@@ -46,13 +50,9 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawAssignmentDeclaration, var:$1, ty:$3, tok  }
 
-  | expr::member
+  | expr::region_access
 
-    :ast { t_RawAssignmentVariable, var:$1, tok  }
-
-  | complex::region_access
-
-  | complex::pointer_arithmetic
+  | complex::pointer_cast_to_value
 
 
 <> break_statement 
@@ -90,7 +90,7 @@ IMPORT ../common/comment as cmt
   
   > block_expression 
   
-  | ":" expr::expression
+  | "=>" expr::expression
 
 <> match_expression
 

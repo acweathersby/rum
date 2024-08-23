@@ -23,7 +23,7 @@ IGNORE { c:sp c:nl }
 
 <> annotation >  tk:( "#" bindable_name )
 
-  :ast { t_Annotation, val: str($1<1,1>) }
+  :ast { t_Annotation, val: str($1<1,0>) }
 
 
 <> lifetime_variable > lifetime "=>" prim::var(+"+")^lifetimes

@@ -12,7 +12,7 @@ use crate::{
   },
   istring::IString,
   linker::{LinkableBinary, RetargetingLink},
-  types::{RoutineBody, Type, TypeDatabase, TypeRef},
+  types::{PrimitiveSubType, RoutineBody, Type, TypeDatabase, TypeRef},
   x86::{print_instructions, push_bytes},
 };
 
@@ -255,8 +255,16 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         // need to be stored to memory, and can be just preserved in the op1 register.
 
         let bit_size = node_ty.bit_size();
-
         let dst_arg = if node_ty_is_pointer { regs[0].as_mem_op() } else { regs[0].as_reg_op() };
+
+        match node_ty {
+          TypeRef::Primitive(prim) => {
+            if prim.sub_type() == PrimitiveSubType::Float {
+              // Use SSE or AVX mechanics. But really, we're simply mapping either a register or a constant to a memory location.
+            }
+          }
+          _ => {}
+        }
 
         println!("STORE: {bit_size} {}", node_ty);
 
@@ -413,6 +421,41 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           }
           _ => unreachable!(),
         };
+      }
+
+      IROp::ADD => {
+        let [op1, op2] = operands;
+        let CompileContext { link: bin, .. } = cc;
+
+        match node_ty {
+          TypeRef::Primitive(prim) => match prim.sub_type() {
+            PrimitiveSubType::Float => {
+              panic!("Need to implement add for floating point variables");
+            }
+            _ => {}
+          },
+          _ => {}
+        }
+
+        let bit_size = node_ty.bit_size();
+
+        let dst_reg = regs[0].as_reg_op();
+        let l_reg = regs[1].as_reg_op();
+        let r_reg = regs[2].as_reg_op();
+
+        if cc.body.graph[*op1].is_const() {
+          let const_ = cc.body.graph[*op1].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, dst_reg, Arg::from_const(const_), None);
+        } else if dst_reg != l_reg {
+          encode(&mut cc.link.binary, &mov, bit_size, dst_reg, l_reg, None);
+        }
+
+        if cc.body.graph[*op2].is_const() {
+          let const_ = cc.body.graph[*op2].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, r_reg, Arg::from_const(const_), None);
+        }
+
+        encode(&mut cc.link.binary, &add, bit_size, dst_reg, r_reg, None);
       }
       /*
 

@@ -3,15 +3,15 @@ use super::{
   ir_graph::TyData,
 };
 use crate::{
-  container::{get_aligned_value, ArrayVec},
+  container::get_aligned_value,
   ir::{
     ir_builder::{SMO, SMT},
-    ir_graph::{IRGraphId, IROp},
+    ir_graph::{IRGraphId, IROp, VarId},
   },
   istring::*,
   parser::script_parser::{
     assignment_var_Value,
-    bitfield_element_Value,
+    bitfield_element_group_Value,
     block_expression_group_3_Value,
     expression_Value,
     lifetime_Value,
@@ -21,7 +21,6 @@ use crate::{
     match_scope_Value,
     module_member_Value,
     module_members_group_Value,
-    pointer_type_group_Value,
     property_Value,
     routine_type_Value,
     statement_Value,
@@ -31,7 +30,8 @@ use crate::{
     Expression,
     Mul,
     Pow,
-    RawArray,
+    RawAggregateInstantiation,
+    RawAssignment,
     RawBlock,
     RawCall,
     RawLoop,
@@ -41,11 +41,16 @@ use crate::{
     RawModule,
     RawNum,
     RawRoutine,
-    RawStruct,
-    RawStructInstantiation,
     Sub,
+    Type_Array,
+    Type_Enum,
+    Type_Flag,
+    Type_Struct,
+    BIT_AND,
+    BIT_OR,
     BIT_SL,
     BIT_SR,
+    BIT_XOR,
   },
   types::*,
 };
@@ -179,40 +184,22 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
 
             let ty = ty_db.insert_ty(name, ScopeType { name, ctx: sub_type_scope }.into()); */
           }
-          RawEnum(array) => {
-            let name = array.name.id.intern();
 
-            /* let ty = ty_db.insert_ty(name, Type::UNRESOLVED { name:
-             * MemberName::IdMember(name) }); */
+          RawBoundType(bound_type) => {
+            let name = bound_type.name.id.intern();
 
-            println!("Declaring ENUM      [{scope_name:2}{name}]")
-          }
-          RawBitFlagEnum(flag) => {
-            let name = flag.name.id.intern();
-            /* let ty = ty_db.insert_ty(name, Type::UNRESOLVED { name:
-             * MemberName::IdMember(name) }); */
+            use type_Value::*;
+            match &bound_type.ty {
+              Type_Flag(flag_enum) => process_flag_enum(flag_enum, ty_db, name),
+              Type_Enum(enumerator) => process_enum(enumerator, ty_db, name),
+              Type_Array(array) => process_array(array, ty_db, name),
+              Type_Struct(strct) => {
+                ty_db.insert_type(name, StructType { name, members: Default::default(), size: 0, alignment: 0 }.into());
 
-            println!("Declaring FLAG_ENUM [{scope_name:2}{name}]")
-          }
-          RawArray(array) => {
-            let name = array.name.id.intern();
-            /* let ty = ty_db.insert_ty(name, Type::UNRESOLVED { name:
-             * MemberName::IdMember(name) }); */
-
-            println!("Declaring ARRAY     [{scope_name:2}{name}]")
-          }
-          RawUnion(union) => {
-            let name = union.name.id.intern();
-            /* let ty = ty_db.insert_ty(name, Type::UNRESOLVED { name:
-             * MemberName::IdMember(name) }); */
-
-            println!("Declaring UNION     [{scope_name:2}{name}]")
-          }
-          RawStruct(strct) => {
-            let name = strct.name.id.intern();
-            ty_db.insert_type(name, StructType { name, members: Default::default(), size: 0, alignment: 0 }.into());
-
-            println!("Declaring STRUCTURE [{scope_name:2}{name}]")
+                println!("Declaring STRUCTURE [{scope_name:2}{name}]")
+              }
+              ty => println!("Declaring {ty:?} bound to {name}"),
+            }
           }
           RawRoutine(routine) => {
             let name = routine.name.id.intern();
@@ -232,6 +219,7 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
             match &routine.ty {
               RawFunctionType(..) => println!("Declaring FUNCTION  [{scope_name:2}{name}]"),
               RawProcedureType(..) => println!("Declaring PROCEDURE [{scope_name:2}{name}]",),
+
               _ => {}
             }
           }
@@ -255,12 +243,18 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
 
         match &member.member {
           RawScope(scope) => {}
-          RawEnum(array) => {}
-          RawBitFlagEnum(flag) => {}
-          RawArray(array) => {}
-          RawUnion(union) => {}
-          RawStruct(strct) => {
-            process_struct(strct, ty_db);
+
+          RawBoundType(bound_type) => {
+            let name = bound_type.name.id.intern();
+
+            use type_Value::*;
+            match &bound_type.ty {
+              Type_Struct(strct) => {
+                process_struct(strct, ty_db, name);
+              }
+              Type_Flag(flag_enum) => {}
+              ty => println!("Type not recognized {ty:#?}"),
+            }
           }
           RawRoutine(routine) => {
             process_routine_signature(routine, ty_db);
@@ -277,15 +271,56 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
   return routines;
 }
 
-fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
-  let name = strct.name.id.intern();
+fn process_array(array: &Type_Array<Token>, ty_db: &mut TypeDatabase, name: IString) {
+  if let Some(base_type) = get_type(&array.base_type.clone().into(), ty_db, true) {
+    let size = array.size as usize;
+
+    let ty = ArrayType { name, element_type: base_type, size: size };
+
+    ty_db.insert_type(name, Type::Array(ty));
+  } else {
+    panic!("Invalid type")
+  }
+}
+
+fn process_enum(enumarator: &Type_Enum<Token>, ty_db: &mut TypeDatabase, name: IString) {
+  if let Some(base_type) = get_type(&enumarator.base_type.clone().into(), ty_db, true) {
+    if base_type.is_primitive() {
+      let members = enumarator.values.iter().map(|v| v.name.id.intern()).collect();
+
+      let ty = EnumType { name, base_type, members };
+
+      ty_db.insert_type(name, Type::Enum(ty));
+    } else {
+      panic!("Invalid type")
+    }
+  } else {
+    panic!("Invalid type")
+  }
+}
+
+fn process_flag_enum(flag: &Type_Flag<Token>, ty_db: &mut TypeDatabase, name: IString) {
+  let size = flag.flag_size;
+
+  match size {
+    8 | 16 | 32 | 64 => {}
+    size => panic!("Flag enum size {size} not supported:\n{}", flag.tok.blame(1, 1, "must be one of 8 | 16 | 32 | 64", None)),
+  }
+
+  let members = flag.values.iter().map(|v| v.id.intern()).collect();
+
+  let ty = FlagEnumType { name, bit_size: size as u64, members };
+
+  ty_db.insert_type(name, Type::Flag(ty));
+}
+
+fn process_struct(strct: &Type_Struct<Token>, ty_db: &mut TypeDatabase, name: IString) {
   let Some((mut ty_ref, _)) = ty_db.get_type_mut(name) else {
     panic!("Could not find Struct type: {name}",);
   };
 
   match ty_ref {
     Type::Structure(st) => {
-      let name = strct.name.id.intern();
       let mut offset = 0;
       let mut min_alignment = 1;
 
@@ -302,8 +337,8 @@ fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
             offset = prop_offset + max_byte_size as u64;
 
             for prop in &bitfield.props {
-              match prop {
-                bitfield_element_Value::BitFieldDescriminator(desc) => {
+              match &prop.r#type {
+                bitfield_element_group_Value::Discriminator(desc) => {
                   if bit_offset != 0 {
                     panic!("A discriminator must be the first element of a bitfield.")
                   }
@@ -321,24 +356,22 @@ fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
 
                   bit_offset += bit_size;
                 }
-                bitfield_element_Value::BitFieldProp(prop) => {
-                  /*         use type_Value::*;
-                  match &prop.r#type {
-                    Type_u32(_) => {
-                      if let Some(ty) = type_scope.get_type_entry("u32".intern()) {
-                        dbg!(ty);
-                      }
-                    }
-                    Type_Variable(ty) => {
-                      let name = ty.name.id.intern();
-                      if let Some(ty) = type_scope.get_type_entry(name) {
-                        dbg!(ty);
-                      }
-                    }
-                    _ => unreachable!(),
-                  } */
+                ty => { /*         use type_Value::*;
+                   match &prop.r#type {
+                     Type_u32(_) => {
+                       if let Some(ty) = type_scope.get_type_entry("u32".intern()) {
+                         dbg!(ty);
+                       }
+                     }
+                     Type_Variable(ty) => {
+                       let name = ty.name.id.intern();
+                       if let Some(ty) = type_scope.get_type_entry(name) {
+                         dbg!(ty);
+                       }
+                     }
+                     _ => unreachable!(),
+                   } */
                 }
-                bitfield_element_Value::None => {}
               }
             }
 
@@ -346,8 +379,8 @@ fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
               panic!("Bitfield element size {bit_offset} overflow bitfield size {max_bit_size}")
             }
           }
-          RawProperty(raw_prop) => {
-            if let Some(ty) = get_type(&raw_prop.r#type, ty_db, false) {
+          Property(raw_prop) => {
+            if let Some(ty) = get_type(&raw_prop.ty, ty_db, false) {
               let name = raw_prop.name.id.intern();
               /*        let prop_offset = get_aligned_value(offset, ty.alignment() as u64);
               offset = prop_offset + ty.byte_size() as u64;
@@ -361,7 +394,8 @@ fn process_struct(strct: &RawStruct<Token>, ty_db: &mut TypeDatabase) {
 
               st.members.push(StructMemberType { ty, original_index: index, name, offset: 0 })
             } else {
-              panic!("Could not resolve type");
+              let name = get_type_name(&raw_prop.ty);
+              panic!("Could not resolve type: {name}");
             }
           }
           node => panic!("Unhandled property type {node:#?}"),
@@ -451,23 +485,32 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
         var.store = var_data;
         var.reference = var_data;
 
-        /*         let reference = var.reference;
-        ib.push_ssa(IROp::MEMB_PTR_LOAD, SMT::Data(TyData::DerefVar(var.id.into())), &[SMO::IROp(reference)], Default::default());
-        var.pointer = ib.pop_stack().unwrap(); */
-
         ib.body.ctx.vars[var.id] = var;
       }
 
       process_expression(&ast.expression.expr, &mut ib);
 
       if returns.len() > 0 {
-        dbg!(&returns);
         debug_assert_eq!(ib.ssa_stack.len(), returns.len(), "Invalid number of return expression {} in {routine_name}. Expected {}", ib.ssa_stack.len(), returns.len());
-
+        let mut i: usize = 0;
         while let Some(stack) = ib.pop_stack() {
-          ib.push_ssa(RET_VAL, Inherit, &[stack.into()], Default::default());
-          ib.pop_stack().unwrap();
+          let (ty, t) = &returns[i];
+          ib.push_ssa(RET_VAL, Inherit, &[stack.into()], t.clone());
+          let val = ib.pop_stack().unwrap();
+
+          if let Some(var) = ib.get_node_variable(stack).cloned() {
+            match var.ty_slot {
+              TypeSlot::CtxIndex(index) => match ib.body.ctx.type_slots[index as usize] {
+                TypeSlot::UNRESOLVED(..) => {
+                  ib.body.ctx.type_slots[index as usize] = *ty;
+                }
+                _ => {}
+              },
+              _ => {}
+            }
+          }
         }
+        i += 1;
       }
     }
     _ => unreachable!(),
@@ -484,7 +527,7 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
     expression_Value::RawCall(call) => process_call(call, ib),
     expression_Value::RawNum(num) => process_const_number(num, ib),
     // expression_Value::AddressOf(addr) => process_address_of(ib, addr),
-    expression_Value::RawStructInstantiation(struct_instance) => process_struct_instantiation(struct_instance, ib),
+    //expression_Value::RawStructInstantiation(struct_instance) => process_struct_instantiation(struct_instance, ib),
     expression_Value::RawMember(mem) => process_member_load(mem, ib),
     expression_Value::RawBlock(ast_block) => process_block(ast_block, ib),
     expression_Value::Add(add) => process_add(add, ib),
@@ -494,6 +537,10 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
     expression_Value::Pow(pow) => process_pow(pow, ib),
     expression_Value::BIT_SL(sl) => process_sl(sl, ib),
     expression_Value::BIT_SR(sr) => process_sr(sr, ib),
+    expression_Value::BIT_OR(or) => process_or(or, ib),
+    expression_Value::BIT_XOR(xor) => process_xor(xor, ib),
+    expression_Value::BIT_AND(and) => process_and(and, ib),
+    expression_Value::RawAggregateInstantiation(agg) => process_aggregate_instantiation(agg, ib),
     d => todo!("expression: {d:#?}"),
   }
 }
@@ -518,15 +565,11 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Variab
     for var_name in &mem.members[1..] {
       let name = var_name.id.intern();
 
-      if let Some(var) = ib.get_var_member(&var_data, name) {
+      if let Some(var) = ib.get_var_member(var_data.id, name) {
         let mut var = var.clone();
 
         ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(var_data.store)], var_name.tok.clone());
         var.reference = ib.pop_stack().unwrap();
-
-        /*         let reference = var.reference;
-        ib.push_ssa(IROp::MEMB_PTR_LOAD, SMT::Data(TyData::DerefVar(var.id.into())), &[SMO::IROp(reference)], var_name.tok.clone());
-        var.pointer = ib.pop_stack().unwrap(); */
 
         ib.body.ctx.vars[var.id.usize()] = var;
 
@@ -592,6 +635,24 @@ fn process_sr(sr: &BIT_SR<Token>, ib: &mut IRBuilder) {
   ib.push_ssa(SHR, Inherit, &[StackOp, StackOp], Default::default());
 }
 
+fn process_or(or: &BIT_OR<Token>, ib: &mut IRBuilder) {
+  process_expression(&(or.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(or.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+  ib.push_ssa(OR, Inherit, &[StackOp, StackOp], Default::default());
+}
+
+fn process_xor(xor: &BIT_XOR<Token>, ib: &mut IRBuilder) {
+  process_expression(&(xor.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(xor.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+  ib.push_ssa(XOR, Inherit, &[StackOp, StackOp], Default::default());
+}
+
+fn process_and(and: &BIT_AND<Token>, ib: &mut IRBuilder) {
+  process_expression(&(and.left.clone().to_ast().into_expression_Value().unwrap()), ib);
+  process_expression(&(and.right.clone().to_ast().into_expression_Value().unwrap()), ib);
+  ib.push_ssa(AND, Inherit, &[StackOp, StackOp], Default::default());
+}
+
 fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
   let string_val = num.tok.to_string();
 
@@ -612,48 +673,59 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
   // Member call resolution may involve lookup on compatible functions in the
   // type scope stack.
 
-  let name = if call_node.member.members.len() == 1 {
-    let name = call_node.member.members[0].clone();
-    name.id.intern()
-  } else {
-    todo!("Handle member call");
+  let name = {
+    use crate::parser::script_parser::region_access_Value::*;
+    match &call_node.member {
+      RawMember(member) => {
+        if member.members.len() == 1 {
+          let name = member.members[0].clone();
+          name.id.intern()
+        } else {
+          todo!("Handle member call");
+        }
+      }
+      RawArrayAccess(array_access) => todo!(),
+      None => unreachable!(),
+    }
   };
 
   let mut args = Vec::new();
   for arg in &call_node.args {
     process_expression(&arg.expr, ib);
 
-    ib.push_ssa(CALL_ARG, Inherit, &[StackOp], Default::default());
+    ib.push_ssa(CALL_ARG, Inherit, &[StackOp], arg.tok.clone());
 
     args.push(ib.pop_stack().unwrap());
   }
+
+  let tok = &call_node.tok;
 
   if let Some(sys_call_name) = SYS_CALL_TARGETS.iter().find(|d| (**d).cmp(name.to_str().as_str()).is_eq()) {
     let call = sys_call_name.intern();
     let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Syscall(call));
     let call_slot = TypeSlot::GlobalIndex(call_target_id as u32);
 
-    ib.push_ssa(CALL, TyData::from(call_slot).into(), &[], Default::default());
+    ib.push_ssa(CALL, TyData::from(call_slot).into(), &[], tok.clone());
     ib.pop_stack();
 
     let call = format!("*u8").intern();
     let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Pointer("".intern(), TypeSlot::Primitive(PrimitiveType::u8)));
     let call_ret_arg = TypeSlot::GlobalIndex(call_target_id as u32);
 
-    ib.push_ssa(CALL_RET, TyData::from(call_ret_arg).into(), &[], Default::default());
+    ib.push_ssa(CALL_RET, TyData::from(call_ret_arg).into(), &[], tok.clone());
   } else if let Some(sys_call_name) = DBG_CALL_TARGETS.iter().find(|d| (**d).cmp(name.to_str().as_str()).is_eq()) {
     let call = sys_call_name.intern();
     let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::DebugCall(call));
     let call_slot = TypeSlot::GlobalIndex(call_target_id as u32);
 
-    ib.push_ssa(DBG_CALL, TyData::from(call_slot).into(), &[], Default::default());
+    ib.push_ssa(DBG_CALL, TyData::from(call_slot).into(), &[], tok.clone());
     ib.pop_stack();
 
     let call = format!("*u8").intern();
     let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call, Type::Pointer("".intern(), TypeSlot::Primitive(PrimitiveType::u8)));
     let call_ret_arg = TypeSlot::GlobalIndex(call_target_id as u32);
 
-    ib.push_ssa(CALL_RET, TyData::from(call_ret_arg).into(), &[], Default::default());
+    ib.push_ssa(CALL_RET, TyData::from(call_ret_arg).into(), &[], tok.clone());
   } else {
     let call = if let Some((routine_entry, _)) = ib.body.ctx.db_mut().get_type_mut(name).as_ref() {
       match routine_entry {
@@ -772,89 +844,81 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
   }
 }
 
-fn proces_array_instantiation(struct_decl: &RawArray<Token>, ib: &mut IRBuilder) {}
+fn proces_array_instantiation(struct_decl: &Type_Array<Token>, ib: &mut IRBuilder) {}
 
-fn process_struct_instantiation(struct_decl: &RawStructInstantiation<Token>, ib: &mut IRBuilder) {
+fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token>, ib: &mut IRBuilder) {
   // note(Anthony): All struct instantiations should be on known types. If the struct to be instantiate is incomplete, this should signal that
   // downstream processing of this routine should not continue.
 
-  let struct_type_name = struct_decl.name.id.intern();
+  //let struct_type_name = struct_decl.name.id.intern();
 
-  if let Some((struct_entry, struct_slot)) = ib.body.ctx.db_mut().get_type_mut(struct_type_name).as_ref() {
-    if let Type::Structure(StructType { name, members, size, alignment }) = &struct_entry {
-      let base_type = *struct_slot;
+  //  if let Some((struct_entry, struct_slot)) = ib.body.ctx.db_mut().get_type_mut(struct_type_name).as_ref() {
 
-      let type_db = ib.body.ctx.db_mut();
+  //if let Type::Structure(StructType { name, members, size, alignment }) = &struct_entry {
+  //let base_type = *struct_slot;
 
-      let (slot, is_ptr) = match &struct_decl.allocator_binding {
-        lifetime_Value::GlobalLifetime(_) => {
-          (TypeSlot::GlobalIndex(type_db.get_or_add_type_index(format!("*{}", name).intern(), Type::Pointer(Default::default(), base_type)) as u32), true)
-        }
-        lifetime_Value::ScopedLifetime(scope) => {
-          (TypeSlot::GlobalIndex(type_db.get_or_add_type_index(format!("{}*{}", scope.val, name).intern(), Type::Pointer(scope.val.intern(), base_type)) as u32), true)
-        }
-        lifetime_Value::None => (base_type, false),
-      };
+  let name = format!("TEMP_{}", VarId::new(ib.body.graph.len() as u32));
+  let mut agg_var = ib.declare_generic(name.intern(), struct_decl.tok.clone(), false).clone();
 
-      let mut struct_var = ib.declare_variable("TEMPORARY".intern(), slot, struct_decl.tok.clone(), is_ptr).clone();
-
-      struct StructEntry {
-        ty:    TypeSlot,
-        value: IRGraphId,
-        name:  IString,
-        tok:   Token,
-      }
-
-      let mut value_maps = BTreeMap::<IString, StructEntry>::new();
-
-      for init_expression in &struct_decl.inits {
-        let member_name = init_expression.name.id.intern();
-
-        if let Some(member) = members.iter().find(|i| i.name == member_name) {
-          process_expression(&init_expression.expression.expr, ib);
-
-          value_maps.insert(member_name, StructEntry {
-            ty:    member.ty.clone(),
-            value: ib.pop_stack().unwrap(),
-            name:  member_name,
-            tok:   init_expression.tok.clone(),
-          });
-
-          // Calculate the offset to the member within the struct
-        } else {
-          panic!("Member name not found. ");
-        }
-      }
-
-      println!("todo(anthony): Handle the default initialization of other members");
-
-      if !is_ptr {
-        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, struct_var.id.into())), &[SMO::IROp(struct_var.store)], struct_decl.tok.clone());
-        struct_var.reference = ib.pop_stack().unwrap();
-      } else {
-        struct_var.reference = struct_var.store;
-      }
-
-      ib.body.ctx.vars[struct_var.id] = struct_var;
-
-      for (_, StructEntry { ty, value, name, tok }) in value_maps {
-        if let Some(mut var) = ib.get_var_member(&struct_var, name).cloned() {
-          ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(struct_var.reference)], tok.clone());
-          var.reference = ib.get_top_id().unwrap();
-          ib.body.ctx.vars[var.id] = var;
-
-          ib.push_ssa(STORE, Inherit, &[StackOp, value.into()], tok);
-          ib.pop_stack();
-        } else {
-          todo!("TBD");
-        }
-      }
-
-      ib.push_node(struct_var.reference);
-    }
-  } else {
-    panic!("Could not find struct definition for {struct_type_name:?}")
+  struct StructEntry {
+    ty:    TypeSlot,
+    value: IRGraphId,
+    name:  IString,
+    tok:   Token,
   }
+
+  let mut value_maps = BTreeMap::<IString, StructEntry>::new();
+
+  for (index, init_expression) in struct_decl.inits.iter().enumerate() {
+    let member_name = init_expression.name.id.intern();
+
+    if member_name.is_empty() {
+      todo!("Use index reference for member variable");
+    }
+
+    process_expression(&init_expression.expression.expr, ib);
+
+    value_maps.insert(member_name, StructEntry {
+      ty:    TypeSlot::None,
+      value: ib.pop_stack().unwrap(),
+      name:  member_name,
+      tok:   init_expression.tok.clone(),
+    });
+
+    // Calculate the offset to the member within the struct
+  }
+
+  println!("todo(anthony): Handle the default initialization of other members");
+
+  if false {
+    ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, agg_var.id.into())), &[SMO::IROp(agg_var.store)], struct_decl.tok.clone());
+    agg_var.reference = ib.pop_stack().unwrap();
+  } else {
+    agg_var.reference = agg_var.store;
+  }
+
+  ib.body.ctx.vars[agg_var.id] = agg_var;
+
+  let par_id = agg_var.id;
+
+  for (_, StructEntry { ty: _, value, name, tok }) in value_maps {
+    if let Some(mut var) = ib.get_var_member(par_id, name).cloned() {
+      ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(agg_var.reference)], tok.clone());
+      var.reference = ib.get_top_id().unwrap();
+      ib.body.ctx.vars[var.id] = var;
+
+      ib.push_ssa(STORE, Inherit, &[StackOp, value.into()], tok);
+      ib.pop_stack();
+    } else {
+      todo!("TBD");
+    }
+  }
+
+  ib.push_node(agg_var.reference);
+  // }
+  /*   } else {
+    panic!("Could not find struct definition for {struct_type_name:?}")
+  } */
 }
 
 fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
@@ -981,88 +1045,166 @@ fn process_expression_statement(expr: &std::sync::Arc<Expression<Token>>, ib: &m
   }
 }
 
-fn process_assign_statement(assign: &std::sync::Arc<crate::parser::script_parser::RawAssignment<Token>>, ib: &mut IRBuilder<'_>) {
+fn process_agg_assign(agg_assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_>) {
+  process_expression(&agg_assign.expression.expr, ib);
+
+  let (variable, expr_id) = (&agg_assign.var, ib.pop_stack().unwrap());
+
+  use assignment_var_Value::*;
+  match variable {
+    RawArrayAccess(..) => {
+      todo!("RawArrayAccess")
+    }
+    RawMember(var_assign) => {
+      if let Some(var_data) = resolve_variable(&var_assign, ib) {
+        ib.push_ssa(STORE, Inherit, &[var_data.reference.into(), expr_id.into()], var_assign.tok.clone());
+        ib.pop_stack();
+      } else if var_assign.members.len() == 1 {
+        // Create and assign a new variable based on the expression.
+        let var_name = var_assign.members[0].id.intern();
+
+        if let Some(var) = ib.get_node_variable(expr_id).cloned() {
+          ib.body.ctx.rename_var(var.mem_name, var_name);
+        } else {
+          unreachable!();
+        }
+      } else {
+        let blame_string = var_assign.tok.blame(1, 1, "could not find variable @", Option::None);
+        panic!("{blame_string} \n{ib:?}",)
+      }
+    }
+    RawAssignmentDeclaration(var_decl) => {
+      let var_name = var_decl.var.id.intern();
+      if let Some(ty) = get_type(&var_decl.ty, &mut ib.body.ctx.db_mut(), false) {
+        if let Some(mut var) = ib.get_node_variable(expr_id).cloned() {
+          var.ty_slot = ty;
+          ib.set_variable(var);
+          ib.body.ctx.rename_var(var.mem_name, var_name);
+        } else {
+          unreachable!();
+        }
+      } else {
+        todo!("Handle no type")
+      }
+
+      /*
+      dbg!(expr_ty.ty_enum());
+      let var_name = var_decl.var.id.intern();
+      let (expected_ty, _ptr) = get_type_from_sm(&var_decl.ty, ib).unwrap();
+      let var_id = ib.body.graph[expr_id].ty_var();
+
+      match expr_ty.ty_enum() {
+        BaseType::Complex(ty) => match &ty.as_ref().ty {
+          ComplexType::Struct(..) => ib.rename_var(var_id, IdMember(var_name)),
+          _ => unreachable!(),
+        },
+        _ => {
+          if expected_ty != expr_ty {
+            match (expected_ty.ty_enum(), expr_ty.ty_enum()) {
+              (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
+                let var = ib.push_variable(var_name, expected_ty);
+                ib.pop_stack();
+
+                ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
+                ib.pop_stack();
+              }
+              _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
+            }
+          } else {
+            let var = ib.push_variable(var_name, expr_ty);
+            ib.pop_stack();
+
+            ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
+            ib.pop_stack();
+          }
+        }
+      } */
+    }
+    _ => unreachable!(),
+  }
+}
+
+fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_>) {
   let db = ib.body.ctx.db();
   // Process assignments.
-  for expression in &assign.expressions {
-    process_expression(&expression.expr, ib)
+
+  if matches!(assign.expression.expr, expression_Value::RawAggregateInstantiation(..)) {
+    return process_agg_assign(assign, ib);
   }
 
-  let mut expression_data = (0..assign.expressions.len()).into_iter().map(|_| ib.pop_stack().unwrap()).collect::<ArrayVec<6, _>>();
-  expression_data.reverse();
+  process_expression(&assign.expression.expr, ib);
 
   // Process assignment targets.
-  for (variable, expr_id) in assign.vars.iter().zip(&mut expression_data.iter().cloned()) {
-    let expr_ty = ib.get_node_ty(expr_id).unwrap();
-    let expr_ty_slot = expr_ty.ty_slot(&ib.body.ctx);
+  let (variable, expr_id) = (&assign.var, ib.pop_stack().unwrap());
+  let expr_ty = ib.get_node_ty(expr_id).unwrap();
+  let expr_ty_slot = expr_ty.ty_slot(&ib.body.ctx);
 
-    use assignment_var_Value::*;
-    match variable {
-      RawArrayAccess(..) => {
-        todo!("RawArrayAccess")
-      }
-      RawAssignmentVariable(var_assign) => {
-        if let Some(var_data) = resolve_variable(&var_assign.var, ib) {
-          ib.push_ssa(STORE, Inherit, &[var_data.reference.into(), expr_id.into()], var_assign.tok.clone());
-          ib.pop_stack();
-        } else if var_assign.var.members.len() == 1 {
-          // Create and assign a new variable based on the expression.
-          let var_name = var_assign.var.members[0].id.intern();
-
-          if let Some(var) = ib.get_node_variable(expr_id).cloned() {
-            if let TypeRef::Struct(_) = var.clone().ty_slot.ty_base(&ib.body.ctx) {
-              ib.body.ctx.rename_var(var.mem_name, var_name);
-              return;
-            }
-          }
-
-          let var = ib.declare_variable(var_name, expr_ty_slot, Default::default(), true).clone();
-
-          ib.push_ssa(STORE, var.id.into(), &[var.reference.into(), expr_id.into()], var_assign.tok.clone());
-
-          ib.pop_stack();
-        } else {
-          let blame_string = var_assign.tok.blame(1, 1, "could not find variable @", Option::None);
-          panic!("{blame_string} \n{ib:?}",)
-        }
-      }
-      RawAssignmentDeclaration(var_decl) => {
-        todo!("process assignment_var_Value::");
-        /*
-        dbg!(expr_ty.ty_enum());
-        let var_name = var_decl.var.id.intern();
-        let (expected_ty, _ptr) = get_type_from_sm(&var_decl.ty, ib).unwrap();
-        let var_id = ib.body.graph[expr_id].ty_var();
-
-        match expr_ty.ty_enum() {
-          BaseType::Complex(ty) => match &ty.as_ref().ty {
-            ComplexType::Struct(..) => ib.rename_var(var_id, IdMember(var_name)),
-            _ => unreachable!(),
-          },
-          _ => {
-            if expected_ty != expr_ty {
-              match (expected_ty.ty_enum(), expr_ty.ty_enum()) {
-                (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
-                  let var = ib.push_variable(var_name, expected_ty);
-                  ib.pop_stack();
-
-                  ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
-                  ib.pop_stack();
-                }
-                _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
-              }
-            } else {
-              let var = ib.push_variable(var_name, expr_ty);
-              ib.pop_stack();
-
-              ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
-              ib.pop_stack();
-            }
-          }
-        } */
-      }
-      _ => unreachable!(),
+  use assignment_var_Value::*;
+  match variable {
+    RawArrayAccess(..) => {
+      todo!("RawArrayAccess")
     }
+    RawMember(var_assign) => {
+      if let Some(var_data) = resolve_variable(&var_assign, ib) {
+        ib.push_ssa(STORE, Inherit, &[var_data.reference.into(), expr_id.into()], var_assign.tok.clone());
+        ib.pop_stack();
+      } else if var_assign.members.len() == 1 {
+        // Create and assign a new variable based on the expression.
+        let var_name = var_assign.members[0].id.intern();
+
+        if let Some(var) = ib.get_node_variable(expr_id).cloned() {
+          if let TypeRef::Struct(_) = var.clone().ty_slot.ty_base(&ib.body.ctx) {
+            ib.body.ctx.rename_var(var.mem_name, var_name);
+            return;
+          }
+        }
+
+        let var = ib.declare_variable(var_name, expr_ty_slot, Default::default(), true).clone();
+
+        ib.push_ssa(STORE, var.id.into(), &[var.reference.into(), expr_id.into()], var_assign.tok.clone());
+
+        ib.pop_stack();
+      } else {
+        let blame_string = var_assign.tok.blame(1, 1, "could not find variable @", Option::None);
+        panic!("{blame_string} \n{ib:?}",)
+      }
+    }
+    RawAssignmentDeclaration(var_decl) => {
+      todo!("process assignment_var_Value::");
+      /*
+      dbg!(expr_ty.ty_enum());
+      let var_name = var_decl.var.id.intern();
+      let (expected_ty, _ptr) = get_type_from_sm(&var_decl.ty, ib).unwrap();
+      let var_id = ib.body.graph[expr_id].ty_var();
+
+      match expr_ty.ty_enum() {
+        BaseType::Complex(ty) => match &ty.as_ref().ty {
+          ComplexType::Struct(..) => ib.rename_var(var_id, IdMember(var_name)),
+          _ => unreachable!(),
+        },
+        _ => {
+          if expected_ty != expr_ty {
+            match (expected_ty.ty_enum(), expr_ty.ty_enum()) {
+              (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
+                let var = ib.push_variable(var_name, expected_ty);
+                ib.pop_stack();
+
+                ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
+                ib.pop_stack();
+              }
+              _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
+            }
+          } else {
+            let var = ib.push_variable(var_name, expr_ty);
+            ib.pop_stack();
+
+            ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
+            ib.pop_stack();
+          }
+        }
+      } */
+    }
+    _ => unreachable!(),
   }
 
   // Match assignments to targets.
@@ -1102,9 +1244,9 @@ pub fn get_type(ir_type: &type_Value<Token>, type_db: &mut TypeDatabase, insert_
     Type_f64v4(_) => Some(TypeSlot::Primitive(PrimitiveType::f64v4)),
     Type_Pointer(ptr) => {
       if let Some(base_type) = get_type(&ptr.ty.clone().to_ast().into_type_Value().unwrap(), type_db, insert_unresolved) {
-        use pointer_type_group_Value::*;
+        use lifetime_Value::*;
         match &ptr.ptr_type {
-          Reference(_) | GlobalLifetime(_) => {
+          GlobalLifetime(_) => {
             Some(TypeSlot::GlobalIndex(type_db.get_or_add_type_index(format!("*{}", base_type.ty_gb(type_db)).intern(), Type::Pointer(Default::default(), base_type)) as u32))
           }
           ScopedLifetime(scope) => Some(TypeSlot::GlobalIndex(
