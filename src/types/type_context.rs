@@ -17,22 +17,20 @@ use super::{ArrayType, BitFieldType, EnumType, PrimitiveType, RoutineType, Scope
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemberName {
-  IdMember(IString),
-  IndexMember(usize),
-  None,
+  String(IString),
+  Index(usize),
 }
-
 impl From<IString> for MemberName {
   fn from(value: IString) -> Self {
-    MemberName::IdMember(value)
+    MemberName::String(value)
   }
 }
 
 impl Display for MemberName {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      MemberName::IdMember(id) => f.write_fmt(format_args!(".{id}",)),
-      MemberName::IndexMember(id) => f.write_fmt(format_args!("[id]",)),
+      MemberName::String(id) => f.write_fmt(format_args!(".{id}",)),
+      MemberName::Index(id) => f.write_fmt(format_args!("[id]",)),
       _ => Ok(()),
     }
   }
@@ -56,6 +54,3 @@ impl VariableType {
     matches!(self, VariableType::InternalPointer { .. })
   }
 }
-
-
-

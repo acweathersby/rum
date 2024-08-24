@@ -73,28 +73,30 @@ pub fn compile_from_ssa_fn(
       let mut offsets = BTreeMap::<VarId, u64>::new();
       let mut rsp_offset = 0;
 
-      fn fun_name(node: &IRGraphNode, body: &RoutineBody, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
-        let slot = node.ty_data().ty_slot(&body.ctx);
-        let node_ty = slot.ty(&body.ctx);
-        let id = node.var_id();
-
+      fn fun_name(id: VarId, body: &RoutineBody, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
         debug_assert!(id.is_valid());
 
-        todo!("Handle Pointer Semantics");
-
-        match node_ty {
-          TypeRef::Primitive(ty) => {
-            offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
-            *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
+        if let Some(var) = body.ctx.vars.get(id.usize()) {
+          let ty = var.ty_slot.ty(&body.ctx);
+          if ty.is_pointer() {
+            todo!("Handle Pointer Semantics {ty}");
           }
-          _ => todo!("Handle this??"),
+
+          match ty {
+            TypeRef::Primitive(ty) => {
+              offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
+              *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
+            }
+            _ => todo!("Handle this??"),
+          }
         }
         // /}
       }
 
       for var_id in spilled_variables {
+        dbg!(var_id);
         if !offsets.contains_key(var_id) {
-          fun_name(&cc.body.graph[*var_id], body, &mut offsets, &mut rsp_offset);
+          fun_name(*var_id, body, &mut offsets, &mut rsp_offset);
         }
       }
 
@@ -106,6 +108,8 @@ pub fn compile_from_ssa_fn(
         if block.nodes.is_empty() {
           continue;
         }
+        let mut jump_resolved = false;
+
         cc.jmp_resolver.block_offset.push(cc.link.binary.len());
         println!("START_BLOCK {} ---------------- \n", block.id);
         for op_expr in &block.nodes {
@@ -117,19 +121,21 @@ pub fn compile_from_ssa_fn(
           println!("               {assigns:}");
 
           let old_offset = cc.link.binary.len();
-          compile_op(node, assigns, &block, &mut cc, &offsets, rsp_offset);
+          jump_resolved |= compile_op(node, assigns, &block, &mut cc, &offsets, rsp_offset);
           offset = print_instructions(&cc.link.binary[old_offset..], offset);
 
           println!("\n")
         }
 
-        if let Some(block_id) = block.branch_succeed {
-          use Arg::*;
-          if block_id != BlockId(block.id.0 + 1) {
-            let CompileContext { stack_size, jmp_resolver, link, body: ctx } = &mut cc;
-            encode(&mut link.binary, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
-            jmp_resolver.add_jump(&mut link.binary, block_id.0 as usize);
-            println!("JL BLOCK({block_id})");
+        if !jump_resolved {
+          if let Some(block_id) = block.branch_succeed {
+            use Arg::*;
+            if block_id != BlockId(block.id.0 + 1) {
+              let CompileContext { stack_size, jmp_resolver, link, body: ctx } = &mut cc;
+              encode(&mut link.binary, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
+              jmp_resolver.add_jump(&mut link.binary, block_id.0 as usize);
+              println!("JL BLOCK({block_id})");
+            }
           }
         }
 
@@ -186,9 +192,15 @@ fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
 pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, cc: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
   const POINTER_SIZE: u64 = 64;
 
+  let db = cc.body.ctx.db();
   let slot = node.ty_data().ty_slot(&cc.body.ctx);
   let node_ty = slot.ty(&cc.body.ctx);
   let node_ty_is_pointer = node.ty_data().is_pointer(&cc.body.ctx);
+
+  if node_ty.is_unresolved() {
+    println!("TODO(anthony): All types should be resolved at this point");
+    return false;
+  }
 
   use Arg::*;
   if let IRGraphNode::SSA { op, block_id, operands, .. } = node {
@@ -197,10 +209,10 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     let spills = reg_data.spills;
 
     // Perform spills
-    for (op_index, spill_var) in spills.iter().enumerate() {
+    for (op_index, spill_var) in spills[0..3].iter().enumerate() {
       if spill_var.is_valid() {
         let node = &cc.body.graph[*spill_var];
-        let bit_size = node_ty.bit_size();
+        let bit_size = node_ty.bit_size(db);
         let offset = *so.get(spill_var).unwrap();
         let reg = match op_index {
           0 => regs[0].as_reg_op(),
@@ -220,8 +232,9 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
         let node = &cc.body.graph[var_id];
 
-        let bit_size = node_ty.bit_size();
+        let bit_size = node_ty.bit_size(db);
 
+        dbg!(var_id, so);
         let offset = *so.get(&var_id).unwrap();
 
         let reg = regs[load_index].as_reg_op();
@@ -231,6 +244,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     }
 
     match op {
+      IROp::VAR_DECL => {}
       /*
        * Store represents a move of a primitive value into either a stack slot, or a memory
        * location.
@@ -254,7 +268,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         // Otherwise, the store will be made to stack slot, which may not actually
         // need to be stored to memory, and can be just preserved in the op1 register.
 
-        let bit_size = node_ty.bit_size();
+        let bit_size = node_ty.bit_size(db);
         let dst_arg = if node_ty_is_pointer { regs[0].as_mem_op() } else { regs[0].as_reg_op() };
 
         match node_ty {
@@ -275,6 +289,14 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           let src_arg = regs[2].as_reg_op();
           if dst_arg != src_arg {
             encode(&mut cc.link.binary, &mov, bit_size, dst_arg, src_arg, None);
+          }
+        }
+
+        for (op_index, spill_var) in spills[3..4].iter().enumerate() {
+          if spill_var.is_valid() {
+            let bit_size = node_ty.bit_size(db);
+            let offset = *so.get(spill_var).unwrap();
+            encode(&mut cc.link.binary, &mov, bit_size, RSP_REL(offset), dst_arg, None);
           }
         }
       }
@@ -324,6 +346,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
               unreachable!()
             }
           }
+          TypeRef::Array(ty) => var.mem_index as u64 * ty.element_type.ty_gb(db).byte_size(db),
           ty => unreachable!("Unrecognized base type for MEMB_PTR_CALC: {ty}"),
         };
 
@@ -347,7 +370,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
         let dst_reg = regs[0].as_reg_op();
         let src_ptr = regs[1].as_mem_op();
-        let bit_size = node_ty.bit_size();
+        let bit_size = node_ty.bit_size(db);
 
         encode(&mut cc.link.binary, &mov, bit_size, dst_reg, src_ptr, None);
       }
@@ -357,7 +380,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
         let dst_reg = regs[0].as_reg_op();
         let src_reg = regs[1].as_reg_op();
-        let bit_size = node_ty.bit_size();
+        let bit_size = node_ty.bit_size(db);
 
         if dst_reg != src_reg {
           encode(&mut cc.link.binary, &mov, bit_size, dst_reg, src_reg, None);
@@ -370,7 +393,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         let [op1, _] = operands;
         let CompileContext { link: bin, .. } = cc;
 
-        let bit_size = node_ty.bit_size();
+        let bit_size = node_ty.bit_size(db);
 
         let dst_arg = if node_ty_is_pointer { regs[0].as_mem_op() } else { regs[0].as_reg_op() };
 
@@ -417,13 +440,15 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
             });
           }
           TypeRef::Syscall(name) => {
-            todo!("Sys calls");
+            todo!("Sys calls {name}");
           }
           _ => unreachable!(),
         };
       }
 
       IROp::ADD => {
+        println!("TODO(ANTHONY) - Unify encoding of binary operators, as the base x86 instructions general only differ in opcode.");
+
         let [op1, op2] = operands;
         let CompileContext { link: bin, .. } = cc;
 
@@ -437,7 +462,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           _ => {}
         }
 
-        let bit_size = node_ty.bit_size();
+        let bit_size = node_ty.bit_size(db);
 
         let dst_reg = regs[0].as_reg_op();
         let l_reg = regs[1].as_reg_op();
@@ -456,6 +481,142 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         }
 
         encode(&mut cc.link.binary, &add, bit_size, dst_reg, r_reg, None);
+      }
+
+      IROp::MUL => {
+        println!("TODO(ANTHONY) - Unify encoding of binary operators, as the base x86 instructions general only differ in opcode.");
+        let [op1, op2] = operands;
+        let CompileContext { link: bin, .. } = cc;
+
+        match node_ty {
+          TypeRef::Primitive(prim) => match prim.sub_type() {
+            PrimitiveSubType::Float => {
+              panic!("Need to implement add for floating point variables");
+            }
+            _ => {}
+          },
+          _ => {}
+        }
+
+        let bit_size = node_ty.bit_size(db);
+
+        let dst_reg = regs[0].as_reg_op();
+        let l_reg = regs[1].as_reg_op();
+        let r_reg = regs[2].as_reg_op();
+
+        if cc.body.graph[*op1].is_const() {
+          let const_ = cc.body.graph[*op1].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, dst_reg, Arg::from_const(const_), None);
+        } else if dst_reg != l_reg {
+          encode(&mut cc.link.binary, &mov, bit_size, dst_reg, l_reg, None);
+        }
+
+        if cc.body.graph[*op2].is_const() {
+          let const_ = cc.body.graph[*op2].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, r_reg, Arg::from_const(const_), None);
+        }
+
+        encode(&mut cc.link.binary, &imul, bit_size, dst_reg, r_reg, None);
+      }
+
+      IROp::LS => {
+        println!("TODO(ANTHONY) - Unify encoding of binary operators, as the base x86 instructions general only differ in opcode.");
+        let [op1, op2] = operands;
+        let CompileContext { link: bin, .. } = cc;
+
+        match node_ty {
+          TypeRef::Primitive(prim) => match prim.sub_type() {
+            PrimitiveSubType::Float => {
+              panic!("Need to implement add for floating point variables");
+            }
+            _ => {}
+          },
+          _ => {}
+        }
+
+        let bit_size = node_ty.bit_size(db);
+
+        let l_reg = regs[1].as_reg_op();
+        let r_reg = regs[2].as_reg_op();
+
+        if cc.body.graph[*op2].is_const() {
+          let const_ = cc.body.graph[*op2].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, r_reg, Arg::from_const(const_), None);
+        }
+
+        let jmp_resolver = &mut cc.jmp_resolver;
+
+        if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_fail) {
+          encode(&mut cc.link.binary, &cmp, bit_size, l_reg, r_reg, None);
+          let next_block = BlockId(block.id.0 + 1);
+          if pass == next_block {
+            encode(&mut cc.link.binary, &jge, 32, Imm_Int(fail.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, fail.0 as usize);
+            println!("JL BLOCK({fail})");
+          } else if fail == next_block {
+            encode(&mut cc.link.binary, &jl, 32, Imm_Int(pass.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, pass.0 as usize);
+            println!("JGE BLOCK({pass})");
+          } else {
+            encode(&mut cc.link.binary, &jl, 32, Imm_Int(pass.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, pass.0 as usize);
+            encode(&mut cc.link.binary, &jmp, 32, Imm_Int(fail.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, fail.0 as usize);
+            println!("JGE BLOCK({pass})");
+            println!("JMP BLOCK({fail})");
+          }
+        }
+        return true;
+      }
+
+      IROp::GR => {
+        println!("TODO(ANTHONY) - Unify encoding of binary operators, as the base x86 instructions general only differ in opcode.");
+        let [op1, op2] = operands;
+        let CompileContext { link: bin, .. } = cc;
+
+        match node_ty {
+          TypeRef::Primitive(prim) => match prim.sub_type() {
+            PrimitiveSubType::Float => {
+              panic!("Need to implement add for floating point variables");
+            }
+            _ => {}
+          },
+          _ => {}
+        }
+
+        let bit_size = node_ty.bit_size(db);
+
+        let l_reg = regs[1].as_reg_op();
+        let r_reg = regs[2].as_reg_op();
+
+        if cc.body.graph[*op2].is_const() {
+          let const_ = cc.body.graph[*op2].constant().unwrap();
+          encode(&mut cc.link.binary, &mov, bit_size, r_reg, Arg::from_const(const_), None);
+        }
+
+        let jmp_resolver = &mut cc.jmp_resolver;
+
+        if let (Some(pass), Some(fail)) = (block.branch_succeed, block.branch_fail) {
+          encode(&mut cc.link.binary, &cmp, bit_size, l_reg, r_reg, None);
+          let next_block = BlockId(block.id.0 + 1);
+          if pass == next_block {
+            encode(&mut cc.link.binary, &jle, 32, Imm_Int(fail.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, fail.0 as usize);
+            println!("JL BLOCK({fail})");
+          } else if fail == next_block {
+            encode(&mut cc.link.binary, &jg, 32, Imm_Int(pass.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, pass.0 as usize);
+            println!("JGE BLOCK({pass})");
+          } else {
+            encode(&mut cc.link.binary, &jg, 32, Imm_Int(pass.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, pass.0 as usize);
+            encode(&mut cc.link.binary, &jmp, 32, Imm_Int(fail.0 as i64), None, None);
+            jmp_resolver.add_jump(&mut cc.link.binary, fail.0 as usize);
+            println!("JGE BLOCK({pass})");
+            println!("JMP BLOCK({fail})");
+          }
+        }
+        return true;
       }
       /*
 

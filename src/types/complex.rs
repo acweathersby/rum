@@ -155,6 +155,17 @@ impl Display for RoutineBody {
           f.write_fmt(format_args!("\n\n\u{001b}[31m{}\u{001b}[0m", tok.blame(0, 0, "", None)));
         }
       }
+
+      match (block.branch_fail, block.branch_succeed) {
+        (Some(fail), Some(pass)) => {
+          println!("if true goto {pass} else goto {fail}")
+        }
+        (None, Some(default)) => {
+          println!("goto {default}")
+        }
+        (None, None) => {}
+        _ => unreachable!(),
+      }
     }
 
     /*     if !self.type_context.is_empty() {

@@ -12,7 +12,7 @@ pub use complex::*;
 pub use const_val::*;
 pub use primitive::*;
 use std::collections::HashMap;
-//pub use type_context::*;
+pub use type_context::*;
 pub use type_database::*;
 
 use crate::istring::*;

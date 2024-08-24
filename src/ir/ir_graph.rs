@@ -7,7 +7,7 @@ use std::fmt::{Debug, Display};
 
 use super::ir_builder::{SMO, SMT};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(u32);
 
 impl Default for VarId {
@@ -176,6 +176,14 @@ impl TyData {
         crate::types::TypeRef::Pointer(..) => true,
         _ => false,
       },
+    }
+  }
+
+  pub fn increment_ptr(&self) -> Self {
+    match self {
+      TyData::Var(ptr, var_id) => TyData::Var(*ptr + 1, *var_id),
+      TyData::Slot(ptr, slot) => TyData::Slot(*ptr + 1, *slot),
+      _ => TyData::Undefined,
     }
   }
 
@@ -448,14 +456,13 @@ impl From<IRGraphId> for usize {
 
 #[derive(Clone, Debug)]
 pub struct IRBlock {
-  pub id:                  BlockId,
-  pub nodes:               Vec<IRGraphId>,
-  pub branch_succeed:      Option<BlockId>,
-  pub branch_fail:         Option<BlockId>,
-  pub name:                IString,
-  pub is_loop_head:        bool,
-  pub loop_components:     Vec<BlockId>,
-  pub direct_predecessors: Vec<BlockId>,
+  pub id:              BlockId,
+  pub nodes:           Vec<IRGraphId>,
+  pub branch_succeed:  Option<BlockId>,
+  pub branch_fail:     Option<BlockId>,
+  pub name:            IString,
+  pub is_loop_head:    bool,
+  pub loop_components: Vec<BlockId>,
 }
 
 impl Display for IRBlock {
@@ -484,7 +491,7 @@ Block-{id:03} {} {{
   }
 }
 
-#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default, Hash)]
 pub struct BlockId(pub u32);
 
 impl BlockId {

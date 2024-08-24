@@ -15,7 +15,7 @@ IMPORT ../common/comment as cmt
 
 <> aggregate_instantiation 
 
-  > "[" aggregate_member_initializer(*",")^inits ","(*) "]"
+  > ':[' aggregate_member_initializer(*",")^inits ","(*) "]"
 
     :ast  { t_RawAggregateInstantiation, allocator_binding, inits, tok }
 

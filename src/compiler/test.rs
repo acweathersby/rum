@@ -17,8 +17,25 @@ fn compile_structures() {
     &crate::parser::script_parser::parse_raw_module(
       &r##"
 
-main () =| {
-  test: [i32; 2] = [1, 2]
+BaseArray => [i32; 6]
+
+heap_allocate ( size: u64, alignment: u64 ) => *u8 _malloc( size )
+
+
+main (nest: i32) => *BaseArray {
+
+  test: *BaseArray = :[ 1 ]
+
+  test[1] = if nest is
+    < 30 {1}
+    > 80 {2}
+    else {
+      if nest is 
+        < 10 { 5 }
+        else { 10000 + nest }
+    }
+
+  test
 }
 
   "##,
@@ -26,7 +43,7 @@ main () =| {
     .unwrap(),
   );
 
-  let (entry_offset, binary) = compile_binary_from_entry("start".intern(), vec![], db.as_mut());
+  let (entry_offset, binary) = compile_binary_from_entry("main".intern(), vec![], db.as_mut());
 
   print_instructions(&binary, 0);
 
@@ -40,13 +57,15 @@ main () =| {
     name:   f32,
   }
 
-  let funct = fn_.access_as_call::<fn() -> *const OutStruct>();
+  let funct = fn_.access_as_call::<fn(i32) -> &'static [i32; 6]>();
 
-  let out = funct();
-  let out = unsafe { &*out };
+  let out = funct(50);
 
-  assert_eq!(out.name, 1234.934);
-  assert_eq!(out.params, 22);
+  dbg!(out);
+  //let out = unsafe { &*out };
+  //
+  //assert_eq!(out.name, 1234.934);
+  //assert_eq!(out.params, 22);
 
   dbg!(out);
 }

@@ -10,17 +10,26 @@ IMPORT ../common/comment as cmt
 
 <> statement 
   > loop_statement 
-  | match_statement 
   | assignment_statement 
   | expression_statement
+  | iterator_definition
 
 <> expression_statement > expr::expression
 
 <> block_expression 
 
-  > "{" ( anno::annotation | allocator_binding )(*)^attributes statement(*)^statements ( block_exit_expressions | break_statement )?^exit "}"
+  > "{" ( anno::annotation | allocator_binding )(*)^attributes statement(*)^statements ( return_statement | break_statement | yield_statement )?^exit "}"
 
     :ast { t_RawBlock, statements, attributes, exit }
+
++> expr::term > block_expression
+
+
+<> iterator_definition 
+  
+  >  "iter" ( block_expression | match_expression )^expr
+
+    :ast { t_IterReentrance, expr, tok }
 
 
 <> allocator_binding 
@@ -28,9 +37,6 @@ IMPORT ../common/comment as cmt
   > anno::lifetime^binding_name "=>" prim::var^allocator_name "(" anno::lifetime?^parent_allocator ")"
 
     :ast { t_RawAllocatorBinding, binding_name, allocator_name, parent_allocator }
-
-
-+> expr::term > block_expression
 
 
 <> assignment_statement 
@@ -50,63 +56,63 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawAssignmentDeclaration, var:$1, ty:$3, tok  }
 
-  | expr::region_access
+  | expr::member
 
   | complex::pointer_cast_to_value
 
 
 <> break_statement 
 
-  > "break" ("#" prim::var)?^label ";"?
+  > "break" ("#" prim::var)?^label
 
     :ast { t_RawBreak, label, tok  }
 
 
-<> loop_statement 
+<> yield_statement 
 
-  > "loop" ("#" prim::var)?^label ( match_statement | block_expression ){1}^scope
-    
-    :ast { t_RawLoop, label, scope, tok  }
+  > "yield" expr::expression^expr
 
+    :ast { t_RawYield, expr, tok  }
 
-<> match_statement 
-
-  > "if" expr::expression^expression "is" match_clause(+){2}^clauses
-
-    :ast { t_RawMatch, expression, clauses, tok  }
-
-
-<> match_clause 
-
-  > match_expression match_scope
-    
-    :ast { t_RawMatchClause, expr:$1, scope: $2 }
-
-  | ( "?" | "or" | "else" | "otherwise" ) match_scope
-
-    :ast { t_RawDefaultClause, scope: $2 }
-
-<> match_scope 
   
-  > block_expression 
-  
-  | "=>" expr::expression
-
-<> match_expression
-
-  > ( ">" | "<" | ">=" | "<=" | "==" | "!=" ) expr::expression
-
-    :ast { t_RawExprMatch, op:str($1), expr: $2, tok  }
-
-  | ( expr::primitive_value | expr::primitive_bool | prim::var )
-
-    :ast { t_RawValMatch, val: $1, tok  }
-
-<> block_exit_expressions
+<> return_statement
 
   > "ret" expr::expression^expression
 
     :ast { t_BlockExitExpressions, expression }
 
 
-<>  range > "[" "..." "]"
+<> loop_statement 
+
+  > "loop" ("#" prim::var)?^label ( match_expression | block_expression )^scope
+    
+    :ast { t_RawLoop, label, scope, tok  }
+
+
+<> match_expression 
+
+  > "if" expr::l_val^expression "is" match_clause(+)^clauses
+
+    :ast { t_RawMatch, expression, clauses, tok  }
+
+
++> expr::term > match_expression
+
+
+<> match_clause 
+
+  > match_condition block_expression
+    
+    :ast { t_RawMatchClause, default: false, expr:$1, scope: $2 }
+
+  | ( "or" | "else" | "otherwise" ) block_expression
+
+    :ast { t_RawMatchClause, default: true, scope: $2 }
+
+
+<> match_condition
+
+  > ( ">" | "<" | ">=" | "<=" | "==" | "!=" ) expr::r_val^expr
+
+    :ast { t_RawExprMatch, op:str($1), expr: $2, tok  }
+

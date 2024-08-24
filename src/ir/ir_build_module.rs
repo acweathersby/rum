@@ -16,9 +16,6 @@ use crate::{
     expression_Value,
     lifetime_Value,
     loop_statement_group_1_Value,
-    match_clause_Value,
-    match_expression_Value,
-    match_scope_Value,
     module_member_Value,
     module_members_group_Value,
     property_Value,
@@ -28,7 +25,9 @@ use crate::{
     Add,
     Div,
     Expression,
+    MemberCompositeAccess,
     Mul,
+    NamedMember,
     Pow,
     RawAggregateInstantiation,
     RawAssignment,
@@ -36,7 +35,6 @@ use crate::{
     RawCall,
     RawLoop,
     RawMatch,
-    RawMember,
     RawModMembers,
     RawModule,
     RawNum,
@@ -223,10 +221,10 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
               _ => {}
             }
           }
-          ty => unreachable!("Type not recognized {ty:#?}"),
+          ty => unreachable!(":: Type not recognized {ty:#?}"),
         }
       }
-      ty => unreachable!("Type not recognized {ty:#?}"),
+      ty => unreachable!(": Type not recognized {ty:#?}"),
     }
   }
 
@@ -253,16 +251,16 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
                 process_struct(strct, ty_db, name);
               }
               Type_Flag(flag_enum) => {}
-              ty => println!("Type not recognized {ty:#?}"),
+              ty => println!("@ Type not recognized {ty:#?}"),
             }
           }
           RawRoutine(routine) => {
             process_routine_signature(routine, ty_db);
           }
-          ty => unreachable!("Type not recognized {ty:#?}"),
+          ty => unreachable!("& Type not recognized {ty:#?}"),
         }
       }
-      ty => unreachable!("Type not recognized {ty:#?}"),
+      ty => unreachable!("* Type not recognized {ty:#?}"),
     }
   }
 
@@ -429,8 +427,8 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
         let param_type = &param.ty;
         if param_type.inferred {
           let gen_ty_name = get_type_name(&param.ty.ty);
-          let slot = body.ctx.insert_generic(gen_ty_name);
-          debug_assert!(!matches!(slot, TypeSlot::UNRESOLVED(..)));
+          let slot = body.ctx.insert_generic(MemberName::String(gen_ty_name));
+          debug_assert!(!matches!(slot, TypeSlot::UNRESOLVED { .. }));
           parameters.push((param_name, index, slot, param.tok.clone()));
         } else if let Some(ty) = get_type(&param_type.ty, ty_db, false) {
           parameters.push((param_name, index, ty, param.tok.clone()));
@@ -446,7 +444,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
         Some(ret_type) => {
           if ret_type.inferred {
             let gen_ty_name = get_type_name(&ret_type.ty);
-            let slot = body.ctx.insert_generic(gen_ty_name);
+            let slot = body.ctx.insert_generic(MemberName::String(gen_ty_name));
             vec![(slot.clone().into(), ret_type.tok.clone())]
           } else if let Some(ty) = get_type(&ret_type.ty, ty_db, false) {
             vec![(ty.into(), ret_type.tok.clone())]
@@ -491,7 +489,7 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
       process_expression(&ast.expression.expr, &mut ib);
 
       if returns.len() > 0 {
-        debug_assert_eq!(ib.ssa_stack.len(), returns.len(), "Invalid number of return expression {} in {routine_name}. Expected {}", ib.ssa_stack.len(), returns.len());
+        debug_assert_eq!(ib.ssa_stack.len(), returns.len(), "Invalid number of return expression {} in {routine_name}. Expected {} \n{ib:?}", ib.ssa_stack.len(), returns.len());
         let mut i: usize = 0;
         while let Some(stack) = ib.pop_stack() {
           let (ty, t) = &returns[i];
@@ -501,7 +499,7 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
           if let Some(var) = ib.get_node_variable(stack).cloned() {
             match var.ty_slot {
               TypeSlot::CtxIndex(index) => match ib.body.ctx.type_slots[index as usize] {
-                TypeSlot::UNRESOLVED(..) => {
+                TypeSlot::UNRESOLVED { .. } => {
                   ib.body.ctx.type_slots[index as usize] = *ty;
                 }
                 _ => {}
@@ -528,7 +526,7 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
     expression_Value::RawNum(num) => process_const_number(num, ib),
     // expression_Value::AddressOf(addr) => process_address_of(ib, addr),
     //expression_Value::RawStructInstantiation(struct_instance) => process_struct_instantiation(struct_instance, ib),
-    expression_Value::RawMember(mem) => process_member_load(mem, ib),
+    expression_Value::MemberCompositeAccess(mem) => process_member_load(mem, ib),
     expression_Value::RawBlock(ast_block) => process_block(ast_block, ib),
     expression_Value::Add(add) => process_add(add, ib),
     expression_Value::Sub(sub) => process_sub(sub, ib),
@@ -541,6 +539,7 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
     expression_Value::BIT_XOR(xor) => process_xor(xor, ib),
     expression_Value::BIT_AND(and) => process_and(and, ib),
     expression_Value::RawAggregateInstantiation(agg) => process_aggregate_instantiation(agg, ib),
+    expression_Value::RawMatch(agg) => process_match(agg, ib),
     d => todo!("expression: {d:#?}"),
   }
 }
@@ -554,28 +553,62 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
   }
 } */
 
-fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Variable> {
-  let base = &mem.members[0];
+fn resolve_variable(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder) -> Option<Variable> {
+  let base_var = &mem.root;
 
-  let var_name = base.id.intern();
+  let var_name = base_var.name.id.intern();
 
   if let Some(var_data) = ib.get_variable(var_name) {
     let mut var_data = var_data.clone();
 
-    for var_name in &mem.members[1..] {
-      let name = var_name.id.intern();
+    for sub_member in &mem.sub_members {
+      use crate::parser::script_parser::member_group_Value::*;
+      match sub_member {
+        NamedMember(mem) => {
+          let name = mem.name.id.intern();
 
-      if let Some(var) = ib.get_var_member(var_data.id, name) {
-        let mut var = var.clone();
+          if let Some(var) = ib.get_var_member(var_data.id, MemberName::String(name)) {
+            let mut var = var.clone();
 
-        ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(var_data.store)], var_name.tok.clone());
-        var.reference = ib.pop_stack().unwrap();
+            ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(var_data.store)], mem.tok.clone());
+            var.reference = ib.pop_stack().unwrap();
 
-        ib.body.ctx.vars[var.id.usize()] = var;
+            ib.body.ctx.vars[var.id.usize()] = var;
 
-        var_data = var;
-      } else {
-        panic!("Could not resolve variable");
+            var_data = var;
+          } else {
+            panic!("Could not resolve variable");
+          }
+        }
+        IndexedMember(mem) => {
+          let index_expr = &mem.expression;
+
+          use crate::parser::script_parser::pointer_offset_Value::*;
+          match &mem.expression {
+            RawInt(int) => {
+              let index = int.val as isize;
+              if index < 0 {
+                panic!("{}", int.tok.blame(1, 1, "Sub-index literals not supported", Option::None));
+              } else {
+                if let Some(var) = ib.get_var_member(var_data.id, MemberName::Index(index as usize)) {
+                  let mut var = var.clone();
+
+                  ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(var_data.store)], mem.tok.clone());
+                  var.reference = ib.pop_stack().unwrap();
+
+                  ib.body.ctx.vars[var.id.usize()] = var;
+
+                  var_data = var;
+                }
+              }
+            }
+            expr => {
+              let blame_string = mem.tok.blame(1, 1, "Index by expression not supported yet.", Option::None);
+              panic!("\n{blame_string} \n{ib:?}",)
+            }
+          }
+        }
+        _ => unreachable!(),
       }
     }
 
@@ -585,7 +618,7 @@ fn resolve_variable(mem: &RawMember<Token>, ib: &mut IRBuilder) -> Option<Variab
   }
 }
 
-fn process_member_load(mem: &std::sync::Arc<RawMember<Token>>, ib: &mut IRBuilder<'_>) {
+fn process_member_load(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder<'_>) {
   //todo!("Handle Member Load");
   if let Some(var) = resolve_variable(mem, ib) {
     // ib.push_ssa(LOAD, var.id.into(), &[var.reference.into()], mem.tok.clone());
@@ -674,18 +707,15 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
   // type scope stack.
 
   let name = {
-    use crate::parser::script_parser::region_access_Value::*;
-    match &call_node.member {
-      RawMember(member) => {
-        if member.members.len() == 1 {
-          let name = member.members[0].clone();
-          name.id.intern()
-        } else {
-          todo!("Handle member call");
-        }
+    if call_node.member.sub_members.is_empty() {
+      call_node.member.root.name.id.intern()
+    } else {
+      if let Some(var) = resolve_variable(&call_node.member, ib) {
+        // ib.push_ssa(LOAD, var.id.into(), &[var.reference.into()], mem.tok.clone());
+        var.mem_name
+      } else {
+        panic!("Not a call")
       }
-      RawArrayAccess(array_access) => todo!(),
-      None => unreachable!(),
     }
   };
 
@@ -751,10 +781,10 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
                 let param_ty = param_ty_slot.ty_base(&routine.body.ctx);
 
                 match (param_ty, arg_var_ty) {
-                  (TypeRef::UNRESOLVED(p_name, p_index), TypeRef::UNRESOLVED(a_name, a_index)) => {
-                    if let Some(ty) = routine_body.ctx.get_type_local(p_name) {
+                  (TypeRef::UNRESOLVED { slot_index: p_index, var_index, var_name: p_name }, TypeRef::UNRESOLVED { slot_index, var_index: a_index, var_name }) => {
+                    if let Some(ty) = routine_body.ctx.get_type_local(*p_name) {
                       debug_assert!(!matches!(ty, TypeSlot::CtxIndex(_)));
-
+                      let a_index = *a_index;
                       let _ = ib.body.ctx.type_slots[a_index as usize] = ty;
                     } else if tries == 0 && !param_queue.is_empty() {
                       // Try to match this after other types have been defined.
@@ -763,17 +793,18 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
                       panic!("Could not resolve this type {arg_var_ty}");
                     }
                   }
-                  (ty @ TypeRef::UNRESOLVED(p_name, p_index), _) => {
+                  (ty @ TypeRef::UNRESOLVED { slot_index: p_index, var_index, var_name: p_name }, _) => {
                     generic_args.push(p_name.to_string() + ":" + &arg_var_ty.to_string());
-                    if let TypeSlot::CtxIndex(index) = routine_body.ctx.insert_generic(p_name) {
+                    if let TypeSlot::CtxIndex(index) = routine_body.ctx.insert_generic(MemberName::String(*p_name)) {
                       let slot = arg_var.ty_slot.resolve_to_outer_slot(&ib.body.ctx);
                       debug_assert!(!matches!(slot, TypeSlot::CtxIndex(_)));
                       routine_body.ctx.type_slots[index as usize] = slot;
                     }
                     // routine
                   }
-                  (ty, TypeRef::UNRESOLVED(a_name, a_index)) => {
+                  (ty, TypeRef::UNRESOLVED { slot_index, var_index: a_index, var_name }) => {
                     debug_assert!(!matches!(param_ty_slot, TypeSlot::CtxIndex(_)));
+                    let a_index = *a_index;
                     ib.body.ctx.type_slots[a_index as usize] = *param_ty_slot;
                   }
 
@@ -844,8 +875,6 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
   }
 }
 
-fn proces_array_instantiation(struct_decl: &Type_Array<Token>, ib: &mut IRBuilder) {}
-
 fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token>, ib: &mut IRBuilder) {
   // note(Anthony): All struct instantiations should be on known types. If the struct to be instantiate is incomplete, this should signal that
   // downstream processing of this routine should not continue.
@@ -861,29 +890,20 @@ fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token
   let mut agg_var = ib.declare_generic(name.intern(), struct_decl.tok.clone(), false).clone();
 
   struct StructEntry {
-    ty:    TypeSlot,
     value: IRGraphId,
-    name:  IString,
+    name:  MemberName,
     tok:   Token,
   }
 
-  let mut value_maps = BTreeMap::<IString, StructEntry>::new();
+  let mut value_maps = BTreeMap::<MemberName, StructEntry>::new();
 
   for (index, init_expression) in struct_decl.inits.iter().enumerate() {
     let member_name = init_expression.name.id.intern();
-
-    if member_name.is_empty() {
-      todo!("Use index reference for member variable");
-    }
-
     process_expression(&init_expression.expression.expr, ib);
 
-    value_maps.insert(member_name, StructEntry {
-      ty:    TypeSlot::None,
-      value: ib.pop_stack().unwrap(),
-      name:  member_name,
-      tok:   init_expression.tok.clone(),
-    });
+    let name = if member_name.is_empty() { MemberName::Index(index) } else { MemberName::String(member_name) };
+
+    value_maps.insert(name, StructEntry { value: ib.pop_stack().unwrap(), name, tok: init_expression.tok.clone() });
 
     // Calculate the offset to the member within the struct
   }
@@ -901,7 +921,7 @@ fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token
 
   let par_id = agg_var.id;
 
-  for (_, StructEntry { ty: _, value, name, tok }) in value_maps {
+  for (_, StructEntry { value, name, tok }) in value_maps {
     if let Some(mut var) = ib.get_var_member(par_id, name).cloned() {
       ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[SMO::IROp(agg_var.reference)], tok.clone());
       var.reference = ib.get_top_id().unwrap();
@@ -927,7 +947,11 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
   let len = ast_block.statements.len();
 
   for (i, stmt) in ast_block.statements.iter().enumerate() {
-    process_statement(stmt, ib, i == len - 1);
+    process_statement(stmt, ib);
+
+    if i < (len - 1) {
+      ib.pop_stack().unwrap();
+    }
   }
 
   use block_expression_group_3_Value::*;
@@ -957,72 +981,79 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
   ib.body.ctx.pop_scope();
 }
 
-fn process_statement(stmt: &statement_Value<Token>, ib: &mut IRBuilder, last_value: bool) {
+fn process_statement(stmt: &statement_Value<Token>, ib: &mut IRBuilder) {
   use statement_Value::*;
   match stmt {
     RawAssignment(assign) => process_assign_statement(assign, ib),
-    Expression(expr) => process_expression_statement(expr, ib, last_value),
+    Expression(expr) => process_expression_statement(expr, ib),
     RawLoop(loop_) => process_loop(loop_, ib),
-    RawMatch(match_) => process_match(match_, ib),
+    IterReentrance(iter) => todo!("Need to implement IterReentance"),
     d => todo!("process statement: {d:#?}"),
   }
 }
 
 fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
-  process_expression(&match_.expression.expr, ib);
+  process_expression(&match_.expression.clone().into(), ib);
 
   let expr_id = ib.pop_stack().unwrap();
-
   let end = ib.create_block();
 
+  let var = ib.declare_generic(format!("var::{}", match_.tok.get_start()).intern(), match_.tok.clone(), false).clone();
+
+  //ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[], match_.tok.clone());
+  //let store_target = ib.pop_stack().unwrap();
+  let store_target = var.store;
+
   for clause in &match_.clauses {
-    match clause {
-      match_clause_Value::RawDefaultClause(def) => {
-        process_match_scope(&def.scope, ib);
+    if clause.default {
+      process_block(&clause.scope, ib);
+
+      let expression_result = ib.pop_stack().unwrap();
+
+      if !expression_result.is_invalid() {
+        ib.push_ssa(STORE, Inherit, &[store_target.into(), expression_result.into()], clause.expr.tok.clone());
+        ib.pop_stack();
       }
-      match_clause_Value::RawMatchClause(mtch) => {
-        match &mtch.expr {
-          match_expression_Value::RawExprMatch(expr_match) => {
-            process_expression(&expr_match.expr.expr, ib);
-            let op = match expr_match.op.as_str() {
-              "<" => LS,
-              ">" => GR,
-              "<=" => LE,
-              ">=" => GE,
-              "==" => EQ,
-              "!=" => NE,
-              _ => unreachable!(),
-            };
 
-            ib.push_ssa(op, Inherit, &[expr_id.into(), StackOp], expr_match.tok.clone());
-            ib.pop_stack();
-          }
-          _ => todo!(),
-        }
+      break;
+    } else {
+      process_expression(&clause.expr.expr.clone().to_ast().into_expression_Value().unwrap(), ib);
+      let op = match clause.expr.op.as_str() {
+        "<" => LS,
+        ">" => GR,
+        "<=" => LE,
+        ">=" => GE,
+        "==" => EQ,
+        "!=" => NE,
+        _ => unreachable!(),
+      };
 
-        let (succeed, failed) = ib.create_branch();
+      ib.push_ssa(op, Inherit, &[expr_id.into(), StackOp], clause.expr.tok.clone());
+      ib.pop_stack();
 
-        ib.set_active(succeed);
+      let (succeed, failed) = ib.create_branch();
 
-        process_match_scope(&mtch.scope, ib);
+      ib.set_active(succeed);
 
-        ib.set_successor(end, SuccessorMode::Default);
-        ib.set_active(failed);
+      process_block(&clause.scope, ib);
+
+      let expression_result = ib.pop_stack().unwrap();
+
+      if !expression_result.is_invalid() {
+        ib.push_ssa(STORE, Inherit, &[store_target.into(), expression_result.into()], clause.expr.tok.clone());
+        ib.pop_stack();
       }
-      _ => {}
+
+      ib.set_successor(end, SuccessorMode::Default);
+      ib.set_active(failed);
     }
   }
 
   ib.set_successor(end, SuccessorMode::Default);
   ib.set_active(end);
-}
 
-fn process_match_scope(scope: &match_scope_Value<Token>, ib: &mut IRBuilder<'_>) {
-  match &scope {
-    match_scope_Value::Expression(expr) => process_expression(&expr.expr, ib),
-    match_scope_Value::RawBlock(block) => process_block(block, ib),
-    _ => unreachable!(),
-  }
+  ib.push_node(store_target);
+  //ib.push_ssa(LOAD, Inherit, &[store_target.into()], match_.tok.clone());
 }
 
 fn process_loop(loop_: &RawLoop<Token>, ib: &mut IRBuilder<'_>) {
@@ -1038,40 +1069,48 @@ fn process_loop(loop_: &RawLoop<Token>, ib: &mut IRBuilder<'_>) {
   ib.pop_loop();
 }
 
-fn process_expression_statement(expr: &std::sync::Arc<Expression<Token>>, ib: &mut IRBuilder<'_>, last_value: bool) {
+fn process_expression_statement(expr: &std::sync::Arc<Expression<Token>>, ib: &mut IRBuilder<'_>) {
   process_expression(&expr.expr, ib);
-  if !last_value {
-    ib.pop_stack();
-  }
 }
 
-fn process_agg_assign(agg_assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_>) {
-  process_expression(&agg_assign.expression.expr, ib);
+fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_>) {
+  let db = ib.body.ctx.db();
+  // Process assignments.
 
-  let (variable, expr_id) = (&agg_assign.var, ib.pop_stack().unwrap());
+  process_expression(&assign.expression.expr, ib);
+
+  // Process assignment targets.
+  let (variable, expr_id) = (&assign.var, ib.pop_stack().unwrap());
+  let expr_ty = ib.get_node_ty(expr_id).unwrap();
+  let expr_ty_slot = expr_ty.ty_slot(&ib.body.ctx);
 
   use assignment_var_Value::*;
   match variable {
-    RawArrayAccess(..) => {
-      todo!("RawArrayAccess")
-    }
-    RawMember(var_assign) => {
+    MemberCompositeAccess(var_assign) => {
       if let Some(var_data) = resolve_variable(&var_assign, ib) {
         ib.push_ssa(STORE, Inherit, &[var_data.reference.into(), expr_id.into()], var_assign.tok.clone());
-        ib.pop_stack();
-      } else if var_assign.members.len() == 1 {
+        ib.pop_stack().unwrap();
+      } else if var_assign.sub_members.len() == 0 {
         // Create and assign a new variable based on the expression.
-        let var_name = var_assign.members[0].id.intern();
+        let var_name = var_assign.root.name.id.intern();
 
         if let Some(var) = ib.get_node_variable(expr_id).cloned() {
-          ib.body.ctx.rename_var(var.mem_name, var_name);
-        } else {
-          unreachable!();
+          if let TypeRef::Struct(_) = var.clone().ty_slot.ty_base(&ib.body.ctx) {
+            ib.body.ctx.rename_var(var.mem_name, var_name);
+            return;
+          }
         }
+
+        let var = ib.declare_variable(var_name, expr_ty_slot, Default::default(), true).clone();
+        ib.push_ssa(STORE, var.id.into(), &[var.reference.into(), expr_id.into()], var_assign.tok.clone());
+        ib.pop_stack().unwrap();
       } else {
         let blame_string = var_assign.tok.blame(1, 1, "could not find variable @", Option::None);
-        panic!("{blame_string} \n{ib:?}",)
+        panic!("\n{blame_string} \n{ib:?}",)
       }
+    }
+    PointerCastToAddress(cast) => {
+      todo!("process PointerCastToAddress::");
     }
     RawAssignmentDeclaration(var_decl) => {
       let var_name = var_decl.var.id.intern();
@@ -1086,126 +1125,11 @@ fn process_agg_assign(agg_assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_>)
       } else {
         todo!("Handle no type")
       }
-
-      /*
-      dbg!(expr_ty.ty_enum());
-      let var_name = var_decl.var.id.intern();
-      let (expected_ty, _ptr) = get_type_from_sm(&var_decl.ty, ib).unwrap();
-      let var_id = ib.body.graph[expr_id].ty_var();
-
-      match expr_ty.ty_enum() {
-        BaseType::Complex(ty) => match &ty.as_ref().ty {
-          ComplexType::Struct(..) => ib.rename_var(var_id, IdMember(var_name)),
-          _ => unreachable!(),
-        },
-        _ => {
-          if expected_ty != expr_ty {
-            match (expected_ty.ty_enum(), expr_ty.ty_enum()) {
-              (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
-                let var = ib.push_variable(var_name, expected_ty);
-                ib.pop_stack();
-
-                ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
-                ib.pop_stack();
-              }
-              _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
-            }
-          } else {
-            let var = ib.push_variable(var_name, expr_ty);
-            ib.pop_stack();
-
-            ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
-            ib.pop_stack();
-          }
-        }
-      } */
     }
     _ => unreachable!(),
   }
-}
 
-fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_>) {
-  let db = ib.body.ctx.db();
-  // Process assignments.
-
-  if matches!(assign.expression.expr, expression_Value::RawAggregateInstantiation(..)) {
-    return process_agg_assign(assign, ib);
-  }
-
-  process_expression(&assign.expression.expr, ib);
-
-  // Process assignment targets.
-  let (variable, expr_id) = (&assign.var, ib.pop_stack().unwrap());
-  let expr_ty = ib.get_node_ty(expr_id).unwrap();
-  let expr_ty_slot = expr_ty.ty_slot(&ib.body.ctx);
-
-  use assignment_var_Value::*;
-  match variable {
-    RawArrayAccess(..) => {
-      todo!("RawArrayAccess")
-    }
-    RawMember(var_assign) => {
-      if let Some(var_data) = resolve_variable(&var_assign, ib) {
-        ib.push_ssa(STORE, Inherit, &[var_data.reference.into(), expr_id.into()], var_assign.tok.clone());
-        ib.pop_stack();
-      } else if var_assign.members.len() == 1 {
-        // Create and assign a new variable based on the expression.
-        let var_name = var_assign.members[0].id.intern();
-
-        if let Some(var) = ib.get_node_variable(expr_id).cloned() {
-          if let TypeRef::Struct(_) = var.clone().ty_slot.ty_base(&ib.body.ctx) {
-            ib.body.ctx.rename_var(var.mem_name, var_name);
-            return;
-          }
-        }
-
-        let var = ib.declare_variable(var_name, expr_ty_slot, Default::default(), true).clone();
-
-        ib.push_ssa(STORE, var.id.into(), &[var.reference.into(), expr_id.into()], var_assign.tok.clone());
-
-        ib.pop_stack();
-      } else {
-        let blame_string = var_assign.tok.blame(1, 1, "could not find variable @", Option::None);
-        panic!("{blame_string} \n{ib:?}",)
-      }
-    }
-    RawAssignmentDeclaration(var_decl) => {
-      todo!("process assignment_var_Value::");
-      /*
-      dbg!(expr_ty.ty_enum());
-      let var_name = var_decl.var.id.intern();
-      let (expected_ty, _ptr) = get_type_from_sm(&var_decl.ty, ib).unwrap();
-      let var_id = ib.body.graph[expr_id].ty_var();
-
-      match expr_ty.ty_enum() {
-        BaseType::Complex(ty) => match &ty.as_ref().ty {
-          ComplexType::Struct(..) => ib.rename_var(var_id, IdMember(var_name)),
-          _ => unreachable!(),
-        },
-        _ => {
-          if expected_ty != expr_ty {
-            match (expected_ty.ty_enum(), expr_ty.ty_enum()) {
-              (BaseType::Prim(prim_ty), BaseType::Prim(prim_expr_ty)) => {
-                let var = ib.push_variable(var_name, expected_ty);
-                ib.pop_stack();
-
-                ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
-                ib.pop_stack();
-              }
-              _ => panic!("Miss matched types ty:{expected_ty:?} expr_ty:{expr_ty:?}"),
-            }
-          } else {
-            let var = ib.push_variable(var_name, expr_ty);
-            ib.pop_stack();
-
-            ib.push_ssa(STORE, var.ty_var.into(), &[var.store.into(), expr_id.into()]);
-            ib.pop_stack();
-          }
-        }
-      } */
-    }
-    _ => unreachable!(),
-  }
+  ib.push_node(IRGraphId::INVALID);
 
   // Match assignments to targets.
 }
@@ -1242,6 +1166,7 @@ pub fn get_type(ir_type: &type_Value<Token>, type_db: &mut TypeDatabase, insert_
     Type_f32v4(_) => Some(TypeSlot::Primitive(PrimitiveType::f32v4)),
     Type_f64v2(_) => Some(TypeSlot::Primitive(PrimitiveType::f64v2)),
     Type_f64v4(_) => Some(TypeSlot::Primitive(PrimitiveType::f64v4)),
+
     Type_Pointer(ptr) => {
       if let Some(base_type) = get_type(&ptr.ty.clone().to_ast().into_type_Value().unwrap(), type_db, insert_unresolved) {
         use lifetime_Value::*;

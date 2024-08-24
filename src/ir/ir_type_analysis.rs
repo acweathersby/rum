@@ -10,7 +10,7 @@ use crate::{
   },
   istring::IString,
   parser::script_parser::RawModule,
-  types::{PrimitiveType, RoutineBody, RoutineType, Type, TypeDatabase, TypeRef, TypeSlot, TypeVarContext},
+  types::{MemberName, PrimitiveType, RoutineBody, RoutineType, Type, TypeDatabase, TypeRef, TypeSlot, TypeVarContext},
 };
 use core::panic;
 use radlr_rust_runtime::types::BlameColor;
@@ -63,11 +63,11 @@ pub fn resolve_struct_offset(struct_name: IString, type_scope: &mut TypeDatabase
       for member in strct.members.iter_mut() {
         let ty = member.ty.ty_gb(&type_scope);
 
-        alignment = alignment.max(ty.byte_alignment());
+        alignment = alignment.max(ty.byte_alignment(&type_scope));
 
-        member.offset = get_aligned_value(offset, ty.byte_alignment());
+        member.offset = get_aligned_value(offset, ty.byte_alignment(&type_scope));
 
-        offset = member.offset + ty.byte_size();
+        offset = member.offset + ty.byte_size(&type_scope);
       }
 
       strct.size = get_aligned_value(offset, alignment);
@@ -92,7 +92,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
     Type::Routine(rt) => {
       resolve_generic_members(rt);
 
-      println!("{routine_name}:\n{}", &rt.body);
+      //  println!("{routine_name}:\n{}", &rt.body);
       println!("TODO(anthony) Assert the routine is ready to be type checked.");
 
       let RoutineBody { graph, tokens, blocks, resolved, ctx } = &mut rt.body;
@@ -195,7 +195,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                       (0, 0) => {
                         // This requires either creating a load op on the target pointer, or retargeting the destination operand.
 
-                        panic!("TODO: Setup stack prim to stack prim copy");
+                        //panic!("TODO: Setup stack prim to stack prim copy");
                       }
                       (0, 1) => {
                         println!("TODO: Setup mem prim to stack prim copy");
@@ -393,23 +393,57 @@ fn resolve_generic_members(rt: &mut RoutineType) {
     let var = rt.body.ctx.vars[var_index];
     let ty = var.ty_slot.ty(&rt.body.ctx);
 
-    if let TypeRef::UNRESOLVED(..) = ty {
+    if let TypeRef::UNRESOLVED { .. } = ty {
       if var.par.is_valid() {
         // todo(Anthony): Rebuild the type using parent information. This should be recursive process, as the
         // parent may be undefined until it is resolved with its own parent, and SOSF.
-        match rt.body.ctx.get_member_type(var.par, var.mem_name) {
-          None => {
-            panic!("Could not locate the member [{}]", var.mem_name);
-          }
+        match rt.body.ctx.get_member_type(var.par, MemberName::String(var.mem_name)) {
+          None => {}
           Some(c_ty) => {
             rt.body.ctx.vars[var_index].ty_slot = c_ty;
           }
         }
-      } else {
-        panic!("Unresolved ty {ty}");
       }
     }
   }
+
+  // resolve all assignment expressions that have unresolved vars on the right side.
+
+  let mut should_continue = true;
+  while should_continue {
+    should_continue = false;
+    for node_id in 0..rt.body.graph.len() {
+      match rt.body.graph[node_id].clone() {
+        IRGraphNode::SSA { op, block_id, operands, ty } => match op {
+          IROp::STORE => {
+            let right_var = rt.body.graph[operands[1]].ty_data();
+            let right_ts = right_var.ty_slot(&rt.body.ctx);
+            let right_ty = right_ts.ty_base(&rt.body.ctx);
+
+            let left_var = rt.body.graph[operands[0]].ty_data();
+            let left_ts = left_var.ty_slot(&rt.body.ctx);
+            let left_ty = left_ts.ty_base(&rt.body.ctx);
+
+            if right_ty.is_unresolved() {
+              if !left_ty.is_unresolved() && right_var.var_id().is_valid() {
+                rt.body.ctx.vars[right_var.var_id()].ty_slot = left_ts;
+                should_continue = true;
+              } else if !should_continue {
+                // Could not resolve expression.
+                // panic!("R-VAL Inference on type failed")
+              }
+            } /*  else if left_ty.is_unresolved() {
+                panic!("L-VAl Inference on type failed @ {node_id}")
+              } */
+          }
+          _ => {}
+        },
+        _ => {}
+      }
+    }
+  }
+
+  println!("{}", rt.body);
 }
 
 fn type_data_to_string(ty: TyData, ctx: &TypeVarContext) -> String {

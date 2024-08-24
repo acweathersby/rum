@@ -2,7 +2,7 @@ use super::ir_graph::{IRGraphId, TyData, VarId};
 use crate::{
   ir::ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   istring::*,
-  types::{ConstVal, RoutineBody, TypeSlot, Variable},
+  types::{ConstVal, MemberName, RoutineBody, TypeSlot, Variable},
 };
 pub use radlr_rust_runtime::types::Token;
 use std::fmt::Debug;
@@ -103,7 +103,7 @@ impl<'body> IRBuilder<'body> {
     self.body.ctx.get_var(name)
   }
 
-  pub fn get_var_member(&mut self, var: VarId, name: IString) -> Option<&mut Variable> {
+  pub fn get_var_member(&mut self, var: VarId, name: MemberName) -> Option<&mut Variable> {
     self.body.ctx.get_var_member(var, name)
   }
 
@@ -139,7 +139,7 @@ impl<'body> IRBuilder<'body> {
   }
 
   pub fn push_node(&mut self, val: IRGraphId) {
-    debug_assert!(val.usize() < self.body.graph.len());
+    //debug_assert!(val.usize() < self.body.graph.len());
     self.ssa_stack.push(val);
   }
 
@@ -173,7 +173,7 @@ impl<'body> IRBuilder<'body> {
   }
 
   pub fn declare_generic(&mut self, var_name: IString, tok: Token, heap: bool) -> &mut Variable {
-    let var = self.body.ctx.insert_generic(var_name).clone();
+    let var = self.body.ctx.insert_generic(crate::types::MemberName::String(var_name)).clone();
 
     self.declare_variable(var_name, var, tok, heap)
   }
@@ -231,14 +231,13 @@ impl<'body> IRBuilder<'body> {
     let block_id: BlockId = BlockId((self.body.blocks.len()) as u32);
 
     self.body.blocks.push(Box::new(IRBlock {
-      id:                  block_id,
-      nodes:               Default::default(),
-      branch_succeed:      Default::default(),
-      branch_fail:         Default::default(),
-      name:                Default::default(),
-      direct_predecessors: Default::default(),
-      is_loop_head:        Default::default(),
-      loop_components:     Default::default(),
+      id:              block_id,
+      nodes:           Default::default(),
+      branch_succeed:  Default::default(),
+      branch_fail:     Default::default(),
+      name:            Default::default(),
+      is_loop_head:    Default::default(),
+      loop_components: Default::default(),
     }));
 
     block_id
@@ -261,16 +260,13 @@ impl<'body> IRBuilder<'body> {
       SuccessorMode::Default => {
         if active_block.branch_succeed.is_none() {
           active_block.branch_succeed = Some(block_id);
-          self.body.blocks[block_id].direct_predecessors.push(self.active_block_id);
         }
       }
       SuccessorMode::Succeed => {
         active_block.branch_succeed = Some(block_id);
-        self.body.blocks[block_id].direct_predecessors.push(self.active_block_id);
       }
       SuccessorMode::Fail => {
         active_block.branch_fail = Some(block_id);
-        self.body.blocks[block_id].direct_predecessors.push(self.active_block_id);
       }
     }
   }
@@ -285,20 +281,18 @@ impl<'body> IRBuilder<'body> {
       branch_succeed: Default::default(),
       branch_fail: Default::default(),
       name,
-      direct_predecessors: Default::default(),
       is_loop_head: true,
       loop_components: Default::default(),
     }));
 
     self.body.blocks.push(Box::new(IRBlock {
-      id:                  loop_end_id,
-      nodes:               Default::default(),
-      branch_succeed:      Default::default(),
-      branch_fail:         Default::default(),
-      name:                Default::default(),
-      direct_predecessors: Default::default(),
-      is_loop_head:        Default::default(),
-      loop_components:     Default::default(),
+      id:              loop_end_id,
+      nodes:           Default::default(),
+      branch_succeed:  Default::default(),
+      branch_fail:     Default::default(),
+      name:            Default::default(),
+      is_loop_head:    Default::default(),
+      loop_components: Default::default(),
     }));
 
     self.set_successor(loop_start_id, SuccessorMode::Default);

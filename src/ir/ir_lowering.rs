@@ -53,8 +53,8 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
                 // Create arguments for allocation
                 {
                   let ty = slot.ty_base(&ib.body.ctx);
-                  let alignment = ty.byte_alignment();
-                  let size = ty.byte_size();
+                  let alignment = ty.byte_alignment(&type_scope);
+                  let size = ty.byte_size(&type_scope);
 
                   let u64 = PrimitiveType::u64;
 
@@ -77,6 +77,9 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
 
                 ib.insert_before(node_id, IRGraphNode::create_ssa(CALL, call_slot.into(), &[]), tok.clone());
                 ib.replace_node(node_id, IRGraphNode::create_ssa(CALL_RET, ty, &[]), tok);
+              } else if !slot.ty(&ib.body.ctx).is_primitive() {
+                ib.insert_before(node_id, node, tok.clone());
+                ib.replace_node(node_id, IRGraphNode::create_ssa(MEMB_PTR_CALC, ty.increment_ptr(), &[node_id]), tok);
               }
             }
             IROp::COPY => {
@@ -87,6 +90,8 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
           _ => {}
         }
       }
+
+      dbg!(rt);
     }
     _ => unreachable!(),
   }

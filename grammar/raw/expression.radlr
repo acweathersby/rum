@@ -149,37 +149,59 @@ IMPORT ../common/comment as cmt
 
 <> term 
 
-  > call
+  > r_val
 
-  | primitive_value
+  | call
 
-  | region_access
+  | "(" expression_types ")"
 
-  | "(" expression_types(+",")^expressions ")"
+    :ast $1
+
+<> r_val 
+
+  > primitive_value
+
+  | member
+
     
-    :ast { t_RawTuple, expressions }
+<> l_val 
+
+  > member
 
 
 <> call 
 
-  > region_access^member "("{1} expression(*",")^args ")"
+  > member^member "("{1} expression(*",")^args ")"
 
     :ast { t_RawCall, member, args, tok }
 
 
-<> region_access
-
-  > member
-
-  | member^name{1} "["{2} pointer_offset^expression "]"
-
-    :ast  { t_RawArrayAccess, name, expression, tok }
-
 <> member 
   
-  > prim::var(+".")^members
+  > member_root{1}^root ( indexed_member | named_member )(*)^sub_members{2}
 
-    :ast { t_RawMember, members, tok }
+    :ast { t_MemberCompositeAccess, root, sub_members, tok }
+
+
+<> indexed_member 
+
+  >  "[" pointer_offset^expression "]"
+
+    :ast  { t_IndexedMember, expression, tok }
+
+
+<> named_member 
+
+  >  "." prim::var^name
+
+    :ast  { t_NamedMember, name, tok }
+
+
+<> member_root 
+  
+  >  prim::var^name
+
+    :ast { t_Variable, name, tok }
 
 
 <> primitive_bool 
@@ -192,13 +214,19 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawFalse }
 
+
 <> primitive_value
 
   > primitive_number
 
-  | prim::string^val
+  | primitive_string  
 
-    :ast { t_RawStr, val:str($val), tok  }
+
+<> primitive_string  
+  
+  >  prim::string
+
+    :ast { t_RawStr, val:str($1), tok  }
 
 
 <> primitive_number 

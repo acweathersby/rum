@@ -1,15 +1,13 @@
 use super::ir_graph::{BlockId, IRGraphId, TyData, VarId};
 use crate::{
-  ir::{
-    ir_build_module::build_module,
-    ir_graph::{IRGraphNode, IROp},
-  },
+  ir::ir_graph::{IRGraphNode, IROp},
   istring::*,
-  //x86::compile_from_ssa_fn,
-  parser::script_parser::Var,
   types::{PrimitiveSubType, RoutineBody, Type, TypeDatabase, TypeRef, TypeVarContext},
 };
-use std::fmt::{Debug, Display};
+use std::{
+  collections::{HashMap, HashSet, VecDeque},
+  fmt::{Debug, Display},
+};
 
 /// Architectural specific register mappings
 pub struct RegisterVariables {
@@ -72,7 +70,7 @@ impl Reg {
 #[derive(Default, Clone, Copy)]
 pub struct RegisterAssignement {
   pub vars:   [VarId; 3],
-  pub spills: [VarId; 3],
+  pub spills: [VarId; 4],
   pub reg:    [Reg; 3],
   pub loads:  u8,
   pub loaded: bool,
@@ -114,11 +112,14 @@ impl Debug for RegisterAssignement {
 }
 
 struct SelectionPack<'imm, 'vars, 'assigns> {
-  reg_pack:    &'imm RegisterVariables,
-  body:        &'imm RoutineBody,
-  ctx:         &'imm TypeVarContext,
-  reg_vars:    &'vars mut [RegisterAssignement],
-  reg_assigns: &'assigns mut Vec<VarId>,
+  reg_pack: &'imm RegisterVariables,
+  body: &'imm RoutineBody,
+  ctx: &'imm TypeVarContext,
+  reg_vars: &'vars mut [RegisterAssignement],
+  reg_assigns: &'assigns mut Vec<Vec<(VarId, IRGraphId)>>,
+  block_predecessors: &'imm [Vec<BlockId>],
+  vars_loaded_from_predecessors: &'vars mut [HashMap<VarId, IRGraphId>],
+  current_block: BlockId,
 }
 
 pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDatabase, reg_pack: &RegisterVariables) -> (Vec<VarId>, Vec<RegisterAssignement>) {
@@ -133,20 +134,32 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
       let mut register_variables = vec![RegisterAssignement::default(); body.graph.len()];
       let reg_vars = &mut register_variables;
 
+      let block_predecessors = get_block_direct_predecessors(&rt.body);
+
       create_and_diffuse_temp_variables(body, reg_vars);
 
-      let block_ordering = create_block_ordering(body);
+      let block_ordering = create_block_ordering(body, block_predecessors.as_slice());
 
       // Assign registers to blocks.
 
       let RoutineBody { graph, blocks, .. } = body;
 
       let mut spilled_variables = Vec::new();
-      let mut assigned_registers = vec![VarId::default(); reg_pack.registers.len()];
+      let mut assigned_registers = vec![vec![(VarId::default(), IRGraphId::default()); reg_pack.registers.len()]; block_ordering.len()];
+      let mut vars_loaded_from_predecessors = vec![HashMap::new(); block_ordering.len()];
 
       let ctx = &body.ctx;
 
-      let mut sp = SelectionPack { body, reg_assigns: &mut assigned_registers, reg_vars, reg_pack, ctx };
+      let mut sp = SelectionPack {
+        body,
+        reg_assigns: &mut assigned_registers,
+        reg_vars,
+        reg_pack,
+        ctx,
+        block_predecessors: &block_predecessors,
+        vars_loaded_from_predecessors: &mut vars_loaded_from_predecessors,
+        current_block: BlockId(0),
+      };
 
       let ctx = &body.ctx;
 
@@ -160,38 +173,65 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
         CallArg,
         CallRet,
         Return,
-      };
+      }
 
+      type AllocateUpdateStore = bool;
       type AllocateOp1Reg = bool;
       type AllocateOp2Reg = bool;
 
+      #[derive(Clone, Copy)]
+      struct LiveVarData {
+        var_id:         VarId,
+        /// Graph node that commits a value for this variable.
+        store_node:     IRGraphId,
+        register_index: usize,
+      }
+
+      struct BlockData {
+        live_vars: HashMap<VarId, LiveVarData>,
+      }
+
       #[inline]
-      fn get_op_allocation_policy(op: IROp) -> (AllocateResultReg, AllocateOp1Reg, AllocateOp2Reg) {
+      fn get_op_allocation_policy(op: IROp) -> (AllocateResultReg, AllocateUpdateStore, AllocateOp1Reg, AllocateOp2Reg) {
         use AllocateResultReg::*;
         match op {
-          IROp::PARAM_DECL => (Parameter, false, false),
-          IROp::MEMB_PTR_CALC => (Allocate, true, true),
-          IROp::LOAD => (Allocate, true, false),
-          IROp::ADDR => (Allocate, false, true),
-          IROp::STORE => (Allocate, true, true),
-          IROp::CALL_ARG => (CallArg, true, false),
-          IROp::CALL => (None, false, false),
-          IROp::DBG_CALL => (Allocate, false, false),
-          IROp::CALL_RET => (CallRet, false, false),
-          IROp::RET_VAL => (Return, true, false),
-          IROp::ADD => (Allocate, true, true),
+          IROp::VAR_DECL => (Allocate, true, false, false),
+          IROp::PARAM_DECL => (Parameter, true, false, false),
+          IROp::MEMB_PTR_CALC => (Allocate, true, true, true),
+          IROp::CALL_RET => (CallRet, true, false, false),
+          IROp::LOAD => (Allocate, false, false, false),
+          IROp::ADDR => (Allocate, false, false, true),
+          IROp::STORE => (Allocate, true, true, true),
+          IROp::CALL_ARG => (CallArg, false, true, false),
+          IROp::CALL => (None, false, false, false),
+          IROp::DBG_CALL => (Allocate, false, false, false),
+          IROp::RET_VAL => (Return, false, true, false),
+          IROp::ADD => (Allocate, false, true, true),
+          IROp::MUL => (Allocate, false, true, true),
+          // Results stored in flags (Need to adapt this to handle isa that return bools from comparisons)
+          IROp::LS => (None, false, true, true),
+          IROp::GR => (None, false, true, true),
+          IROp::LE => (None, false, true, true),
+          IROp::GE => (None, false, true, true),
+          IROp::EQ => (None, false, true, true),
+          IROp::NE => (None, false, true, true),
           op => todo!("Create allocation policy for {op:?}"),
         }
       }
 
-      for block_index in block_ordering {
+      for block_id in block_ordering {
+        sp.current_block = BlockId(block_id as u32);
+
         let mut call_arg_index = 0;
         let mut call_ret_index = 0;
         let mut params_index = 0;
         let mut return_index = 0;
 
-        let block_nodes = blocks[block_index].nodes.clone();
-        let block_id = BlockId(block_index as u32);
+        let block_nodes = blocks[sp.current_block].nodes.clone();
+
+        // resolve var_id from our blocks
+
+        transfer_vars(&mut sp);
 
         for block_node_index in 0..block_nodes.len() {
           let node_id = block_nodes[block_node_index];
@@ -213,47 +253,52 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
                 // Assign a register to this node. But first get the intended registers of its
                 // operators
 
-                let (allocate_result, allocate_op_1, allocate_op_2) = get_op_allocation_policy(*op);
+                let (allocate_result, update_store, allocate_op_1, allocate_op_2) = get_op_allocation_policy(*op);
+
+                if update_store {
+                  sp.vars_loaded_from_predecessors[sp.current_block.usize()].insert(var_id, node_id);
+                }
 
                 let mut blocked_register = None;
 
                 if !operands[0].is_invalid() && allocate_op_1 {
                   let op_node = operands[0];
-                  allocate_op_register(1, op_node, node_id, block_id, &mut sp, &mut blocked_register);
+                  allocate_op_register(1, op_node, node_id, block_node_index, &mut sp, &mut blocked_register);
                 }
 
                 if !operands[1].is_invalid() && allocate_op_2 {
                   let op_node = operands[1];
-                  allocate_op_register(2, op_node, node_id, block_id, &mut sp, &mut blocked_register);
+
+                  allocate_op_register(2, op_node, node_id, block_node_index, &mut sp, &mut blocked_register);
                 }
 
                 match allocate_result {
                   AllocateResultReg::Parameter => {
                     let reg_index = get_arg_register_set(ty.ty_slot(ctx).ty(ctx), &sp.reg_pack, 0).unwrap()[params_index];
                     params_index += 1;
-                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_id);
+                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_node_index);
                     set_register(RegAssignResult { reg_index, spill_var, requires_load: false, new_var: var_id }, node_id, 0, &mut sp);
                   }
                   AllocateResultReg::Return => {
                     let reg_index = get_ret_register_set(ty.ty_slot(ctx).ty(ctx), &sp.reg_pack, 0).unwrap()[return_index];
                     return_index += 1;
-                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_id);
+                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_node_index);
                     set_register(RegAssignResult { reg_index, spill_var, requires_load: false, new_var: var_id }, node_id, 0, &mut sp);
                   }
                   AllocateResultReg::CallRet => {
                     let reg_index = get_ret_register_set(ty.ty_slot(ctx).ty(ctx), &sp.reg_pack, 0).unwrap()[call_ret_index];
                     call_ret_index += 1;
-                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_id);
+                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_node_index);
                     set_register(RegAssignResult { reg_index, spill_var, requires_load: false, new_var: var_id }, node_id, 0, &mut sp);
                   }
                   AllocateResultReg::CallArg => {
                     let reg_index = get_arg_register_set(ty.ty_slot(ctx).ty(ctx), &sp.reg_pack, 0).unwrap()[call_arg_index];
                     call_arg_index += 1;
-                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_id);
+                    let (_, spill_var) = measure_allocation_cost(&mut sp, reg_index, node_id, block_node_index);
                     set_register(RegAssignResult { reg_index, spill_var, requires_load: false, new_var: var_id }, node_id, 0, &mut sp);
                   }
                   AllocateResultReg::Allocate => {
-                    allocate_op_register(0, node_id, node_id, block_id, &mut sp, &mut None);
+                    allocate_op_register(0, node_id, node_id, block_node_index, &mut sp, &mut None);
                   }
                   AllocateResultReg::CopyOp1 => {
                     // Registers of primitive values are passed to the out_id
@@ -262,15 +307,17 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
                   }
                   AllocateResultReg::None => {}
                 }
-
-                for spill in sp.reg_vars[node_id.usize()].spills {
-                  if spill.is_valid() {
-                    spilled_variables.push(spill)
-                  }
-                }
               }
             },
             IRGraphNode::Const { .. } => {}
+          }
+        }
+      }
+
+      for node_id in 0..graph.len() {
+        for spill in sp.reg_vars[node_id].spills {
+          if spill.is_valid() {
+            spilled_variables.push(spill)
           }
         }
       }
@@ -289,7 +336,62 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
   }
 }
 
-fn allocate_op_register(op_index: usize, op_node_id: IRGraphId, node_id: IRGraphId, block_id: BlockId, sp: &mut SelectionPack<'_, '_, '_>, blocked_register: &mut Option<usize>) {
+fn transfer_vars(sp: &mut SelectionPack<'_, '_, '_>) {
+  let current_block = sp.current_block;
+
+  let predecessors = &sp.block_predecessors[current_block.usize()];
+
+  for predecessor in predecessors {
+    for register_index in 0..sp.reg_pack.registers.len() {
+      let (foreign_var, foreign_store) = sp.reg_assigns[*predecessor][register_index];
+
+      if foreign_var.is_valid() && !foreign_store.is_invalid() {
+        let (own_var, own_store) = sp.reg_assigns[current_block][register_index];
+
+        if !own_var.is_valid() {
+          sp.reg_assigns[current_block][register_index] = sp.reg_assigns[*predecessor][register_index];
+        } else if own_var == foreign_var {
+          println!("Good store");
+        } else if own_var == VarId::new(1212121212) {
+          post_insert_spill(sp, foreign_store, foreign_var);
+        } else {
+          post_insert_spill(sp, own_store, own_var);
+          post_insert_spill(sp, foreign_store, foreign_var);
+          sp.reg_assigns[current_block][register_index] = (VarId::new(1212121212), Default::default());
+          println!("Need to update foreign store and current store to spill {:?} {:?}", sp.body.graph[own_store], sp.body.graph[foreign_store])
+        }
+      }
+    }
+  }
+
+  for register_index in 0..sp.reg_pack.registers.len() {
+    let (foreign_var, ..) = &mut sp.reg_assigns[current_block][register_index];
+
+    if *foreign_var == VarId::new(1212121212) {
+      *foreign_var = VarId::default();
+    };
+  }
+}
+
+fn post_insert_spill(sp: &mut SelectionPack<'_, '_, '_>, store: IRGraphId, var: VarId) {
+  match &sp.body.graph[store] {
+    IRGraphNode::SSA { op, block_id, operands, ty } => match op {
+      IROp::STORE => sp.reg_vars[store.usize()].spills[3] = var,
+      IROp::PARAM_DECL => sp.reg_vars[store.usize()].spills[3] = var,
+      op => unreachable!("unexpected store {op:?}"),
+    },
+    IRGraphNode::Const { .. } => unreachable!(),
+  }
+}
+
+fn allocate_op_register(
+  op_index: usize,
+  op_node_id: IRGraphId,
+  node_id: IRGraphId,
+  block_node_index: usize,
+  sp: &mut SelectionPack<'_, '_, '_>,
+  blocked_register: &mut Option<usize>,
+) {
   let SelectionPack { reg_vars: reg_data, body, .. } = sp;
 
   let node = &body.graph[op_node_id.usize()];
@@ -299,7 +401,7 @@ fn allocate_op_register(op_index: usize, op_node_id: IRGraphId, node_id: IRGraph
     // No need to assign a register to constants.
   } else if var_id.is_valid() {
     // see if this var_id is already loaded into a register.
-    if let Some(vals) = get_register_for_var(var_id, node_id, block_id, node.ty_data(), *blocked_register, sp) {
+    if let Some(vals) = get_register_for_var(var_id, node_id, block_node_index, node.ty_data(), *blocked_register, sp) {
       set_register(vals, node_id, op_index, sp);
       // Prevent the next operand from stealing the reg assigned to this one.
       *blocked_register = Some(vals.reg_index);
@@ -320,7 +422,11 @@ struct RegAssignResult {
 fn set_register(val: RegAssignResult, node_id: IRGraphId, op_index: usize, sp: &mut SelectionPack<'_, '_, '_>) {
   let RegAssignResult { reg_index, spill_var, requires_load, new_var } = val;
 
-  sp.reg_assigns[reg_index] = new_var;
+  if let Some(store_location) = sp.vars_loaded_from_predecessors[sp.current_block.usize()].get(&new_var) {
+    sp.reg_assigns[sp.current_block][reg_index] = (new_var, *store_location);
+  } else {
+    sp.reg_assigns[sp.current_block][reg_index] = (new_var, Default::default());
+  }
 
   let SelectionPack { reg_vars: reg_data, .. } = sp;
   // Spill the value stored in the register.
@@ -338,7 +444,7 @@ fn set_register(val: RegAssignResult, node_id: IRGraphId, op_index: usize, sp: &
 fn get_register_for_var(
   incoming_var_id: VarId,
   node_id: IRGraphId,
-  block_id: BlockId,
+  block_node_index: usize,
   ty: TyData,
   blocked_register: Option<usize>,
   sp: &mut SelectionPack<'_, '_, '_>,
@@ -348,11 +454,11 @@ fn get_register_for_var(
 
   let mut compatible_register = None;
 
-  // check for variable in all registers
+  // check for variable in our local registers
   for register_index in 0..sp.reg_pack.registers.len() {
     let SelectionPack { reg_assigns, .. } = sp;
-    let loaded_var = reg_assigns[register_index];
-    if loaded_var == incoming_var_id {
+    let loaded_var = reg_assigns[sp.current_block][register_index];
+    if loaded_var.0 == incoming_var_id {
       compatible_register = Some((register_index, None, false));
       break; // Break as we now have the ideal candidate.
     }
@@ -370,11 +476,11 @@ fn get_register_for_var(
         continue;
       }
 
-      let loaded_var = reg_assigns[*register_index];
+      let loaded_var = reg_assigns[sp.current_block][*register_index];
 
-      if !loaded_var.is_valid() && compatible_register.is_none() {
+      if !loaded_var.0.is_valid() && compatible_register.is_none() {
         compatible_register = Some((*register_index, None, true));
-      } else if loaded_var == incoming_var_id {
+      } else if loaded_var.0 == incoming_var_id {
         compatible_register = Some((*register_index, None, false));
         break; // Break as we now have the ideal candidate.
       }
@@ -396,13 +502,13 @@ fn get_register_for_var(
     let mut candidates = vec![];
 
     for register_index in allowed_registers {
-      let SelectionPack { reg_vars: reg_data, body, reg_pack, reg_assigns, ctx } = sp;
+      let SelectionPack { reg_vars: reg_data, body, reg_pack, reg_assigns, ctx, .. } = sp;
 
       if Some(*register_index) == blocked_register {
         continue;
       }
 
-      let (score, spill) = measure_allocation_cost(sp, *register_index, node_id, block_id);
+      let (score, spill) = measure_allocation_cost(sp, *register_index, node_id, block_node_index);
 
       candidates.push((score, register_index, spill));
 
@@ -429,14 +535,16 @@ fn get_register_for_var(
   }
 }
 
-fn measure_allocation_cost(sp: &mut SelectionPack<'_, '_, '_>, register_index: usize, node_id: IRGraphId, block_id: BlockId) -> (i32, Option<VarId>) {
-  let SelectionPack { reg_vars: reg_data, body, reg_pack, reg_assigns, ctx } = sp;
-  let var = reg_assigns[register_index];
+fn measure_allocation_cost(sp: &SelectionPack<'_, '_, '_>, register_index: usize, node_id: IRGraphId, block_node_index: usize) -> (i32, Option<VarId>) {
+  let SelectionPack { reg_vars: reg_data, body, reg_pack, reg_assigns, ctx, current_block: block_id, .. } = sp;
+  let block_id = *block_id;
+  let (var, _) = reg_assigns[block_id][register_index];
   let mut score = 80000;
   let mut spill = None;
 
   // Find the next use of this variable.
-  for node_index in (node_id.usize() + 1)..body.graph.len() {
+  for block_node_index in (block_node_index + 1)..body.blocks[block_id].nodes.len() {
+    let node_index = body.blocks[block_id].nodes[block_node_index].usize();
     let node = &body.graph[node_index];
     let reg = &reg_data[node_index];
 
@@ -448,23 +556,26 @@ fn measure_allocation_cost(sp: &mut SelectionPack<'_, '_, '_>, register_index: u
       break;
     }
 
-    if node_index == body.graph.len() - 1 {
-      // The variable is no longer accessed and the associated register can be freely
-      // reused.
+    if block_node_index == body.blocks[block_id].nodes.len() - 1 {
+      // We should check this block's predesessors
       score = 0;
       break;
     }
 
-    if node.is_ssa() && var.is_valid() {
+    // TODO: Handle phi nodes.
+    score -= 1;
+  }
+
+  if var.is_valid() {
+    for block_node_index in (block_node_index + 1)..body.blocks[block_id].nodes.len() {
+      let node_index = body.blocks[block_id].nodes[block_node_index].usize();
+      let reg = &reg_data[node_index];
+
       if reg.vars[1] == var || reg.vars[2] == var {
         spill = Some(var);
         break;
       }
     }
-
-    // TODO: Handle phi nodes.
-
-    score -= 1;
   }
 
   (score, spill)
@@ -533,15 +644,61 @@ fn get_register_set<'imm>(ty: TyData, reg_vars: &'imm RegisterVariables, ctx: &T
   }
 }
 
-fn get_node<'a>(graph_ptr: *mut IRGraphNode, i: usize) -> &'a mut IRGraphNode {
-  unsafe { graph_ptr.offset(i as isize).as_mut().unwrap() }
+fn get_block_direct_predecessors(ctx: &RoutineBody) -> Vec<Vec<BlockId>> {
+  let mut out_vecs = vec![vec![]; ctx.blocks.len()];
+
+  for block_id in 0..ctx.blocks.len() {
+    let block = &ctx.blocks[block_id];
+    let block_id = BlockId(block_id as u32);
+
+    if let Some(other_block_id) = block.branch_fail {
+      out_vecs[other_block_id].push(block_id);
+    }
+
+    if let Some(other_block_id) = block.branch_succeed {
+      out_vecs[other_block_id].push(block_id);
+    }
+  }
+
+  out_vecs
 }
 
 /// Create an ordering for block register assignment based on block features
 /// such as loops and return values.
-fn create_block_ordering(ctx: &RoutineBody) -> Vec<usize> {
+fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockId>]) -> Vec<usize> {
   let RoutineBody { graph, blocks, .. } = ctx;
-  (0..blocks.len()).collect()
+
+  let mut block_ordering = vec![];
+
+  let mut queue = VecDeque::from_iter(vec![BlockId(0)]);
+  let mut seen: HashSet<BlockId> = HashSet::new();
+
+  'outer: while let Some(block) = queue.pop_front() {
+    if seen.contains(&block) {
+      continue;
+    }
+
+    for predecessor in &block_predecessors[block.usize()] {
+      if !seen.contains(predecessor) {
+        queue.push_front(block);
+        queue.push_front(*predecessor);
+        continue 'outer;
+      }
+    }
+
+    if let Some(other_block_id) = ctx.blocks[block.usize()].branch_fail {
+      queue.push_back(other_block_id);
+    }
+
+    if let Some(other_block_id) = ctx.blocks[block.usize()].branch_succeed {
+      queue.push_back(other_block_id);
+    }
+
+    seen.insert(block);
+    block_ordering.push(block.usize());
+  }
+
+  block_ordering
 }
 
 /// Ensures VarIds are present on all graph nodes and operands that are not
@@ -558,7 +715,10 @@ fn create_and_diffuse_temp_variables(ctx: &RoutineBody, reg_data: &mut [Register
           continue;
         }
 
-        if ty.var_id().is_valid() {
+        if matches!(op, IROp::MUL) {
+          // Ignore nodes that aren't variable producing
+          reg_data.vars[0] = VarId::new(id as u32);
+        } else if ty.var_id().is_valid() {
           reg_data.vars[0] = ty.var_id();
         } else {
           reg_data.vars[0] = VarId::new(id as u32);
