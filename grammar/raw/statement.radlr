@@ -84,7 +84,7 @@ IMPORT ../common/comment as cmt
 
 <> loop_statement 
 
-  > "loop" ("#" prim::var)?^label ( match_expression | block_expression )^scope
+  > "loop" ("#" prim::var)?^label ( match_expression | block_expression | iter_statement)^scope
     
     :ast { t_RawLoop, label, scope, tok  }
 
@@ -116,3 +116,9 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawExprMatch, op:str($1), expr: $2, tok  }
 
+
+<> iter_statement 
+
+  > prim::var^var "in" expr::call^iter block_expression^block
+
+    :ast { t_RawIterStatement, var, iter, block, tok }

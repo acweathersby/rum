@@ -172,16 +172,16 @@ impl<'body> IRBuilder<'body> {
     self.ssa_stack.push(id);
   }
 
-  pub fn declare_generic(&mut self, var_name: IString, tok: Token, heap: bool) -> &mut Variable {
+  pub fn declare_generic(&mut self, var_name: IString, tok: Token, heap: bool, decl_type: IROp) -> &mut Variable {
     let var = self.body.ctx.insert_generic(crate::types::MemberName::String(var_name)).clone();
 
-    self.declare_variable(var_name, var, tok, heap)
+    self.declare_variable(var_name, var, tok, heap, decl_type)
   }
 
-  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot, tok: Token, heap: bool) -> &mut Variable {
+  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot, tok: Token, heap: bool, decl_type: IROp) -> &mut Variable {
     let var = self.body.ctx.insert_var(var_name, ty).clone();
 
-    self.push_ssa(IROp::VAR_DECL, var.id.into(), &[], tok);
+    self.push_ssa(decl_type, var.id.into(), &[], tok);
 
     self.body.ctx.vars[var.id].store = self.pop_stack().unwrap();
 
@@ -203,7 +203,13 @@ impl<'body> IRBuilder<'body> {
     let id = IRGraphId::new(graph.len());
 
     let ty = match ty {
-      SMT::Inherit => graph[operands[0].usize()].ty_data(),
+      SMT::Inherit => {
+        dbg!(operands[0].usize(), operands[0].usize() < graph.len());
+        let in_range = operands[0].usize() < graph.len();
+        assert!(in_range, "Invalid Inherit operand for expression:\n{}", tok.blame(1, 1, "", None));
+
+        graph[operands[0].usize()].ty_data()
+      }
       SMT::Data(ty) => ty,
       SMT::Undef => TyData::Undefined,
     };

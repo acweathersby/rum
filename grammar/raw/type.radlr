@@ -7,9 +7,11 @@ IMPORT ../common/comment as cmt
 
 IGNORE { c:sp c:nl }
 
-<> type > base_type | pointer_type
+<> type > base_type | pointer_type | reference_type
 
 <> pointer_type > anno::lifetime^ptr_type base_type^ty :ast { t_Type_Pointer, ptr_type, ty }
+
+<> reference_type > "&" base_type^ty :ast { t_Type_Reference, ty }
 
 <> base_type 
   

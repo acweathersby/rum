@@ -407,8 +407,97 @@ fn resolve_generic_members(rt: &mut RoutineType) {
     }
   }
 
-  // resolve all assignment expressions that have unresolved vars on the right side.
+  // Resolve calls and iter_calls
+  for node_id in 0..rt.body.graph.len() {
+    match rt.body.graph[node_id].clone() {
+      IRGraphNode::SSA { op, block_id, operands, ty } => match op {
+        IROp::ITER_CALL => {
+          dbg!(&rt);
+          let ctx = &rt.body.ctx;
 
+          // find last instance
+          let args_start = fun_name(IROp::ITER_ARG, node_id, rt, false);
+          let args_end = node_id;
+
+          let returns_start = node_id + 1;
+          let returns_end = fun_name(IROp::ITER_IN_VAL, node_id + 1, rt, true);
+
+          match ty.ty_slot(ctx).ty_gb(ctx.db()) {
+            TypeRef::Routine(iter_rt) => {
+              let mut param_index = 0;
+              for arg_index in args_start..args_end {
+                match rt.body.graph[arg_index].clone() {
+                  IRGraphNode::SSA { op, block_id, operands, ty } => {
+                    let right_var = ty;
+                    let right_ts = right_var.ty_slot(&rt.body.ctx);
+                    let right_ty = right_ts.ty_base(&rt.body.ctx);
+
+                    let (_, _, left_ts, ..) = iter_rt.parameters[param_index];
+                    let left_ty = left_ts.ty_base(&iter_rt.body.ctx);
+
+                    if right_ty.is_unresolved() {
+                      if !left_ty.is_unresolved() && right_var.var_id().is_valid() {
+                        rt.body.ctx.vars[right_var.var_id()].ty_slot = left_ts;
+                      } else {
+                        // Could not resolve expression.
+                        // panic!("R-VAL Inference on type failed")
+                      }
+                    }
+                  }
+                  _ => unreachable!(),
+                }
+
+                param_index += 1;
+              }
+
+              let mut returns_index = 0;
+              for node_index in returns_start..returns_end {
+                match rt.body.graph[node_index].clone() {
+                  IRGraphNode::SSA { op, block_id, operands, ty } => {
+                    let right_var = ty;
+                    let right_ts = right_var.ty_slot(&rt.body.ctx);
+                    let right_ty = right_ts.ty_base(&rt.body.ctx);
+
+                    let (left_ts, ..) = iter_rt.returns[returns_index];
+                    let left_ty = left_ts.ty_base(&iter_rt.body.ctx);
+
+                    println!("ITER RET: {left_ty} ITER_BODY_BINDING: {right_ty}");
+
+                    if right_ty.is_unresolved() {
+                      if !left_ty.is_unresolved() && right_var.var_id().is_valid() {
+                        rt.body.ctx.vars[right_var.var_id()].ty_slot = left_ts;
+                      } else {
+                        // Could not resolve expression.
+                        // panic!("R-VAL Inference on type failed")
+                      }
+                    }
+                  }
+                  _ => unreachable!(),
+                }
+
+                returns_index += 1;
+              }
+
+              panic!(
+                "{:?} AAAAAAAAAAAAA args_start= {args_start}
+              args_end= {args_end}
+              returns_start= {returns_start}
+              returns_end= {returns_end}",
+                &rt
+              );
+            }
+            _ => unreachable!(),
+          }
+
+          // if
+        }
+        _ => {}
+      },
+      _ => {}
+    }
+  }
+
+  // resolve all assignment expressions that have unresolved vars on the right side.
   let mut should_continue = true;
   while should_continue {
     should_continue = false;
@@ -444,6 +533,42 @@ fn resolve_generic_members(rt: &mut RoutineType) {
   }
 
   println!("{}", rt.body);
+}
+
+fn fun_name(target_ty: IROp, node_id: usize, rt: &RoutineType, forward: bool) -> usize {
+  if forward {
+    for node_id in (node_id..rt.body.graph.len()) {
+      match &rt.body.graph[node_id] {
+        IRGraphNode::SSA { op, .. } => {
+          if target_ty != *op {
+            return node_id;
+          }
+        }
+        _ => {
+          return node_id;
+        }
+      }
+    }
+  } else {
+    for node_id in (0..node_id).rev() {
+      match &rt.body.graph[node_id] {
+        IRGraphNode::SSA { op, .. } => {
+          if target_ty != *op {
+            return node_id + 1;
+          }
+        }
+        _ => {
+          return node_id + 1;
+        }
+      }
+    }
+  }
+
+  if forward {
+    rt.body.graph.len()
+  } else {
+    0
+  }
 }
 
 fn type_data_to_string(ty: TyData, ctx: &TypeVarContext) -> String {

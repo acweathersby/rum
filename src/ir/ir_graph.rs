@@ -367,8 +367,15 @@ pub enum IROp {
   ZERO,
   /// Copies data from one type pointer to another type pointer.
   COPY,
-  CALL,
+
+  /// Declares a variable output value for an iteration step
+  ITER_OUT_VAL,
+  ITER_IN_VAL,
+  ITER_ARG,
+  ITER_CALL,
+
   DBG_CALL,
+  CALL,
   CALL_ARG,
   CALL_RET,
   // Deliberate movement of data from one location to another
