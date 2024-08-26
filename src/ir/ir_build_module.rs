@@ -5,7 +5,7 @@ use super::{
 use crate::{
   container::get_aligned_value,
   ir::{
-    ir_builder::{SMO, SMT},
+    ir_builder::{IterStack, SMO, SMT},
     ir_graph::{IRGraphId, IROp, VarId},
   },
   istring::*,
@@ -491,7 +491,14 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
       process_expression(&ast.expression.expr, &mut ib);
 
       if returns.len() > 0 {
-        debug_assert_eq!(ib.ssa_stack.len(), returns.len(), "Invalid number of return expression {} in {routine_name}. Expected {} \n{ib:?}", ib.ssa_stack.len(), returns.len());
+        /*         debug_assert_eq!(
+          ib.ssa_stack.len(),
+          returns.len(),
+          "Invalid number of return expression {} in {routine_name}. Expected {} \n{ib:?} {:?}",
+          ib.ssa_stack.len(),
+          returns.len(),
+          ib.ssa_stack
+        ); */
         let mut i: usize = 0;
         while let Some(stack) = ib.pop_stack() {
           let (ty, t) = &returns[i];
@@ -509,6 +516,7 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
               _ => {}
             }
           }
+          break;
         }
         i += 1;
       }
@@ -701,47 +709,6 @@ fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
   );
 }
 
-fn process_iter_loop(iter_stmt: &RawIterStatement<Token>, ib: &mut IRBuilder<'_>) {
-  let RawIterStatement { var, iter, block, tok } = iter_stmt;
-
-  ib.push_lexical_scope();
-
-  // lookup loop expression
-
-  let call_name = if iter.member.sub_members.is_empty() {
-    iter.member.root.name.id.intern()
-  } else {
-    panic!("Need to handle member based calls");
-  };
-
-  for arg in &iter.args {
-    process_expression(&arg.expr, ib);
-
-    ib.push_ssa(ITER_ARG, Inherit, &[StackOp], arg.tok.clone());
-    ib.pop_stack().unwrap();
-  }
-
-  if let Some((routine_entry, other)) = ib.body.ctx.db_mut().get_type_mut(call_name).as_ref() {
-    let val = match routine_entry {
-      Type::Routine(_) => ib.body.ctx.insert_var(call_name, *other).clone(),
-      _ => unreachable!(),
-    };
-
-    ib.push_ssa(ITER_CALL, TyData::from(val.ty_slot).into(), &[], tok.clone());
-    ib.pop_stack().unwrap();
-  } else {
-    panic!("AAAA");
-  }
-
-  let mut iter_var = ib.declare_generic(var.id.intern(), var.tok.clone(), false, IROp::ITER_IN_VAL).clone();
-  iter_var.reference = iter_var.store;
-  ib.set_variable(iter_var);
-
-  process_block(block, ib);
-
-  ib.pop_lexical_scope();
-}
-
 const SYS_CALL_TARGETS: [&'static str; 2] = ["_sys_allocate", "_sys_free"];
 const DBG_CALL_TARGETS: [&'static str; 1] = ["_malloc"];
 
@@ -930,7 +897,7 @@ fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token
   //let base_type = *struct_slot;
 
   let name = format!("TEMP_{}", VarId::new(ib.body.graph.len() as u32));
-  let mut agg_var = ib.declare_generic(name.intern(), struct_decl.tok.clone(), false, IROp::VAR_DECL).clone();
+  let mut agg_var = ib.declare_generic(name.intern(), struct_decl.tok.clone(), false, IROp::AGG_DECL).clone();
 
   struct StructEntry {
     value: IRGraphId,
@@ -1015,10 +982,17 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
       }
     }
     RawYield(yield_) => {
-      process_expression(&yield_.expr.expr, ib);
-      let expr_id = ib.pop_stack().unwrap();
-      ib.push_ssa(ITER_IN_VAL, Inherit, &[expr_id.into()], yield_.tok.clone());
-      ib.pop_stack().unwrap();
+      if let Some(IterStack { body_block, output_vars }) = ib.get_iter_stack().cloned() {
+        {
+          let var_id = output_vars[0];
+          process_expression(&yield_.expr.expr, ib);
+          let var = ib.body.ctx.vars[var_id].clone();
+          let expr_id = ib.pop_stack().unwrap();
+          ib.push_ssa(STORE, var_id.into(), &[var.store.into(), expr_id.into()], yield_.tok.clone());
+          ib.pop_stack().unwrap();
+        }
+        ib.set_successor(body_block, SuccessorMode::Default)
+      }
     }
     d => {
       todo!("process block exit: {d:#?}");
@@ -1037,18 +1011,6 @@ fn process_statement(stmt: &statement_Value<Token>, ib: &mut IRBuilder) {
     IterReentrance(iter) => process_iter_block(iter, ib),
     d => todo!("process statement: {d:#?}"),
   }
-}
-
-fn process_iter_block(iter: &IterReentrance<Token>, ib: &mut IRBuilder<'_>) {
-  let IterReentrance { tok, expr } = iter;
-
-  let iter_block = ib.create_block();
-  ib.set_active(iter_block);
-
-  process_expression(&expr.clone().to_ast().into_expression_Value().unwrap(), ib);
-
-  let iter_block = ib.create_block();
-  ib.set_active(iter_block);
 }
 
 fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
@@ -1116,18 +1078,104 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
 }
 
 fn process_loop(loop_: &RawLoop<Token>, ib: &mut IRBuilder<'_>) {
-  let (loop_head, loop_exit) = ib.push_loop(loop_.label.id.intern());
-
   match &loop_.scope {
-    loop_statement_group_1_Value::RawBlock(block) => process_block(block, ib),
-    loop_statement_group_1_Value::RawMatch(match_) => process_match(match_, ib),
-    loop_statement_group_1_Value::RawIterStatement(iter_stmt) => process_iter_loop(iter_stmt, ib),
-    _ => unreachable!(),
-  }
+    loop_statement_group_1_Value::RawIterStatement(iter_stmt) => process_iter_loop(iter_stmt, loop_.label.id.intern(), ib),
+    _ => {
+      let (loop_head, loop_exit) = ib.push_loop(loop_.label.id.intern());
+      ib.body.blocks[loop_head].name = "LOOP_HEAD".intern();
 
-  ib.set_successor(loop_head, SuccessorMode::Default);
-  ib.set_successor(loop_exit, SuccessorMode::Fail);
-  ib.pop_loop();
+      match &loop_.scope {
+        loop_statement_group_1_Value::RawBlock(block) => process_block(block, ib),
+        loop_statement_group_1_Value::RawMatch(match_) => process_match(match_, ib),
+        _ => unreachable!(),
+      }
+
+      ib.set_successor(loop_head, SuccessorMode::Default);
+      ib.set_successor(loop_exit, SuccessorMode::Fail);
+      ib.pop_loop();
+    }
+  }
+}
+
+fn process_iter_block(iter: &IterReentrance<Token>, ib: &mut IRBuilder<'_>) {
+  let IterReentrance { tok, expr } = iter;
+
+  process_expression(&expr.clone().to_ast().into_expression_Value().unwrap(), ib);
+}
+
+fn process_iter_loop(iter_stmt: &RawIterStatement<Token>, loop_name: IString, ib: &mut IRBuilder<'_>) {
+  let RawIterStatement { var, iter, block, tok } = iter_stmt;
+
+  ib.push_lexical_scope();
+
+  // lookup loop expression
+
+  let iter_preamble = ib.create_block();
+  ib.body.blocks[iter_preamble].name = "ITER PREAMBLE".intern();
+  ib.set_successor(iter_preamble, SuccessorMode::Default);
+  ib.set_active(iter_preamble);
+
+  let call_name = if iter.member.sub_members.is_empty() {
+    iter.member.root.name.id.intern()
+  } else {
+    panic!("Need to handle member based calls");
+  };
+
+  if let Some((routine_entry, _)) = ib.body.ctx.db_mut().get_type_mut(call_name).as_ref() {
+    match routine_entry {
+      Type::Routine(routine) => {
+        // Map the routines parameters to the expression inputs.
+        for (arg, params) in iter.args.iter().zip(routine.parameters.iter()) {
+          // both the arg and the param will be mapped to the same variable
+          process_expression(&arg.expr, ib);
+
+          let val = ib.pop_stack().unwrap();
+          let var = ib.declare_variable(params.0, params.2, params.3.clone(), true, IROp::VAR_DECL).clone();
+          ib.push_ssa(STORE, var.id.into(), &[var.store.into(), val.into()], arg.tok.clone());
+          ib.pop_stack().unwrap();
+        }
+
+        match &routine.ast.expression.expr {
+          expression_Value::RawBlock(iter_setup_block) => {
+            for statement in &iter_setup_block.statements {
+              match statement {
+                statement_Value::IterReentrance(iter) => {
+                  //create the variable for the loop
+                  let var_name = iter_stmt.var.id.intern();
+                  let var = ib.declare_generic(var_name, iter_stmt.var.tok.clone(), false, VAR_DECL).clone();
+
+                  let iter_body = ib.create_block();
+                  ib.body.blocks[iter_body].name = "ITER BODY".intern();
+                  //ib.set_successor(iter_preamble, SuccessorMode::Default);
+
+                  ib.push_iter_var_stack(IterStack { body_block: iter_body, output_vars: vec![var.id] });
+
+                  let (loop_head, loop_exit) = ib.push_loop(loop_name);
+
+                  process_expression(&iter.expr.clone().to_ast().into_expression_Value().unwrap(), ib);
+
+                  ib.set_active(iter_body);
+
+                  process_block(block, ib);
+
+                  ib.set_successor(loop_head, SuccessorMode::Default);
+
+                  ib.pop_lexical_scope();
+                  ib.pop_loop();
+                  break;
+                }
+                stmt => process_statement(stmt, ib),
+              }
+            }
+          }
+          _ => panic!("Invalid expression for an iterator"),
+        }
+      }
+      _ => {
+        panic!("Could not find routine type!");
+      }
+    }
+  };
 }
 
 fn process_expression_statement(expr: &Expression<Token>, ib: &mut IRBuilder<'_>) {

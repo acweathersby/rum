@@ -27,10 +27,12 @@ loop_iter(array: &BaseArray) => &i32 {
   i: u32 = 0
   
   iter if i is < 2 {
-    i = 1
+    i = i - 1
     yield array[0]
   }
 }
+
+
 
 
 main (nest: i32) => *BaseArray {
@@ -38,7 +40,7 @@ main (nest: i32) => *BaseArray {
   test: *BaseArray = :[ 1 ]
 
   loop a in loop_iter(test) {
-    a = 300
+    a = 300 + nest
   }
 
   test

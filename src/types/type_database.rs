@@ -94,6 +94,7 @@ mod ctx {
 
   use super::{ty::Type, variable::Variable, TypeDatabase, TypeSlot};
 
+  #[derive(Clone)]
   pub struct TypeVarContext {
     pub db:            *mut TypeDatabase,
     pub vars:          Vec<Variable>,
@@ -537,6 +538,7 @@ mod variable {
 mod scope {
   use crate::istring::IString;
 
+  #[derive(Clone)]
   pub struct ScopeLookup {
     pub scopes:        Vec<(usize, Vec<(IString, usize, usize)>)>,
     pub free_scopes:   Vec<usize>,

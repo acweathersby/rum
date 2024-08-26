@@ -644,7 +644,7 @@ fn get_register_set<'imm>(ty: TyData, reg_vars: &'imm RegisterVariables, ctx: &T
   }
 }
 
-fn get_block_direct_predecessors(ctx: &RoutineBody) -> Vec<Vec<BlockId>> {
+pub fn get_block_direct_predecessors(ctx: &RoutineBody) -> Vec<Vec<BlockId>> {
   let mut out_vecs = vec![vec![]; ctx.blocks.len()];
 
   for block_id in 0..ctx.blocks.len() {
@@ -665,7 +665,7 @@ fn get_block_direct_predecessors(ctx: &RoutineBody) -> Vec<Vec<BlockId>> {
 
 /// Create an ordering for block register assignment based on block features
 /// such as loops and return values.
-fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockId>]) -> Vec<usize> {
+pub fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockId>]) -> Vec<usize> {
   let RoutineBody { graph, blocks, .. } = ctx;
 
   let mut block_ordering = vec![];
@@ -678,13 +678,13 @@ fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockId>])
       continue;
     }
 
-    for predecessor in &block_predecessors[block.usize()] {
+    /* for predecessor in &block_predecessors[block.usize()] {
       if !seen.contains(predecessor) {
         queue.push_front(block);
         queue.push_front(*predecessor);
         continue 'outer;
       }
-    }
+    } */
 
     if let Some(other_block_id) = ctx.blocks[block.usize()].branch_fail {
       queue.push_back(other_block_id);

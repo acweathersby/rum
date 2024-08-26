@@ -117,13 +117,13 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
               STORE => {
                 let left_node_id = operands[0];
                 let right_node_id = operands[1];
+                let tok = &tokens[left_node_id];
 
                 // Left and right nodes MUST be compatible
 
                 //Get the VARID of left node. All stores should be to nodes with var_ids!
                 let l_var_id = graph[left_node_id].var_id();
                 if !l_var_id.is_valid() {
-                  let tok = &tokens[left_node_id];
                   panic!("INTERNAL COMPILER ERROR\n{}", tok.blame(1, 1, "VarId dot assigned to value", BlameColor::RED));
                 }
 
@@ -283,7 +283,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                     panic!("Handle enum to array type cast")
                   }
                   (TypeRef::Array(..), TypeRef::Array(..)) => {
-                    panic!("Handle array to array type cast")
+                    //panic!("Handle array to array type cast, {}", tok.blame(1, 1, "", None))
                   }
                   (TypeRef::Array(..), TypeRef::Struct(..)) => {
                     panic!("Handle struct to array type cast")
@@ -412,15 +412,16 @@ fn resolve_generic_members(rt: &mut RoutineType) {
     match rt.body.graph[node_id].clone() {
       IRGraphNode::SSA { op, block_id, operands, ty } => match op {
         IROp::ITER_CALL => {
+          continue;
           dbg!(&rt);
           let ctx = &rt.body.ctx;
 
           // find last instance
-          let args_start = fun_name(IROp::ITER_ARG, node_id, rt, false);
+          let args_start = last_index_of(IROp::ITER_ARG, node_id, &rt.body, false);
           let args_end = node_id;
 
           let returns_start = node_id + 1;
-          let returns_end = fun_name(IROp::ITER_IN_VAL, node_id + 1, rt, true);
+          let returns_end = last_index_of(IROp::ITER_IN_VAL, node_id + 1, &rt.body, true);
 
           match ty.ty_slot(ctx).ty_gb(ctx.db()) {
             TypeRef::Routine(iter_rt) => {
@@ -477,14 +478,6 @@ fn resolve_generic_members(rt: &mut RoutineType) {
 
                 returns_index += 1;
               }
-
-              panic!(
-                "{:?} AAAAAAAAAAAAA args_start= {args_start}
-              args_end= {args_end}
-              returns_start= {returns_start}
-              returns_end= {returns_end}",
-                &rt
-              );
             }
             _ => unreachable!(),
           }
@@ -507,7 +500,7 @@ fn resolve_generic_members(rt: &mut RoutineType) {
           IROp::STORE => {
             let right_var = rt.body.graph[operands[1]].ty_data();
             let right_ts = right_var.ty_slot(&rt.body.ctx);
-            let right_ty = right_ts.ty_base(&rt.body.ctx);
+            let right_ty = right_ts.ty(&rt.body.ctx);
 
             let left_var = rt.body.graph[operands[0]].ty_data();
             let left_ts = left_var.ty_slot(&rt.body.ctx);
@@ -521,9 +514,18 @@ fn resolve_generic_members(rt: &mut RoutineType) {
                 // Could not resolve expression.
                 // panic!("R-VAL Inference on type failed")
               }
-            } /*  else if left_ty.is_unresolved() {
-                panic!("L-VAl Inference on type failed @ {node_id}")
-              } */
+            } else if left_ty.is_unresolved() {
+              if !right_ty.is_unresolved() && left_var.var_id().is_valid() {
+                rt.body.ctx.vars[left_var.var_id()].ty_slot = right_ts;
+                should_continue = true;
+              } else if !should_continue {
+                // Could not resolve expression.
+                // panic!("R-VAL Inference on type failed")
+              }
+            }
+            /*  else if left_ty.is_unresolved() {
+              panic!("L-VAl Inference on type failed @ {node_id}")
+            } */
           }
           _ => {}
         },
@@ -535,10 +537,10 @@ fn resolve_generic_members(rt: &mut RoutineType) {
   println!("{}", rt.body);
 }
 
-fn fun_name(target_ty: IROp, node_id: usize, rt: &RoutineType, forward: bool) -> usize {
+pub fn last_index_of(target_ty: IROp, node_id: usize, rt: &RoutineBody, forward: bool) -> usize {
   if forward {
-    for node_id in (node_id..rt.body.graph.len()) {
-      match &rt.body.graph[node_id] {
+    for node_id in (node_id..rt.graph.len()) {
+      match &rt.graph[node_id] {
         IRGraphNode::SSA { op, .. } => {
           if target_ty != *op {
             return node_id;
@@ -551,7 +553,7 @@ fn fun_name(target_ty: IROp, node_id: usize, rt: &RoutineType, forward: bool) ->
     }
   } else {
     for node_id in (0..node_id).rev() {
-      match &rt.body.graph[node_id] {
+      match &rt.graph[node_id] {
         IRGraphNode::SSA { op, .. } => {
           if target_ty != *op {
             return node_id + 1;
@@ -565,7 +567,7 @@ fn fun_name(target_ty: IROp, node_id: usize, rt: &RoutineType, forward: bool) ->
   }
 
   if forward {
-    rt.body.graph.len()
+    rt.graph.len()
   } else {
     0
   }

@@ -13,11 +13,18 @@ pub enum SuccessorMode {
   Succeed,
 }
 
+#[derive(Clone)]
+pub struct IterStack {
+  pub body_block:  BlockId,
+  pub output_vars: Vec<VarId>,
+}
+
 pub struct IRBuilder<'body> {
   pub body:            &'body mut RoutineBody,
   pub ssa_stack:       Vec<IRGraphId>,
   pub loop_stack:      Vec<(IString, BlockId, BlockId)>,
   pub active_block_id: BlockId,
+  pub iter_stack:      Vec<IterStack>,
 }
 
 impl<'body> IRBuilder<'body> {
@@ -27,6 +34,7 @@ impl<'body> IRBuilder<'body> {
       body,
       active_block_id: Default::default(),
       loop_stack: Default::default(),
+      iter_stack: Default::default(),
     };
     let block = ir_builder.create_block();
 
@@ -118,6 +126,18 @@ impl<'body> IRBuilder<'body> {
 
 /// Methods for the creation of a new routine body.
 impl<'body> IRBuilder<'body> {
+  pub fn get_iter_stack(&self) -> Option<&IterStack> {
+    self.iter_stack.last()
+  }
+
+  pub fn pop_iter_var_stack(&mut self) {
+    self.iter_stack.pop();
+  }
+
+  pub fn push_iter_var_stack(&mut self, iter_stack: IterStack) {
+    self.iter_stack.push(iter_stack)
+  }
+
   #[inline]
   pub fn pop_stack(&mut self) -> Option<IRGraphId> {
     self.ssa_stack.pop()
@@ -140,6 +160,7 @@ impl<'body> IRBuilder<'body> {
 
   pub fn push_node(&mut self, val: IRGraphId) {
     //debug_assert!(val.usize() < self.body.graph.len());
+
     self.ssa_stack.push(val);
   }
 
@@ -184,6 +205,7 @@ impl<'body> IRBuilder<'body> {
     self.push_ssa(decl_type, var.id.into(), &[], tok);
 
     self.body.ctx.vars[var.id].store = self.pop_stack().unwrap();
+    self.body.ctx.vars[var.id].reference = self.body.ctx.vars[var.id].store;
 
     &mut self.body.ctx.vars[var.id]
   }
@@ -218,6 +240,7 @@ impl<'body> IRBuilder<'body> {
 
     graph.push(node);
     self.body.tokens.push(tok);
+
     self.ssa_stack.push(id);
 
     if matches!(op, IROp::STORE | IROp::ADDR | IROp::PARAM_DECL) && ty.var_id().is_valid() {

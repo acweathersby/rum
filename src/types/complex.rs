@@ -2,7 +2,10 @@ use radlr_rust_runtime::types::TokenRange;
 
 use super::*;
 use crate::{
-  ir::ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, TypeVar, VarId},
+  ir::{
+    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, TypeVar, VarId},
+    ir_register_allocator::{create_block_ordering, get_block_direct_predecessors},
+  },
   parser::script_parser::{RawRoutine, Token},
 };
 use std::{
@@ -109,6 +112,7 @@ impl IRGraphNode {
   }
 }
 
+#[derive(Clone)]
 pub struct RoutineBody {
   /// An append only list of SSA and CONST IR nodes
   pub graph:    Vec<IRGraphNode>,
@@ -144,8 +148,14 @@ impl Display for RoutineBody {
       }
     }
 
-    for (index, block) in self.blocks.iter().enumerate() {
+    for index in create_block_ordering(self, &get_block_direct_predecessors(self)) {
+      let block = &self.blocks[index];
+      //for (index, block) in self.blocks.iter().enumerate() {
       f.write_fmt(format_args!("\nblock_{index:0>5}: \n"));
+
+      if !block.name.is_empty() {
+        f.write_fmt(format_args!("\n{} \n", block.name));
+      }
       for node_id in &block.nodes {
         let index = node_id.usize();
         let node = &self.graph[node_id.usize()];
@@ -158,14 +168,18 @@ impl Display for RoutineBody {
 
       match (block.branch_fail, block.branch_succeed) {
         (Some(fail), Some(pass)) => {
-          println!("if true goto {pass} else goto {fail}")
+          f.write_fmt(format_args!("if true goto {pass} else goto {fail}"));
         }
         (None, Some(default)) => {
-          println!("goto {default}")
+          f.write_fmt(format_args!("goto {default}"));
         }
-        (None, None) => {}
+        (None, None) => {
+          f.write_fmt(format_args!("return"));
+        }
         _ => unreachable!(),
       }
+
+      f.write_str("\n");
     }
 
     /*     if !self.type_context.is_empty() {

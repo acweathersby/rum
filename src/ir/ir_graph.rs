@@ -8,7 +8,7 @@ use std::fmt::{Debug, Display};
 use super::ir_builder::{SMO, SMT};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VarId(u32);
+pub struct VarId(pub u32);
 
 impl Default for VarId {
   fn default() -> Self {
@@ -328,6 +328,8 @@ pub enum IROp {
   MEMB_PTR_CALC,
   /// Declares a stack or heap variable and its type
   VAR_DECL,
+  /// Declares an aggregate data structure.
+  AGG_DECL,
   /// Declares a parameter variable and its type
   PARAM_DECL,
   /// Declares a constant and its type
