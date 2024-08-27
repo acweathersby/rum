@@ -22,12 +22,13 @@ BaseArray => [i32; 6]
 heap_allocate ( size: u64, alignment: u64 ) => *u8 _malloc( size )
 
 
-loop_iter(array: &BaseArray) => &i32 {
+
+loop_iter(array: BaseArray?) => &i32 {
   
   i: u32 = 0
   
   iter if i is < 2 {
-    i = i - 1
+    i = i + 1
     yield array[0]
   }
 }
@@ -38,6 +39,8 @@ loop_iter(array: &BaseArray) => &i32 {
 main (nest: i32) => *BaseArray {
 
   test: *BaseArray = :[ 1 ]
+
+  UV: u32 = 0
 
   loop a in loop_iter(test) {
     a = 300 + nest

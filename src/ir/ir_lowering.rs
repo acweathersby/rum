@@ -3,7 +3,7 @@
 use crate::{
   ir::{
     ir_builder::{IRBuilder, SMO, SMT},
-    ir_graph::{BlockId, IRGraphId, IRGraphNode, IROp, TyData, VarId},
+    ir_graph::{BlockId, IRGraphId, IRGraphNode, IROp, VarId},
     ir_type_analysis::last_index_of,
   },
   istring::{CachedString, IString},
@@ -23,6 +23,9 @@ use SMT::Inherit;
 
 /// Lowers high level IR ops such as copy into lower level operations.
 pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
+  panic!("todo");
+  /*
+
   // load the target routine
   let Some((mut ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find Struct type: {routine_name}",);
@@ -44,7 +47,7 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
         let tok = ib.body.tokens[node_index].clone();
 
         match node {
-          IRGraphNode::SSA { block_id, operands, ty, op } => match op {
+          IRGraphNode::SSA { block_id, operands, var_id: ty, op } => match op {
             IROp::ITER_CALL => {
               continue;
               let ctx = &ib.body.ctx;
@@ -69,7 +72,7 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
 
               let mut remaps = HashMap::new();
 
-              match ty.ty_slot(ctx).ty_gb(ctx.db()) {
+              match ty.ty(ctx) {
                 TypeRef::Routine(iter_rt) => {
                   let mut iter_body = iter_rt.body.clone();
                   dbg!(&iter_body);
@@ -110,7 +113,7 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
                   for (id, node) in iter_body.graph.iter_mut().enumerate() {
                     let adjusted_id = id + ssa_offset;
                     match node {
-                      IRGraphNode::SSA { op, block_id, operands, ty } => {
+                      IRGraphNode::SSA { op, block_id, operands, var_id: ty } => {
                         for op in operands.iter_mut() {
                           if !op.is_invalid() {
                             *op = IRGraphId(op.0 + ssa_offset as u32);
@@ -126,7 +129,7 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
                           IROp::PARAM_DECL => {
                             if args_offset < args_len {
                               match &ib.body.graph[args_start + args_offset] {
-                                IRGraphNode::SSA { op, block_id, operands, ty } => {
+                                IRGraphNode::SSA { op, block_id, operands, var_id: ty } => {
                                   remaps.insert(IRGraphId(adjusted_id as u32), operands[0]);
                                 }
                                 _ => unreachable!(),
@@ -160,7 +163,7 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
 
                   for (id, node) in ib.body.graph.iter_mut().enumerate() {
                     match node {
-                      IRGraphNode::SSA { op, block_id, operands, ty } => {
+                      IRGraphNode::SSA { op, block_id, operands, var_id: ty } => {
                         for op in operands.iter_mut() {
                           if !op.is_invalid() {
                             if let Some(alternate) = remaps.get(&op) {
@@ -234,4 +237,5 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
     }
     _ => unreachable!(),
   }
+  */
 }

@@ -1,7 +1,7 @@
 use crate::{
   container::ArrayVec,
   istring::*,
-  types::{ConstVal, PrimitiveType, TypeSlot, TypeVarContext},
+  types::{ConstVal, PrimitiveType, Type, TypeRef, TypeSlot, TypeVarContext},
 };
 use std::fmt::{Debug, Display};
 
@@ -42,13 +42,29 @@ impl VarId {
     self.0 as usize
   }
 
-  /*   pub fn ty(&self, body: &RoutineBody) -> Option<Ref<'_, Type>> {
+  pub fn ty<'a>(&self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
     if !self.is_valid() {
-      None
+      TypeRef::Undefined
     } else {
-      Some(body.type_context_scope.vars[self.0 as usize].ty())
+      ctx.vars[self.0 as usize].ty()
     }
-  } */
+  }
+
+  pub fn type_slot<'a>(&self, ctx: &'a TypeVarContext) -> TypeSlot {
+    if !self.is_valid() {
+      TypeSlot::None
+    } else {
+      ctx.vars[self.0 as usize].ty_slot
+    }
+  }
+
+  pub fn pointer_depth<'a>(&self, ctx: &'a TypeVarContext) -> usize {
+    if !self.is_valid() {
+      0
+    } else {
+      ctx.vars[self.0 as usize].ty_slot.ptr_depth(ctx)
+    }
+  }
 }
 
 impl Display for VarId {
@@ -144,91 +160,14 @@ impl TypeVar {
   }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum TyData {
-  Undefined,
-  Var(u8, VarId),
-  Slot(u8, TypeSlot),
-}
-
-impl Default for TyData {
-  fn default() -> Self {
-    Self::Undefined
-  }
-}
-
-impl From<PrimitiveType> for TyData {
-  fn from(value: PrimitiveType) -> Self {
-    Self::Slot(0, TypeSlot::Primitive(value))
-  }
-}
-
-impl From<TypeSlot> for TyData {
-  fn from(value: TypeSlot) -> Self {
-    Self::Slot(0, value)
-  }
-}
-
-impl TyData {
-  pub fn is_named_ptr(&self, ctx: &TypeVarContext) -> bool {
-    match self {
-      ty => match ty.ty_slot(ctx).ty(ctx) {
-        crate::types::TypeRef::Pointer(..) => true,
-        _ => false,
-      },
-    }
-  }
-
-  pub fn increment_ptr(&self) -> Self {
-    match self {
-      TyData::Var(ptr, var_id) => TyData::Var(*ptr + 1, *var_id),
-      TyData::Slot(ptr, slot) => TyData::Slot(*ptr + 1, *slot),
-      _ => TyData::Undefined,
-    }
-  }
-
-  pub fn ptr_depth(&self) -> u32 {
-    match self {
-      TyData::Var(ptr_depth, _) | TyData::Var(ptr_depth, _) => *ptr_depth as u32,
-      _ => 0,
-    }
-  }
-
-  pub fn is_inline_ptr(&self) -> bool {
-    match self {
-      TyData::Var(ptr_depth, _) | TyData::Var(ptr_depth, _) => *ptr_depth > 0,
-      _ => false,
-    }
-  }
-
-  pub fn is_pointer(&self, ctx: &TypeVarContext) -> bool {
-    self.is_inline_ptr() || self.is_named_ptr(ctx)
-  }
-
-  pub fn var_id(&self) -> VarId {
-    match self {
-      TyData::Var(_, var_id) => *var_id,
-      _ => VarId::default(),
-    }
-  }
-
-  pub fn ty_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
-    match self {
-      TyData::Var(_, var_id) => ctx.vars[var_id.usize()].ty_slot,
-      TyData::Slot(_, slot) => *slot,
-      _ => TypeSlot::None,
-    }
-  }
-}
-
 #[derive(Clone, Debug)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  SSA { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], ty: TyData },
+  SSA { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], var_id: VarId },
 }
 
 impl IRGraphNode {
-  pub fn create_ssa(op: IROp, ty: TyData, operands: &[IRGraphId]) -> Self {
+  pub fn create_ssa(op: IROp, var: VarId, operands: &[IRGraphId]) -> Self {
     let operands = match (operands.get(0), operands.get(1)) {
       (Some(op1), Some(op2)) => {
         let (b, a) = (*op2, *op1);
@@ -239,7 +178,7 @@ impl IRGraphNode {
       _ => unreachable!(),
     };
 
-    IRGraphNode::SSA { op, block_id: Default::default(), ty, operands }
+    IRGraphNode::SSA { op, block_id: Default::default(), var_id: var, operands }
   }
 
   pub fn create_const(const_val: ConstVal) -> IRGraphNode {
@@ -261,19 +200,19 @@ impl IRGraphNode {
     }
   }
 
-  pub fn ty_var(&self) -> VarId {
+  pub fn var_id(&self) -> VarId {
     match self {
       IRGraphNode::Const { val, .. } => VarId::default(),
-      IRGraphNode::SSA { ty, .. } => ty.var_id(),
+      IRGraphNode::SSA { var_id, .. } => *var_id,
     }
   }
 
-  pub fn ty_data(&self) -> TyData {
+  /*   pub fn ty_data(&self) -> TyData {
     match self {
       IRGraphNode::Const { val, .. } => TyData::Slot(0, TypeSlot::Primitive(val.ty)),
-      IRGraphNode::SSA { ty, .. } => *ty,
+      IRGraphNode::SSA { var_id: ty, .. } => *ty,
     }
-  }
+  } */
 
   /*   pub fn ty(&self, vars: &RoutineBody) -> Type {
     todo!("Get type")
@@ -283,13 +222,6 @@ impl IRGraphNode {
       IRGraphNode::PHI { ty_var, .. } => ty_var.ty(vars),
     } */
   } */
-
-  pub fn var_id(&self) -> VarId {
-    match self {
-      IRGraphNode::SSA { ty, .. } => ty.var_id(),
-      _ => Default::default(),
-    }
-  }
 
   pub fn operand(&self, index: usize) -> IRGraphId {
     if index > 1 {
@@ -385,6 +317,7 @@ pub enum IROp {
   // Clone one memory structure to another memory structure. Operands MUST be pointer values.
   // Depending on type, may require deep cloning, which will probably be handled through a dynamically generated function.
   CLONE,
+  ALIAS,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]

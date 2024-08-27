@@ -50,7 +50,7 @@ impl TypeDatabase {
     if let Some(index) = self.get_type_index(name) {
       let ptr = self.types.as_mut_ptr();
       let val = unsafe { ptr.offset(index as isize) };
-      Some((unsafe { &mut *val }, TypeSlot::GlobalIndex(index as u32)))
+      Some((unsafe { &mut *val }, TypeSlot::GlobalIndex(0, index as u32)))
     } else {
       None
     }
@@ -60,7 +60,7 @@ impl TypeDatabase {
     if let Some(index) = self.get_type_index(name) {
       let ptr = self.types.as_ptr();
       let val = unsafe { ptr.offset(index as isize) };
-      Some((unsafe { &*val }, TypeSlot::GlobalIndex(index as u32)))
+      Some((unsafe { &*val }, TypeSlot::GlobalIndex(0, index as u32)))
     } else {
       None
     }
@@ -184,7 +184,7 @@ mod ctx {
       } else if let Some(g_index) = self.db_mut().get_type_index(ty_name) {
         let index = self.type_slots.len();
         self.ty_var_scopes.add_index(ty_name, usize::MAX, index);
-        self.type_slots.push(TypeSlot::GlobalIndex(g_index as u32));
+        self.type_slots.push(TypeSlot::GlobalIndex(0, g_index as u32));
         Some(self.convert_into_out_ctx_slot(index))
       } else {
         None
@@ -203,7 +203,7 @@ mod ctx {
       let index = self.type_slots.len();
       self.ty_var_scopes.add_index(ty_name, usize::MAX, index);
       let g_index = self.db_mut().insert_anonymous_type(ty);
-      self.type_slots.push(TypeSlot::GlobalIndex(g_index as u32));
+      self.type_slots.push(TypeSlot::GlobalIndex(0, g_index as u32));
       self.convert_into_out_ctx_slot(index)
     }
 
@@ -219,11 +219,16 @@ mod ctx {
         let slot = match name {
           MemberName::Index(mem_index) => {
             self.ty_var_scopes.add_index(Default::default(), mem_index, index);
-            TypeSlot::UNRESOLVED { var_name: Default::default(), var_index: mem_index as u32, slot_index: index as u32 }
+            TypeSlot::UNRESOLVED {
+              ptr_depth:  0,
+              var_name:   Default::default(),
+              var_index:  mem_index as u32,
+              slot_index: index as u32,
+            }
           }
           MemberName::String(name) => {
             self.ty_var_scopes.add_index(name, usize::MAX, index);
-            TypeSlot::UNRESOLVED { var_name: name, var_index: u32::MAX, slot_index: index as u32 }
+            TypeSlot::UNRESOLVED { ptr_depth: 0, var_name: name, var_index: u32::MAX, slot_index: index as u32 }
           }
         };
 
@@ -234,7 +239,7 @@ mod ctx {
 
     fn convert_into_out_ctx_slot(self: &TypeVarContext, index: usize) -> TypeSlot {
       match self.type_slots[index] {
-        TypeSlot::UNRESOLVED { .. } => TypeSlot::CtxIndex(index as u32),
+        TypeSlot::UNRESOLVED { .. } => TypeSlot::CtxIndex(0, index as u32),
         slot => slot,
       }
     }
@@ -272,10 +277,10 @@ mod ctx {
 
       let var = Variable {
         ctx:       self as *const _ as *mut _,
+        temporary: false,
         id:        VarId::new(index as u32),
         par:       Default::default(),
         reference: Default::default(),
-        store:     Default::default(),
         ty_slot:   slot_index,
         mem_name:  var_name,
         mem_index: usize::MAX,
@@ -340,14 +345,14 @@ mod ctx {
         self.var_scopes.pop_scope();
       }
 
-      let entry = self.get_member_type(par_var.id, member_name).unwrap();
+      let entry = self.get_member_type(par_var.id, member_name).unwrap_or_default();
 
       let var = Variable {
         ctx:       self as *const _ as *mut _,
+        temporary: false,
         id:        VarId::new(member_index as u32),
         par:       VarId::new(par_index as u32),
         reference: Default::default(),
-        store:     Default::default(),
         ty_slot:   entry,
         mem_name:  match member_name {
           MemberName::String(name) => name,
@@ -374,24 +379,27 @@ mod ctx {
           self.ty_var_scopes.pop_scope();
           entry
         }
-        TypeRef::Array(array) => array.element_type,
+        TypeRef::Array(array) => array.element_type.increment_ptr(),
         TypeRef::Struct(strct) => match member_name {
           MemberName::Index(index) => {
             if let Some(mem) = strct.members.iter().find(|m| m.original_index == index) {
-              mem.ty
+              mem.ty.increment_ptr()
             } else {
               return None;
             }
           }
           MemberName::String(member_name) => {
             if let Some(mem) = strct.members.iter().find(|m| m.name == member_name) {
-              mem.ty
+              mem.ty.increment_ptr()
             } else {
               return None;
             }
           }
         },
-        tr => panic!("invalid operation on {tr}"),
+        tr => {
+          println!("invalid operation on {tr}");
+          return None;
+        }
       };
       Some(entry)
     }
@@ -418,20 +426,63 @@ mod type_slot {
 
   use super::{ty::TypeRef, Type, TypeDatabase, TypeVarContext};
 
-  #[derive(Clone, Copy)]
+  #[derive(Clone, Copy, Default)]
   pub enum TypeSlot {
     // Mapping to a global type. Stores index to a user type.
-    GlobalIndex(u32),
+    GlobalIndex(u32, u32),
     // Mapping to a local context's type table.
-    CtxIndex(u32),
+    CtxIndex(u32, u32),
     // Mapping to a primitive type. Stores the primitive type.
-    Primitive(PrimitiveType),
+    Primitive(u32, PrimitiveType),
     // Slot is unresolved. Stores the index to the local ctx's type_slot,
-    UNRESOLVED { var_name: IString, var_index: u32, slot_index: u32 },
+    UNRESOLVED {
+      var_name:   IString,
+      var_index:  u32,
+      slot_index: u32,
+      ptr_depth:  u32,
+    },
+
+    #[default]
     None,
   }
 
   impl TypeSlot {
+    pub fn increment_ptr(&self) -> Self {
+      match *self {
+        TypeSlot::Primitive(ptr_depth, prim) => Self::Primitive(ptr_depth + 1, prim),
+        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => TypeSlot::UNRESOLVED { ptr_depth: ptr_depth + 1, slot_index, var_index, var_name },
+        TypeSlot::GlobalIndex(ptr_depth, index) => TypeSlot::GlobalIndex(ptr_depth + 1, index),
+        TypeSlot::CtxIndex(ptr_depth, index) => TypeSlot::CtxIndex(ptr_depth + 1, index),
+        TypeSlot::None => TypeSlot::None,
+      }
+    }
+
+    pub fn decrement_ptr(&self) -> Self {
+      match *self {
+        TypeSlot::Primitive(ptr_depth, prim) => Self::Primitive(ptr_depth.checked_sub(1).unwrap_or_default(), prim),
+        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => {
+          TypeSlot::UNRESOLVED { ptr_depth: ptr_depth.checked_sub(1).unwrap_or_default(), slot_index, var_index, var_name }
+        }
+        TypeSlot::GlobalIndex(ptr_depth, index) => TypeSlot::GlobalIndex(ptr_depth.checked_sub(1).unwrap_or_default(), index),
+        TypeSlot::CtxIndex(ptr_depth, index) => TypeSlot::CtxIndex(ptr_depth.checked_sub(1).unwrap_or_default(), index),
+        TypeSlot::None => TypeSlot::None,
+      }
+    }
+
+    pub fn ptr_depth(&self, ctx: &TypeVarContext) -> usize {
+      let ref_depth = match *self {
+        TypeSlot::Primitive(ptr_depth, prim) => ptr_depth as usize,
+        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => ptr_depth as usize,
+        TypeSlot::GlobalIndex(ptr_depth, index) => ptr_depth as usize,
+        TypeSlot::CtxIndex(ptr_depth, index) => ptr_depth as usize,
+        TypeSlot::None => 0,
+      };
+
+      let base_depth = self.ty(ctx).ptr_depth();
+
+      ref_depth + base_depth
+    }
+
     pub fn is_unresolved(&self) -> bool {
       matches!(self, TypeSlot::UNRESOLVED { .. })
     }
@@ -442,14 +493,14 @@ mod type_slot {
 
     pub fn resolve_to_outer_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
       match *self {
-        Self::CtxIndex(index) => ctx.type_slots[index as usize],
+        Self::CtxIndex(0, index) => ctx.type_slots[index as usize],
         slot => slot,
       }
     }
 
     pub fn ty_base<'a>(&'a self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
       match self.ty(ctx) {
-        TypeRef::Pointer(_, slot) => slot.ty_base(ctx),
+        TypeRef::Pointer(.., slot) => slot.ty_base(ctx),
         ty => ty,
       }
     }
@@ -463,20 +514,20 @@ mod type_slot {
 
     pub fn ty<'a>(&'a self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
       match self {
-        TypeSlot::Primitive(prim) => TypeRef::Primitive(prim),
-        TypeSlot::UNRESOLVED { slot_index, var_index, var_name } => TypeRef::UNRESOLVED { slot_index, var_index, var_name },
-        TypeSlot::GlobalIndex(index) => ctx.db().types[*index as usize].as_ref().into(),
-        TypeSlot::CtxIndex(index) => ctx.type_slots[*index as usize].ty(ctx),
+        TypeSlot::Primitive(ptr_depth, prim) => TypeRef::Primitive(prim),
+        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => TypeRef::UNRESOLVED { slot_index, var_index, var_name },
+        TypeSlot::GlobalIndex(ptr_depth, index) => ctx.db().types[*index as usize].as_ref().into(),
+        TypeSlot::CtxIndex(ptr_depth, index) => ctx.type_slots[*index as usize].ty(ctx),
         TypeSlot::None => TypeRef::Undefined,
       }
     }
 
     pub fn ty_gb<'a>(&'a self, db: &'a TypeDatabase) -> TypeRef<'a> {
       match self {
-        TypeSlot::Primitive(prim) => TypeRef::Primitive(prim),
-        TypeSlot::UNRESOLVED { slot_index, var_index, var_name } => TypeRef::UNRESOLVED { slot_index, var_index, var_name },
-        TypeSlot::GlobalIndex(index) => db.types[*index as usize].as_ref().into(),
-        TypeSlot::CtxIndex(index) => TypeRef::Undefined,
+        TypeSlot::Primitive(ptr_depth, prim) => TypeRef::Primitive(prim),
+        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => TypeRef::UNRESOLVED { slot_index, var_index, var_name },
+        TypeSlot::GlobalIndex(ptr_depth, index) => db.types[*index as usize].as_ref().into(),
+        TypeSlot::CtxIndex(ptr_depth, index) => TypeRef::Undefined,
         TypeSlot::None => TypeRef::Undefined,
       }
     }
@@ -485,10 +536,10 @@ mod type_slot {
   impl Display for TypeSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
       match self {
-        Self::Primitive(prim) => Display::fmt(prim, f),
-        Self::GlobalIndex(index) => f.write_fmt(format_args!("ty @ {index}")),
-        Self::CtxIndex(index) => f.write_fmt(format_args!("ty @ local {index}")),
-        Self::UNRESOLVED { slot_index, var_index, var_name } => f.write_fmt(format_args!("{var_name}[{var_index}]? @ local {slot_index}")),
+        Self::Primitive(ptr_depth, prim) => Display::fmt(prim, f),
+        Self::GlobalIndex(ptr_depth, index) => f.write_fmt(format_args!("ty @ {index}")),
+        Self::CtxIndex(ptr_depth, index) => f.write_fmt(format_args!("ty @ local {index}")),
+        Self::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => f.write_fmt(format_args!("{var_name}[{var_index}]? @ local {slot_index}")),
         Self::None => Ok(()),
       }
     }
@@ -516,12 +567,11 @@ mod variable {
   #[derive(Clone, Copy, Debug)]
   pub struct Variable {
     pub ctx:       *mut TypeVarContext,
+    pub temporary: bool,
     pub ty_slot:   TypeSlot,
     pub id:        VarId,
     pub par:       VarId,
-    /// Can be assigned a * value if ty is *
     pub reference: IRGraphId,
-    pub store:     IRGraphId,
     pub mem_name:  IString,
     pub mem_index: usize,
     pub mem_scope: usize,
@@ -624,7 +674,7 @@ mod ty {
   use super::{TypeDatabase, TypeSlot};
 
   pub enum Type {
-    Pointer(IString, TypeSlot),
+    Pointer(IString, u32, TypeSlot),
     Scope(ScopeType),
     Structure(StructType),
     Union(UnionType),
@@ -658,7 +708,7 @@ mod ty {
   impl<'a> From<&'a Type> for TypeRef<'a> {
     fn from(value: &'a Type) -> Self {
       match value {
-        Type::Pointer(name, ty) => TypeRef::Pointer(*name, ty),
+        Type::Pointer(name, depth, ty) => TypeRef::Pointer(*name, ty),
         Type::Scope(ty) => TypeRef::Scope(ty),
         Type::Structure(ty) => TypeRef::Struct(ty),
         Type::Union(ty) => TypeRef::Union(ty),
@@ -754,8 +804,22 @@ mod ty {
 
     pub fn base_type<'b>(&'b self, ctx: &'b TypeDatabase) -> TypeRef<'b> {
       match self {
-        TypeRef::Pointer(_, ty) => ty.ty_gb(ctx),
+        TypeRef::Pointer(.., ty) => ty.ty_gb(ctx),
         _ => *self,
+      }
+    }
+
+    pub fn ptr_depth(&self) -> usize {
+      match self {
+        TypeRef::Pointer(..) => 1,
+        _ => 0,
+      }
+    }
+
+    pub fn pointer_name(&self) -> IString {
+      match self {
+        TypeRef::Pointer(name, ..) => *name,
+        _ => Default::default(),
       }
     }
   }
@@ -772,7 +836,7 @@ mod ty {
         // Self::Reference(ptr) => f.write_fmt(format_args!("&{}", ptr.base_type)),
         Self::Pointer(ty, base) => {
           if ty.is_empty() {
-            f.write_fmt(format_args!("* {}", base))
+            f.write_fmt(format_args!("*{}", base))
           } else {
             f.write_fmt(format_args!("{}* {}", ty.to_string(), base))
           }

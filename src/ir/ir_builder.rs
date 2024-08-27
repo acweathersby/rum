@@ -1,8 +1,8 @@
-use super::ir_graph::{IRGraphId, TyData, VarId};
+use super::ir_graph::{IRGraphId, VarId};
 use crate::{
   ir::ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
   istring::*,
-  types::{ConstVal, MemberName, RoutineBody, TypeSlot, Variable},
+  types::{ConstVal, MemberName, RoutineBody, TypeRef, TypeSlot, Variable},
 };
 pub use radlr_rust_runtime::types::Token;
 use std::fmt::Debug;
@@ -59,41 +59,22 @@ impl From<IRGraphId> for SMO {
 
 #[derive(Clone)]
 pub enum SMT {
-  Data(TyData),
+  Data(VarId),
   /// Inherits the type of the first operand
   Inherit,
+  Temporary,
   Undef,
 }
 
-impl From<TyData> for SMT {
-  fn from(ty: TyData) -> Self {
-    Self::Data(ty)
-  }
-}
-
 impl From<VarId> for SMT {
-  fn from(ty: VarId) -> Self {
-    Self::Data(TyData::Var(0, ty))
+  fn from(var: VarId) -> Self {
+    Self::Data(var)
   }
 }
 
 impl<'body> IRBuilder<'body> {
-  pub fn get_node_var(&self, node_id: IRGraphId) -> Option<TypeSlot> {
-    todo!("get_node_var");
-    //self.body.graph.get(node_id.usize()).map(|t| t.ty(&self.body))
-  }
-
-  pub fn get_top_type(&mut self) -> Option<TypeSlot> {
-    todo!("get_top_type");
-    //self.get_top_id().map(|s| self.body.graph[s.usize()].ty(&self.body))
-  }
-
-  pub fn get_node_ty(&mut self, node_id: IRGraphId) -> Option<TyData> {
-    self.body.graph.get(node_id.usize()).map(|t| t.ty_data())
-  }
-
-  pub fn is_node_unresolved(&mut self, node_id: IRGraphId) -> Option<TyData> {
-    self.body.graph.get(node_id.usize()).map(|t| t.ty_data())
+  pub fn get_node_ty(&mut self, node_id: IRGraphId) -> Option<TypeRef> {
+    self.body.graph.get(node_id.usize()).map(|t| t.var_id().ty(&self.body.ctx))
   }
 
   pub fn get_node_variable(&mut self, node_id: IRGraphId) -> Option<&mut Variable> {
@@ -193,19 +174,14 @@ impl<'body> IRBuilder<'body> {
     self.ssa_stack.push(id);
   }
 
-  pub fn declare_generic(&mut self, var_name: IString, tok: Token, heap: bool, decl_type: IROp) -> &mut Variable {
+  pub fn declare_generic(&mut self, var_name: IString) -> &mut Variable {
     let var = self.body.ctx.insert_generic(crate::types::MemberName::String(var_name)).clone();
 
-    self.declare_variable(var_name, var, tok, heap, decl_type)
+    self.declare_variable(var_name, var)
   }
 
-  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot, tok: Token, heap: bool, decl_type: IROp) -> &mut Variable {
+  pub fn declare_variable(&mut self, var_name: IString, ty: TypeSlot) -> &mut Variable {
     let var = self.body.ctx.insert_var(var_name, ty).clone();
-
-    self.push_ssa(decl_type, var.id.into(), &[], tok);
-
-    self.body.ctx.vars[var.id].store = self.pop_stack().unwrap();
-    self.body.ctx.vars[var.id].reference = self.body.ctx.vars[var.id].store;
 
     &mut self.body.ctx.vars[var.id]
   }
@@ -222,30 +198,44 @@ impl<'body> IRBuilder<'body> {
     };
 
     let graph = &mut self.body.graph;
-    let id = IRGraphId::new(graph.len());
 
-    let ty = match ty {
+    let var_id = match ty {
+      SMT::Temporary => {
+        let v1 = if !operands[0].is_invalid() { graph[operands[0].usize()].var_id() } else { Default::default() };
+
+        let v2 = if !operands[1].is_invalid() { graph[operands[1].usize()].var_id() } else { Default::default() };
+
+        if v1.is_valid() && self.body.ctx.vars[v1].temporary {
+          v1
+        } else if v2.is_valid() && self.body.ctx.vars[v2].temporary {
+          v2
+        } else {
+          let var = self.declare_generic("".intern());
+          var.temporary = true;
+          var.id
+        }
+      }
       SMT::Inherit => {
+        let graph = &mut self.body.graph;
         dbg!(operands[0].usize(), operands[0].usize() < graph.len());
         let in_range = operands[0].usize() < graph.len();
         assert!(in_range, "Invalid Inherit operand for expression:\n{}", tok.blame(1, 1, "", None));
 
-        graph[operands[0].usize()].ty_data()
+        graph[operands[0].usize()].var_id()
       }
       SMT::Data(ty) => ty,
-      SMT::Undef => TyData::Undefined,
+      SMT::Undef => Default::default(),
     };
 
-    let node = IRGraphNode::SSA { op, block_id: self.active_block_id, ty, operands };
+    let graph = &mut self.body.graph;
+    let id = IRGraphId::new(graph.len());
+
+    let node = IRGraphNode::SSA { op, block_id: self.active_block_id, var_id, operands };
 
     graph.push(node);
     self.body.tokens.push(tok);
 
     self.ssa_stack.push(id);
-
-    if matches!(op, IROp::STORE | IROp::ADDR | IROp::PARAM_DECL) && ty.var_id().is_valid() {
-      self.body.ctx.vars[ty.var_id()].store = id;
-    }
 
     match op {
       _ => self.body.blocks[self.active_block_id].nodes.push(id),
@@ -346,7 +336,7 @@ impl<'body> IRBuilder<'body> {
     let existing = self.get_node_from_id(target);
 
     match (&mut node, existing) {
-      (IRGraphNode::SSA { block_id, .. }, IRGraphNode::SSA { op, block_id: b_id, operands, ty }) => {
+      (IRGraphNode::SSA { block_id, .. }, IRGraphNode::SSA { op, block_id: b_id, operands, var_id: ty }) => {
         *block_id = *b_id;
       }
       _ => unreachable!("Invalid node combination"),

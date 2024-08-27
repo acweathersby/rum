@@ -91,18 +91,17 @@ impl IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>, body: &RoutineBody) -> std::fmt::Result {
     match self {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val))?,
-      IRGraphNode::SSA { block_id, op, operands, ty, .. } => {
+      IRGraphNode::SSA { block_id, op, operands, var_id, .. } => {
         let ctx = &body.ctx;
-        let val = ty.ty_slot(ctx);
-        let var = ty.var_id();
-        let ptr = "*".repeat(ty.ptr_depth() as usize);
-        let named_ptr = if let Some(name) = val.ty_pointer_name(ctx) { format!("{name}*") } else { Default::default() };
-        let base = val.ty_base(ctx);
+        let val = var_id.ty(ctx);
+        let ptr = "*".repeat(var_id.pointer_depth(ctx));
+        let named_ptr = format!("{}", val.pointer_name());
+        let base = val.base_type(ctx.db());
 
         f.write_fmt(format_args!(
           "b{:03} {:34} = {:15} {}",
           block_id,
-          format!("{var:5} {ptr}{named_ptr}{base}"),
+          format!("{var_id:5} {ptr}{named_ptr}{base}"),
           format!("{:?}", op),
           operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
         ))?;

@@ -190,6 +190,10 @@ fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
 }
 
 pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, cc: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
+  todo!("compile_op");
+
+  /*
+
   const POINTER_SIZE: u64 = 64;
 
   let db = cc.body.ctx.db();
@@ -799,4 +803,5 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
   };
 
   false
+  */
 }

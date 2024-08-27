@@ -1,4 +1,4 @@
-use super::ir_graph::{BlockId, IRGraphId, TyData, VarId};
+use super::ir_graph::{BlockId, IRGraphId, VarId};
 use crate::{
   ir::ir_graph::{IRGraphNode, IROp},
   istring::*,
@@ -123,6 +123,8 @@ struct SelectionPack<'imm, 'vars, 'assigns> {
 }
 
 pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDatabase, reg_pack: &RegisterVariables) -> (Vec<VarId>, Vec<RegisterAssignement>) {
+  todo!("generate_register_assignments");
+  /*
   // load the target routine
   let Some((ty_ref, _)) = type_scope.get_type(routine_name) else {
     panic!("Could not find routine type: {routine_name}",);
@@ -241,7 +243,7 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
           let graph = &body.graph;
 
           match &graph[node_id.usize()] {
-            IRGraphNode::SSA { op, operands, ty, .. } => match op {
+            IRGraphNode::SSA { op, operands, var_id: ty, .. } => match op {
               _ => {
                 let var_id = sp.reg_vars[node_id.usize()].vars[0];
 
@@ -334,6 +336,7 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
     }
     _ => unreachable!(),
   }
+  */
 }
 
 fn transfer_vars(sp: &mut SelectionPack<'_, '_, '_>) {
@@ -375,7 +378,7 @@ fn transfer_vars(sp: &mut SelectionPack<'_, '_, '_>) {
 
 fn post_insert_spill(sp: &mut SelectionPack<'_, '_, '_>, store: IRGraphId, var: VarId) {
   match &sp.body.graph[store] {
-    IRGraphNode::SSA { op, block_id, operands, ty } => match op {
+    IRGraphNode::SSA { op, block_id, operands, var_id: ty } => match op {
       IROp::STORE => sp.reg_vars[store.usize()].spills[3] = var,
       IROp::PARAM_DECL => sp.reg_vars[store.usize()].spills[3] = var,
       op => unreachable!("unexpected store {op:?}"),
@@ -392,6 +395,8 @@ fn allocate_op_register(
   sp: &mut SelectionPack<'_, '_, '_>,
   blocked_register: &mut Option<usize>,
 ) {
+  todo!("allocate_op_register");
+  /*
   let SelectionPack { reg_vars: reg_data, body, .. } = sp;
 
   let node = &body.graph[op_node_id.usize()];
@@ -409,6 +414,7 @@ fn allocate_op_register(
       panic!("Could not assign register for operand, out of available registers");
     }
   }
+  */
 }
 
 #[derive(Clone, Copy)]
@@ -445,7 +451,7 @@ fn get_register_for_var(
   incoming_var_id: VarId,
   node_id: IRGraphId,
   block_node_index: usize,
-  ty: TyData,
+  ty: TypeRef,
   blocked_register: Option<usize>,
   sp: &mut SelectionPack<'_, '_, '_>,
 ) -> Option<RegAssignResult> {
@@ -623,16 +629,16 @@ fn get_ret_register_set<'imm>(ty: TypeRef<'_>, reg_vars: &'imm RegisterVariables
   }
 }
 
-fn get_register_set<'imm>(ty: TyData, reg_vars: &'imm RegisterVariables, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>> {
+fn get_register_set<'imm>(ty: TypeRef, reg_vars: &'imm RegisterVariables, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>> {
   // Acquire the set of register indices that can store the given type.
-  if ty.is_pointer(ctx) {
+  if ty.is_pointer() {
     if reg_vars.ptr_registers.is_empty() {
       Some(&reg_vars.int_registers)
     } else {
       Some(&reg_vars.ptr_registers)
     }
   } else {
-    match ty.ty_slot(ctx).ty(ctx) {
+    match ty {
       TypeRef::DebugCall(_) => Some(&reg_vars.int_registers),
       TypeRef::Primitive(prim) => match prim.sub_type() {
         PrimitiveSubType::Signed | PrimitiveSubType::Unsigned => Some(&reg_vars.int_registers),
@@ -685,12 +691,11 @@ pub fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockI
         continue 'outer;
       }
     } */
-
-    if let Some(other_block_id) = ctx.blocks[block.usize()].branch_fail {
-      queue.push_back(other_block_id);
+    if let Some(other_block_id) = ctx.blocks[block.usize()].branch_succeed {
+      queue.push_front(other_block_id);
     }
 
-    if let Some(other_block_id) = ctx.blocks[block.usize()].branch_succeed {
+    if let Some(other_block_id) = ctx.blocks[block.usize()].branch_fail {
       queue.push_back(other_block_id);
     }
 
@@ -709,7 +714,7 @@ fn create_and_diffuse_temp_variables(ctx: &RoutineBody, reg_data: &mut [Register
   // Unsure all non-const and non-var nodes have a variable id.
   for ((id, node), reg_data) in graph.iter().enumerate().zip(reg_data.iter_mut()) {
     match node {
-      IRGraphNode::SSA { op, ty, .. } => {
+      IRGraphNode::SSA { op, var_id, .. } => {
         if matches!(op, IROp::GR | IROp::GE) {
           // Ignore nodes that aren't variable producing
           continue;
@@ -718,8 +723,8 @@ fn create_and_diffuse_temp_variables(ctx: &RoutineBody, reg_data: &mut [Register
         if matches!(op, IROp::MUL) {
           // Ignore nodes that aren't variable producing
           reg_data.vars[0] = VarId::new(id as u32);
-        } else if ty.var_id().is_valid() {
-          reg_data.vars[0] = ty.var_id();
+        } else if var_id.is_valid() {
+          reg_data.vars[0] = *var_id;
         } else {
           reg_data.vars[0] = VarId::new(id as u32);
         }

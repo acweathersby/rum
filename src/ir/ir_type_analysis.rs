@@ -1,7 +1,4 @@
-use super::{
-  ir_builder::{IRBuilder, SuccessorMode},
-  ir_graph::TyData,
-};
+use super::ir_builder::{IRBuilder, SuccessorMode};
 use crate::{
   container::get_aligned_value,
   ir::{
@@ -92,6 +89,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
     Type::Routine(rt) => {
       resolve_generic_members(rt);
 
+      /*
       //  println!("{routine_name}:\n{}", &rt.body);
       println!("TODO(anthony) Assert the routine is ready to be type checked.");
 
@@ -111,7 +109,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
         let tok = &tokens[node_index];
 
         match node {
-          IRGraphNode::SSA { block_id, operands, ty, op } => {
+          IRGraphNode::SSA { block_id, operands, var_id: ty, op } => {
             /* Place holder - MODIFY, DO NOT REMOVE */
             match op {
               STORE => {
@@ -128,10 +126,10 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                 }
 
                 // Load the type of the var
-                let l_var_id = graph[left_node_id].ty_data();
+                let l_var_id = graph[left_node_id].var_id();
 
                 // Load the type of the right node
-                let r_var_id = graph[right_node_id].ty_data();
+                let r_var_id = graph[right_node_id].var_id();
 
                 // True if the target variable is an inline pointer to a named pointer
                 let t_is_ptr_ptr = false;
@@ -172,7 +170,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                             // Always convert constants. They should be unique to any expression.
                             *val = val.convert(*t_prim);
                           }
-                          IRGraphNode::SSA { op, block_id, operands, ty } => match op {
+                          IRGraphNode::SSA { op, block_id, operands, var_id: ty } => match op {
                             IROp::ADD | IROp::SUB => {
                               *ty = TyData::Slot(0, TypeSlot::Primitive(*t_prim));
 
@@ -383,6 +381,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
       }
 
       println!("{routine_name}:\n{}", &rt.body);
+      */
     }
     _ => unreachable!(),
   }
@@ -407,125 +406,63 @@ fn resolve_generic_members(rt: &mut RoutineType) {
     }
   }
 
-  // Resolve calls and iter_calls
-  for node_id in 0..rt.body.graph.len() {
-    match rt.body.graph[node_id].clone() {
-      IRGraphNode::SSA { op, block_id, operands, ty } => match op {
-        IROp::ITER_CALL => {
-          continue;
-          dbg!(&rt);
-          let ctx = &rt.body.ctx;
-
-          // find last instance
-          let args_start = last_index_of(IROp::ITER_ARG, node_id, &rt.body, false);
-          let args_end = node_id;
-
-          let returns_start = node_id + 1;
-          let returns_end = last_index_of(IROp::ITER_IN_VAL, node_id + 1, &rt.body, true);
-
-          match ty.ty_slot(ctx).ty_gb(ctx.db()) {
-            TypeRef::Routine(iter_rt) => {
-              let mut param_index = 0;
-              for arg_index in args_start..args_end {
-                match rt.body.graph[arg_index].clone() {
-                  IRGraphNode::SSA { op, block_id, operands, ty } => {
-                    let right_var = ty;
-                    let right_ts = right_var.ty_slot(&rt.body.ctx);
-                    let right_ty = right_ts.ty_base(&rt.body.ctx);
-
-                    let (_, _, left_ts, ..) = iter_rt.parameters[param_index];
-                    let left_ty = left_ts.ty_base(&iter_rt.body.ctx);
-
-                    if right_ty.is_unresolved() {
-                      if !left_ty.is_unresolved() && right_var.var_id().is_valid() {
-                        rt.body.ctx.vars[right_var.var_id()].ty_slot = left_ts;
-                      } else {
-                        // Could not resolve expression.
-                        // panic!("R-VAL Inference on type failed")
-                      }
-                    }
-                  }
-                  _ => unreachable!(),
-                }
-
-                param_index += 1;
-              }
-
-              let mut returns_index = 0;
-              for node_index in returns_start..returns_end {
-                match rt.body.graph[node_index].clone() {
-                  IRGraphNode::SSA { op, block_id, operands, ty } => {
-                    let right_var = ty;
-                    let right_ts = right_var.ty_slot(&rt.body.ctx);
-                    let right_ty = right_ts.ty_base(&rt.body.ctx);
-
-                    let (left_ts, ..) = iter_rt.returns[returns_index];
-                    let left_ty = left_ts.ty_base(&iter_rt.body.ctx);
-
-                    println!("ITER RET: {left_ty} ITER_BODY_BINDING: {right_ty}");
-
-                    if right_ty.is_unresolved() {
-                      if !left_ty.is_unresolved() && right_var.var_id().is_valid() {
-                        rt.body.ctx.vars[right_var.var_id()].ty_slot = left_ts;
-                      } else {
-                        // Could not resolve expression.
-                        // panic!("R-VAL Inference on type failed")
-                      }
-                    }
-                  }
-                  _ => unreachable!(),
-                }
-
-                returns_index += 1;
-              }
-            }
-            _ => unreachable!(),
-          }
-
-          // if
-        }
-        _ => {}
-      },
-      _ => {}
-    }
-  }
-
   // resolve all assignment expressions that have unresolved vars on the right side.
   let mut should_continue = true;
   while should_continue {
     should_continue = false;
     for node_id in 0..rt.body.graph.len() {
       match rt.body.graph[node_id].clone() {
-        IRGraphNode::SSA { op, block_id, operands, ty } => match op {
-          IROp::STORE => {
-            let right_var = rt.body.graph[operands[1]].ty_data();
-            let right_ts = right_var.ty_slot(&rt.body.ctx);
-            let right_ty = right_ts.ty(&rt.body.ctx);
+        IRGraphNode::SSA { op, block_id, operands, var_id } => match op {
+          IROp::MEMB_PTR_CALC => {
+            let ctx = &mut rt.body.ctx;
+            let par_var = rt.body.graph[operands[0]].var_id();
 
-            let left_var = rt.body.graph[operands[0]].ty_data();
-            let left_ts = left_var.ty_slot(&rt.body.ctx);
-            let left_ty = left_ts.ty_base(&rt.body.ctx);
-
-            if right_ty.is_unresolved() {
-              if !left_ty.is_unresolved() && right_var.var_id().is_valid() {
-                rt.body.ctx.vars[right_var.var_id()].ty_slot = left_ts;
+            if var_id.ty(ctx).is_unresolved() && !par_var.ty(ctx).is_unresolved() {
+              let mut var = ctx.vars[var_id].clone();
+              if let Some(ty_slot) = ctx.get_member_type(par_var, if var.mem_name.is_empty() { MemberName::String(var.mem_name) } else { MemberName::Index(var.mem_index) }) {
+                var.ty_slot = ty_slot;
+                ctx.vars[var_id] = var;
                 should_continue = true;
-              } else if !should_continue {
-                // Could not resolve expression.
-                // panic!("R-VAL Inference on type failed")
-              }
-            } else if left_ty.is_unresolved() {
-              if !right_ty.is_unresolved() && left_var.var_id().is_valid() {
-                rt.body.ctx.vars[left_var.var_id()].ty_slot = right_ts;
-                should_continue = true;
-              } else if !should_continue {
-                // Could not resolve expression.
-                // panic!("R-VAL Inference on type failed")
+              } else {
+                // Create non-aggregate type error.
               }
             }
-            /*  else if left_ty.is_unresolved() {
-              panic!("L-VAl Inference on type failed @ {node_id}")
-            } */
+          }
+          IROp::ALIAS => {
+            let ctx = &mut rt.body.ctx;
+            let right_var = rt.body.graph[operands[0]].var_id();
+            let right_ty = right_var.ty(ctx);
+
+            let left_var = var_id;
+            let left_ty = left_var.ty(ctx);
+
+            println!("{left_ty} {right_ty}");
+            if left_ty.is_unresolved() {
+              if !right_ty.is_unresolved() {
+                ctx.vars[left_var].ty_slot = right_var.type_slot(ctx).clone();
+                should_continue = true;
+              }
+            }
+          }
+          IROp::STORE => {
+            let ctx = &mut rt.body.ctx;
+            let right_var = rt.body.graph[operands[1]].var_id();
+            let right_ty = right_var.ty(ctx);
+
+            let left_var = rt.body.graph[operands[0]].var_id();
+            let left_ty = left_var.ty(ctx);
+
+            if right_ty.is_unresolved() {
+              if !left_ty.is_unresolved() && right_var.is_valid() {
+                ctx.vars[right_var].ty_slot = left_var.type_slot(ctx).clone().decrement_ptr();
+                should_continue = true;
+              }
+            } else if left_ty.is_unresolved() {
+              if !right_ty.is_unresolved() && left_var.is_valid() {
+                ctx.vars[left_var].ty_slot = right_var.type_slot(ctx).clone().increment_ptr();
+                should_continue = true;
+              }
+            }
           }
           _ => {}
         },
@@ -571,23 +508,4 @@ pub fn last_index_of(target_ty: IROp, node_id: usize, rt: &RoutineBody, forward:
   } else {
     0
   }
-}
-
-fn type_data_to_string(ty: TyData, ctx: &TypeVarContext) -> String {
-  let mut out_str = String::new();
-  if ty.is_inline_ptr() {
-    out_str += "*";
-  }
-
-  if ty.is_named_ptr(ctx) {
-    out_str += "*";
-  }
-
-  let ty = ty.ty_slot(ctx);
-
-  let ty = ty.ty_base(ctx);
-
-  out_str += &ty.to_string();
-
-  out_str
 }
