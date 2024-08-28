@@ -6,9 +6,9 @@ use std::{
 };
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Default)]
-#[repr(align(8))]
+#[repr(align(4))]
 pub struct ConstVal {
-  pub(crate) val: [u8; 16],
+  pub(crate) val: [u8; 8],
   pub(crate) ty:  TI,
 }
 
@@ -29,8 +29,9 @@ impl Display for ConstVal {
         16 => fmt_val::<i16>(self, f),
         32 => fmt_val::<i32>(self, f),
         64 => fmt_val::<i64>(self, f),
-        128 => fmt_val::<i128>(self, f),
-        _ => fmt_val::<i128>(self, f),
+        //128 => fmt_val::<i128>(self, f),
+        //_ => fmt_val::<i128>(self, f),
+        _ => unreachable!(),
       },
       PrimitiveSubType::Unsigned => match self.ty.bit_size() {
         8 => fmt_val::<u8>(self, f),
@@ -81,7 +82,7 @@ impl ConstVal {
 
   pub fn store<T>(mut self, val: T) -> Self {
     let byte_size = std::mem::size_of::<T>();
-    let mut bytes: [u8; 16] = Default::default();
+    let mut bytes: [u8; 8] = Default::default();
 
     unsafe { std::ptr::copy(&val as *const _ as *const u8, bytes.as_mut_ptr(), byte_size) };
 

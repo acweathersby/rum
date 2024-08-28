@@ -1,14 +1,8 @@
 use crate::{
   compiler::compile_binary_from_entry,
-  ir::{
-    ir_build_module::build_module,
-    ir_lowering::lower_iops,
-    ir_register_allocator::{generate_register_assignments, CallRegisters, RegisterVariables},
-    ir_type_analysis::{resolve_routine, resolve_struct_offset},
-  },
+  ir::ir_build_module::build_module,
   istring::CachedString,
-  types::PrimitiveType,
-  x86::{compile_from_ssa_fn, print_instructions, x86_eval::x86Function},
+  x86::{print_instructions, x86_eval::x86Function},
 };
 
 #[test]
@@ -22,25 +16,25 @@ BaseArray => [i32; 6]
 heap_allocate ( size: u64, alignment: u64 ) => *u8 _malloc( size )
 
 
-
-loop_iter(array: BaseArray?) => &i32 {
-  
-  i: u32 = 0
-  
-  iter if i is < 2 {
-    i = i + 1
-    yield array[0]
-  }
+dandy () => u32 { 
+  0
 }
 
+loop_iter(array: T?) => &i32 {
+  
+  i: u32 = 0
 
-
+  iter if i is 
+    < 2 {
+      i = i + 1
+      yield array[0]
+    }
+}
 
 main (nest: i32) => *BaseArray {
+  a: u32 = 1
 
-  test: *BaseArray = :[ 1 ]
-
-  UV: u32 = 0
+  test: *BaseArray = :[ 1, a +a, a, a *8, a ]
 
   loop a in loop_iter(test) {
     a = 300 + nest

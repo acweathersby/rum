@@ -289,7 +289,7 @@ mod ctx {
 
       self.vars.push(var);
 
-      self.get_var(var_name).unwrap()
+      self.vars.last_mut().unwrap()
     }
 
     pub fn get_var(&mut self, var_name: IString) -> Option<&mut Variable> {
@@ -469,6 +469,7 @@ mod type_slot {
       }
     }
 
+    /// The number of pointer dereferences required to get to the base value of this type.
     pub fn ptr_depth(&self, ctx: &TypeVarContext) -> usize {
       let ref_depth = match *self {
         TypeSlot::Primitive(ptr_depth, prim) => ptr_depth as usize,

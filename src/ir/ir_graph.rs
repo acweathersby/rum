@@ -1,7 +1,7 @@
 use crate::{
   container::ArrayVec,
   istring::*,
-  types::{ConstVal, PrimitiveType, Type, TypeRef, TypeSlot, TypeVarContext},
+  types::{ConstVal, PrimitiveType, Type, TypeRef, TypeSlot, TypeVarContext, Variable},
 };
 use std::fmt::{Debug, Display};
 
@@ -57,13 +57,17 @@ impl VarId {
       ctx.vars[self.0 as usize].ty_slot
     }
   }
-
-  pub fn pointer_depth<'a>(&self, ctx: &'a TypeVarContext) -> usize {
+  /// The number of pointer dereferences required to get to the base value of this type.
+  pub fn ptr_depth<'a>(&self, ctx: &'a TypeVarContext) -> usize {
     if !self.is_valid() {
       0
     } else {
       ctx.vars[self.0 as usize].ty_slot.ptr_depth(ctx)
     }
+  }
+
+  pub fn var<'a>(&self, ctx: &'a mut TypeVarContext) -> Option<&'a mut Variable> {
+    ctx.vars.get_mut(self.usize())
   }
 }
 
@@ -161,6 +165,7 @@ impl TypeVar {
 }
 
 #[derive(Clone, Debug)]
+#[repr(u8)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
   SSA { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], var_id: VarId },
@@ -223,6 +228,13 @@ impl IRGraphNode {
     } */
   } */
 
+  pub fn ty_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
+    match self {
+      IRGraphNode::Const { val } => TypeSlot::Primitive(0, val.ty),
+      IRGraphNode::SSA { var_id, .. } => var_id.type_slot(ctx),
+    }
+  }
+
   pub fn operand(&self, index: usize) -> IRGraphId {
     if index > 1 {
       IRGraphId::INVALID
@@ -258,6 +270,8 @@ pub enum IROp {
   /// variable, by taking address of the difference between the sp and stack
   /// offset.
   MEMB_PTR_CALC,
+  /// Declares a stack or heap variable and its type
+  MATCH_DECL,
   /// Declares a stack or heap variable and its type
   VAR_DECL,
   /// Declares an aggregate data structure.
@@ -306,7 +320,6 @@ pub enum IROp {
   ITER_OUT_VAL,
   ITER_IN_VAL,
   ITER_ARG,
-  ITER_CALL,
 
   DBG_CALL,
   CALL,

@@ -267,7 +267,7 @@ impl Arg {
   }
 
   pub(super) fn from_const(c: ConstVal) -> Self {
-    let val: i128 = unsafe { std::mem::transmute(c.val) };
+    let val: i64 = unsafe { std::mem::transmute(c.val) };
     Arg::Imm_Int(val as i64)
   }
 

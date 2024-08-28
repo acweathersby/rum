@@ -5,12 +5,14 @@ use std::fmt::{Debug, Display};
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[allow(unused, non_camel_case_types, non_upper_case_globals)]
 pub enum PrimitiveSubType {
-  Undefined    = 0,
-  Unsigned     = 1,
-  Signed       = 2,
-  Descriminant = 4,
-  Float        = 3,
-  Flag         = 5,
+  Undefined       = 0,
+  Unsigned        = 1,
+  Signed          = 2,
+  Float           = 3,
+  Descriminant    = 4,
+  Flag            = 5,
+  UnsignedPtrSize = 6,
+  SignedPtrSize   = 7,
 }
 
 impl Display for PrimitiveSubType {

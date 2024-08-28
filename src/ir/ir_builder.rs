@@ -217,9 +217,9 @@ impl<'body> IRBuilder<'body> {
       }
       SMT::Inherit => {
         let graph = &mut self.body.graph;
-        dbg!(operands[0].usize(), operands[0].usize() < graph.len());
         let in_range = operands[0].usize() < graph.len();
-        assert!(in_range, "Invalid Inherit operand for expression:\n{}", tok.blame(1, 1, "", None));
+
+        debug_assert!(in_range, "Invalid Inherit operand for expression:\n{}", tok.blame(1, 1, "", None));
 
         graph[operands[0].usize()].var_id()
       }

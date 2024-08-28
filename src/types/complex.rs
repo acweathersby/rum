@@ -94,7 +94,7 @@ impl IRGraphNode {
       IRGraphNode::SSA { block_id, op, operands, var_id, .. } => {
         let ctx = &body.ctx;
         let val = var_id.ty(ctx);
-        let ptr = "*".repeat(var_id.pointer_depth(ctx));
+        let ptr = "*".repeat(var_id.ptr_depth(ctx));
         let named_ptr = format!("{}", val.pointer_name());
         let base = val.base_type(ctx.db());
 
@@ -132,6 +132,29 @@ impl RoutineBody {
       ctx:      TypeVarContext::new(db),
     }
   }
+
+  pub fn print_node(&self, node_index: usize, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let index = node_index;
+    let node = &self.graph[node_index];
+    f.write_fmt(format_args!("\n  {index: >5}: "))?;
+    node.fmt(f, self)?;
+    if let Some(tok) = self.tokens.get(index) {
+      f.write_fmt(format_args!("\n\n\u{001b}[31m{}\u{001b}[0m", tok.blame(0, 0, "", None)));
+    }
+    Ok(())
+  }
+
+  pub fn node_to_string(&self, node_index: usize) -> String {
+    format!("{}", ShitKludgeToGetAFormattedNodeStringWithContextDataBecuaseRustIsAPOS(self, node_index))
+  }
+}
+
+struct ShitKludgeToGetAFormattedNodeStringWithContextDataBecuaseRustIsAPOS<'a>(&'a RoutineBody, usize);
+
+impl<'a> Display for ShitKludgeToGetAFormattedNodeStringWithContextDataBecuaseRustIsAPOS<'a> {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    self.0.print_node(self.1, f)
+  }
 }
 
 impl Display for RoutineBody {
@@ -156,13 +179,7 @@ impl Display for RoutineBody {
         f.write_fmt(format_args!("\n{} \n", block.name));
       }
       for node_id in &block.nodes {
-        let index = node_id.usize();
-        let node = &self.graph[node_id.usize()];
-        f.write_fmt(format_args!("\n  {index: >5}: "))?;
-        node.fmt(f, self)?;
-        if let Some(tok) = self.tokens.get(index) {
-          f.write_fmt(format_args!("\n\n\u{001b}[31m{}\u{001b}[0m", tok.blame(0, 0, "", None)));
-        }
+        self.print_node(node_id.usize(), f)?;
       }
 
       match (block.branch_fail, block.branch_succeed) {

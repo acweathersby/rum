@@ -210,7 +210,7 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
               ast: routine.clone(),
             };
 
-            let ty = ty_db.insert_type(name, ty.into());
+            ty_db.insert_type(name, ty.into());
 
             use routine_type_Value::*;
             match &routine.ty {
@@ -504,7 +504,7 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
         i += 1;
       }
 
-      println!("{ib:?}");
+      //println!("{ib:?}");
     }
     _ => unreachable!(),
   }
@@ -538,15 +538,6 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
     d => todo!("expression: {d:#?}"),
   }
 }
-
-/* fn process_address_of(ib: &mut IRBuilder<'_>, addr: &std::sync::Arc<crate::parser::script_parser::AddressOf<Token>>) {
-  if let Some(var) = ib.get_variable_from_id(IdMember(addr.id.id.intern())) {
-    let ptr = ib.get_variable_ptr(&var, "---".intern()).unwrap();
-    ib.push_ssa(ADDR, ptr.ty_var.into(), &[SMO::IROp(var.store)])
-  } else {
-    panic!("Variable not found")
-  }
-} */
 
 fn resolve_variable(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder) -> Option<Variable> {
   let base_var = &mem.root;
@@ -612,9 +603,7 @@ fn resolve_variable(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder) -> O
 }
 
 fn process_member_load(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder<'_>) {
-  //todo!("Handle Member Load");
   if let Some(var) = resolve_variable(mem, ib) {
-    // ib.push_ssa(LOAD, var.id.into(), &[var.reference.into()], mem.tok.clone());
     ib.push_node(var.reference);
   }
 }
@@ -738,11 +727,12 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
     let call_name = sys_call_name.intern();
     let call_target_id = ib.body.ctx.db_mut().get_or_add_type_index(call_name, Type::DebugCall(call_name));
     let call_slot = TypeSlot::GlobalIndex(0, call_target_id as u32);
+
     let var = ib.declare_variable(call_name, call_slot).clone();
     ib.push_ssa(DBG_CALL, var.id.into(), &[], tok.clone());
     ib.pop_stack();
 
-    let var = ib.declare_variable(Default::default(), call_slot).clone();
+    let var = ib.declare_variable(Default::default(), TypeSlot::Primitive(1, PrimitiveType::u8)).clone();
     ib.push_ssa(CALL_RET, var.id.into(), &[], tok.clone());
   } else {
     let call = if let Some((routine_entry, _)) = ib.body.ctx.db_mut().get_type_mut(name).as_ref() {
@@ -938,7 +928,7 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
   let end = ib.create_block();
 
   let mut var = ib.declare_generic(format!("var::{}", match_.tok.get_start()).intern()).clone();
-  ib.push_ssa(VAR_DECL, var.id.into(), &[], match_.tok.clone());
+  ib.push_ssa(MATCH_DECL, var.id.into(), &[], match_.tok.clone());
   var.reference = ib.pop_stack().unwrap();
   ib.set_variable(var);
 

@@ -89,7 +89,8 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
     Type::Routine(rt) => {
       resolve_generic_members(rt);
 
-      /*
+      dbg!(&rt);
+
       //  println!("{routine_name}:\n{}", &rt.body);
       println!("TODO(anthony) Assert the routine is ready to be type checked.");
 
@@ -112,7 +113,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
           IRGraphNode::SSA { block_id, operands, var_id: ty, op } => {
             /* Place holder - MODIFY, DO NOT REMOVE */
             match op {
-              STORE => {
+              STORE | LS => {
                 let left_node_id = operands[0];
                 let right_node_id = operands[1];
                 let tok = &tokens[left_node_id];
@@ -125,59 +126,43 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                   panic!("INTERNAL COMPILER ERROR\n{}", tok.blame(1, 1, "VarId dot assigned to value", BlameColor::RED));
                 }
 
-                // Load the type of the var
-                let l_var_id = graph[left_node_id].var_id();
-
-                // Load the type of the right node
-                let r_var_id = graph[right_node_id].var_id();
-
-                // True if the target variable is an inline pointer to a named pointer
-                let t_is_ptr_ptr = false;
-                // True if the source variable is an inline pointer to a named pointer
-                let s_is_ptr_ptr = false;
-
-                // The rules set for pointer operations on the source pointer.
-                let s_ptr_rules = 0;
-
-                // The rules set for pointer operations on the target pointer.
-                let t_ptr_rules = 0;
-
                 // Resolve operational type
+                let r_ty_slot = graph[right_node_id].ty_slot(ctx);
+                let l_ty_slot = graph[left_node_id].ty_slot(ctx);
 
-                let l_var_id_slot = l_var_id.ty_slot(ctx);
-                let r_var_id_slot = r_var_id.ty_slot(ctx);
+                let r_ptr_size = r_ty_slot.ptr_depth(ctx) as u32;
+                let l_ptr_size = l_ty_slot.ptr_depth(ctx) as u32;
 
-                let s_ptr_size = r_var_id.ptr_depth() + (r_var_id.is_named_ptr(ctx) as u32);
-                let t_ptr_size = l_var_id.ptr_depth() + (l_var_id.is_named_ptr(ctx) as u32);
-
-                let s_ty = r_var_id_slot.ty_base(ctx);
-                let t_ty = l_var_id_slot.ty_base(ctx);
+                let r_ty = l_ty_slot.ty(ctx);
+                let l_ty = l_ty_slot.ty(ctx);
 
                 // Handle base conversion semantics.
 
-                match (t_ty, s_ty) {
+                println!("L: {l_ty} {l_ptr_size} \nR: {r_ty} {r_ptr_size}");
+
+                match (l_ty, r_ty) {
                   (TypeRef::Primitive(t_prim), TypeRef::Primitive(s_prim)) => {
-                    if t_prim != s_prim {
+                    if t_prim != s_prim || true {
                       // Add conversion for s_prim. This may also require changing the types upstream.
 
                       // Convert the incoming types to outgoing types.
 
                       let node_id = left_node_id;
 
-                      fn convert_node(graph: &mut Vec<IRGraphNode>, node_id: super::ir_graph::IRGraphId, t_prim: &PrimitiveType) {
+                      fn convert_node(graph: &mut Vec<IRGraphNode>, ctx: &mut TypeVarContext, node_id: super::ir_graph::IRGraphId, t_prim: PrimitiveType) {
                         match &mut graph[node_id] {
                           IRGraphNode::Const { val } => {
                             // Always convert constants. They should be unique to any expression.
-                            *val = val.convert(*t_prim);
+                            *val = val.convert(t_prim);
                           }
-                          IRGraphNode::SSA { op, block_id, operands, var_id: ty } => match op {
-                            IROp::ADD | IROp::SUB => {
-                              *ty = TyData::Slot(0, TypeSlot::Primitive(*t_prim));
+                          IRGraphNode::SSA { op, block_id, operands, var_id } => match op {
+                            IROp::ADD | IROp::SUB | IROp::MUL | IROp::DIV => {
+                              var_id.var(ctx).unwrap().ty_slot = TypeSlot::Primitive(var_id.ptr_depth(ctx) as u32, t_prim);
 
                               let op1 = operands[0];
                               let op2 = operands[1];
-                              convert_node(graph, op1, t_prim);
-                              convert_node(graph, op2, t_prim);
+                              convert_node(graph, ctx, op1, t_prim);
+                              convert_node(graph, ctx, op2, t_prim);
                               // Convert child nodes
                             }
                             _ => {}
@@ -186,10 +171,13 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                         }
                       }
 
-                      convert_node(graph, right_node_id, t_prim);
+                      convert_node(graph, ctx, right_node_id, *t_prim);
                     }
 
-                    match (t_ptr_size, s_ptr_size) {
+                    let r_ty = l_ty_slot.ty(ctx);
+                    let l_ty = l_ty_slot.ty(ctx);
+
+                    match (l_ptr_size, r_ptr_size) {
                       (0, 0) => {
                         // This requires either creating a load op on the target pointer, or retargeting the destination operand.
 
@@ -214,9 +202,9 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
 
                       (2, 0) => {
                         panic!(
-                          "\n\nCannot assign a primitive r-value type {}{s_ty} to an l-value type unless #pointer-arithmetic is active {}{t_ty}: \n{}\n\n",
-                          "*".repeat((s_ptr_size as isize - 1).max(0) as usize),
-                          "*".repeat((t_ptr_size as isize - 1).max(0) as usize),
+                          "\n\nCannot assign a primitive r-value type {}{l_ty} to an l-value type unless #pointer-arithmetic is active {}{r_ty}: \n{}\n\n",
+                          "*".repeat((r_ptr_size as isize - 1).max(0) as usize),
+                          "*".repeat((l_ptr_size as isize - 1).max(0) as usize),
                           tok.blame(1, 1, &format!("maybe place a hint here?",), BlameColor::RED)
                         );
                       }
@@ -227,9 +215,9 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                         println!("TODO: Setup named prim ptr to named prim pointer move (MOVABLE), pointer clone (SHARABLE), or prim clone (COPYABLE)");
                       }
                       _ => panic!(
-                        "\n\nCannot assign primitive type {}{s_ty} to a primitive type {}{t_ty}: \n{}\n\n",
-                        "*".repeat((s_ptr_size as isize - 1).max(0) as usize),
-                        "*".repeat((t_ptr_size as isize - 1).max(0) as usize),
+                        "\n\nCannot assign primitive type {}{l_ty} to a primitive type {}{r_ty}: \n{}\n\n",
+                        "*".repeat((r_ptr_size as isize - 1).max(0) as usize),
+                        "*".repeat((l_ptr_size as isize - 1).max(0) as usize),
                         tok.blame(1, 1, &format!("maybe place a hint here?",), BlameColor::RED)
                       ),
                     }
@@ -242,9 +230,9 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                   }
                   (TypeRef::Primitive(..), TypeRef::Struct(..)) => {
                     panic!(
-                      "\n\nCannot assign a structure type {}{s_ty} to a primitive type {}{t_ty}: \n{}\n\n",
-                      "*".repeat((s_ptr_size as isize - 1).max(0) as usize),
-                      "*".repeat((t_ptr_size as isize - 1).max(0) as usize),
+                      "\n\nCannot assign a structure type {}{r_ty} to a primitive type {}{l_ty}: \n{}\n\n",
+                      "*".repeat((r_ptr_size as isize - 1).max(0) as usize),
+                      "*".repeat((l_ptr_size as isize - 1).max(0) as usize),
                       tok.blame(1, 1, &format!("maybe place a hint here?",), BlameColor::RED)
                     );
                   }
@@ -295,9 +283,9 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
 
                   (TypeRef::Struct(..), TypeRef::Primitive(..)) => {
                     panic!(
-                      "\n\ninvalid assignment of {}{s_ty} to {}{t_ty}: \n{}\n\n",
-                      "*".repeat((s_ptr_size as isize - 1).max(0) as usize),
-                      "*".repeat((t_ptr_size as isize - 1).max(0) as usize),
+                      "\n\ninvalid assignment of {}{r_ty} to {}{l_ty} @{node_index}: \n{}\n\n",
+                      "*".repeat((r_ptr_size as isize - 1).max(0) as usize),
+                      "*".repeat((l_ptr_size as isize - 1).max(0) as usize),
                       tok.blame(1, 1, &format!("maybe place a hint here?",), BlameColor::RED)
                     );
 
@@ -313,7 +301,7 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                     if (a as *const _ as usize) != (b as *const _ as usize) {
                       panic!("Handle struct assignment with different types: May need to create a sub pointer to a compatible member");
                     }
-                    match (t_ptr_size, s_ptr_size) {
+                    match (l_ptr_size, r_ptr_size) {
                       (1, 1) => {
                         // This is a copy
                         println!("TODO: Setup struct to struct copy");
@@ -360,12 +348,15 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
                   (TypeRef::Union(..), TypeRef::Routine(..)) => {
                     panic!("Handle routine to union type cast")
                   }
-                  _ => panic!(
-                    "\n\ninvalid assignment of {}{s_ty} to {}{t_ty}: \n{}\n\n",
-                    "*".repeat((s_ptr_size as isize - 1).max(0) as usize),
-                    "*".repeat((t_ptr_size as isize - 1).max(0) as usize),
-                    tok.blame(1, 1, &format!("maybe place a hint here?",), BlameColor::RED)
-                  ),
+                  _ => {
+                    let tok = tok.clone();
+                    panic!(
+                      "\n\ninvalid assignment of {}{r_ty} to {}{l_ty} @{node_index}: \n{}\n\n",
+                      "*".repeat((r_ptr_size as isize - 1).max(0) as usize),
+                      "*".repeat((l_ptr_size as isize - 1).max(0) as usize),
+                      tok.blame(1, 1, &format!("maybe place a hint here?",), BlameColor::RED)
+                    )
+                  }
                 }
 
                 // todo(anthony) - Handle Struct, Array, Enum, Union, Bitfield assignment / conversion semantics.
@@ -381,7 +372,6 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
       }
 
       println!("{routine_name}:\n{}", &rt.body);
-      */
     }
     _ => unreachable!(),
   }
@@ -436,7 +426,6 @@ fn resolve_generic_members(rt: &mut RoutineType) {
             let left_var = var_id;
             let left_ty = left_var.ty(ctx);
 
-            println!("{left_ty} {right_ty}");
             if left_ty.is_unresolved() {
               if !right_ty.is_unresolved() {
                 ctx.vars[left_var].ty_slot = right_var.type_slot(ctx).clone();

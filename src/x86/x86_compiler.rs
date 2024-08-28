@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Formatter};
 
 use radlr_rust_runtime::types::NodeTraits;
 
@@ -7,7 +7,7 @@ use crate::{
   container::get_aligned_value,
   error::RumResult,
   ir::{
-    ir_graph::{BlockId, IRBlock, IRGraphNode, IROp, VarId},
+    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, IROp, VarId},
     ir_register_allocator::RegisterAssignement,
   },
   istring::IString,
@@ -118,7 +118,9 @@ pub fn compile_from_ssa_fn(
           let assigns = &register_assignments[index];
 
           //println!("{index:8}: {node:}");
-          println!("               {assigns:}");
+          let mut string = "".to_string();
+
+          println!("\n\n{}\n               {assigns:}:\n\n", cc.body.node_to_string(index));
 
           let old_offset = cc.link.binary.len();
           jump_resolved |= compile_op(node, assigns, &block, &mut cc, &offsets, rsp_offset);
@@ -190,16 +192,12 @@ fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
 }
 
 pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, cc: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
-  todo!("compile_op");
-
-  /*
-
   const POINTER_SIZE: u64 = 64;
 
   let db = cc.body.ctx.db();
-  let slot = node.ty_data().ty_slot(&cc.body.ctx);
+  let slot = node.ty_slot(&cc.body.ctx);
   let node_ty = slot.ty(&cc.body.ctx);
-  let node_ty_is_pointer = node.ty_data().is_pointer(&cc.body.ctx);
+  let node_ty_is_pointer = slot.ptr_depth(&cc.body.ctx) > 0;
 
   if node_ty.is_unresolved() {
     println!("TODO(anthony): All types should be resolved at this point");
@@ -211,6 +209,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     let regs = reg_data.reg;
     let vars = reg_data.vars;
     let spills = reg_data.spills;
+    println!("{op:?} to x86:->");
 
     // Perform spills
     for (op_index, spill_var) in spills[0..3].iter().enumerate() {
@@ -797,11 +796,11 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
                    }
                  }
       */
+      IROp::ALIAS => {}
       IROp::OR | IROp::XOR | IROp::AND | IROp::NOT | IROp::DIV | IROp::LOG | IROp::POW | IROp::LS | IROp::LE => todo!("TODO: {node:?}"),
       op => todo!("Handle {op:?}"),
     }
   };
 
   false
-  */
 }
