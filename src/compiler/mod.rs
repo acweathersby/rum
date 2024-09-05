@@ -1,27 +1,16 @@
 use crate::{
   ir::{
-    ir_lowering::lower_iops,
+    ir_lowering::{lower_into_ssa, lower_iops},
     ir_register_allocator::{generate_register_assignments, CallRegisters, RegisterVariables},
     ir_type_analysis::{resolve_routine, resolve_struct_offset},
   },
   istring::{CachedString, IString},
   types::{Type, TypeDatabase},
-  x86::compile_from_ssa_fn,
 };
 use std::collections::{HashSet, VecDeque};
 
 #[cfg(test)]
 mod test;
-
-mod module {
-  use crate::{istring::IString, types::TypeDatabase};
-
-  struct RumModule {
-    resolved: bool,
-    path:     IString,
-    types:    TypeDatabase,
-  }
-}
 
 use crate::x86::x86_types::*;
 
@@ -66,13 +55,15 @@ pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, d
     match ty_ref {
       Type::Routine(routine) => {
         for var in &routine.body.ctx.vars {
-          match var.ty() {
-            crate::types::TypeRef::Routine(r) => {
-              if seen.insert(r.name) {
-                pending_routines.push_back(r.name);
+          if var.ty.is_aggregate() {
+            match var.ty.aggregate(db) {
+              Some(Type::Routine(r)) => {
+                if seen.insert(r.name) {
+                  pending_routines.push_back(r.name);
+                }
               }
+              _ => {}
             }
-            _ => {}
           }
         }
       }
@@ -81,6 +72,7 @@ pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, d
 
     resolve_routine(pending, db);
 
+    lower_into_ssa(pending, db);
     lower_iops(pending, db);
 
     // optimize_routine(pending, db);

@@ -8,7 +8,7 @@ struct_field_align_threshold = 20
 newline_style = "Unix"
 tab_spaces = 2
 
-hide_parse_errors = true
+show_parse_errors = true
 
 binop_separator = "Front"
 

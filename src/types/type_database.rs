@@ -1,4 +1,4 @@
-use super::{ArrayType, BitFieldType, EnumType, PrimitiveType, RoutineType, ScopeType, StructType, UnionType};
+use super::{ArrayType, BitFieldType, EnumType, Lifetime, RoutineType, RumType, ScopeType, StructType, UnionType};
 use crate::{
   ir::ir_graph::{IRGraphId, VarId},
   istring::{CachedString, IString},
@@ -20,14 +20,15 @@ pub use type_slot::*;
 pub use variable::*;
 
 pub struct TypeDatabase {
-  pub types: Vec<Box<Type>>,
+  pub types:     Vec<Box<Type>>,
+  pub lifetimes: Vec<Box<Lifetime>>,
   /// Maps a typename to a to a databese type type.
-  lookup:    BTreeMap<IString, usize>,
+  lookup:        BTreeMap<IString, usize>,
 }
 
 impl TypeDatabase {
   pub fn new() -> Self {
-    Self { types: Default::default(), lookup: Default::default() }
+    Self { types: Default::default(), lifetimes: Default::default(), lookup: Default::default() }
   }
 
   pub fn get_type_index(&self, name: IString) -> Option<usize> {
@@ -46,21 +47,21 @@ impl TypeDatabase {
     }
   }
 
-  pub fn get_type_mut<'a>(&mut self, name: IString) -> Option<(&'a mut Type, TypeSlot)> {
+  pub fn get_type_mut<'a>(&mut self, name: IString) -> Option<(&'a mut Type, RumType)> {
     if let Some(index) = self.get_type_index(name) {
       let ptr = self.types.as_mut_ptr();
       let val = unsafe { ptr.offset(index as isize) };
-      Some((unsafe { &mut *val }, TypeSlot::GlobalIndex(0, index as u32)))
+      Some((unsafe { &mut *val }, RumType::Undefined.to_aggregate_id(index)))
     } else {
       None
     }
   }
 
-  pub fn get_type<'a>(&self, name: IString) -> Option<(&'a Type, TypeSlot)> {
+  pub fn get_type<'a>(&self, name: IString) -> Option<(&'a Type, RumType)> {
     if let Some(index) = self.get_type_index(name) {
       let ptr = self.types.as_ptr();
       let val = unsafe { ptr.offset(index as isize) };
-      Some((unsafe { &*val }, TypeSlot::GlobalIndex(0, index as u32)))
+      Some((unsafe { &*val }, RumType::Undefined.to_aggregate_id(index)))
     } else {
       None
     }
@@ -86,19 +87,19 @@ mod ctx {
     fmt::{Debug, Display},
   };
 
+  use super::{ty::Type, variable::Variable, RumType, TypeDatabase};
   use crate::{
     ir::ir_graph::VarId,
     istring::{CachedString, IString},
-    types::{type_context::MemberName, type_database::ty::TypeRef, ScopeLookup},
+    types::{type_context::MemberName, type_database::ty::TypeRef, RumSubType, ScopeLookup},
   };
-
-  use super::{ty::Type, variable::Variable, TypeDatabase, TypeSlot};
 
   #[derive(Clone)]
   pub struct TypeVarContext {
     pub db:            *mut TypeDatabase,
     pub vars:          Vec<Variable>,
-    pub type_slots:    Vec<TypeSlot>,
+    pub type_slots:    Vec<(RumType, VarId)>,
+    pub generics:      Vec<Vec<VarId>>,
     pub var_scopes:    ScopeLookup,
     pub ty_var_scopes: ScopeLookup,
   }
@@ -117,24 +118,29 @@ mod ctx {
       for (index, var) in self.vars.iter().enumerate() {
         if var.par.is_valid() {
           if var.mem_name.is_empty() {
-            f.write_fmt(format_args!("  {index:5}: {}[{}]({})", var.par, var.mem_index, var.ty_slot.ty(self)))?;
+            f.write_fmt(format_args!("  {index:5}: {}[{}]({})", var.par, var.mem_index, var.ty))?;
           } else {
-            f.write_fmt(format_args!("  {index:5}: {}.{}({})", var.par, var.mem_name, var.ty_slot.ty(self)))?;
+            f.write_fmt(format_args!("  {index:5}: {}.{}({})", var.par, var.mem_name, var.ty))?;
           }
         } else {
-          f.write_fmt(format_args!("  {index:5}: {} {} ", var.mem_name, var.ty_slot.ty(self)))?;
+          f.write_fmt(format_args!("  {index:5}: {} {} ", var.mem_name, var.ty))?;
         }
         f.write_str("\n")?;
       }
 
       f.write_str("  types:\n")?;
 
-      for (index, scope) in self.ty_var_scopes.scopes.iter().enumerate() {
+      for (index, scope) in self.var_scopes.scopes.iter().enumerate() {
         f.write_fmt(format_args!("  scope {index}:\n"))?;
-        for (.., entry_index) in &scope.1 {
-          let slot = &self.type_slots[*entry_index];
-          let ty = slot.ty(self);
-          f.write_fmt(format_args!(" {entry_index:5}: {}", ty))?;
+        for (name, index, entry_index) in &scope.1 {
+          let ty = &self.type_slots[*entry_index].0;
+          if !name.is_empty() {
+            f.write_fmt(format_args!(" {entry_index:5}: {name} => {}", ty))?;
+          } else if *index < usize::MAX {
+            f.write_fmt(format_args!(" {entry_index:5}: [{index}] => {}", ty))?;
+          } else {
+            f.write_fmt(format_args!(" {entry_index:5}: ____ => {}", ty))?;
+          }
           f.write_str("\n")?;
         }
       }
@@ -149,6 +155,7 @@ mod ctx {
         db:            db,
         vars:          Default::default(),
         type_slots:    Default::default(),
+        generics:      Default::default(),
         ty_var_scopes: ScopeLookup::new(),
         var_scopes:    ScopeLookup::new(),
       }
@@ -178,118 +185,204 @@ mod ctx {
       unsafe { &*self.db }
     }
 
-    pub fn get_type(&mut self, ty_name: IString) -> Option<TypeSlot> {
+    pub fn get_type(&mut self, ty_name: IString) -> Option<(RumType, VarId)> {
       if let Some(index) = self.ty_var_scopes.get_index_from_id(ty_name) {
-        Some(self.convert_into_out_ctx_slot(index))
+        Some(self.type_slots[index])
       } else if let Some(g_index) = self.db_mut().get_type_index(ty_name) {
         let index = self.type_slots.len();
         self.ty_var_scopes.add_index(ty_name, usize::MAX, index);
-        self.type_slots.push(TypeSlot::GlobalIndex(0, g_index as u32));
-        Some(self.convert_into_out_ctx_slot(index))
+        self.type_slots.push((RumType::Undefined.to_aggregate_id(g_index), VarId::default()));
+        Some(self.type_slots[index])
       } else {
         None
       }
     }
 
-    pub fn get_type_local(&self, name: IString) -> Option<TypeSlot> {
+    pub fn get_type_local(&self, name: IString) -> Option<(RumType, VarId)> {
       if let Some(index) = self.ty_var_scopes.get_index_from_id(name) {
-        Some(self.convert_into_out_ctx_slot(index))
+        Some(self.type_slots[index])
       } else {
         None
       }
     }
 
-    fn insert_ty_internal(self: &mut TypeVarContext, ty_name: IString, ty: Type) -> TypeSlot {
-      let index = self.type_slots.len();
-      self.ty_var_scopes.add_index(ty_name, usize::MAX, index);
-      let g_index = self.db_mut().insert_anonymous_type(ty);
-      self.type_slots.push(TypeSlot::GlobalIndex(0, g_index as u32));
-      self.convert_into_out_ctx_slot(index)
+    pub fn get_member_var(&mut self, parent_var: VarId, member_name: MemberName) -> Option<&mut Variable> {
+      let host = self as *mut _;
+
+      let par_var = self.vars[parent_var];
+
+      debug_assert!(par_var.ctx as usize == host as usize);
+
+      let ts_index = self.type_slots.len();
+      let par_index = parent_var.usize();
+
+      let member_var_index = self.get_member_var_index(par_var, par_index, member_name);
+
+      if member_var_index == self.type_slots.len() {
+        let var = self.get_member_type_var(parent_var, member_name);
+        var.temporary = false;
+        var.mem_name = match member_name {
+          MemberName::String(name) => name,
+          _ => Default::default(),
+        };
+        var.mem_index = match member_name {
+          MemberName::Index(id) => id,
+          _ => usize::MAX,
+        };
+        var.par = VarId::new(par_index as u32);
+
+        Some(var)
+      } else {
+        let var = self.type_slots[member_var_index].1;
+        Some(&mut self.vars[var])
+      }
     }
 
-    pub fn insert_generic(self: &mut TypeVarContext, name: MemberName) -> TypeSlot {
-      if let Some(index) = match name {
-        MemberName::Index(index) => self.ty_var_scopes.get_index_from_index(index),
-        MemberName::String(name) => self.ty_var_scopes.get_index_from_id(name),
-      } {
-        self.convert_into_out_ctx_slot(index)
-      } else {
-        let index = self.type_slots.len();
+    fn get_member_type_var(&mut self, par_var_id: VarId, member_name: MemberName) -> &mut Variable {
+      let par_var = &self.vars[par_var_id];
 
-        let slot = match name {
-          MemberName::Index(mem_index) => {
-            self.ty_var_scopes.add_index(Default::default(), mem_index, index);
-            TypeSlot::UNRESOLVED {
-              ptr_depth:  0,
-              var_name:   Default::default(),
-              var_index:  mem_index as u32,
-              slot_index: index as u32,
+      if par_var.ty.is_generic() {
+        return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+      }
+
+      let entry = match par_var.ty.sub_type() {
+        RumSubType::Generic => {
+          return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+        }
+        RumSubType::Aggregate => match par_var.ty.aggregate(&self.db()).unwrap() {
+          Type::Array(array) => return self.insert_new_var_internal(Default::default(), array.element_type, true),
+          Type::Structure(strct) => match member_name {
+            MemberName::Index(index) => {
+              if let Some(mem) = strct.members.iter().find(|m| m.original_index == index) {
+                return self.insert_new_var_internal(Default::default(), mem.ty, true);
+              } else {
+                return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+              }
+            }
+            MemberName::String(member_name) => {
+              if let Some(mem) = strct.members.iter().find(|m| m.name == member_name) {
+                return self.insert_new_var_internal(Default::default(), mem.ty, true);
+              } else {
+                return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+              }
+            }
+          },
+          tr => {
+            panic!("invalid operation on {}", par_var.ty);
+          }
+        },
+
+        tr => {
+          panic!("invalid operation on {}", par_var.ty);
+        }
+      };
+    }
+
+    fn get_member_var_index(&mut self, par_var: Variable, par_index: usize, member_name: MemberName) -> usize {
+      let par_index = par_var.id.usize();
+
+      let member_var_index = self.vars.len();
+      if par_var.mem_scope > 0 {
+        let (_, scope) = &self.var_scopes.scopes[par_var.mem_scope];
+
+        match member_name {
+          MemberName::String(member_name) => {
+            if let Some((.., index)) = scope.iter().find(|(.., id)| self.vars[*id].mem_name == member_name) {
+              return *index;
+            } else {
+              self.var_scopes.scopes[par_var.mem_scope].1.push((member_name, usize::MAX, member_var_index));
+              return member_var_index;
             }
           }
-          MemberName::String(name) => {
-            self.ty_var_scopes.add_index(name, usize::MAX, index);
-            TypeSlot::UNRESOLVED { ptr_depth: 0, var_name: name, var_index: u32::MAX, slot_index: index as u32 }
+          MemberName::Index(index) => {
+            if let Some((.., index)) = scope.iter().find(|(.., id)| self.vars[*id].mem_index == index) {
+              return *index;
+            } else {
+              self.var_scopes.scopes[par_var.mem_scope].1.push((Default::default(), index, member_var_index));
+              return member_var_index;
+            }
           }
-        };
-
-        self.type_slots.push(slot);
-        self.convert_into_out_ctx_slot(index)
-      }
-    }
-
-    fn convert_into_out_ctx_slot(self: &TypeVarContext, index: usize) -> TypeSlot {
-      match self.type_slots[index] {
-        TypeSlot::UNRESOLVED { .. } => TypeSlot::CtxIndex(0, index as u32),
-        slot => slot,
-      }
-    }
-
-    pub fn get_or_add_type(&mut self, ty_name: IString, ty_string: Type) -> TypeSlot {
-      if let Some(ty_index) = self.get_type(ty_name) {
-        ty_index
+        }
       } else {
-        self.insert_ty_internal(ty_name.into(), ty_string)
+        self.var_scopes.push_scope();
+        dbg!(self.var_scopes.current_scope, member_name);
+        let par_scope = self.var_scopes.current_scope;
+        self.vars[par_index].mem_scope = par_scope;
+
+        match member_name {
+          MemberName::Index(index) => {
+            self.var_scopes.scopes[par_scope].1.push((Default::default(), index, member_var_index));
+          }
+          MemberName::String(name) => {
+            self.var_scopes.scopes[par_scope].1.push((name, usize::MAX, member_var_index));
+          }
+        }
+        self.var_scopes.pop_scope();
+
+        return member_var_index;
       }
     }
 
-    pub fn get_or_add_type_local(&mut self, ty_name: IString, ty_string: Type) -> TypeSlot {
-      if let Some(ty_index) = self.get_type_local(ty_name) {
-        ty_index
-      } else {
-        self.insert_ty_internal(ty_name.into(), ty_string)
-      }
+    pub fn alias_variable(&mut self, existing_var: &Variable, new_name: IString) {
+      self.var_scopes.add_index(new_name.into(), usize::MAX, existing_var.id.usize());
     }
 
-    pub fn insert_ty(&mut self, ty_name: IString, ty_string: Type) -> TypeSlot {
-      if let Some(ty_index) = self.ty_var_scopes.get_index_from_id(ty_name) {
-        panic!("Type {} => {} has already been added into this context", ty_name.to_string(), TypeRef::from(&ty_string));
-      } else {
-        self.insert_ty_internal(ty_name.into(), ty_string)
-      }
+    pub fn insert_new_var(&mut self, var_name: IString, ty: RumType) -> &mut Variable {
+      self.insert_new_var_internal(var_name, ty, false)
     }
 
-    pub fn insert_var(&mut self, var_name: IString, slot_index: TypeSlot) -> &mut Variable {
-      debug_assert!(!matches!(slot_index, TypeSlot::UNRESOLVED { .. }));
-      let index: usize = self.vars.len();
+    pub fn insert_new_var_internal(&mut self, var_name: IString, ty: RumType, use_parent_scope: bool) -> &mut Variable {
+      let var_index: usize = self.vars.len();
+      let ts_index: usize = self.type_slots.len();
+
       let db = self.db_mut();
 
-      self.var_scopes.add_index(var_name.into(), usize::MAX, index);
+      if (!use_parent_scope) {
+        self.var_scopes.add_index(var_name.into(), usize::MAX, var_index);
+      }
 
       let var = Variable {
-        ctx:       self as *const _ as *mut _,
-        temporary: false,
-        id:        VarId::new(index as u32),
-        par:       Default::default(),
-        reference: Default::default(),
-        ty_slot:   slot_index,
-        mem_name:  var_name,
-        mem_index: usize::MAX,
-        mem_scope: 0,
+        ctx:         self as *const _ as *mut _,
+        temporary:   false,
+        id:          VarId::new(var_index as u32),
+        par:         Default::default(),
+        declaration: Default::default(),
+        ty:          ty.increment_pointer(),
+        mem_name:    var_name,
+        mem_index:   usize::MAX,
+        mem_scope:   0,
       };
 
       self.vars.push(var);
 
+      self.type_slots.push((ty, VarId::new(var_index as u32)));
+
       self.vars.last_mut().unwrap()
+    }
+
+    pub fn insert_generic(self: &mut TypeVarContext, var_name: IString, generic_type_name: IString) -> (RumType, &mut Variable) {
+      self.insert_generic_internal(var_name, generic_type_name, false)
+    }
+
+    pub fn insert_generic_internal(self: &mut TypeVarContext, var_name: IString, generic_type_name: IString, use_parent_scope: bool) -> (RumType, &mut Variable) {
+      // get generic slot
+
+      let generic_index = match (!generic_type_name.is_empty()).then_some(self.ty_var_scopes.get_index_from_id(generic_type_name)).flatten() {
+        Some(index) => index,
+        None => {
+          let index = self.generics.len();
+          self.generics.push(Vec::new());
+          index
+        }
+      };
+
+      let ty = RumType::Undefined.to_generic_id(generic_index);
+
+      let var_id = self.insert_new_var_internal(var_name, ty, use_parent_scope).id;
+
+      self.generics[generic_index].push(var_id);
+
+      (ty, &mut self.vars[var_id])
     }
 
     pub fn get_var(&mut self, var_name: IString) -> Option<&mut Variable> {
@@ -298,110 +391,6 @@ mod ctx {
       } else {
         None
       }
-    }
-
-    pub fn get_var_member(&mut self, par_var: VarId, member_name: MemberName) -> Option<&mut Variable> {
-      let host = self as *mut _;
-
-      let par_var = self.vars[par_var];
-
-      debug_assert!(par_var.ctx as usize == host as usize);
-
-      let member_index = self.vars.len();
-
-      let par_index = par_var.id.usize();
-
-      if par_var.mem_scope > 0 {
-        let (_, scope) = &self.var_scopes.scopes[par_var.mem_scope];
-        match member_name {
-          MemberName::String(member_name) => {
-            if let Some((.., index)) = scope.iter().find(|(.., id)| self.vars[*id].mem_name == member_name) {
-              return Some(&mut self.vars[*index]);
-            } else {
-              self.var_scopes.scopes[par_var.mem_scope].1.push((member_name, usize::MAX, member_index));
-            }
-          }
-          MemberName::Index(index) => {
-            if let Some((.., index)) = scope.iter().find(|(.., id)| self.vars[*id].mem_index == index) {
-              return Some(&mut self.vars[*index]);
-            } else {
-              self.var_scopes.scopes[par_var.mem_scope].1.push((Default::default(), index, member_index));
-            }
-          }
-        }
-      } else {
-        self.var_scopes.push_scope();
-        self.vars[par_index].mem_scope = self.var_scopes.current_scope;
-
-        match member_name {
-          MemberName::Index(index) => {
-            self.var_scopes.scopes[self.vars[par_index].mem_scope].1.push((Default::default(), index, member_index));
-          }
-          MemberName::String(name) => {
-            self.var_scopes.scopes[self.vars[par_index].mem_scope].1.push((name, usize::MAX, member_index));
-          }
-        }
-
-        self.var_scopes.pop_scope();
-      }
-
-      let entry = self.get_member_type(par_var.id, member_name).unwrap_or_default();
-
-      let var = Variable {
-        ctx:       self as *const _ as *mut _,
-        temporary: false,
-        id:        VarId::new(member_index as u32),
-        par:       VarId::new(par_index as u32),
-        reference: Default::default(),
-        ty_slot:   entry,
-        mem_name:  match member_name {
-          MemberName::String(name) => name,
-          _ => Default::default(),
-        },
-        mem_index: match member_name {
-          MemberName::Index(id) => id,
-          _ => usize::MAX,
-        },
-        mem_scope: 0,
-      };
-
-      self.vars.push(var);
-
-      Some(&mut self.vars[member_index])
-    }
-
-    pub fn get_member_type(&mut self, par_var_id: VarId, member_name: MemberName) -> Option<TypeSlot> {
-      let par_var = &self.vars[par_var_id];
-      let entry = match par_var.ty_slot.ty_base(self) {
-        TypeRef::Undefined | TypeRef::UNRESOLVED { .. } => {
-          self.ty_var_scopes.push_scope();
-          let entry = self.insert_generic(member_name);
-          self.ty_var_scopes.pop_scope();
-          entry
-        }
-        TypeRef::Array(array) => array.element_type.increment_ptr(),
-        TypeRef::Struct(strct) => match member_name {
-          MemberName::Index(index) => {
-            if let Some(mem) = strct.members.iter().find(|m| m.original_index == index) {
-              mem.ty.increment_ptr()
-            } else {
-              return None;
-            }
-          }
-          MemberName::String(member_name) => {
-            if let Some(mem) = strct.members.iter().find(|m| m.name == member_name) {
-              mem.ty.increment_ptr()
-            } else {
-              return None;
-            }
-          }
-        },
-        tr => {
-          println!("invalid operation on {tr}");
-          return None;
-        }
-      };
-      Some(entry)
     }
 
     pub fn push_scope(&mut self) {
@@ -421,136 +410,10 @@ mod type_slot {
 
   use crate::{
     istring::IString,
-    types::{ArrayType, BitFieldType, EnumType, PrimitiveType, RoutineType, ScopeType, StructType, UnionType},
+    types::{ArrayType, BitFieldType, EnumType, RoutineType, ScopeType, StructType, UnionType},
   };
 
   use super::{ty::TypeRef, Type, TypeDatabase, TypeVarContext};
-
-  #[derive(Clone, Copy, Default)]
-  pub enum TypeSlot {
-    // Mapping to a global type. Stores index to a user type.
-    GlobalIndex(u32, u32),
-    // Mapping to a local context's type table.
-    CtxIndex(u32, u32),
-    // Mapping to a primitive type. Stores the primitive type.
-    Primitive(u32, PrimitiveType),
-    // Slot is unresolved. Stores the index to the local ctx's type_slot,
-    UNRESOLVED {
-      var_name:   IString,
-      var_index:  u32,
-      slot_index: u32,
-      ptr_depth:  u32,
-    },
-
-    #[default]
-    None,
-  }
-
-  impl TypeSlot {
-    pub fn increment_ptr(&self) -> Self {
-      match *self {
-        TypeSlot::Primitive(ptr_depth, prim) => Self::Primitive(ptr_depth + 1, prim),
-        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => TypeSlot::UNRESOLVED { ptr_depth: ptr_depth + 1, slot_index, var_index, var_name },
-        TypeSlot::GlobalIndex(ptr_depth, index) => TypeSlot::GlobalIndex(ptr_depth + 1, index),
-        TypeSlot::CtxIndex(ptr_depth, index) => TypeSlot::CtxIndex(ptr_depth + 1, index),
-        TypeSlot::None => TypeSlot::None,
-      }
-    }
-
-    pub fn decrement_ptr(&self) -> Self {
-      match *self {
-        TypeSlot::Primitive(ptr_depth, prim) => Self::Primitive(ptr_depth.checked_sub(1).unwrap_or_default(), prim),
-        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => {
-          TypeSlot::UNRESOLVED { ptr_depth: ptr_depth.checked_sub(1).unwrap_or_default(), slot_index, var_index, var_name }
-        }
-        TypeSlot::GlobalIndex(ptr_depth, index) => TypeSlot::GlobalIndex(ptr_depth.checked_sub(1).unwrap_or_default(), index),
-        TypeSlot::CtxIndex(ptr_depth, index) => TypeSlot::CtxIndex(ptr_depth.checked_sub(1).unwrap_or_default(), index),
-        TypeSlot::None => TypeSlot::None,
-      }
-    }
-
-    /// The number of pointer dereferences required to get to the base value of this type.
-    pub fn ptr_depth(&self, ctx: &TypeVarContext) -> usize {
-      let ref_depth = match *self {
-        TypeSlot::Primitive(ptr_depth, prim) => ptr_depth as usize,
-        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => ptr_depth as usize,
-        TypeSlot::GlobalIndex(ptr_depth, index) => ptr_depth as usize,
-        TypeSlot::CtxIndex(ptr_depth, index) => ptr_depth as usize,
-        TypeSlot::None => 0,
-      };
-
-      let base_depth = self.ty(ctx).ptr_depth();
-
-      ref_depth + base_depth
-    }
-
-    pub fn is_unresolved(&self) -> bool {
-      matches!(self, TypeSlot::UNRESOLVED { .. })
-    }
-
-    pub fn is_primitive(&self) -> bool {
-      matches!(self, TypeSlot::Primitive(..))
-    }
-
-    pub fn resolve_to_outer_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
-      match *self {
-        Self::CtxIndex(0, index) => ctx.type_slots[index as usize],
-        slot => slot,
-      }
-    }
-
-    pub fn ty_base<'a>(&'a self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
-      match self.ty(ctx) {
-        TypeRef::Pointer(.., slot) => slot.ty_base(ctx),
-        ty => ty,
-      }
-    }
-
-    pub fn ty_pointer_name<'a>(&'a self, ctx: &'a TypeVarContext) -> Option<IString> {
-      match self.ty(ctx) {
-        TypeRef::Pointer(name, slot) => Some(name),
-        ty => None,
-      }
-    }
-
-    pub fn ty<'a>(&'a self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
-      match self {
-        TypeSlot::Primitive(ptr_depth, prim) => TypeRef::Primitive(prim),
-        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => TypeRef::UNRESOLVED { slot_index, var_index, var_name },
-        TypeSlot::GlobalIndex(ptr_depth, index) => ctx.db().types[*index as usize].as_ref().into(),
-        TypeSlot::CtxIndex(ptr_depth, index) => ctx.type_slots[*index as usize].ty(ctx),
-        TypeSlot::None => TypeRef::Undefined,
-      }
-    }
-
-    pub fn ty_gb<'a>(&'a self, db: &'a TypeDatabase) -> TypeRef<'a> {
-      match self {
-        TypeSlot::Primitive(ptr_depth, prim) => TypeRef::Primitive(prim),
-        TypeSlot::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => TypeRef::UNRESOLVED { slot_index, var_index, var_name },
-        TypeSlot::GlobalIndex(ptr_depth, index) => db.types[*index as usize].as_ref().into(),
-        TypeSlot::CtxIndex(ptr_depth, index) => TypeRef::Undefined,
-        TypeSlot::None => TypeRef::Undefined,
-      }
-    }
-  }
-
-  impl Display for TypeSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      match self {
-        Self::Primitive(ptr_depth, prim) => Display::fmt(prim, f),
-        Self::GlobalIndex(ptr_depth, index) => f.write_fmt(format_args!("ty @ {index}")),
-        Self::CtxIndex(ptr_depth, index) => f.write_fmt(format_args!("ty @ local {index}")),
-        Self::UNRESOLVED { ptr_depth, slot_index, var_index, var_name } => f.write_fmt(format_args!("{var_name}[{var_index}]? @ local {slot_index}")),
-        Self::None => Ok(()),
-      }
-    }
-  }
-
-  impl Debug for TypeSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      Display::fmt(&self, f)
-    }
-  }
 }
 
 pub enum MemName {
@@ -559,30 +422,25 @@ pub enum MemName {
 }
 
 mod variable {
-  use super::{TypeRef, TypeSlot, TypeVarContext};
+  use super::{TypeRef, TypeVarContext};
   use crate::{
     ir::ir_graph::{IRGraphId, VarId},
     istring::IString,
+    types::RumType,
   };
 
   #[derive(Clone, Copy, Debug)]
   pub struct Variable {
-    pub ctx:       *mut TypeVarContext,
-    pub temporary: bool,
-    pub ty_slot:   TypeSlot,
-    pub id:        VarId,
-    pub par:       VarId,
-    pub reference: IRGraphId,
-    pub mem_name:  IString,
-    pub mem_index: usize,
-    pub mem_scope: usize,
-  }
-
-  impl Variable {
-    pub fn ty<'a>(&'a self) -> TypeRef<'a> {
-      let par = unsafe { &*self.ctx };
-      self.ty_slot.ty(par)
-    }
+    pub ctx:         *mut TypeVarContext,
+    pub temporary:   bool,
+    /// The index of the type slot for this variable.
+    pub ty:          RumType,
+    pub id:          VarId,
+    pub par:         VarId,
+    pub declaration: IRGraphId,
+    pub mem_name:    IString,
+    pub mem_index:   usize,
+    pub mem_scope:   usize,
   }
 }
 
@@ -669,13 +527,12 @@ mod ty {
 
   use crate::{
     istring::IString,
-    types::{ArrayType, BitFieldType, EnumType, FlagEnumType, PrimitiveType, RoutineType, ScopeType, StructType, UnionType},
+    types::{ArrayType, BitFieldType, EnumType, FlagEnumType, RoutineType, ScopeType, StructType, UnionType},
   };
 
-  use super::{TypeDatabase, TypeSlot};
+  use super::{RumType, TypeDatabase};
 
   pub enum Type {
-    Pointer(IString, u32, TypeSlot),
     Scope(ScopeType),
     Structure(StructType),
     Union(UnionType),
@@ -690,9 +547,7 @@ mod ty {
 
   #[derive(Clone, Copy)]
   pub enum TypeRef<'a> {
-    Primitive(&'a PrimitiveType),
     UNRESOLVED { var_name: &'a IString, var_index: &'a u32, slot_index: &'a u32 },
-    Pointer(IString, &'a TypeSlot),
     Scope(&'a ScopeType),
     Struct(&'a StructType),
     Union(&'a UnionType),
@@ -709,7 +564,6 @@ mod ty {
   impl<'a> From<&'a Type> for TypeRef<'a> {
     fn from(value: &'a Type) -> Self {
       match value {
-        Type::Pointer(name, depth, ty) => TypeRef::Pointer(*name, ty),
         Type::Scope(ty) => TypeRef::Scope(ty),
         Type::Structure(ty) => TypeRef::Struct(ty),
         Type::Union(ty) => TypeRef::Union(ty),
@@ -767,23 +621,14 @@ mod ty {
   }
 
   impl<'a> TypeRef<'a> {
-    pub fn is_primitive(&self) -> bool {
-      matches!(self, TypeRef::Primitive(..))
-    }
-
-    pub fn is_pointer(&self) -> bool {
-      matches!(self, TypeRef::Pointer(..))
-    }
-
     pub fn is_unresolved(&self) -> bool {
       matches!(self, TypeRef::UNRESOLVED { .. })
     }
 
-    pub fn byte_alignment(&self, ctx: &TypeDatabase) -> u64 {
+    /*     pub fn byte_alignment(&self, ctx: &TypeDatabase) -> u64 {
       match self {
         TypeRef::Struct(struc) => struc.alignment,
         TypeRef::Primitive(prim) => prim.alignment(),
-        TypeRef::Pointer(..) => 8,
         TypeRef::Array(array) => array.element_type.ty_gb(ctx).byte_alignment(ctx),
         val => todo!("Byte alignment of {val}"),
       }
@@ -793,33 +638,29 @@ mod ty {
       match self {
         TypeRef::Struct(struc) => struc.size,
         TypeRef::Primitive(prim) => prim.byte_size(),
-        TypeRef::Pointer(..) => 8,
         TypeRef::Array(array) => array.element_type.ty_gb(ctx).byte_size(ctx) * array.size as u64,
         val => todo!("Byte size of {val}"),
       }
-    }
+    } */
 
-    pub fn bit_size(&self, ctx: &TypeDatabase) -> u64 {
+    /*     pub fn bit_size(&self, ctx: &TypeDatabase) -> u64 {
       self.byte_size(ctx) * 8
-    }
+    } */
 
     pub fn base_type<'b>(&'b self, ctx: &'b TypeDatabase) -> TypeRef<'b> {
       match self {
-        TypeRef::Pointer(.., ty) => ty.ty_gb(ctx),
         _ => *self,
       }
     }
 
     pub fn ptr_depth(&self) -> usize {
       match self {
-        TypeRef::Pointer(..) => 1,
         _ => 0,
       }
     }
 
     pub fn pointer_name(&self) -> IString {
       match self {
-        TypeRef::Pointer(name, ..) => *name,
         _ => Default::default(),
       }
     }
@@ -834,14 +675,6 @@ mod ty {
   impl std::fmt::Display for TypeRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
       match self {
-        // Self::Reference(ptr) => f.write_fmt(format_args!("&{}", ptr.base_type)),
-        Self::Pointer(ty, base) => {
-          if ty.is_empty() {
-            f.write_fmt(format_args!("*{}", base))
-          } else {
-            f.write_fmt(format_args!("{}* {}", ty.to_string(), base))
-          }
-        }
         Self::Scope(s) => f.write_fmt(format_args!("scope {}", s.name.to_str().as_str())),
         Self::Struct(s) => f.write_fmt(format_args!("struct {}", s.name.to_str().as_str())),
         Self::Flag(s) => f.write_fmt(format_args!("flag {}", s.name.to_str().as_str())),
@@ -877,7 +710,6 @@ mod ty {
         Self::BitField(s) => f.write_fmt(format_args!("bf {}", s.name.to_str().as_str())),
         Self::Array(s) => f.write_fmt(format_args!("{}[{}]", s.name.to_str().as_str(), s.element_type)),
         Self::UNRESOLVED { var_name, var_index, slot_index } => f.write_fmt(format_args!("({var_name}[{var_index}]?)",)),
-        Self::Primitive(prim) => Display::fmt(prim, f),
         Self::Syscall(name) => f.write_fmt(format_args!("sys::{}()", name)),
         Self::DebugCall(name) => f.write_fmt(format_args!("dbg::{}()", name)),
         Self::Undefined => f.write_str("undef"),

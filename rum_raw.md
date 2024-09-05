@@ -109,7 +109,7 @@ Reference -> pointer to an object. The object should not be update until the ref
 
 # Descriminant
 
-Rum provides the descriminant type to facilitate unions. A descriminant can be declared in a bit field of a certain size provided the bitfield is the first member of the struct. This member will allays occupy the top N bits of the bitfield. 
+Rum provides the discriminant type to facilitate unions. A descriminant can be declared in a bit field of a certain size provided the bitfield is the first member of the struct. This member will allays occupy the top N bits of the bitfield. 
 
 When a union of structures is made, if all structures have a descriminant defined, and minim bit size of all the descriminants is sufficient to enumerate all struct members of the union, then the discriminant SHALL be used to distinct the stuct type of unique instances of the union. This mechanism provids a standard method for optimizing the packing of the descriminant value within structures.
 
@@ -124,6 +124,16 @@ A union of stuct types may be made to compactly represent values that maybe one 
 When a quallifying challange statement is used to determine the underling struct member type of the union, and the entrance of a block scope is qualified by the challenge stement, then the union variable shall be declared a PROXY of the underlying struct type, and all memver access of the variable SHALL be bound to the struct type, and not the union type. 
 
 If all struct members of a union contain a member such that the name, type, and offset of the member is identical in all struct types, then an access to this member may be made from a union variable without first qualifying the union strut subtype. This also applies to inlined sub-structure variables.
+
+
+# iterators
+
+Frequently, there is a need to access members of aggregate structures in a specific pattern. Whether its sequentially accessing members of an array, or 
+iterating through nodes in a linked list, common and uncommon access patterns crop up all over our code basis. In recognition of this, Rum has dedicated
+syntax to augment loops with special types that can handle the tedium of iteration in an encapsultated fashion. 
+
+Rum iterators are not functions, but rather special code blocks that provide a clear syntax to handle iterating over items in aggregates. Within iterator definition blocks,
+the programmer gains access to two statements not available outside iterators, the *iter* statement and the *yield* statement.
 
 # Structures 
   

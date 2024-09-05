@@ -5,7 +5,6 @@ use crate::{
     ir_type_analysis::{resolve_routine, resolve_struct_offset},
   },
   istring::CachedString,
-  types::PrimitiveType,
   x86::{compile_from_ssa_fn, x86_eval::x86Function},
 };
 

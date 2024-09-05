@@ -1,4 +1,4 @@
-use crate::types::{PrimitiveSubType, PrimitiveType as TI};
+use super::{RumSubType, RumType};
 use num_traits::{Num, NumCast};
 use std::{
   self,
@@ -9,7 +9,7 @@ use std::{
 #[repr(align(4))]
 pub struct ConstVal {
   pub(crate) val: [u8; 8],
-  pub(crate) ty:  TI,
+  pub(crate) ty:  RumType,
 }
 
 impl Display for ConstVal {
@@ -19,12 +19,12 @@ impl Display for ConstVal {
     }
 
     match self.ty.sub_type() {
-      PrimitiveSubType::Float => match self.ty.bit_size() {
+      RumSubType::Float => match self.ty.bit_size() {
         32 => fmt_val::<f32>(self, f),
         64 => fmt_val::<f64>(self, f),
         _ => fmt_val::<u8>(self, f),
       },
-      PrimitiveSubType::Signed => match self.ty.bit_size() {
+      RumSubType::Signed => match self.ty.bit_size() {
         8 => fmt_val::<i8>(self, f),
         16 => fmt_val::<i16>(self, f),
         32 => fmt_val::<i32>(self, f),
@@ -33,7 +33,7 @@ impl Display for ConstVal {
         //_ => fmt_val::<i128>(self, f),
         _ => unreachable!(),
       },
-      PrimitiveSubType::Unsigned => match self.ty.bit_size() {
+      RumSubType::Unsigned => match self.ty.bit_size() {
         8 => fmt_val::<u8>(self, f),
         16 => fmt_val::<u16>(self, f),
         32 => fmt_val::<u32>(self, f),
@@ -46,7 +46,7 @@ impl Display for ConstVal {
 }
 
 impl ConstVal {
-  pub fn new<T>(ty: TI, val: T) -> Self {
+  pub fn new<T>(ty: RumType, val: T) -> Self {
     ConstVal { ty, val: Default::default() }.store(val)
   }
 
@@ -93,63 +93,63 @@ impl ConstVal {
 
   pub fn invert(&self) -> ConstVal {
     match (self.ty.sub_type(), self.ty.bit_size()) {
-      (PrimitiveSubType::Float, 64) => self.clone().store(-self.load::<f64>()),
-      (PrimitiveSubType::Float, 32) => self.clone().store(-self.load::<f32>()),
-      (PrimitiveSubType::Signed, 128) => self.clone().store(-self.load::<i128>()),
-      (PrimitiveSubType::Signed, 64) => self.clone().store(-self.load::<i64>()),
-      (PrimitiveSubType::Signed, 32) => self.clone().store(-self.load::<i32>()),
-      (PrimitiveSubType::Signed, 16) => self.clone().store(-self.load::<i16>()),
-      (PrimitiveSubType::Signed, 8) => self.clone().store(-self.load::<i8>()),
+      (RumSubType::Float, 64) => self.clone().store(-self.load::<f64>()),
+      (RumSubType::Float, 32) => self.clone().store(-self.load::<f32>()),
+      (RumSubType::Signed, 128) => self.clone().store(-self.load::<i128>()),
+      (RumSubType::Signed, 64) => self.clone().store(-self.load::<i64>()),
+      (RumSubType::Signed, 32) => self.clone().store(-self.load::<i32>()),
+      (RumSubType::Signed, 16) => self.clone().store(-self.load::<i16>()),
+      (RumSubType::Signed, 8) => self.clone().store(-self.load::<i8>()),
       _ => *self,
     }
   }
 
   pub fn is_negative(&self) -> bool {
     match (self.ty.sub_type(), self.ty.bit_size()) {
-      (PrimitiveSubType::Float, 64) => self.load::<f64>() < 0.0,
-      (PrimitiveSubType::Float, 32) => self.load::<f32>() < 0.0,
-      (PrimitiveSubType::Signed, 128) => self.load::<i128>() < 0,
-      (PrimitiveSubType::Signed, 64) => self.load::<i64>() < 0,
-      (PrimitiveSubType::Signed, 32) => self.load::<i32>() < 0,
-      (PrimitiveSubType::Signed, 16) => self.load::<i16>() < 0,
-      (PrimitiveSubType::Signed, 8) => self.load::<i8>() < 0,
+      (RumSubType::Float, 64) => self.load::<f64>() < 0.0,
+      (RumSubType::Float, 32) => self.load::<f32>() < 0.0,
+      (RumSubType::Signed, 128) => self.load::<i128>() < 0,
+      (RumSubType::Signed, 64) => self.load::<i64>() < 0,
+      (RumSubType::Signed, 32) => self.load::<i32>() < 0,
+      (RumSubType::Signed, 16) => self.load::<i16>() < 0,
+      (RumSubType::Signed, 8) => self.load::<i8>() < 0,
       _ => false,
     }
   }
 
-  pub fn convert(&self, to_info: TI) -> ConstVal {
+  pub fn convert(&self, to_info: RumType) -> ConstVal {
     let from_info = self.ty;
 
     match (to_info.sub_type(), from_info.sub_type()) {
-      (PrimitiveSubType::Float, PrimitiveSubType::Float) => {
+      (RumSubType::Float, RumSubType::Float) => {
         if to_info.bit_size() != from_info.bit_size() {
           to_flt(ConstVal::new(to_info, 0), from_flt(*self))
         } else {
           *self
         }
       }
-      (PrimitiveSubType::Float, PrimitiveSubType::Unsigned) => to_flt(ConstVal::new(to_info, 0), from_uint(*self)),
-      (PrimitiveSubType::Float, PrimitiveSubType::Signed) => to_flt(ConstVal::new(to_info, 0), from_int(*self)),
+      (RumSubType::Float, RumSubType::Unsigned) => to_flt(ConstVal::new(to_info, 0), from_uint(*self)),
+      (RumSubType::Float, RumSubType::Signed) => to_flt(ConstVal::new(to_info, 0), from_int(*self)),
 
-      (PrimitiveSubType::Unsigned, PrimitiveSubType::Unsigned) => {
+      (RumSubType::Unsigned, RumSubType::Unsigned) => {
         if from_info.bit_size() != to_info.bit_size() {
           to_uint(ConstVal::new(to_info, 0), from_uint(*self))
         } else {
           *self
         }
       }
-      (PrimitiveSubType::Unsigned, PrimitiveSubType::Float) => to_uint(ConstVal::new(to_info, 0), from_flt(*self)),
-      (PrimitiveSubType::Unsigned, PrimitiveSubType::Signed) => to_uint(ConstVal::new(to_info, 0), from_int(*self)),
+      (RumSubType::Unsigned, RumSubType::Float) => to_uint(ConstVal::new(to_info, 0), from_flt(*self)),
+      (RumSubType::Unsigned, RumSubType::Signed) => to_uint(ConstVal::new(to_info, 0), from_int(*self)),
 
-      (PrimitiveSubType::Signed, PrimitiveSubType::Signed) => {
+      (RumSubType::Signed, RumSubType::Signed) => {
         if to_info.bit_size() != from_info.bit_size() {
           to_int(ConstVal::new(to_info, 0), from_int(*self))
         } else {
           *self
         }
       }
-      (PrimitiveSubType::Signed, PrimitiveSubType::Float) => to_int(ConstVal::new(to_info, 0), from_flt(*self)),
-      (PrimitiveSubType::Signed, PrimitiveSubType::Unsigned) => to_int(ConstVal::new(to_info, 0), from_uint(*self)),
+      (RumSubType::Signed, RumSubType::Float) => to_int(ConstVal::new(to_info, 0), from_flt(*self)),
+      (RumSubType::Signed, RumSubType::Unsigned) => to_int(ConstVal::new(to_info, 0), from_uint(*self)),
       _ => *self,
     }
   }
@@ -157,31 +157,31 @@ impl ConstVal {
 
 impl ConstVal {
   pub fn to_f32(&self) -> Option<f32> {
-    self.convert(TI::Float | TI::b32).load()
+    self.convert(RumType::Float | RumType::b32).load()
   }
 
   pub fn to_f64(&self) -> Option<f64> {
-    self.convert(TI::Float | TI::b64).load()
+    self.convert(RumType::Float | RumType::b64).load()
   }
 
   pub fn neg(&self) -> ConstVal {
     let l = self;
     match l.ty.sub_type() {
-      PrimitiveSubType::Unsigned => match l.ty.bit_size() {
-        64 => ConstVal::new(TI::Signed | TI::b64, 0).store(-(l.load::<u64>() as i64)),
-        32 => ConstVal::new(TI::Signed | TI::b32, 0).store(-(l.load::<u32>() as i32)),
-        16 => ConstVal::new(TI::Signed | TI::b16, 0).store(-(l.load::<u16>() as i16)),
-        8 => ConstVal::new(TI::Signed | TI::b8, 0).store(-(l.load::<u8>() as i8)),
+      RumSubType::Unsigned => match l.ty.bit_size() {
+        64 => ConstVal::new(RumType::Signed | RumType::b64, 0).store(-(l.load::<u64>() as i64)),
+        32 => ConstVal::new(RumType::Signed | RumType::b32, 0).store(-(l.load::<u32>() as i32)),
+        16 => ConstVal::new(RumType::Signed | RumType::b16, 0).store(-(l.load::<u16>() as i16)),
+        8 => ConstVal::new(RumType::Signed | RumType::b8, 0).store(-(l.load::<u8>() as i8)),
         _ => panic!(),
       },
-      PrimitiveSubType::Signed => match l.ty.bit_size() {
+      RumSubType::Signed => match l.ty.bit_size() {
         64 => ConstVal::new(l.ty, 0).store(-l.load::<i64>()),
         32 => ConstVal::new(l.ty, 0).store(-l.load::<i32>()),
         16 => ConstVal::new(l.ty, 0).store(-l.load::<i16>()),
         8 => ConstVal::new(l.ty, 0).store(-l.load::<i8>()),
         _ => panic!(),
       },
-      PrimitiveSubType::Float => match l.ty.bit_size() {
+      RumSubType::Float => match l.ty.bit_size() {
         64 => ConstVal::new(l.ty, 0).store(-l.load::<f64>()),
         32 => ConstVal::new(l.ty, 0).store(-l.load::<f32>()),
         _ => panic!(),
@@ -200,7 +200,7 @@ macro_rules! op_expr {
         let r = right.convert(l.ty);
 
         match l.ty.sub_type() {
-          PrimitiveSubType::Unsigned => match l.ty.bit_size() {
+          RumSubType::Unsigned => match l.ty.bit_size() {
             64 =>
               ConstVal::new(l.ty, 0).store(l.load::<u64>() $op r.load::<u64>()),
             32 =>
@@ -211,7 +211,7 @@ macro_rules! op_expr {
               ConstVal::new(l.ty, 0).store(l.load::<u8>() $op r.load::<u8>()),
             _ => panic!(),
           },
-          PrimitiveSubType::Signed => match l.ty.bit_size() {
+          RumSubType::Signed => match l.ty.bit_size() {
             64 =>
               ConstVal::new(l.ty, 0).store(l.load::<i64>() $op r.load::<i64>()),
             32 =>
@@ -222,7 +222,7 @@ macro_rules! op_expr {
               ConstVal::new(l.ty, 0).store(l.load::<i8>() $op r.load::<i8>()),
             _ => panic!(),
           },
-          PrimitiveSubType::Float => match l.ty.bit_size() {
+          RumSubType::Float => match l.ty.bit_size() {
             64 =>
               ConstVal::new(l.ty, 0).store(l.load::<f64>() $op r.load::<f64>()),
             32 =>
@@ -249,7 +249,7 @@ impl Debug for ConstVal {
 
 pub fn from_uint(val: ConstVal) -> u64 {
   let info = val.ty;
-  debug_assert!(info.sub_type() == PrimitiveSubType::Unsigned);
+  debug_assert!(info.sub_type() == RumSubType::Unsigned);
   match info.bit_size() {
     8 => val.load::<u8>() as u64,
     16 => val.load::<u16>() as u64,
@@ -261,7 +261,7 @@ pub fn from_uint(val: ConstVal) -> u64 {
 
 pub fn from_int(val: ConstVal) -> i64 {
   let info = val.ty;
-  debug_assert!(info.sub_type() == PrimitiveSubType::Signed, "{:?} {}", info.sub_type(), info);
+  debug_assert!(info.sub_type() == RumSubType::Signed, "{:?} {}", info.sub_type(), info);
   match info.bit_size() {
     8 => val.load::<i8>() as i64,
     16 => val.load::<i16>() as i64,
@@ -273,7 +273,7 @@ pub fn from_int(val: ConstVal) -> i64 {
 
 pub fn from_flt(val: ConstVal) -> f64 {
   let info = val.ty;
-  debug_assert!(info.sub_type() == PrimitiveSubType::Float);
+  debug_assert!(info.sub_type() == RumSubType::Float);
   match info.bit_size() {
     32 => val.load::<f32>() as f64,
     64 => val.load::<f64>() as f64,
@@ -282,7 +282,7 @@ pub fn from_flt(val: ConstVal) -> f64 {
 }
 
 fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
-  debug_assert!(l_val.ty.sub_type() == PrimitiveSubType::Float);
+  debug_assert!(l_val.ty.sub_type() == RumSubType::Float);
   match (l_val.ty.bit_size()) {
     32 => l_val.store(val.to_f32().unwrap()),
     64 => l_val.store(val.to_f64().unwrap()),
@@ -291,7 +291,7 @@ fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
 }
 
 fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
-  debug_assert!(l_val.ty.sub_type() == PrimitiveSubType::Signed);
+  debug_assert!(l_val.ty.sub_type() == RumSubType::Signed);
   match (l_val.ty.bit_size()) {
     8 => l_val.store(val.to_i8().unwrap()),
     16 => l_val.store(val.to_i16().unwrap()),
@@ -302,7 +302,7 @@ fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
 }
 
 fn to_uint<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
-  debug_assert!(l_val.ty.sub_type() == PrimitiveSubType::Unsigned);
+  debug_assert!(l_val.ty.sub_type() == RumSubType::Unsigned);
   match (l_val.ty.bit_size()) {
     8 => l_val.store(val.to_u8().unwrap()),
     16 => l_val.store(val.to_u16().unwrap()),

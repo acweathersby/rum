@@ -16,14 +16,10 @@ BaseArray => [i32; 6]
 heap_allocate ( size: u64, alignment: u64 ) => *u8 _malloc( size )
 
 
-dandy () => u32 { 
-  0
-}
+dandy () => u32 0
 
 loop_iter(array: T?) => &i32 {
-  
   i: u32 = 0
-
   iter if i is 
     < 2 {
       i = i + 1
@@ -34,7 +30,7 @@ loop_iter(array: T?) => &i32 {
 main (nest: i32) => *BaseArray {
   a: u32 = 1
 
-  test: *BaseArray = :[ 1, a +a, a, a *8, a ]
+  test: *BaseArray = :[ 1 ]
 
   loop a in loop_iter(test) {
     a = 300 + nest
@@ -64,7 +60,7 @@ main (nest: i32) => *BaseArray {
 
   let funct = fn_.access_as_call::<fn(i32) -> &'static [i32; 6]>();
 
-  let out = funct(50);
+  let out = funct(150);
 
   dbg!(out);
   //let out = unsafe { &*out };

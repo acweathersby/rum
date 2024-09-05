@@ -1,7 +1,7 @@
 use crate::{
   container::ArrayVec,
   istring::*,
-  types::{ConstVal, PrimitiveType, Type, TypeRef, TypeSlot, TypeVarContext, Variable},
+  types::{ConstVal, RumType, Type, TypeRef, TypeVarContext, Variable},
 };
 use std::fmt::{Debug, Display};
 
@@ -12,7 +12,7 @@ pub struct VarId(pub u32);
 
 impl Default for VarId {
   fn default() -> Self {
-    Self(u32::MAX)
+    Self::INVALID
   }
 }
 
@@ -30,6 +30,9 @@ impl<T> std::ops::IndexMut<VarId> for Vec<T> {
 }
 
 impl VarId {
+  pub const INVALID: Self = Self(u32::MAX);
+  pub const NONE: Self = Self(u32::MAX);
+
   pub fn new(val: u32) -> Self {
     Self(val)
   }
@@ -42,27 +45,22 @@ impl VarId {
     self.0 as usize
   }
 
-  pub fn ty<'a>(&self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
+  /*   pub fn ty<'a>(&self, ctx: &'a TypeVarContext) -> TypeRef<'a> {
     if !self.is_valid() {
       TypeRef::Undefined
     } else {
-      ctx.vars[self.0 as usize].ty()
-    }
-  }
+      match ctx.vars[self.0 as usize].ty
 
-  pub fn type_slot<'a>(&self, ctx: &'a TypeVarContext) -> TypeSlot {
-    if !self.is_valid() {
-      TypeSlot::None
-    } else {
-      ctx.vars[self.0 as usize].ty_slot
+      ctx.vars[self.0 as usize].ty
     }
-  }
+  } */
+
   /// The number of pointer dereferences required to get to the base value of this type.
   pub fn ptr_depth<'a>(&self, ctx: &'a TypeVarContext) -> usize {
     if !self.is_valid() {
       0
     } else {
-      ctx.vars[self.0 as usize].ty_slot.ptr_depth(ctx)
+      ctx.vars[self.0 as usize].ty.ptr_depth() as usize
     }
   }
 
@@ -87,88 +85,48 @@ impl Debug for VarId {
   }
 }
 
-// Maps to a variable and or a type.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TypeVar {
-  pub ty:  VarId,
-  pub var: VarId,
+#[derive(Clone)]
+#[repr(u8)]
+pub enum SSAGraphNode {
+  Data { byte_size: u32, data: *const u8 },
+  Const { val: ConstVal },
+  Node { op: IROp, block: u16, var: VarId, ty: RumType, operands: [IRGraphId; 2] },
 }
 
-impl TypeVar {
-  const PRIM_TYPES: [PrimitiveType; 10] = [
-    PrimitiveType::u8,
-    PrimitiveType::u16,
-    PrimitiveType::u32,
-    PrimitiveType::u64,
-    PrimitiveType::i8,
-    PrimitiveType::i16,
-    PrimitiveType::i32,
-    PrimitiveType::i64,
-    PrimitiveType::f32,
-    PrimitiveType::f64,
-  ];
+impl Debug for SSAGraphNode {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self, f)
+  }
+}
 
-  fn match_prim(ty: PrimitiveType) -> VarId {
-    const _u8: u64 = PrimitiveType::u8.raw();
-    const _u16: u64 = PrimitiveType::u16.raw();
-    const _u32: u64 = PrimitiveType::u32.raw();
-    const _u64: u64 = PrimitiveType::u64.raw();
-    const _i8: u64 = PrimitiveType::i8.raw();
-    const _i16: u64 = PrimitiveType::i16.raw();
-    const _i32: u64 = PrimitiveType::i32.raw();
-    const _i64: u64 = PrimitiveType::i64.raw();
-    const _f32: u64 = PrimitiveType::f32.raw();
-    const _f64: u64 = PrimitiveType::f64.raw();
-
-    match ty.raw() {
-      _u8 => VarId::new(0),
-      _u16 => VarId::new(1),
-      _u32 => VarId::new(2),
-      _u64 => VarId::new(3),
-      _i8 => VarId::new(4),
-      _i16 => VarId::new(5),
-      _i32 => VarId::new(6),
-      _i64 => VarId::new(7),
-      _f32 => VarId::new(8),
-      _f64 => VarId::new(9),
-      _ => Default::default(),
+impl Display for SSAGraphNode {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      SSAGraphNode::Const { val } => f.write_fmt(format_args!("CONST {:30}{}", "", val)),
+      SSAGraphNode::Node { op, var, block, ty, operands } => f.write_fmt(format_args!(
+        "b{:03} {} {:34} = {:15} {}",
+        block,
+        var,
+        format!("{ty}"),
+        format!("{:?}", op),
+        operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
+      )),
+      SSAGraphNode::Data { byte_size, data } => f.write_fmt(format_args!("DATA len: {} ptr:{:016X}", byte_size, *data as usize)),
     }
   }
+}
 
-  pub fn from_prim(val: PrimitiveType) -> Self {
-    Self { ty: Self::match_prim(val), var: Default::default() }
-  }
-
-  pub fn from_const(val: &ConstVal) -> Self {
-    Self::from_prim(val.ty)
-  }
-
-  pub fn is_custom_type(&self) -> bool {
-    self.var == self.ty
-  }
-
-  pub fn is_invalid(&self) -> bool {
-    !(self.var.is_valid() || self.ty.is_valid())
-  }
-
-  /*   pub fn ty(&self, body: &RoutineBody) -> Option<Ref<'_, Type>> {
-     if self.is_invalid() {
-       None
-     } else {
-       Some(body.type_context_scope.vars[self.var()].ty.ty())
-     }
-   }
-  */
-  pub fn var(&self) -> VarId {
-    self.var
-  }
+pub struct SSABlock {
+  pub nodes:          Vec<IRGraphId>,
+  pub branch_succeed: Option<BlockId>,
+  pub branch_fail:    Option<BlockId>,
 }
 
 #[derive(Clone, Debug)]
 #[repr(u8)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  SSA { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], var_id: VarId },
+  OpNode { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], ty: RumType, var_id: VarId },
 }
 
 impl IRGraphNode {
@@ -183,7 +141,7 @@ impl IRGraphNode {
       _ => unreachable!(),
     };
 
-    IRGraphNode::SSA { op, block_id: Default::default(), var_id: var, operands }
+    IRGraphNode::OpNode { op, block_id: Default::default(), var_id: var, operands, ty: RumType::Undefined }
   }
 
   pub fn create_const(const_val: ConstVal) -> IRGraphNode {
@@ -195,7 +153,7 @@ impl IRGraphNode {
   }
 
   pub fn is_ssa(&self) -> bool {
-    matches!(self, IRGraphNode::SSA { .. })
+    matches!(self, IRGraphNode::OpNode { .. })
   }
 
   pub fn constant(&self) -> Option<ConstVal> {
@@ -208,30 +166,7 @@ impl IRGraphNode {
   pub fn var_id(&self) -> VarId {
     match self {
       IRGraphNode::Const { val, .. } => VarId::default(),
-      IRGraphNode::SSA { var_id, .. } => *var_id,
-    }
-  }
-
-  /*   pub fn ty_data(&self) -> TyData {
-    match self {
-      IRGraphNode::Const { val, .. } => TyData::Slot(0, TypeSlot::Primitive(val.ty)),
-      IRGraphNode::SSA { var_id: ty, .. } => *ty,
-    }
-  } */
-
-  /*   pub fn ty(&self, vars: &RoutineBody) -> Type {
-    todo!("Get type")
-    /*   match self {
-      IRGraphNode::Const { val, .. } => val.ty.into(),
-      IRGraphNode::SSA { ty_var, .. } => ty_var.ty(vars),
-      IRGraphNode::PHI { ty_var, .. } => ty_var.ty(vars),
-    } */
-  } */
-
-  pub fn ty_slot(&self, ctx: &TypeVarContext) -> TypeSlot {
-    match self {
-      IRGraphNode::Const { val } => TypeSlot::Primitive(0, val.ty),
-      IRGraphNode::SSA { var_id, .. } => var_id.type_slot(ctx),
+      IRGraphNode::OpNode { var_id, .. } => *var_id,
     }
   }
 
@@ -241,22 +176,29 @@ impl IRGraphNode {
     } else {
       match self {
         IRGraphNode::Const { .. } => IRGraphId::INVALID,
-        IRGraphNode::SSA { operands, .. } => operands[index],
+        IRGraphNode::OpNode { operands, .. } => operands[index],
       }
     }
   }
 
   pub fn block_id(&self) -> BlockId {
     match self {
-      IRGraphNode::SSA { block_id, .. } => *block_id,
+      IRGraphNode::OpNode { block_id, .. } => *block_id,
       _ => BlockId::default(),
     }
   }
 
   pub fn set_block_id(&mut self, id: BlockId) {
     match self {
-      IRGraphNode::SSA { block_id, .. } => *block_id = id,
+      IRGraphNode::OpNode { block_id, .. } => *block_id = id,
       _ => {}
+    }
+  }
+
+  pub fn ty(&self) -> RumType {
+    match self {
+      IRGraphNode::Const { val } => val.ty,
+      IRGraphNode::OpNode { operands, ty, .. } => *ty,
     }
   }
 }
@@ -271,12 +213,12 @@ pub enum IROp {
   /// offset.
   MEMB_PTR_CALC,
   /// Declares a stack or heap variable and its type
-  MATCH_DECL,
+  MATCH_LOC,
   /// Declares a stack or heap variable and its type
-  VAR_DECL,
-  /// Declares an aggregate data structure.
-  AGG_DECL,
-  /// Declares a parameter variable and its type
+  VAR_LOC,
+  /// Declares a location to store a local value
+  AGG_LOC,
+  /// Declares a location to store a
   PARAM_DECL,
   /// Declares a constant and its type
   CONST_DECL,
@@ -304,12 +246,9 @@ pub enum IROp {
   SHL,
   SHR,
   // End MATH --------------------------
-  /// Returns the address of op1 as a pointer
-  ADDR,
-  /// Stores the primitive or register in op2 into the stack slot assigned to
-  /// the var of op1.
+  /// Stores a value into a memory location denoted by a pointer.
   STORE,
-  /// Loads a primitive value into a suitable register.
+  /// Loads must proceed from a STORE, a PARAM_DECL, or a RET_VAL
   LOAD,
   /// Zeroes all bytes of a type pointer or an array pointer.
   ZERO,
@@ -330,7 +269,9 @@ pub enum IROp {
   // Clone one memory structure to another memory structure. Operands MUST be pointer values.
   // Depending on type, may require deep cloning, which will probably be handled through a dynamically generated function.
   CLONE,
-  ALIAS,
+  STORE_ADDR,
+  /// Returns the address of op1 as a pointer
+  LOAD_ADDR,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]

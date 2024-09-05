@@ -12,7 +12,7 @@ use crate::{
   },
   istring::IString,
   linker::{LinkableBinary, RetargetingLink},
-  types::{PrimitiveSubType, RoutineBody, Type, TypeDatabase, TypeRef},
+  types::{RoutineBody, Type, TypeDatabase, TypeRef},
   x86::{print_instructions, push_bytes},
 };
 
@@ -77,7 +77,8 @@ pub fn compile_from_ssa_fn(
         debug_assert!(id.is_valid());
 
         if let Some(var) = body.ctx.vars.get(id.usize()) {
-          let ty = var.ty_slot.ty(&body.ctx);
+          unimplemented!()
+          /*       let ty = var.ty.ty(&body.ctx);
           if ty.is_pointer() {
             todo!("Handle Pointer Semantics {ty}");
           }
@@ -88,7 +89,7 @@ pub fn compile_from_ssa_fn(
               *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
             }
             _ => todo!("Handle this??"),
-          }
+          } */
         }
         // /}
       }
@@ -105,9 +106,6 @@ pub fn compile_from_ssa_fn(
       funct_preamble(&mut cc, rsp_offset);
 
       for block in body.blocks.iter() {
-        if block.nodes.is_empty() {
-          continue;
-        }
         let mut jump_resolved = false;
 
         cc.jmp_resolver.block_offset.push(cc.link.binary.len());
@@ -192,6 +190,8 @@ fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
 }
 
 pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, cc: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
+  unimplemented!()
+  /*
   const POINTER_SIZE: u64 = 64;
 
   let db = cc.body.ctx.db();
@@ -205,7 +205,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
   }
 
   use Arg::*;
-  if let IRGraphNode::SSA { op, block_id, operands, .. } = node {
+  if let IRGraphNode::OpNode { op, block_id, operands, .. } = node {
     let regs = reg_data.reg;
     let vars = reg_data.vars;
     let spills = reg_data.spills;
@@ -229,7 +229,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
 
     // Perform loads from spills.
     for load_index in 0..3 {
-      let need_load = ((reg_data.loads >> load_index) & 1 > 0);
+      let need_load = (reg_data.loads >> load_index) & 1 > 0;
       if need_load {
         let var_id = vars[load_index];
 
@@ -247,7 +247,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     }
 
     match op {
-      IROp::VAR_DECL => {}
+      IROp::VAR_LOC => {}
       /*
        * Store represents a move of a primitive value into either a stack slot, or a memory
        * location.
@@ -326,6 +326,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         } */
       }
       IROp::MEMB_PTR_CALC => {
+        unimplemented!();
+        /*
         let CompileContext { link: bin, .. } = cc;
 
         debug_assert!(regs[0].is_valid());
@@ -364,7 +366,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           }
         } else {
           todo!()
-        }
+        } */
       }
 
       IROp::LOAD => {
@@ -523,6 +525,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
       }
 
       IROp::LS => {
+        unimplemented!()
+        /*
         println!("TODO(ANTHONY) - Unify encoding of binary operators, as the base x86 instructions general only differ in opcode.");
         let [op1, op2] = operands;
         let CompileContext { link: bin, .. } = cc;
@@ -537,7 +541,9 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
           _ => {}
         }
 
-        let bit_size = node_ty.bit_size(db);
+        let ctx = &cc.body.ctx;
+
+        let bit_size = cc.body.graph[*op1].ty_slot(ctx).ty(ctx).bit_size(ctx.db());
 
         let l_reg = regs[1].as_reg_op();
         let r_reg = regs[2].as_reg_op();
@@ -569,7 +575,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
             println!("JMP BLOCK({fail})");
           }
         }
-        return true;
+        return true; */
       }
 
       IROp::GR => {
@@ -802,5 +808,5 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
     }
   };
 
-  false
+  false */
 }

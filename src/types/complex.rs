@@ -3,7 +3,7 @@ use radlr_rust_runtime::types::TokenRange;
 use super::*;
 use crate::{
   ir::{
-    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, TypeVar, VarId},
+    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, VarId},
     ir_register_allocator::{create_block_ordering, get_block_direct_predecessors},
   },
   parser::script_parser::{RawRoutine, Token},
@@ -24,11 +24,6 @@ pub struct ScopeType {
   pub ctx:  TypeVarContext,
 }
 
-pub struct NamedPrimitive {
-  name: IString,
-  prim: PrimitiveType,
-}
-
 #[derive(Debug)]
 pub struct StructType {
   pub name:      IString,
@@ -40,7 +35,7 @@ pub struct StructType {
 #[derive(Debug)]
 pub struct StructMemberType {
   pub name:           IString,
-  pub ty:             TypeSlot,
+  pub ty:             RumType,
   pub original_index: usize,
   pub offset:         u64,
 }
@@ -54,15 +49,15 @@ pub enum CallConvention {
 
 pub struct ExternalRoutineType {
   pub name:               IString,
-  pub parameters:         Vec<TypeSlot>,
-  pub returns:            Vec<TypeSlot>,
+  pub parameters:         Vec<RumType>,
+  pub returns:            Vec<RumType>,
   pub calling_convention: CallConvention,
 }
 
 pub struct RoutineType {
   pub name:       IString,
-  pub parameters: Vec<(IString, usize, TypeSlot, Token)>,
-  pub returns:    Vec<(TypeSlot, Token)>,
+  pub parameters: Vec<(IString, usize, RumType, Token)>,
+  pub returns:    Vec<(RumType, Token)>,
   pub body:       RoutineBody,
   pub ast:        Arc<RawRoutine<Token>>,
 }
@@ -91,17 +86,15 @@ impl IRGraphNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>, body: &RoutineBody) -> std::fmt::Result {
     match self {
       IRGraphNode::Const { val, .. } => f.write_fmt(format_args!("CONST {:30}{}", "", val))?,
-      IRGraphNode::SSA { block_id, op, operands, var_id, .. } => {
+      IRGraphNode::OpNode { block_id, op, operands, ty, var_id, .. } => {
         let ctx = &body.ctx;
-        let val = var_id.ty(ctx);
-        let ptr = "*".repeat(var_id.ptr_depth(ctx));
-        let named_ptr = format!("{}", val.pointer_name());
-        let base = val.base_type(ctx.db());
+
+        //let val = if var_id.is_valid() { body.ctx.vars[var_id.usize()].ty } else { RumType::Undefined };
 
         f.write_fmt(format_args!(
           "b{:03} {:34} = {:15} {}",
           block_id,
-          format!("{var_id:5} {ptr}{named_ptr}{base}"),
+          format!("{var_id:5} {ty}"),
           format!("{:?}", op),
           operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
         ))?;
@@ -232,7 +225,7 @@ pub enum DiscriminantType {
 #[derive(Debug)]
 pub struct EnumType {
   pub name:      IString,
-  pub base_type: TypeSlot,
+  pub base_type: RumType,
   pub members:   Vec<IString>,
 }
 
@@ -253,13 +246,13 @@ pub struct BitFieldType {
 #[derive(Debug)]
 pub struct BitFieldMember {
   name: IString,
-  ty:   PrimitiveType,
+  ty:   RumType,
 }
 
 #[derive(Debug)]
 pub struct ArrayType {
   pub name:         IString,
-  pub element_type: TypeSlot,
+  pub element_type: RumType,
   pub size:         usize,
 }
 
