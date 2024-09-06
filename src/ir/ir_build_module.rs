@@ -423,10 +423,11 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
         let param_type = &param.ty;
         if param_type.inferred {
           let gen_ty_name = get_type_name(&param.ty.ty);
-
-          parameters.push((param_name, index, RumType::Undefined.to_generic_id(0), param.tok.clone()));
+          let (ty, var) = body.ctx.insert_generic(param_name, gen_ty_name);
+          parameters.push((param_name, index, ty, var.id, param.tok.clone()));
         } else if let Some(ty) = get_type(&param_type.ty, ty_db, false) {
-          parameters.push((param_name, index, ty, param.tok.clone()));
+          let var = body.ctx.insert_new_var(param_name, ty);
+          parameters.push((param_name, index, ty, var.id, param.tok.clone()));
         } else {
           panic!("Could not resolve type! {param_name}");
         }
@@ -469,8 +470,8 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
 
       let mut ib = IRBuilder::new(body);
 
-      for (name, index, ty, tok) in parameters.iter() {
-        ib.push_ssa(PARAM_DECL, (*ty).into(), &[], VarId::NONE, tok.clone());
+      for (name, index, ty, var, tok) in parameters.iter() {
+        ib.push_ssa(PARAM_DECL, (*ty).into(), &[], *var, tok.clone());
 
         let param_value = ib.pop_stack().unwrap();
 
@@ -930,7 +931,7 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
   let expr_id = ib.pop_stack().unwrap();
   let end = ib.create_block();
 
-  let var = ib.declare_generic(format!("var::{}", match_.tok.get_start()).intern(), Default::default(), match_.tok.clone()).clone();
+  //let var = ib.declare_generic(format!("var::{}", match_.tok.get_start()).intern(), Default::default(), match_.tok.clone()).clone();
 
   // ib.push_ssa(MATCH_LOC, var.ty.decrement_pointer().into(), &[], match_.tok.clone());
   //
@@ -939,7 +940,7 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
 
   //ib.push_ssa(MEMB_PTR_CALC, SMT::Data(TyData::Var(1, var.id.into())), &[], match_.tok.clone());
   //let store_target = ib.pop_stack().unwrap();
-  let store_target = var.declaration;
+  //let store_target = var.declaration;
 
   for clause in &match_.clauses {
     if clause.default {
@@ -948,8 +949,8 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
       let expression_result = ib.pop_stack().unwrap();
 
       if !expression_result.is_invalid() {
-        ib.push_ssa(STORE, Inherit, &[store_target.into(), expression_result.into()], var.id, clause.expr.tok.clone());
-        ib.pop_stack();
+        //  ib.push_ssa(STORE, Inherit, &[store_target.into(), expression_result.into()], var.id, clause.expr.tok.clone());
+        //  ib.pop_stack();
       }
 
       break;
@@ -977,8 +978,8 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
       let expression_result = ib.pop_stack().unwrap();
 
       if !expression_result.is_invalid() {
-        ib.push_ssa(STORE, Inherit, &[store_target.into(), expression_result.into()], var.id, clause.expr.tok.clone());
-        ib.pop_stack();
+        // ib.push_ssa(STORE, Inherit, &[store_target.into(), expression_result.into()], var.id, clause.expr.tok.clone());
+        // ib.pop_stack();
       }
 
       ib.set_successor(end, SuccessorMode::Default);
@@ -989,7 +990,7 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
   ib.set_successor(end, SuccessorMode::Default);
   ib.set_active(end);
 
-  ib.push_node(store_target);
+  //ib.push_node(store_target);
 }
 
 fn process_loop(loop_: &RawLoop<Token>, ib: &mut IRBuilder<'_>) {
@@ -1043,15 +1044,15 @@ fn process_iter_loop(iter_stmt: &RawIterStatement<Token>, loop_name: IString, ib
     match routine_entry {
       Type::Routine(routine) => {
         // Map the routines parameters to the expression inputs.
-        for (arg, params) in iter.args.iter().zip(routine.parameters.iter()) {
+        for (arg, (param_name, _, param_ty, _, param_token)) in iter.args.iter().zip(routine.parameters.iter()) {
           // both the arg and the param will be mapped to the same variable
           process_expression(&arg.expr, ib);
 
           let val = ib.pop_stack().unwrap();
           let ty = ib.get_node(val.usize()).ty();
-          let var = ib.declare_variable(params.0, ty, params.3.clone()).clone();
+          let var = ib.declare_variable(*param_name, ty, param_token.clone()).clone();
 
-          ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), val.into()], var.id, params.3.clone());
+          ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), val.into()], var.id, param_token.clone());
         }
 
         ib.push_lexical_scope();

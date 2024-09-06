@@ -122,7 +122,7 @@ pub struct SSABlock {
   pub branch_fail:    Option<BlockId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 pub enum IRGraphNode {
   Const { val: ConstVal },

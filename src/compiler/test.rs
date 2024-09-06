@@ -27,10 +27,8 @@ loop_iter(array: T?) => &i32 {
     }
 }
 
-main (nest: i32) => *BaseArray {
-  a: u32 = 1
-
-  test: *BaseArray = :[ 1 ]
+main (nest: T?) => *BaseArray {
+  test = :[ 1 ]
 
   loop a in loop_iter(test) {
     a = 300 + nest

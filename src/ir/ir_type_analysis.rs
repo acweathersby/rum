@@ -1,4 +1,7 @@
-use super::ir_builder::{IRBuilder, SuccessorMode};
+use super::{
+  ir_builder::{IRBuilder, SuccessorMode},
+  ir_graph::{IRGraphId, VarId},
+};
 use crate::{
   container::get_aligned_value,
   ir::{
@@ -7,7 +10,7 @@ use crate::{
   },
   istring::IString,
   parser::script_parser::RawModule,
-  types::{MemberName, RoutineBody, RoutineType, Type, TypeDatabase, TypeRef, TypeVarContext},
+  types::{MemberName, RoutineBody, RoutineType, RumType, Type, TypeDatabase, TypeRef, TypeVarContext},
 };
 use core::panic;
 use radlr_rust_runtime::types::BlameColor;
@@ -381,95 +384,192 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
   }
 }
 
+#[derive(Debug)]
+enum TypeInferenceTask {
+  ResolveVar(VarId, RumType),
+  ResolveGenericNode(IRGraphId, usize),
+  Propagate(IRGraphId, RumType),
+}
+
 fn resolve_generic_members(rt: &mut RoutineType) {
-  unimplemented!() /*
-                   for var_index in 0..rt.body.ctx.vars.len() {
-                     let var = rt.body.ctx.vars[var_index];
-                     let ty = var.ty;
+  use TypeInferenceTask::*;
+  let mut inference_tasks = VecDeque::new();
 
-                     if ty.is_generic() {
-                       if var.par.is_valid() {
-                         // todo(Anthony): Rebuild the type using parent information. This should be recursive process, as the
-                         // parent may be undefined until it is resolved with its own parent, and SOSF.
-                         match rt.body.ctx.get_member_type(var.par, MemberName::String(var.mem_name)) {
-                           None => {}
-                           Some(c_ty) => {
-                             rt.body.ctx.vars[var_index].ty = c_ty;
-                           }
-                         }
-                       }
-                     }
-                   }
+  for var_index in 0..rt.body.ctx.vars.len() {
+    let var = rt.body.ctx.vars[var_index];
+    let ty = var.ty;
 
-                   // resolve all assignment expressions that have unresolved vars on the right side.
-                   let mut should_continue = true;
-                   while should_continue {
-                     should_continue = false;
-                     for node_id in 0..rt.body.graph.len() {
-                       match rt.body.graph[node_id].clone() {
-                         IRGraphNode::OpNode { op, block_id, operands, var_id } => match op {
-                           IROp::MEMB_PTR_CALC => {
-                             let ctx = &mut rt.body.ctx;
-                             let par_var = rt.body.graph[operands[0]].var_id();
+    if ty.is_generic() {
+      if var.par.is_valid() {
+        //inference_tasks.push_back(ResolveVar(var.id, var.ty));
+      }
+    }
+  }
 
-                             if var_id.ty(ctx).is_unresolved() && !par_var.ty(ctx).is_unresolved() {
-                               let mut var = ctx.vars[var_id].clone();
-                               if let Some(ty_slot) = ctx.get_member_type(par_var, if var.mem_name.is_empty() { MemberName::String(var.mem_name) } else { MemberName::Index(var.mem_index) }) {
-                                 var.ty = ty_slot;
-                                 ctx.vars[var_id] = var;
-                                 should_continue = true;
-                               } else {
-                                 // Create non-aggregate type error.
-                               }
-                             }
-                           }
-                           IROp::ALIAS => {
-                             let ctx = &mut rt.body.ctx;
-                             let right_var = rt.body.graph[operands[0]].var_id();
-                             let right_ty = right_var.ty(ctx);
+  // resolve all assignment expressions that have unresolved vars on the right side.
+  let mut should_continue = true;
+  while should_continue {
+    should_continue = false;
+    for node_id in 0..rt.body.graph.len() {
+      match rt.body.graph[node_id].clone() {
+        IRGraphNode::OpNode { op, block_id, operands, ty, var_id } => {
+          if !ty.is_generic() {
+            match op {
+              IROp::STORE | IROp::STORE_ADDR | IROp::RET_VAL => {
+                println!("AAAAAAAAA {op:?} {ty:?}");
+                debug_assert!(!operands[0].is_invalid());
 
-                             let left_var = var_id;
-                             let left_ty = left_var.ty(ctx);
+                if var_id.is_valid() {
+                  inference_tasks.push_front(ResolveVar(var_id, ty));
+                }
 
-                             if left_ty.is_unresolved() {
-                               unimplemented!();
-                               /*
-                               if !right_ty.is_unresolved() {
-                                 ctx.vars[left_var].ty = right_var.type_slot(ctx).clone();
-                                 should_continue = true;
-                               } */
-                             }
-                           }
-                           IROp::STORE => {
-                             let ctx = &mut rt.body.ctx;
-                             let right_var = rt.body.graph[operands[1]].var_id();
-                             let right_ty = right_var.ty(ctx);
+                for op in operands {
+                  if !op.is_invalid() {
+                    inference_tasks.push_front(Propagate(op, ty));
+                  }
+                }
+              }
+              _ => {}
+            }
+          } else {
+            inference_tasks.push_back(ResolveGenericNode(IRGraphId(node_id as u32), 0));
+          }
+        }
+        _ => {}
+      }
+    }
+  }
 
-                             let left_var = rt.body.graph[operands[0]].var_id();
-                             let left_ty = left_var.ty(ctx);
+  let mut current_generation = 0;
 
-                             if right_ty.is_unresolved() {
-                               unimplemented!()
-                               /* if !left_ty.is_unresolved() && right_var.is_valid() {
-                                 ctx.vars[right_var].ty = left_var.type_slot(ctx).clone().decrement_ptr();
-                                 should_continue = true;
-                               } */
-                             } else if left_ty.is_unresolved() {
-                               unimplemented!()
-                               /* if !right_ty.is_unresolved() && left_var.is_valid() {
-                                 ctx.vars[left_var].ty = right_var.type_slot(ctx).clone().increment_ptr();
-                                 should_continue = true;
-                               } */
-                             }
-                           }
-                           _ => {}
-                         },
-                         _ => {}
-                       }
-                     }
-                   }
+  if !inference_tasks.is_empty() {
+    while let Some(task) = inference_tasks.pop_front() {
+      match task {
+        ResolveVar(var_id, new_ty) => {
+          debug_assert!(var_id.is_valid());
+          let mut var = rt.body.ctx.vars[var_id];
 
-                   println!("{}", rt.body); */
+          if var.par.is_valid() {
+            let par_var = rt.body.ctx.vars[var.par];
+            if (!par_var.ty.is_generic()) {
+              //panic!("AAA");
+            }
+          } else if let Some(generic_type) = var.ty.generic_id() {
+            let existing_ty = rt.body.ctx.type_slots[generic_type].0;
+            let new_ty = if (existing_ty.is_generic()) {
+              rt.body.ctx.type_slots[generic_type].0 = new_ty;
+              new_ty
+            } else {
+              existing_ty
+            };
+
+            var.ty = new_ty.to_ptr_depth(new_ty.ptr_depth() + var.ty.ptr_depth());
+            current_generation += 1;
+          }
+
+          rt.body.ctx.vars[var_id] = var;
+        }
+        Propagate(node_to, new_ty) => match &mut rt.body.graph[node_to.usize()] {
+          IRGraphNode::OpNode { ty, operands, var_id, op, .. } => {
+            if let Some(generic_type) = ty.generic_id() {
+              let existing_ty = rt.body.ctx.type_slots[generic_type].0;
+
+              let new_ty = if (existing_ty.is_generic()) {
+                rt.body.ctx.type_slots[generic_type].0 = new_ty;
+                new_ty
+              } else {
+                existing_ty
+              };
+
+              current_generation += 1;
+
+              match op {
+                IROp::LOAD => {
+                  debug_assert!(!operands[0].is_invalid());
+                  *ty = new_ty.to_ptr_depth(ty.ptr_depth() + new_ty.ptr_depth());
+                  inference_tasks.push_front(Propagate(operands[0], new_ty.increment_pointer()));
+                }
+                IROp::STORE => {
+                  debug_assert!(!operands[0].is_invalid());
+                  debug_assert!(!operands[1].is_invalid());
+                  *ty = new_ty.to_ptr_depth(ty.ptr_depth() + new_ty.ptr_depth());
+                  inference_tasks.push_front(Propagate(operands[1], new_ty.increment_pointer()));
+                  inference_tasks.push_front(Propagate(operands[0], new_ty));
+                }
+                _ => {
+                  *ty = new_ty.to_ptr_depth(ty.ptr_depth() + new_ty.ptr_depth());
+
+                  for op in operands {
+                    if !op.is_invalid() {
+                      inference_tasks.push_front(Propagate(*op, new_ty));
+                    }
+                  }
+
+                  if var_id.is_valid() {
+                    inference_tasks.push_front(ResolveVar(*var_id, new_ty));
+                  }
+                }
+              };
+            }
+          }
+          _ => {}
+        },
+        ResolveGenericNode(node_id, generation) => match &mut rt.body.graph[node_id.usize()] {
+          IRGraphNode::OpNode { op, ty, var_id, .. } => {
+            if matches!(op, IROp::MEMB_PTR_CALC) {
+              if let Some(generic_type) = ty.generic_id() {
+                let (current_type, _) = rt.body.ctx.type_slots[generic_type];
+
+                if !current_type.is_generic() {
+                  inference_tasks.push_front(Propagate(node_id, current_type));
+                } else if generation < current_generation {
+                  debug_assert!(var_id.is_valid());
+                  let var = rt.body.ctx.vars[var_id.usize()];
+                  debug_assert!(var.par.is_valid());
+                  let par = rt.body.ctx.vars[var.par];
+
+                  if !par.ty.is_generic() {
+                    match par.ty.aggregate(&rt.body.ctx.db()).expect("All child bearing vars should be aggregates") {
+                      Type::Array(array) => {
+                        rt.body.ctx.type_slots[generic_type].0 = array.element_type;
+                        rt.body.ctx.vars[var_id.usize()].ty = array.element_type.increment_pointer();
+                        inference_tasks.push_front(Propagate(node_id, current_type));
+                      }
+                      _ => unreachable!("Invalid aggregate type"),
+                    }
+                  }
+
+                  inference_tasks.push_back(ResolveGenericNode(node_id, current_generation));
+                } else {
+                  println!("could not resolve node {node_id}");
+                }
+              } else {
+                println!("node already resolved {node_id}");
+              }
+            } else {
+              if let Some(generic_type) = ty.generic_id() {
+                let (current_type, _) = rt.body.ctx.type_slots[generic_type];
+
+                if !current_type.is_generic() {
+                  inference_tasks.push_front(Propagate(node_id, current_type));
+                } else if generation < current_generation {
+                  inference_tasks.push_back(ResolveGenericNode(node_id, current_generation));
+                } else {
+                  println!("could not resolve node {node_id}");
+                }
+              } else {
+                println!("node already resolved {node_id}");
+              }
+            }
+          }
+          _ => {}
+        },
+        _ => {}
+      }
+    }
+  }
+
+  todo!("Complete inferences {:?}", rt.body);
 }
 
 pub fn last_index_of(target_ty: IROp, node_id: usize, rt: &RoutineBody, forward: bool) -> usize {

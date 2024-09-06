@@ -261,6 +261,13 @@ impl RumType {
     other
   }
 
+  pub fn generic_id(&self) -> Option<usize> {
+    match self.sub_type() {
+      RumSubType::Generic => Some(((self.0 & Self::AGGREGATE_ID_MASK) >> Self::AGGREGATE_ID_MASK_OFFSET) as usize),
+      _ => None,
+    }
+  }
+
   pub fn aggregate_id(&self) -> Option<usize> {
     match self.sub_type() {
       RumSubType::Aggregate => Some(((self.0 & Self::AGGREGATE_ID_MASK) >> Self::AGGREGATE_ID_MASK_OFFSET) as usize),
