@@ -1,4 +1,4 @@
-use super::ir_builder::{IRBuilder, SuccessorMode};
+use super::{ir_builder::{IRBuilder, SuccessorMode}, ir_graph::{BlockId, IRGraphNode}};
 use crate::{
   container::get_aligned_value,
   ir::{
@@ -418,16 +418,18 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
       let parameters = &mut rt.parameters;
       let body = &mut rt.body;
 
+      let mut ib = IRBuilder::new(body);
+
       for (index, param) in params.params.iter().enumerate() {
         let param_name = param.var.id.intern();
         let param_type = &param.ty;
         if param_type.inferred {
           let gen_ty_name = get_type_name(&param.ty.ty);
-          let (ty, var) = body.ctx.insert_generic(param_name, gen_ty_name);
-          parameters.push((param_name, index, ty, var.id, param.tok.clone()));
+          let var = ib.declare_generic(param_name, gen_ty_name, param.tok.clone());
+          parameters.push((param_name, index, var.ty, var.id, param.tok.clone()));
         } else if let Some(ty) = get_type(&param_type.ty, ty_db, false) {
-          let var = body.ctx.insert_new_var(param_name, ty);
-          parameters.push((param_name, index, ty, var.id, param.tok.clone()));
+          let var = ib.declare_variable(param_name, ty, param.tok.clone());
+          parameters.push((param_name, index, var.ty, var.id, param.tok.clone()));
         } else {
           panic!("Could not resolve type! {param_name}");
         }
@@ -468,7 +470,7 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
 
       let RoutineType { name, parameters, returns, body, ast, .. } = rt;
 
-      let mut ib = IRBuilder::new(body);
+      let mut ib = IRBuilder::attach(body);
 
       for (name, index, ty, var, tok) in parameters.iter() {
         ib.push_ssa(PARAM_DECL, (*ty).into(), &[], *var, tok.clone());
@@ -1130,7 +1132,8 @@ fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_
           }
         }
 
-        let var = ib.declare_generic(var_name, Default::default(), var_assign.tok.clone()).clone();
+        let mut var = ib.declare_variable(var_name,ib.get_node(expr_id.usize()).ty().increment_pointer(), var_assign.tok.clone()).clone();
+
         ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), expr_id.into()], var.id, var_assign.tok.clone());
         ib.pop_stack().unwrap();
       } else {

@@ -27,7 +27,7 @@ loop_iter(array: T?) => &i32 {
     }
 }
 
-main (nest: T?) => *BaseArray {
+main (nest: T?) => gen*BaseArray {
   test = :[ 1 ]
 
   loop a in loop_iter(test) {

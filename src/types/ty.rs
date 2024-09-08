@@ -159,7 +159,12 @@ impl RumType {
 
   pub fn decrement_pointer(&self) -> Self {
     let other = *self;
-    other.to_ptr_depth(self.ptr_depth() - 1)
+
+    if self.ptr_depth() > 0 {
+      other.to_ptr_depth(self.ptr_depth() - 1)
+    } else {
+      other
+    }
   }
 
   pub fn increment_pointer(&self) -> Self {

@@ -221,6 +221,7 @@ mod ctx {
       if member_var_index == self.type_slots.len() {
         let var = self.get_member_type_var(parent_var, member_name);
         var.temporary = false;
+        var.ty = var.ty.increment_pointer();
         var.mem_name = match member_name {
           MemberName::String(name) => name,
           _ => Default::default(),
@@ -347,7 +348,7 @@ mod ctx {
         id:          VarId::new(var_index as u32),
         par:         Default::default(),
         declaration: Default::default(),
-        ty:          ty.increment_pointer(),
+        ty:          ty,
         mem_name:    var_name,
         mem_index:   usize::MAX,
         mem_scope:   0,

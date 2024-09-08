@@ -37,8 +37,19 @@ impl<'body> IRBuilder<'body> {
       iter_stack: Default::default(),
     };
     let block = ir_builder.create_block();
-
     ir_builder.set_active(block);
+
+    ir_builder
+  }
+
+  pub fn attach(body: &'body mut RoutineBody) -> Self {
+    let mut ir_builder = Self {
+      ssa_stack: Default::default(),
+      active_block_id: BlockId((body.blocks.len() - 1) as u32),
+      body,
+      loop_stack: Default::default(),
+      iter_stack: Default::default(),
+    };
 
     ir_builder
   }
@@ -257,6 +268,7 @@ impl<'body> IRBuilder<'body> {
 
     block_id
   }
+
 
   pub fn create_branch(&mut self) -> (BlockId, BlockId) {
     let pass: BlockId = self.create_block();
