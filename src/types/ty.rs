@@ -150,6 +150,12 @@ impl RumType {
 
   // Pointer methods --------------------------------------------
 
+  pub fn to_ptr_data(&self, data: RumType) -> Self {
+    let mut other = *self;
+    other.1 = data.1;
+    other
+  }
+
   pub fn to_ptr_depth(&self, depth: u32) -> Self {
     debug_assert!(depth <= 0xFF);
     let mut other = *self;

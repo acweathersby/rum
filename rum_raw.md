@@ -62,6 +62,11 @@ mutation of allocations that have bound determined at runtime.
 
 # Mutability
 
+
+# Aggregates 
+
+Aggregate types are those that represent memory regions larger than the byte size of primitive types, that contain multiple objects of various types. There are two primary classifications of aggregates, structures, which are regions of memory storing sub objects of heterogenous tying, and arrays, storing a fixed length set of object of homogenous types.
+
 # SSA 
 
 # Ownership

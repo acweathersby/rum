@@ -163,6 +163,13 @@ impl IRGraphNode {
     }
   }
 
+  pub fn op(&self) -> IROp {
+    match self {
+      IRGraphNode::Const { .. } => IROp::CONST_DECL,
+      IRGraphNode::OpNode { op, .. } => *op,
+    }
+  }
+
   pub fn var_id(&self) -> VarId {
     match self {
       IRGraphNode::Const { val, .. } => VarId::default(),
@@ -215,9 +222,9 @@ pub enum IROp {
   /// Declares a stack or heap variable and its type
   MATCH_LOC,
   /// Declares a stack or heap variable and its type
-  VAR_LOC,
+  VAR_DECL,
   /// Declares a location to store a local value
-  AGG_LOC,
+  AGG_DECL,
   /// Declares a location to store a
   PARAM_DECL,
   /// Declares a constant and its type

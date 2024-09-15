@@ -184,22 +184,14 @@ impl<'body> IRBuilder<'body> {
     self.ssa_stack.push(id);
   }
 
-  pub fn declare_generic(&mut self, var_name: IString, generic_name: IString, tok: Token) -> &mut Variable {
-    let mut var = self.body.ctx.insert_generic(var_name, generic_name).1.clone();
-
-    self.push_ssa(IROp::VAR_LOC, var.ty.into(), &[], var.id, tok);
-
-    var.declaration = self.pop_stack().unwrap();
-
-    self.set_variable(var);
-
-    &mut self.body.ctx.vars[var.id]
+  pub fn get_generic_type(&mut self, generic_name: IString) -> RumType {
+    self.body.ctx.create_generic_type(generic_name)
   }
 
-  pub fn declare_variable(&mut self, var_name: IString, ty: RumType, tok: Token) -> &mut Variable {
+  pub fn declare_variable(&mut self, var_name: IString, ty: RumType, tok: Token, declare_id: IROp) -> &mut Variable {
     let mut var = self.body.ctx.insert_new_var(var_name, ty).clone();
 
-    self.push_ssa(IROp::VAR_LOC, var.ty.into(), &[], var.id, tok);
+    self.push_ssa(declare_id, var.ty.into(), &[], var.id, tok);
 
     var.declaration = self.pop_stack().unwrap();
 
@@ -218,8 +210,6 @@ impl<'body> IRBuilder<'body> {
       (None, None) => [IRGraphId::default(), IRGraphId::default()],
       _ => unreachable!(),
     };
-
-    let graph = &mut self.body.graph;
 
     let ty = match ty {
       SMT::Inherit => {
@@ -268,7 +258,6 @@ impl<'body> IRBuilder<'body> {
 
     block_id
   }
-
 
   pub fn create_branch(&mut self) -> (BlockId, BlockId) {
     let pass: BlockId = self.create_block();

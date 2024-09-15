@@ -1,4 +1,7 @@
-use super::{ir_builder::{IRBuilder, SuccessorMode}, ir_graph::{BlockId, IRGraphNode}};
+use super::{
+  ir_builder::{IRBuilder, SuccessorMode},
+  ir_graph::{BlockId, IRGraphNode},
+};
 use crate::{
   container::get_aligned_value,
   ir::{
@@ -425,10 +428,13 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
         let param_type = &param.ty;
         if param_type.inferred {
           let gen_ty_name = get_type_name(&param.ty.ty);
-          let var = ib.declare_generic(param_name, gen_ty_name, param.tok.clone());
+
+          let gen_ty = ib.get_generic_type(gen_ty_name);
+          let mut var = ib.declare_variable(param_name, gen_ty, param.tok.clone(), VAR_DECL).clone();
+
           parameters.push((param_name, index, var.ty, var.id, param.tok.clone()));
         } else if let Some(ty) = get_type(&param_type.ty, ty_db, false) {
-          let var = ib.declare_variable(param_name, ty, param.tok.clone());
+          let var = ib.declare_variable(param_name, ty, param.tok.clone(), VAR_DECL);
           parameters.push((param_name, index, var.ty, var.id, param.tok.clone()));
         } else {
           panic!("Could not resolve type! {param_name}");
@@ -477,7 +483,7 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
 
         let param_value = ib.pop_stack().unwrap();
 
-        let var = ib.declare_variable(*name, *ty, tok.clone()).clone();
+        let var = ib.declare_variable(*name, *ty, tok.clone(), VAR_DECL).clone();
 
         ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), param_value.into()], var.id, tok.clone());
 
@@ -609,7 +615,11 @@ fn resolve_variable(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder) -> O
 
 fn process_member_load(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder<'_>) {
   if let Some(var) = resolve_variable(mem, ib) {
-    ib.push_ssa(LOAD, var.ty.decrement_pointer().into(), &[StackOp], VarId::NONE, mem.tok.clone());
+    if var.ty.is_generic() {
+      ib.push_ssa(LOAD, var.ty.into(), &[StackOp], VarId::NONE, mem.tok.clone());
+    } else {
+      ib.push_ssa(LOAD, var.ty.decrement_pointer().into(), &[StackOp], VarId::NONE, mem.tok.clone());
+    }
   } else {
     // Create error for undefined variable.
   }
@@ -727,7 +737,7 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
     ib.push_ssa(CALL, call_slot.into(), &[], VarId::NONE, tok.clone());
     ib.pop_stack();
 
-    let var = ib.declare_variable(Default::default(), call_slot, tok.clone()).clone();
+    let var = ib.declare_variable(Default::default(), call_slot, tok.clone(), VAR_DECL).clone();
     ib.push_ssa(CALL_RET, var.ty.into(), &[], VarId::NONE, tok.clone());
   } else if let Some(sys_call_name) = DBG_CALL_TARGETS.iter().find(|d| (**d).cmp(name.to_str().as_str()).is_eq()) {
     let call_name = sys_call_name.intern();
@@ -798,7 +808,9 @@ fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token
   //let base_type = *struct_slot;
 
   let name = format!("TEMP_{}", VarId::new(ib.body.graph.len() as u32));
-  let mut agg_var = ib.declare_generic(name.intern(), Default::default(), struct_decl.tok.clone()).clone();
+
+  let gen_ty = ib.get_generic_type(Default::default());
+  let mut agg_var = ib.declare_variable(name.intern(), gen_ty, struct_decl.tok.clone(), IROp::AGG_DECL).clone();
 
   struct StructEntry {
     value: IRGraphId,
@@ -881,16 +893,14 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
           let var_id = output_vars[0];
           let mut var = ib.body.ctx.vars[var_id].clone();
 
-          dbg!(var);
-
           match &yield_.expr.expr {
             expression_Value::MemberCompositeAccess(mem) => {
               if let Some(temp_var) = resolve_variable(mem, ib) {
-                ib.push_ssa(STORE_ADDR, temp_var.ty.into(), &[var.declaration.into(), StackOp], var.id, mem.tok.clone());
-                if var.ty.is_generic() {
-                  var.ty = temp_var.ty;
-                  ib.set_variable(var);
-                }
+                ib.push_ssa(STORE_ADDR, var.ty.into(), &[var.declaration.into(), StackOp], var.id, mem.tok.clone());
+              /*   if var.ty.is_generic() {
+                var.ty = temp_var.ty;
+                ib.set_variable(var);
+              } */
               } else {
                 unreachable!();
               }
@@ -1040,7 +1050,8 @@ fn process_iter_loop(iter_stmt: &RawIterStatement<Token>, loop_name: IString, ib
   };
 
   let var_name = iter_stmt.var.id.intern();
-  let mut var = ib.declare_generic(var_name, Default::default(), iter_stmt.var.tok.clone()).clone();
+  let gen_ty = ib.get_generic_type(Default::default());
+  let mut var = ib.declare_variable(var_name, gen_ty, iter_stmt.var.tok.clone(), VAR_DECL).clone();
 
   if let Some((routine_entry, _)) = ib.body.ctx.db_mut().get_type_mut(call_name).as_ref() {
     match routine_entry {
@@ -1052,7 +1063,7 @@ fn process_iter_loop(iter_stmt: &RawIterStatement<Token>, loop_name: IString, ib
 
           let val = ib.pop_stack().unwrap();
           let ty = ib.get_node(val.usize()).ty();
-          let var = ib.declare_variable(*param_name, ty, param_token.clone()).clone();
+          let var = ib.declare_variable(*param_name, ty.increment_pointer(), param_token.clone(), VAR_DECL).clone();
 
           ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), val.into()], var.id, param_token.clone());
         }
@@ -1132,7 +1143,7 @@ fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_
           }
         }
 
-        let mut var = ib.declare_variable(var_name,ib.get_node(expr_id.usize()).ty().increment_pointer(), var_assign.tok.clone()).clone();
+        let mut var = ib.declare_variable(var_name, ib.get_node(expr_id.usize()).ty().increment_pointer(), var_assign.tok.clone(), VAR_DECL).clone();
 
         ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), expr_id.into()], var.id, var_assign.tok.clone());
         ib.pop_stack().unwrap();
@@ -1146,13 +1157,19 @@ fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_
     }
     RawAssignmentDeclaration(var_decl) => {
       let var_name = var_decl.var.id.intern();
-      if let Some(ty) = get_type(&var_decl.ty, &mut ib.body.ctx.db_mut(), false) {
+      if let Some(mut ty) = get_type(&var_decl.ty, &mut ib.body.ctx.db_mut(), false) {
         /*     if let Some(mut var) = ib.get_node_variable(expr_id).cloned() {
           var.ty = ty;
           ib.set_variable(var);
           ib.body.ctx.alias_variable(&var, var_name);
         } else { */
-        let var = ib.declare_variable(var_name, ty, var_decl.tok.clone()).clone();
+        if ty.is_aggregate() {
+          ty = ty.to_ptr_depth(2);
+        } else {
+          ty = ty.to_ptr_depth(1);
+        }
+
+        let var = ib.declare_variable(var_name, ty, var_decl.tok.clone(), VAR_DECL).clone();
         ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), expr_id.into()], var.id, var_decl.tok.clone());
         ib.pop_stack().unwrap();
         //}

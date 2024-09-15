@@ -221,7 +221,6 @@ mod ctx {
       if member_var_index == self.type_slots.len() {
         let var = self.get_member_type_var(parent_var, member_name);
         var.temporary = false;
-        var.ty = var.ty.increment_pointer();
         var.mem_name = match member_name {
           MemberName::String(name) => name,
           _ => Default::default(),
@@ -242,29 +241,35 @@ mod ctx {
     fn get_member_type_var(&mut self, par_var_id: VarId, member_name: MemberName) -> &mut Variable {
       let par_var = &self.vars[par_var_id];
 
+      let ptr1: RumType = RumType::Undefined.increment_pointer();
+
       if par_var.ty.is_generic() {
-        return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+        let child_ty = self.create_generic_type(Default::default());
+        return self.insert_new_var(Default::default(), child_ty.increment_pointer());
       }
 
       let entry = match par_var.ty.sub_type() {
         RumSubType::Generic => {
-          return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+          let child_ty = self.create_generic_type(Default::default());
+          return self.insert_new_var(Default::default(), child_ty.increment_pointer());
         }
         RumSubType::Aggregate => match par_var.ty.aggregate(&self.db()).unwrap() {
-          Type::Array(array) => return self.insert_new_var_internal(Default::default(), array.element_type, true),
+          Type::Array(array) => return self.insert_new_var_internal(Default::default(), array.element_type.increment_pointer(), true),
           Type::Structure(strct) => match member_name {
             MemberName::Index(index) => {
               if let Some(mem) = strct.members.iter().find(|m| m.original_index == index) {
-                return self.insert_new_var_internal(Default::default(), mem.ty, true);
+                return self.insert_new_var_internal(Default::default(), mem.ty.increment_pointer(), true);
               } else {
-                return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+                let child_ty = self.create_generic_type(Default::default());
+                return self.insert_new_var(Default::default(), child_ty.increment_pointer());
               }
             }
             MemberName::String(member_name) => {
               if let Some(mem) = strct.members.iter().find(|m| m.name == member_name) {
-                return self.insert_new_var_internal(Default::default(), mem.ty, true);
+                return self.insert_new_var_internal(Default::default(), mem.ty.increment_pointer(), true);
               } else {
-                return self.insert_generic_internal(Default::default(), Default::default(), true).1;
+                let child_ty = self.create_generic_type(Default::default());
+                return self.insert_new_var(Default::default(), child_ty.increment_pointer());
               }
             }
           },
@@ -354,6 +359,10 @@ mod ctx {
         mem_scope:   0,
       };
 
+      if let Some(generic_index) = ty.generic_id() {
+        self.generics[generic_index].push(var.id);
+      }
+
       self.vars.push(var);
 
       self.type_slots.push((ty, VarId::new(var_index as u32)));
@@ -361,13 +370,7 @@ mod ctx {
       self.vars.last_mut().unwrap()
     }
 
-    pub fn insert_generic(self: &mut TypeVarContext, var_name: IString, generic_type_name: IString) -> (RumType, &mut Variable) {
-      self.insert_generic_internal(var_name, generic_type_name, false)
-    }
-
-    pub fn insert_generic_internal(self: &mut TypeVarContext, var_name: IString, generic_type_name: IString, use_parent_scope: bool) -> (RumType, &mut Variable) {
-      // get generic slot
-
+    pub fn create_generic_type(self: &mut TypeVarContext, generic_type_name: IString) -> RumType {
       let generic_index = match (!generic_type_name.is_empty()).then_some(self.ty_var_scopes.get_index_from_id(generic_type_name)).flatten() {
         Some(index) => index,
         None => {
@@ -376,14 +379,7 @@ mod ctx {
           index
         }
       };
-
-      let ty = RumType::Undefined.to_generic_id(generic_index);
-
-      let var_id = self.insert_new_var_internal(var_name, ty, use_parent_scope).id;
-
-      self.generics[generic_index].push(var_id);
-
-      (ty, &mut self.vars[var_id])
+      RumType::Undefined.to_generic_id(generic_index)
     }
 
     pub fn get_var(&mut self, var_name: IString) -> Option<&mut Variable> {

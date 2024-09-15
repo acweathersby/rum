@@ -195,8 +195,8 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
       fn get_op_allocation_policy(op: IROp) -> (AllocateResultReg, AllocateUpdateStore, AllocateOp1Reg, AllocateOp2Reg) {
         use AllocateResultReg::*;
         match op {
-          IROp::VAR_LOC => (Allocate, true, false, false),
-          IROp::AGG_LOC => (Allocate, true, false, false),
+          IROp::VAR_DECL => (Allocate, true, false, false),
+          IROp::AGG_DECL => (Allocate, true, false, false),
           IROp::PARAM_DECL => (Parameter, true, false, false),
           IROp::MEMB_PTR_CALC => (Allocate, true, true, true),
           IROp::CALL_RET => (CallRet, true, false, false),
