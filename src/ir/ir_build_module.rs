@@ -417,49 +417,53 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
         routine_type_Value::RawProcedureType(proc_ty) => (proc_ty.params.as_ref(), Option::None),
         _ => unreachable!(),
       };
-
       let parameters = &mut rt.parameters;
       let body = &mut rt.body;
 
       let mut ib = IRBuilder::new(body);
 
       for (index, param) in params.params.iter().enumerate() {
-        let param_name = param.var.id.intern();
         let param_type = &param.ty;
-        if param_type.inferred {
+        let param_name = param.var.id.intern();
+
+        let ty = if param_type.inferred {
           let gen_ty_name = get_type_name(&param.ty.ty);
-
-          let gen_ty = ib.get_generic_type(gen_ty_name);
-          let mut var = ib.declare_variable(param_name, gen_ty, param.tok.clone(), VAR_DECL).clone();
-
-          parameters.push((param_name, index, var.ty, var.id, param.tok.clone()));
-        } else if let Some(ty) = get_type(&param_type.ty, ty_db, false) {
-          let var = ib.declare_variable(param_name, ty, param.tok.clone(), VAR_DECL);
-          parameters.push((param_name, index, var.ty, var.id, param.tok.clone()));
+          ib.get_generic_type(gen_ty_name)
         } else {
-          panic!("Could not resolve type! {param_name}");
-        }
+          get_type(&param_type.ty, ty_db, false).expect("Could not resolve parameter type")
+        };
+
+        let param_ty = ty.increment_pointer();
+        let var = ib.declare_variable(param_name, param_ty, param.tok.clone(), PARAM_DECL).clone();
+
+        ib.push_ssa(PARM_VAL, ty.into(), &[], Default::default(), param.tok.clone());
+        ib.push_ssa(STORE, param_ty.into(), &[var.declaration.into(), StackOp], var.id, param.tok.clone());
+
+        parameters.push((param_name, index, ty, var.id, param.tok.clone()));
       }
 
       // Seal parameter scope.
-      body.ctx.ty_var_scopes.push_scope();
+      ib.body.ctx.ty_var_scopes.push_scope();
 
-      rt.returns = match ret {
+      let returns = match ret {
         Some(ret_type) => {
-          if ret_type.inferred {
+          let ty = if ret_type.inferred {
             let gen_ty_name = get_type_name(&ret_type.ty);
-            vec![(RumType::Undefined.to_generic_id(0), ret_type.tok.clone())]
-          } else if let Some(ty) = get_type(&ret_type.ty, ty_db, false) {
-            vec![(ty.into(), ret_type.tok.clone())]
+            ib.get_generic_type(gen_ty_name)
           } else {
-            panic!("Could not resolve return type")
-          }
+            get_type(&ret_type.ty, ty_db, false).expect("Could not resolve return")
+          };
+
+          let var = ib.declare_variable(format!("ret_1").intern(), ty, ret_type.tok.clone(), VAR_DECL);
+          vec![(ty.into(), ret_type.tok.clone(), var.id)]
         }
         _ => vec![],
       };
 
       // Seal the return signature scope.
-      body.ctx.ty_var_scopes.push_scope();
+      ib.body.ctx.ty_var_scopes.push_scope();
+
+      rt.returns = returns;
     }
     _ => unreachable!(),
   }
@@ -474,21 +478,9 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
     Type::Routine(rt) => {
       rt.body.resolved = false;
 
-      let RoutineType { name, parameters, returns, body, ast, .. } = rt;
+      let RoutineType { returns, body, ast, .. } = rt;
 
       let mut ib = IRBuilder::attach(body);
-
-      for (name, index, ty, var, tok) in parameters.iter() {
-        ib.push_ssa(PARAM_DECL, (*ty).into(), &[], *var, tok.clone());
-
-        let param_value = ib.pop_stack().unwrap();
-
-        let var = ib.declare_variable(*name, *ty, tok.clone(), VAR_DECL).clone();
-
-        ib.push_ssa(STORE, var.ty.into(), &[var.declaration.into(), param_value.into()], var.id, tok.clone());
-
-        ib.pop_stack().unwrap();
-      }
 
       process_expression(&ast.expression.expr, &mut ib);
 
@@ -503,8 +495,10 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
         ); */
         let mut i: usize = 0;
         while let Some(stack) = ib.pop_stack() {
-          let (ty, t) = &returns[i];
-          ib.push_ssa(RET_VAL, (*ty).into(), &[stack.into()], VarId::NONE, t.clone());
+          let (ty, t, var_id) = &returns[i];
+          ib.push_ssa(RET_VAL, (*ty).into(), &[stack.into()], *var_id, t.clone());
+
+          //ib.push_ssa(STORE, (*ty).into(), &[ib.body.ctx.vars[var_id.usize()].declaration.into(), stack.into()], *var_id, t.clone());
           break;
         }
         i += 1;
@@ -896,7 +890,7 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
           match &yield_.expr.expr {
             expression_Value::MemberCompositeAccess(mem) => {
               if let Some(temp_var) = resolve_variable(mem, ib) {
-                ib.push_ssa(STORE_ADDR, var.ty.into(), &[var.declaration.into(), StackOp], var.id, mem.tok.clone());
+                ib.push_ssa(ASSIGN, var.ty.into(), &[var.declaration.into(), StackOp], var.id, mem.tok.clone());
               /*   if var.ty.is_generic() {
                 var.ty = temp_var.ty;
                 ib.set_variable(var);

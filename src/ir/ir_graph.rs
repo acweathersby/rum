@@ -225,12 +225,14 @@ pub enum IROp {
   VAR_DECL,
   /// Declares a location to store a local value
   AGG_DECL,
-  /// Declares a location to store a
+  ///
+  PARM_VAL,
+  /// Declares a location to store a parameter value
   PARAM_DECL,
+  /// Declares a location to store a return value
+  RET_VAL,
   /// Declares a constant and its type
   CONST_DECL,
-  /// Declares and sets a return value
-  RET_VAL,
 
   // Arithmetic & Logic functions - MATH
   ADD,
@@ -276,7 +278,7 @@ pub enum IROp {
   // Clone one memory structure to another memory structure. Operands MUST be pointer values.
   // Depending on type, may require deep cloning, which will probably be handled through a dynamically generated function.
   CLONE,
-  STORE_ADDR,
+  ASSIGN,
   /// Returns the address of op1 as a pointer
   LOAD_ADDR,
 }

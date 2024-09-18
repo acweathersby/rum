@@ -92,9 +92,8 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
     Type::Routine(rt) => {
       resolve_generic_members(rt);
 
-      dbg!(&rt);
+      return;
 
-      //  println!("{routine_name}:\n{}", &rt.body);
       println!("TODO(anthony) Assert the routine is ready to be type checked.");
 
       let RoutineBody { graph, tokens, blocks, resolved, ctx } = &mut rt.body;
@@ -387,9 +386,9 @@ pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* l
 #[derive(Debug, Clone, Copy)]
 enum TypeInferenceTask {
   ResolveVar(IRGraphId, VarId, RumType),
-  ResolveGenericNode(IRGraphId, usize),
+  ResolveGenericNodeTD(IRGraphId, usize, RumType),
+  SetVarBU(IRGraphId, RumType, RumType),
   Propagate(IRGraphId, RumType),
-  SetVar(IRGraphId, RumType, RumType),
 }
 
 fn resolve_generic_members(rt: &mut RoutineType) {
@@ -440,37 +439,50 @@ fn resolve_generic_members(rt: &mut RoutineType) {
             let [a, b] = operands;
 
             if !a.is_invalid() {
-              inference_tasks.push_front(SetVar(a, rt.body.graph[a].ty(), ty));
+              inference_tasks.push_front(SetVarBU(a, rt.body.graph[a].ty(), ty));
             }
 
             if !b.is_invalid() {
-              inference_tasks.push_front(SetVar(b, rt.body.graph[b].ty(), ty.decrement_pointer()));
+              inference_tasks.push_front(SetVarBU(b, rt.body.graph[b].ty(), ty.decrement_pointer()));
             }
           }
         }
-        IROp::STORE_ADDR => {
+
+        IROp::ASSIGN => {
           let [a, b] = operands;
 
-          let ty = rt.body.graph[a].ty().is_generic().then_some(rt.body.graph[b].ty()).unwrap_or(rt.body.graph[a].ty());
+          let a_ty = rt.body.graph[a].ty();
+          let b_ty = rt.body.graph[b].ty();
 
           if !ty.is_generic() {
-            if !a.is_invalid() {
-              inference_tasks.push_front(SetVar(a, rt.body.graph[a].ty(), ty));
+            if a_ty.is_generic() {
+              inference_tasks.push_front(SetVarBU(a, a_ty, ty));
             }
 
-            if !b.is_invalid() {
-              inference_tasks.push_front(SetVar(b, rt.body.graph[b].ty(), ty));
+            if b_ty.is_generic() {
+              inference_tasks.push_front(SetVarBU(b, b_ty, ty));
+            }
+          } else {
+            if !b_ty.is_generic() {
+              println!("AAAA {node_id} {}", b_ty.is_generic());
+              inference_tasks.push_front(SetVarBU(a, a_ty, b_ty));
             }
           }
         }
         IROp::RET_VAL => {
-          debug_assert!(!operands[0].is_invalid());
-
-          for op in operands {
-            if !op.is_invalid() {
-              let gen_ty = rt.body.graph[op].ty();
-              if gen_ty.is_generic() {
-                inference_tasks.push_front(SetVar(op, gen_ty, ty));
+          if ty.is_generic() {
+            // Pull data from the input
+            if !operands[0].is_invalid() && !rt.body.graph[operands[0]].ty().is_generic() {
+              inference_tasks.push_front(ResolveGenericNodeTD(IRGraphId(node_id as u32), 0, rt.body.graph[operands[0]].ty()));
+            }
+          } else {
+            debug_assert!(!operands[0].is_invalid());
+            for op in operands {
+              if !op.is_invalid() {
+                let gen_ty = rt.body.graph[op].ty();
+                if gen_ty.is_generic() {
+                  inference_tasks.push_front(SetVarBU(op, gen_ty, ty));
+                }
               }
             }
           }
@@ -498,7 +510,7 @@ fn resolve_generic_members(rt: &mut RoutineType) {
               if !par_var.ty.is_generic() {
                 if var.mem_index < usize::MAX {
                   match par_var.ty.aggregate(&rt.body.ctx.db()) {
-                    Some(Type::Array(array)) => Some(array.element_type),
+                    Some(Type::Array(array)) => Some(array.element_type.increment_pointer()),
                     _ => unreachable!(),
                   }
                 } else if !var.mem_name.is_empty() {
@@ -510,11 +522,6 @@ fn resolve_generic_members(rt: &mut RoutineType) {
                 None
               }
             } else {
-              let existing_ty = rt.body.ctx.type_slots[generic_type].0;
-              println!("{var_id} {existing_ty} => {new_ty}");
-
-              let new_ty = if existing_ty.is_generic() { new_ty } else { existing_ty };
-
               Some(new_ty)
             }
           } else {
@@ -522,15 +529,10 @@ fn resolve_generic_members(rt: &mut RoutineType) {
           };
 
           if let Some(new_ty) = base_type {
-            println!("========== {task:?} ============ [{}]{new_ty}", var.ty);
             rt.body.ctx.type_slots[var.ty.generic_id().unwrap()].0 = new_ty;
             current_generation += 1;
 
-            if node.op() == IROp::AGG_DECL {
-              var.ty = new_ty.to_ptr_depth(1);
-            } else {
-              var.ty = new_ty //.to_ptr_depth(new_ty.ptr_depth() + var.ty.ptr_depth());
-            }
+            var.ty = new_ty;
 
             match &mut node {
               IRGraphNode::OpNode { ty, .. } => {
@@ -541,10 +543,10 @@ fn resolve_generic_members(rt: &mut RoutineType) {
             }
 
             for node in &matrix[var_node.usize()] {
-              inference_tasks.push_front(ResolveGenericNode(*node, current_generation));
+              inference_tasks.push_front(ResolveGenericNodeTD(*node, current_generation, new_ty));
             }
 
-            inference_tasks.push_front(ResolveGenericNode(var_node, current_generation));
+            inference_tasks.push_front(ResolveGenericNodeTD(var_node, current_generation, new_ty));
 
             match &mut rt.body.graph[var_node] {
               IRGraphNode::OpNode { op, ty, var_id, operands, .. } => {
@@ -556,23 +558,27 @@ fn resolve_generic_members(rt: &mut RoutineType) {
 
           rt.body.ctx.vars[var_id] = var;
         }
-        SetVar(node_id, gen_ty, new_ty) => match rt.body.graph[node_id.usize()] {
+        SetVarBU(node_id, gen_ty, new_ty) => match &mut rt.body.graph[node_id.usize()] {
           IRGraphNode::OpNode { ty, operands, var_id, op, .. } => {
             if ty.generic_id() == gen_ty.generic_id() {
               match op {
-                IROp::VAR_DECL | IROp::AGG_DECL => {
+                IROp::VAR_DECL | IROp::AGG_DECL | IROp::RET_VAL => {
                   debug_assert!(var_id.is_valid());
                   debug_assert!(!new_ty.is_generic());
-                  inference_tasks.push_front(ResolveVar(node_id, var_id, new_ty));
+                  inference_tasks.push_front(ResolveVar(node_id, *var_id, new_ty));
                 }
 
                 IROp::MEMB_PTR_CALC => {
-                  inference_tasks.push_front(ResolveVar(node_id, var_id, new_ty));
+                  inference_tasks.push_front(ResolveVar(node_id, *var_id, new_ty));
+                }
+                IROp::LOAD => {
+                  *ty = new_ty;
+                  inference_tasks.push_front(SetVarBU(operands[0], gen_ty, new_ty.increment_pointer()));
                 }
                 _ => {
-                  for op in operands {
+                  for op in *operands {
                     if !op.is_invalid() {
-                      inference_tasks.push_front(SetVar(op, gen_ty, new_ty));
+                      inference_tasks.push_front(SetVarBU(op, gen_ty, new_ty));
                     }
                   }
                 }
@@ -581,63 +587,53 @@ fn resolve_generic_members(rt: &mut RoutineType) {
           }
           _ => {}
         },
-        ResolveGenericNode(node_id, generation) => match &mut rt.body.graph[node_id.usize()] {
+        ResolveGenericNodeTD(node_id, generation, new_ty) => match &mut rt.body.graph[node_id.usize()] {
           IRGraphNode::OpNode { op, ty, var_id, operands, .. } => {
             if let Some(generic_type) = ty.generic_id() {
               let (current_type, _) = rt.body.ctx.type_slots[generic_type];
+              if (node_id.usize() == 26) {
+                println!("AA {ty} {new_ty} {current_type}")
+              }
+              if ty.is_generic() && *op == MEMB_PTR_CALC {
+                inference_tasks.push_front(ResolveVar(node_id, *var_id, new_ty));
+              } else if ty.is_generic() {
+                *ty = new_ty;
 
-              if current_type.is_generic() && ty.is_generic() && *op == MEMB_PTR_CALC {
-                inference_tasks.push_front(SetVar(node_id, *ty, Default::default()));
-              } else if !current_type.is_generic() && ty.is_generic() {
-                *ty = current_type.to_ptr_depth(current_type.ptr_depth() + ty.ptr_depth());
+                let ty_ = *ty;
 
-                let ty = *ty;
-
-                debug_assert!(!ty.is_generic());
+                debug_assert!(!ty_.is_generic());
 
                 if *op == IROp::STORE {
                   let [a, b] = *operands;
-                  if !a.is_invalid() {
-                    inference_tasks.push_front(SetVar(a, rt.body.graph[a].ty(), ty));
-                  }
                   if !b.is_invalid() {
-                    inference_tasks.push_front(SetVar(b, rt.body.graph[b].ty(), ty.decrement_pointer()));
-                  }
-                } else if *op == IROp::STORE_ADDR {
-                  let [a, b] = *operands;
-
-                  let ty = rt.body.graph[a].ty().is_generic().then_some(rt.body.graph[b].ty()).unwrap_or(rt.body.graph[a].ty());
-
-                  if !ty.is_generic() {
-                    if !a.is_invalid() {
-                      inference_tasks.push_front(SetVar(a, rt.body.graph[a].ty(), ty));
-                    }
-
-                    if !b.is_invalid() {
-                      inference_tasks.push_front(SetVar(b, rt.body.graph[b].ty(), ty));
-                    }
+                    inference_tasks.push_front(SetVarBU(b, rt.body.graph[b].ty(), ty_.decrement_pointer()));
                   }
                 } else if *op == IROp::LOAD {
-                  let ty = current_type;
-                  let operands = *operands;
-                  for op in &(operands)[0..1] {
-                    if !op.is_invalid() {
-                      debug_assert!(!ty.is_generic());
-                      inference_tasks.push_front(ResolveVar(*op, rt.body.graph[*op].var_id(), ty.increment_pointer()));
+                  *ty = new_ty.decrement_pointer();
+                } else if *op == IROp::ASSIGN {
+                  let [a, b] = *operands;
+                  let ty = *ty;
+                  let a_ty = rt.body.graph[a].ty();
+                  let b_ty = rt.body.graph[b].ty();
+
+                  if !ty.is_generic() {
+                    if a_ty.is_generic() {
+                      inference_tasks.push_front(SetVarBU(a, a_ty, ty));
                     }
-                  }
-                } else if *op == IROp::MEMB_PTR_CALC {
-                  let operands = *operands;
-                  for op in &(operands)[0..1] {
-                    if !op.is_invalid() {
-                      debug_assert!(!ty.is_generic());
-                      inference_tasks.push_front(ResolveVar(*op, rt.body.graph[*op].var_id(), ty));
+
+                    if b_ty.is_generic() {
+                      inference_tasks.push_front(SetVarBU(b, b_ty, ty));
+                    }
+                  } else {
+                    if !b_ty.is_generic() {
+                      println!("AAAA {node_id} {}", b_ty.is_generic());
+                      inference_tasks.push_front(SetVarBU(a, a_ty, b_ty));
                     }
                   }
                 }
 
                 for node in &matrix[node_id.usize()] {
-                  inference_tasks.push_back(ResolveGenericNode(*node, current_generation));
+                  inference_tasks.push_back(ResolveGenericNodeTD(*node, current_generation, ty_));
                 }
               } else if generation < current_generation {
                 // inference_tasks.push_back(ResolveGenericNode(node_id, current_generation));
@@ -654,8 +650,6 @@ fn resolve_generic_members(rt: &mut RoutineType) {
       }
     }
   }
-
-  todo!("Complete inferences {:?}", rt.body);
 }
 
 pub fn last_index_of(target_ty: IROp, node_id: usize, rt: &RoutineBody, forward: bool) -> usize {

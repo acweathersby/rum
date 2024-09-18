@@ -695,7 +695,7 @@ mod ty {
 
           if s.returns.len() > 0 {
             f.write_str(" => ");
-            for ((ty, _)) in &s.returns {
+            for ((ty, ..)) in &s.returns {
               f.write_fmt(format_args!("{ty} "));
             }
           }

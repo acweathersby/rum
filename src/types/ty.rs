@@ -4,6 +4,13 @@ use crate::types::BitSize;
 
 use super::{Lifetime, Type, TypeDatabase};
 
+
+pub enum TypeConstraints { 
+  Numeric,
+  Float, 
+  Aggregate,
+}
+
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum RumSubType {

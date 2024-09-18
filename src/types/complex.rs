@@ -57,7 +57,7 @@ pub struct ExternalRoutineType {
 pub struct RoutineType {
   pub name:       IString,
   pub parameters: Vec<(IString, usize, RumType, VarId, Token)>,
-  pub returns:    Vec<(RumType, Token)>,
+  pub returns:    Vec<(RumType, Token, VarId)>,
   pub body:       RoutineBody,
   pub ast:        Arc<RawRoutine<Token>>,
 }

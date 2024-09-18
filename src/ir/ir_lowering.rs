@@ -16,7 +16,6 @@ use super::ir_graph::{SSABlock, SSAGraphNode};
 
 /// Lowers high level IR into SSA for optimization and target machine encoding
 pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
-  unimplemented!();
   /*/
   // load the target routine
   let Some((mut ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
@@ -102,8 +101,7 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
 
 /// Lowers high level IR into SSA for optimization and target machine encoding
 pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> Vec<SSAGraphNode> {
-  todo!();
-  /*   // load the target routine
+  // load the target routine
   let Some((mut ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find Struct type: {routine_name}",);
   };
@@ -121,7 +119,7 @@ pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> V
 
         match node {
           IRGraphNode::Const { val } => ssa_out.push(SSAGraphNode::Const { val: val }),
-          IRGraphNode::OpNode { op, block_id, operands, var_id } => {
+          IRGraphNode::OpNode { op, block_id, operands, var_id, ty } => {
             let ty = PrimitiveType::Undefined;
             let ptr_size = var_id.ptr_depth(&ib.body.ctx) as u8;
 
@@ -157,5 +155,5 @@ pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> V
       ssa_out
     }
     _ => unreachable!(),
-  } */
+  }
 }

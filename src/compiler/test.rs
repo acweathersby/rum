@@ -5,11 +5,7 @@ use crate::{
   x86::{print_instructions, x86_eval::x86Function},
 };
 
-#[test]
-fn compile_structures() {
-  let mut db = build_module(
-    &crate::parser::script_parser::parse_raw_module(
-      &r##"
+const target_test_string: &'static str = r##"
 
 BaseArray => [i32; 6]
 
@@ -27,8 +23,8 @@ loop_iter(array: T?) => &i32 {
     }
 }
 
-main (nest: T?) => gen*BaseArray {
-  test = :[ 1 ]
+main (nest: u32) => D? {
+  test: BaseArray = :[ 1 ]
 
   loop a in loop_iter(test) {
     a = 300 + nest
@@ -37,12 +33,22 @@ main (nest: T?) => gen*BaseArray {
   test
 }
 
-  "##,
-    )
-    .unwrap(),
-  );
+  "##;
 
-  let (entry_offset, binary) = compile_binary_from_entry("main".intern(), vec![], db.as_mut());
+const build_up_test_string: &'static str = r##"
+
+add_two_numbers (l: u32, r: u32) => u32 {
+  l + r
+}
+
+
+"##;
+
+#[test]
+fn compile_structures() {
+  let mut db = build_module(&crate::parser::script_parser::parse_raw_module(&build_up_test_string).unwrap());
+
+  let (entry_offset, binary) = compile_binary_from_entry("add_two_numbers".intern(), vec![], db.as_mut());
 
   print_instructions(&binary, 0);
 
@@ -56,15 +62,15 @@ main (nest: T?) => gen*BaseArray {
     name:   f32,
   }
 
-  let funct = fn_.access_as_call::<fn(i32) -> &'static [i32; 6]>();
+  let funct = fn_.access_as_call::<fn(i32, i32) -> i32>();
 
-  let out = funct(150);
+  let out = funct(150, 2);
 
   dbg!(out);
   //let out = unsafe { &*out };
   //
   //assert_eq!(out.name, 1234.934);
-  //assert_eq!(out.params, 22);
+  assert_eq!(out, 152);
 
   dbg!(out);
 }

@@ -72,9 +72,8 @@ pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, d
 
     resolve_routine(pending, db);
 
-    lower_into_ssa(pending, db);
-    lower_iops(pending, db);
-
+    // lower_into_ssa(pending, db);
+    // lower_iops(pending, db);
     // optimize_routine(pending, db);
 
     let (spilled_variables, assignments) = generate_register_assignments(pending, db, &x86_REG_PACK);
