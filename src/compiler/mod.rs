@@ -2,6 +2,7 @@ use crate::{
   ir::{
     ir_lowering::{lower_into_ssa, lower_iops},
     ir_register_allocator::{generate_register_assignments, CallRegisters, RegisterVariables},
+    ir_register_allocator_ssa,
     ir_type_analysis::{resolve_routine, resolve_struct_offset},
   },
   istring::{CachedString, IString},
@@ -72,7 +73,11 @@ pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, d
 
     resolve_routine(pending, db);
 
-    // lower_into_ssa(pending, db);
+    let (ssa_blocks, ssa_graph) = lower_into_ssa(pending, db);
+
+    ir_register_allocator_ssa::generate_register_assignments(&ssa_blocks, &ssa_graph);
+    dbg!(ssa_graph);
+
     // lower_iops(pending, db);
     // optimize_routine(pending, db);
 

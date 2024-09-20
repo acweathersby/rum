@@ -3,7 +3,7 @@
 use crate::{
   ir::{
     ir_builder::IRBuilder,
-    ir_graph::{IRGraphId, IRGraphNode, IROp},
+    ir_graph::{IRGraphId, IRGraphNode, IROp, VarId},
   },
   istring::{CachedString, IString},
   types::{ConstVal, Type, TypeDatabase, TypeRef},
@@ -12,7 +12,7 @@ use core::panic;
 pub use radlr_rust_runtime::types::Token;
 use IROp::*;
 
-use super::ir_graph::{SSABlock, SSAGraphNode};
+use super::ir_graph::{IRBlock, SSAGraphNode};
 
 /// Lowers high level IR into SSA for optimization and target machine encoding
 pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
@@ -100,7 +100,7 @@ pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
 }
 
 /// Lowers high level IR into SSA for optimization and target machine encoding
-pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> Vec<SSAGraphNode> {
+pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> (Vec<Box<IRBlock>>, Vec<SSAGraphNode>) {
   // load the target routine
   let Some((mut ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find Struct type: {routine_name}",);
@@ -109,7 +109,7 @@ pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> V
   match ty_ref {
     Type::Routine(rt) => {
       let mut ssa_out = Vec::new();
-      let mut ssa_blocks_out = Vec::<SSABlock>::new();
+      let mut ssa_blocks_out = rt.body.blocks.clone();
 
       let mut ib = IRBuilder::new(&mut rt.body);
 
@@ -118,41 +118,19 @@ pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> V
         let tok = ib.body.tokens[node_index].clone();
 
         match node {
-          IRGraphNode::Const { val } => ssa_out.push(SSAGraphNode::Const { val: val }),
+          IRGraphNode::Const { val } => ssa_out.push(SSAGraphNode::Const { val }),
           IRGraphNode::OpNode { op, block_id, operands, var_id, ty } => {
-            let ty = PrimitiveType::Undefined;
-            let ptr_size = var_id.ptr_depth(&ib.body.ctx) as u8;
-
-            use TypeRef::*;
-
-            let ty = match var_id.ty(&ib.body.ctx).base_type(&ib.body.ctx.db()) {
-              Primitive(prim) => {
-                if matches!(op, IROp::LOAD | IROp::STORE) {
-                  PrimitiveType::new_aggregate(var_id)
-                } else {
-                  *prim
-                }
-              }
-              Array(_) => PrimitiveType::new_aggregate(var_id),
-              Struct(_) => PrimitiveType::new_aggregate(var_id),
-              UNRESOLVED { .. } => PrimitiveType::Undefined,
-              Undefined => PrimitiveType::Undefined,
-              BitField(_) => {
-                todo!("Lower bitfield type")
-              }
-              other => todo!("Lower {other}"),
-            };
-
-            ssa_out.push(SSAGraphNode::Node { op, operands_len: 0, ptr_size, block: block_id, ty, operands })
+            debug_assert!(!ty.is_generic());
+            ssa_out.push(SSAGraphNode::Node { op, block: block_id.usize() as u16, ty, operands, var: VarId::NONE })
           }
         }
       }
 
       println!("\n{} \n", ssa_out.iter().enumerate().map(|(i, b)| format!("{i:0004}: {b}")).collect::<Vec<String>>().join("\n"));
 
-      todo!("Hook up the rest of the SSA system");
+      //todo!("Hook up the rest of the SSA system");
 
-      ssa_out
+      (ssa_blocks_out, ssa_out)
     }
     _ => unreachable!(),
   }

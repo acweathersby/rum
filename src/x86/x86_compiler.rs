@@ -744,7 +744,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
             IROp::EQ => todo!("TODO: {node:?}"),
       */
       IROp::OR | IROp::XOR | IROp::AND | IROp::NOT | IROp::DIV | IROp::LOG | IROp::POW | IROp::LS | IROp::LE => todo!("TODO: {node:?}"),
-      IROp::PARM_VAL | IROp::VAR_DECL => {}
+      IROp::PARAM_VAL | IROp::VAR_DECL => {}
       op => todo!("Handle {op:?}"),
     }
   };

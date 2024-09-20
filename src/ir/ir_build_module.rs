@@ -436,7 +436,7 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
         let param_ty = ty.increment_pointer();
         let var = ib.declare_variable(param_name, param_ty, param.tok.clone(), PARAM_DECL).clone();
 
-        ib.push_ssa(PARM_VAL, ty.into(), &[], Default::default(), param.tok.clone());
+        ib.push_ssa(PARAM_VAL, ty.into(), &[], Default::default(), param.tok.clone());
         ib.push_ssa(STORE, param_ty.into(), &[var.declaration.into(), StackOp], var.id, param.tok.clone());
 
         parameters.push((param_name, index, ty, var.id, param.tok.clone()));

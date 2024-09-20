@@ -547,7 +547,7 @@ Debugging
 
 
 
-Syscall - User space OS interrupts that allow a programm to communicate with the OS.
+Posix Syscall - User space OS interrupts that allow a programm to communicate with the OS.
 
 
 |                | RAX | RCX | RDX | RBX | RSP | RBP | RSI | RDI | R08 | R09 | R10 | R11 | R12 | R13 | R14 | R15 |
@@ -555,6 +555,16 @@ Syscall - User space OS interrupts that allow a programm to communicate with the
 |                | 000 | 001 | 002 | 003 | 004 | 005 | 006 | 007 | 008 | 009 | 010 | 011 | 012 | 013 | 014 | 015 |
 | Syscall Args   |     |     |  3  |     |     |     |  2  |  1  |  5  |  6  |  4  |     |     |     |     |     |
 | Syscall Return |  1  |     |  2  |     |     |     |     |     |     |     |     |     |     |     |     |     |
+
+
+C Linux ABI Call Registers
+
+
+|                | RAX | RCX | RDX | RBX | RSP | RBP | RSI | RDI | R08 | R09 | R10 | R11 | R12 | R13 | R14 | R15 |
+| :---------     | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+|                | 000 | 001 | 002 | 003 | 004 | 005 | 006 | 007 | 008 | 009 | 010 | 011 | 012 | 013 | 014 | 015 |
+| Linux C Args   |     |  4  |  3  |     |     |     |  2  |  1  |  5  |  6  |     |     |     |     |     |     |
+| Linux C Ret    |  1  |     |     |     |     |     |     |     |     |     |     |     |     |     |     |     |
 
 ## Write - For console logging. RAX = 0
 

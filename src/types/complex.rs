@@ -25,6 +25,7 @@ pub struct ScopeType {
 }
 
 #[derive(Debug)]
+
 pub struct StructType {
   pub name:      IString,
   pub members:   Vec<StructMemberType>,
@@ -41,7 +42,9 @@ pub struct StructMemberType {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CallConvention {
+pub
+enum CallConvention
+{
   Rum,
   C,
   System,
@@ -217,7 +220,9 @@ pub struct UnionType {
 }
 
 #[derive(Debug)]
-pub enum DiscriminantType {
+pub
+enum DiscriminantType
+{
   Inline { size: usize },
   External { size: usize },
 }

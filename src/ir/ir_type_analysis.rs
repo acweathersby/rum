@@ -418,17 +418,6 @@ fn resolve_generic_members(rt: &mut RoutineType) {
   use TypeInferenceTask::*;
   let mut inference_tasks = VecDeque::new();
 
-  for var_index in 0..rt.body.ctx.vars.len() {
-    let var = rt.body.ctx.vars[var_index];
-    let ty = var.ty;
-
-    if ty.is_generic() {
-      if var.par.is_valid() {
-        //inference_tasks.push_back(ResolveVar(var.id, var.ty));
-      }
-    }
-  }
-
   // resolve all assignment expressions that have unresolved vars on the right side.
 
   for node_id in 0..rt.body.graph.len() {

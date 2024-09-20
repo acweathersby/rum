@@ -116,12 +116,6 @@ impl Display for SSAGraphNode {
   }
 }
 
-pub struct SSABlock {
-  pub nodes:          Vec<IRGraphId>,
-  pub branch_succeed: Option<BlockId>,
-  pub branch_fail:    Option<BlockId>,
-}
-
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 pub enum IRGraphNode {
@@ -226,7 +220,7 @@ pub enum IROp {
   /// Declares a location to store a local value
   AGG_DECL,
   ///
-  PARM_VAL,
+  PARAM_VAL,
   /// Declares a location to store a parameter value
   PARAM_DECL,
   /// Declares a location to store a return value

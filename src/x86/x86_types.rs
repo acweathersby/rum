@@ -5,7 +5,9 @@ use crate::{
 use std::collections::BTreeMap;
 
 #[derive(Debug, Hash, Clone, Copy)]
-pub(super) enum OpEncoding {
+pub(super)
+enum OpEncoding
+{
   Zero,
   VEX_MR,
   VEX_RM,
@@ -91,102 +93,102 @@ pub(super) enum OpEncoding {
   RMI,
 }
 
-const GENERAL_REGISTER: u16 = 0 << 7;
-const VECTOR_REGISTER: u16 = 1 << 8;
-const MASK_REGISTER: u16 = 1 << 9;
+const GENERAL_REGISTER: u8 = 1;
+const VECTOR_REGISTER: u8 = 2;
+const MASK_REGISTER: u8 = 4;
 
-pub const K0: Reg = Reg::new(00 | MASK_REGISTER);
-pub const K1: Reg = Reg::new(01 | MASK_REGISTER);
-pub const K2: Reg = Reg::new(02 | MASK_REGISTER);
-pub const K3: Reg = Reg::new(03 | MASK_REGISTER);
-pub const K4: Reg = Reg::new(04 | MASK_REGISTER);
-pub const K5: Reg = Reg::new(05 | MASK_REGISTER);
-pub const K6: Reg = Reg::new(06 | MASK_REGISTER);
-pub const K7: Reg = Reg::new(07 | MASK_REGISTER);
+pub const RAX: Reg = Reg::new(00, 00, 8, GENERAL_REGISTER);
+pub const RCX: Reg = Reg::new(01, 01, 8, GENERAL_REGISTER);
+pub const RDX: Reg = Reg::new(02, 02, 8, GENERAL_REGISTER);
+pub const RBX: Reg = Reg::new(03, 03, 8, GENERAL_REGISTER);
+pub const RSP: Reg = Reg::new(04, 04, 8, GENERAL_REGISTER);
+pub const RBP: Reg = Reg::new(05, 05, 8, GENERAL_REGISTER);
+pub const RSI: Reg = Reg::new(06, 06, 8, GENERAL_REGISTER);
+pub const RDI: Reg = Reg::new(07, 07, 8, GENERAL_REGISTER);
+pub const R8: Reg = Reg::new(08, 08, 8, GENERAL_REGISTER);
+pub const R9: Reg = Reg::new(09, 09, 8, GENERAL_REGISTER);
+pub const R10: Reg = Reg::new(10, 10, 8, GENERAL_REGISTER);
+pub const R11: Reg = Reg::new(11, 11, 8, GENERAL_REGISTER);
+pub const R12: Reg = Reg::new(12, 12, 8, GENERAL_REGISTER);
+pub const R13: Reg = Reg::new(13, 13, 8, GENERAL_REGISTER);
+pub const R14: Reg = Reg::new(14, 14, 8, GENERAL_REGISTER);
+pub const R15: Reg = Reg::new(15, 15, 8, GENERAL_REGISTER);
 
-pub const RAX: Reg = Reg::new(00 | GENERAL_REGISTER);
-pub const RCX: Reg = Reg::new(01 | GENERAL_REGISTER);
-pub const RDX: Reg = Reg::new(02 | GENERAL_REGISTER);
-pub const RBX: Reg = Reg::new(03 | GENERAL_REGISTER);
-pub const RSP: Reg = Reg::new(04 | GENERAL_REGISTER);
-pub const RBP: Reg = Reg::new(05 | GENERAL_REGISTER);
-pub const RSI: Reg = Reg::new(06 | GENERAL_REGISTER);
-pub const RDI: Reg = Reg::new(07 | GENERAL_REGISTER);
-pub const R8: Reg = Reg::new(08 | GENERAL_REGISTER);
-pub const R9: Reg = Reg::new(09 | GENERAL_REGISTER);
-pub const R10: Reg = Reg::new(10 | GENERAL_REGISTER);
-pub const R11: Reg = Reg::new(11 | GENERAL_REGISTER);
-pub const R12: Reg = Reg::new(12 | GENERAL_REGISTER);
-pub const R13: Reg = Reg::new(13 | GENERAL_REGISTER);
-pub const R14: Reg = Reg::new(14 | GENERAL_REGISTER);
-pub const R15: Reg = Reg::new(15 | GENERAL_REGISTER);
+pub const XMM0: Reg = Reg::new(16, 00, 16, VECTOR_REGISTER);
+pub const XMM1: Reg = Reg::new(17, 01, 16, VECTOR_REGISTER);
+pub const XMM2: Reg = Reg::new(18, 02, 16, VECTOR_REGISTER);
+pub const XMM3: Reg = Reg::new(19, 03, 16, VECTOR_REGISTER);
+pub const XMM4: Reg = Reg::new(20, 04, 16, VECTOR_REGISTER);
+pub const XMM5: Reg = Reg::new(21, 05, 16, VECTOR_REGISTER);
+pub const XMM6: Reg = Reg::new(22, 06, 16, VECTOR_REGISTER);
+pub const XMM7: Reg = Reg::new(23, 07, 16, VECTOR_REGISTER);
+pub const XMM8: Reg = Reg::new(24, 08, 16, VECTOR_REGISTER);
+pub const XMM9: Reg = Reg::new(25, 09, 16, VECTOR_REGISTER);
+pub const XMM10: Reg = Reg::new(26, 10, 16, VECTOR_REGISTER);
+pub const XMM11: Reg = Reg::new(27, 11, 16, VECTOR_REGISTER);
+pub const XMM12: Reg = Reg::new(28, 12, 16, VECTOR_REGISTER);
+pub const XMM13: Reg = Reg::new(29, 13, 16, VECTOR_REGISTER);
+pub const XMM14: Reg = Reg::new(30, 14, 16, VECTOR_REGISTER);
+pub const XMM15: Reg = Reg::new(31, 15, 16, VECTOR_REGISTER);
 
-pub const XMM0: Reg = Reg::new(00 | VECTOR_REGISTER);
-pub const XMM1: Reg = Reg::new(01 | VECTOR_REGISTER);
-pub const XMM2: Reg = Reg::new(02 | VECTOR_REGISTER);
-pub const XMM3: Reg = Reg::new(03 | VECTOR_REGISTER);
-pub const XMM4: Reg = Reg::new(04 | VECTOR_REGISTER);
-pub const XMM5: Reg = Reg::new(05 | VECTOR_REGISTER);
-pub const XMM6: Reg = Reg::new(06 | VECTOR_REGISTER);
-pub const XMM7: Reg = Reg::new(07 | VECTOR_REGISTER);
-pub const XMM8: Reg = Reg::new(08 | VECTOR_REGISTER);
-pub const XMM9: Reg = Reg::new(09 | VECTOR_REGISTER);
-pub const XMM10: Reg = Reg::new(10 | VECTOR_REGISTER);
-pub const XMM11: Reg = Reg::new(11 | VECTOR_REGISTER);
-pub const XMM12: Reg = Reg::new(12 | VECTOR_REGISTER);
-pub const XMM13: Reg = Reg::new(13 | VECTOR_REGISTER);
-pub const XMM14: Reg = Reg::new(14 | VECTOR_REGISTER);
-pub const XMM15: Reg = Reg::new(15 | VECTOR_REGISTER);
+pub const YMM0: Reg = Reg::new(32, 00, 32, VECTOR_REGISTER);
+pub const YMM1: Reg = Reg::new(33, 01, 32, VECTOR_REGISTER);
+pub const YMM2: Reg = Reg::new(34, 02, 32, VECTOR_REGISTER);
+pub const YMM3: Reg = Reg::new(35, 03, 32, VECTOR_REGISTER);
+pub const YMM4: Reg = Reg::new(36, 04, 32, VECTOR_REGISTER);
+pub const YMM5: Reg = Reg::new(37, 05, 32, VECTOR_REGISTER);
+pub const YMM6: Reg = Reg::new(38, 06, 32, VECTOR_REGISTER);
+pub const YMM7: Reg = Reg::new(39, 07, 32, VECTOR_REGISTER);
+pub const YMM8: Reg = Reg::new(40, 08, 32, VECTOR_REGISTER);
+pub const YMM9: Reg = Reg::new(41, 09, 32, VECTOR_REGISTER);
+pub const YMM10: Reg = Reg::new(42, 10, 32, VECTOR_REGISTER);
+pub const YMM11: Reg = Reg::new(43, 11, 32, VECTOR_REGISTER);
+pub const YMM12: Reg = Reg::new(44, 12, 32, VECTOR_REGISTER);
+pub const YMM13: Reg = Reg::new(45, 13, 32, VECTOR_REGISTER);
+pub const YMM14: Reg = Reg::new(46, 14, 32, VECTOR_REGISTER);
+pub const YMM15: Reg = Reg::new(47, 15, 32, VECTOR_REGISTER);
 
-pub const YMM0: Reg = Reg::new(00 | VECTOR_REGISTER);
-pub const YMM1: Reg = Reg::new(01 | VECTOR_REGISTER);
-pub const YMM2: Reg = Reg::new(02 | VECTOR_REGISTER);
-pub const YMM3: Reg = Reg::new(03 | VECTOR_REGISTER);
-pub const YMM4: Reg = Reg::new(04 | VECTOR_REGISTER);
-pub const YMM5: Reg = Reg::new(05 | VECTOR_REGISTER);
-pub const YMM6: Reg = Reg::new(06 | VECTOR_REGISTER);
-pub const YMM7: Reg = Reg::new(07 | VECTOR_REGISTER);
-pub const YMM8: Reg = Reg::new(08 | VECTOR_REGISTER);
-pub const YMM9: Reg = Reg::new(09 | VECTOR_REGISTER);
-pub const YMM10: Reg = Reg::new(10 | VECTOR_REGISTER);
-pub const YMM11: Reg = Reg::new(11 | VECTOR_REGISTER);
-pub const YMM12: Reg = Reg::new(12 | VECTOR_REGISTER);
-pub const YMM13: Reg = Reg::new(13 | VECTOR_REGISTER);
-pub const YMM14: Reg = Reg::new(14 | VECTOR_REGISTER);
-pub const YMM15: Reg = Reg::new(15 | VECTOR_REGISTER);
+pub const ZMM0: Reg = Reg::new(48, 00, 64, VECTOR_REGISTER);
+pub const ZMM1: Reg = Reg::new(49, 01, 64, VECTOR_REGISTER);
+pub const ZMM2: Reg = Reg::new(50, 02, 64, VECTOR_REGISTER);
+pub const ZMM3: Reg = Reg::new(51, 03, 64, VECTOR_REGISTER);
+pub const ZMM4: Reg = Reg::new(52, 04, 64, VECTOR_REGISTER);
+pub const ZMM5: Reg = Reg::new(53, 05, 64, VECTOR_REGISTER);
+pub const ZMM6: Reg = Reg::new(54, 06, 64, VECTOR_REGISTER);
+pub const ZMM7: Reg = Reg::new(55, 07, 64, VECTOR_REGISTER);
+pub const ZMM8: Reg = Reg::new(56, 08, 64, VECTOR_REGISTER);
+pub const ZMM9: Reg = Reg::new(57, 09, 64, VECTOR_REGISTER);
+pub const ZMM10: Reg = Reg::new(58, 10, 64, VECTOR_REGISTER);
+pub const ZMM11: Reg = Reg::new(59, 11, 64, VECTOR_REGISTER);
+pub const ZMM12: Reg = Reg::new(60, 12, 64, VECTOR_REGISTER);
+pub const ZMM13: Reg = Reg::new(61, 13, 64, VECTOR_REGISTER);
+pub const ZMM14: Reg = Reg::new(62, 14, 64, VECTOR_REGISTER);
+pub const ZMM15: Reg = Reg::new(63, 15, 64, VECTOR_REGISTER);
+pub const ZMM16: Reg = Reg::new(64, 16, 64, VECTOR_REGISTER);
+pub const ZMM17: Reg = Reg::new(65, 17, 64, VECTOR_REGISTER);
+pub const ZMM18: Reg = Reg::new(66, 18, 64, VECTOR_REGISTER);
+pub const ZMM19: Reg = Reg::new(67, 19, 64, VECTOR_REGISTER);
+pub const ZMM20: Reg = Reg::new(68, 20, 64, VECTOR_REGISTER);
+pub const ZMM21: Reg = Reg::new(69, 21, 64, VECTOR_REGISTER);
+pub const ZMM22: Reg = Reg::new(70, 22, 64, VECTOR_REGISTER);
+pub const ZMM23: Reg = Reg::new(71, 23, 64, VECTOR_REGISTER);
+pub const ZMM24: Reg = Reg::new(72, 24, 64, VECTOR_REGISTER);
+pub const ZMM25: Reg = Reg::new(73, 25, 64, VECTOR_REGISTER);
+pub const ZMM26: Reg = Reg::new(74, 26, 64, VECTOR_REGISTER);
+pub const ZMM27: Reg = Reg::new(75, 27, 64, VECTOR_REGISTER);
+pub const ZMM28: Reg = Reg::new(76, 28, 64, VECTOR_REGISTER);
+pub const ZMM29: Reg = Reg::new(77, 29, 64, VECTOR_REGISTER);
+pub const ZMM30: Reg = Reg::new(78, 30, 64, VECTOR_REGISTER);
+pub const ZMM31: Reg = Reg::new(79, 31, 64, VECTOR_REGISTER);
 
-pub const ZMM0: Reg = Reg::new(00 | VECTOR_REGISTER);
-pub const ZMM1: Reg = Reg::new(01 | VECTOR_REGISTER);
-pub const ZMM2: Reg = Reg::new(02 | VECTOR_REGISTER);
-pub const ZMM3: Reg = Reg::new(03 | VECTOR_REGISTER);
-pub const ZMM4: Reg = Reg::new(04 | VECTOR_REGISTER);
-pub const ZMM5: Reg = Reg::new(05 | VECTOR_REGISTER);
-pub const ZMM6: Reg = Reg::new(06 | VECTOR_REGISTER);
-pub const ZMM7: Reg = Reg::new(07 | VECTOR_REGISTER);
-pub const ZMM8: Reg = Reg::new(08 | VECTOR_REGISTER);
-pub const ZMM9: Reg = Reg::new(09 | VECTOR_REGISTER);
-pub const ZMM10: Reg = Reg::new(10 | VECTOR_REGISTER);
-pub const ZMM11: Reg = Reg::new(11 | VECTOR_REGISTER);
-pub const ZMM12: Reg = Reg::new(12 | VECTOR_REGISTER);
-pub const ZMM13: Reg = Reg::new(13 | VECTOR_REGISTER);
-pub const ZMM14: Reg = Reg::new(14 | VECTOR_REGISTER);
-pub const ZMM15: Reg = Reg::new(15 | VECTOR_REGISTER);
-pub const ZMM16: Reg = Reg::new(16 | VECTOR_REGISTER);
-pub const ZMM17: Reg = Reg::new(17 | VECTOR_REGISTER);
-pub const ZMM18: Reg = Reg::new(18 | VECTOR_REGISTER);
-pub const ZMM19: Reg = Reg::new(19 | VECTOR_REGISTER);
-pub const ZMM20: Reg = Reg::new(20 | VECTOR_REGISTER);
-pub const ZMM21: Reg = Reg::new(21 | VECTOR_REGISTER);
-pub const ZMM22: Reg = Reg::new(22 | VECTOR_REGISTER);
-pub const ZMM23: Reg = Reg::new(23 | VECTOR_REGISTER);
-pub const ZMM24: Reg = Reg::new(24 | VECTOR_REGISTER);
-pub const ZMM25: Reg = Reg::new(25 | VECTOR_REGISTER);
-pub const ZMM26: Reg = Reg::new(26 | VECTOR_REGISTER);
-pub const ZMM27: Reg = Reg::new(27 | VECTOR_REGISTER);
-pub const ZMM28: Reg = Reg::new(28 | VECTOR_REGISTER);
-pub const ZMM29: Reg = Reg::new(29 | VECTOR_REGISTER);
-pub const ZMM30: Reg = Reg::new(30 | VECTOR_REGISTER);
-pub const ZMM31: Reg = Reg::new(31 | VECTOR_REGISTER);
+pub const K0: Reg = Reg::new(81, 01, 1, MASK_REGISTER);
+pub const K1: Reg = Reg::new(81, 01, 1, MASK_REGISTER);
+pub const K2: Reg = Reg::new(82, 02, 1, MASK_REGISTER);
+pub const K3: Reg = Reg::new(83, 03, 1, MASK_REGISTER);
+pub const K4: Reg = Reg::new(84, 04, 1, MASK_REGISTER);
+pub const K5: Reg = Reg::new(85, 05, 1, MASK_REGISTER);
+pub const K6: Reg = Reg::new(86, 06, 1, MASK_REGISTER);
+pub const K7: Reg = Reg::new(87, 07, 1, MASK_REGISTER);
 
 impl Reg {
   const SIB_RM: u8 = 0b100;
@@ -206,12 +208,12 @@ impl Reg {
   }
 
   pub(super) fn is_general_purpose(&self) -> bool {
-    (self.0 & (VECTOR_REGISTER | MASK_REGISTER)) == 0
+    (self.flags() & (VECTOR_REGISTER | MASK_REGISTER)) == 0
   }
 
   /// The register is one of R8-R15
   pub(super) fn is_ext_8_reg(&self) -> bool {
-    (self.0 & 0x8) > 0
+    self.real_index() >= 8
   }
 
   pub(super) fn is_upper_16_reg(&self) -> bool {
@@ -236,7 +238,9 @@ impl Reg {
 }
 
 #[derive(PartialEq, Debug, Hash)]
-pub(super) enum OperandType {
+pub(super)
+enum OperandType
+{
   REG,
   MEM,
   IMM_INT,
@@ -244,7 +248,9 @@ pub(super) enum OperandType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Arg {
+pub(super)
+enum Arg
+{
   Reg(Reg),
   Mem(Reg),
   RSP_REL(u64),
@@ -298,21 +304,21 @@ impl Arg {
 
   pub(super) fn is_mask_register(&self) -> bool {
     match self {
-      Arg::Reg(reg) => (reg.0 & MASK_REGISTER) > 0,
+      Arg::Reg(reg) => (reg.flags() & MASK_REGISTER) > 0,
       _ => false,
     }
   }
 
   pub(super) fn is_vector_register(&self) -> bool {
     match self {
-      Arg::Reg(reg) => (reg.0 & VECTOR_REGISTER) > 0,
+      Arg::Reg(reg) => (reg.flags() & VECTOR_REGISTER) > 0,
       _ => false,
     }
   }
 
   pub(super) fn is_general_purpose(&self) -> bool {
     match self {
-      Arg::Reg(reg) => (reg.0 & (VECTOR_REGISTER | MASK_REGISTER)) == 0,
+      Arg::Reg(reg) => (reg.flags() & (VECTOR_REGISTER | MASK_REGISTER)) == 0,
       _ => false,
     }
   }

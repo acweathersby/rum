@@ -38,13 +38,19 @@ pub struct CallRegisters {
   pub ret_float_registers: Vec<usize>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Reg(pub u16);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Reg(pub u32);
+
+impl Debug for Reg {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      Display::fmt(&self, f)
+  }
+}
 
 impl Display for Reg {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.is_valid() {
-      f.write_fmt(format_args!("r{:03}", self.0))
+      f.write_fmt(format_args!("r{:03}:{:03}", self.real_index(), self.unique_index()))
     } else {
       f.write_str("rXXX")
     }
@@ -53,17 +59,50 @@ impl Display for Reg {
 
 impl Default for Reg {
   fn default() -> Self {
-    Self(u16::MAX)
+    Self(0)
   }
 }
 
 impl Reg {
-  pub const fn new(val: u16) -> Reg {
-    Self(val)
+  const UNIQUE_INDEX_MASK: u32 = 0x0000_00FF;
+  const UNIQUE_INDEX_OFFSET: u32 = 0;
+
+  const REAL_INDEX_MASK: u32 = 0x0000_FF00;
+  const REAL_INDEX_OFFSET: u32 = 8;
+
+  const BYTE_SIZE_MASK: u32 = 0xFF_0000;
+  const BYTE_SIZE_OFFSET: u32 = 16;
+
+  const FLAG_MASK: u32 = 0xFF00_0000;
+  const FLAG_OFFSET: u32 = 24;
+
+  pub const fn new(unique_index: u8, real_index: u8, byte_size: u8, flags: u8) -> Reg {
+    Self((unique_index as u32) << Self::UNIQUE_INDEX_OFFSET | (real_index as u32) << Self::REAL_INDEX_OFFSET | (byte_size as u32) << Self::BYTE_SIZE_OFFSET | (flags as u32) << Self::FLAG_OFFSET)
   }
 
-  pub fn is_valid(&self) -> bool {
-    self.0 != u16::MAX
+  pub const fn is_valid(&self) -> bool {
+    self.0 != 0
+  }
+
+  /// A unique index to differentiate between other register types. When ordering
+  /// registers, this value should be used
+  pub const fn unique_index(&self) -> usize {
+    ((self.0 & Self::UNIQUE_INDEX_MASK) >> Self::UNIQUE_INDEX_OFFSET) as usize
+  }
+
+  /// Actual register index per the relevant ISA
+  pub const fn real_index(&self) -> usize {
+    ((self.0 & Self::REAL_INDEX_MASK) >> Self::REAL_INDEX_OFFSET) as usize
+  }
+
+  /// Total number of bytes this register loads
+  pub const fn byte_size(&self) -> usize {
+    ((self.0 & Self::BYTE_SIZE_MASK) >> Self::BYTE_SIZE_OFFSET) as usize
+  }
+
+  /// Arbitrary flag values
+  pub const fn flags(&self) -> u8 {
+    ((self.0 & Self::FLAG_MASK) >> Self::FLAG_OFFSET) as u8
   }
 }
 
@@ -122,7 +161,7 @@ struct SelectionPack<'imm, 'vars, 'assigns> {
   current_block: BlockId,
 }
 
-pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDatabase, reg_pack: &RegisterVariables) -> (Vec<VarId>, Vec<RegisterAssignement>) {
+pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDatabase, reg_pack: &RegisterVariables) -> (Vec<VarId>, Vec<RegisterAssignement>){
   // load the target routine
   let Some((ty_ref, _)) = type_scope.get_type(routine_name) else {
     panic!("Could not find routine type: {routine_name}",);
@@ -198,7 +237,7 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
           IROp::VAR_DECL => (Allocate, true, false, false),
           IROp::PARAM_DECL => (Allocate, true, false, false),
           IROp::AGG_DECL => (Allocate, true, false, false),
-          IROp::PARM_VAL => (Parameter, true, false, false),
+          IROp::PARAM_VAL => (Parameter, true, false, false),
           IROp::MEMB_PTR_CALC => (Allocate, true, true, true),
           IROp::CALL_RET => (CallRet, true, false, false),
           IROp::LOAD => (Allocate, false, false, false),
@@ -349,7 +388,10 @@ pub fn generate_register_assignments(routine_name: IString, type_scope: &TypeDat
   }
 }
 
-fn transfer_vars(sp: &mut SelectionPack<'_, '_, '_>) {
+fn transfer_vars(
+  sp: &mut SelectionPack<'_, '_, '_>,
+)
+{
   let current_block = sp.current_block;
 
   let predecessors = &sp.block_predecessors[current_block.usize()];
@@ -388,7 +430,12 @@ fn transfer_vars(sp: &mut SelectionPack<'_, '_, '_>) {
   }
 }
 
-fn post_insert_spill(sp: &mut SelectionPack<'_, '_, '_>, store: IRGraphId, var: VarId) {
+fn post_insert_spill(
+  sp: &mut SelectionPack<'_, '_, '_>,
+  store: IRGraphId,
+  var: VarId,
+)
+{
   match &sp.body.graph[store] {
     IRGraphNode::OpNode { op, block_id, operands, var_id, ty } => match op {
       IROp::STORE => sp.reg_vars[store.usize()].spills[3] = var,
@@ -406,7 +453,8 @@ fn allocate_op_register(
   block_node_index: usize,
   sp: &mut SelectionPack<'_, '_, '_>,
   blocked_register: &mut Option<usize>,
-) {
+)
+{
   let SelectionPack { reg_vars: reg_data, body, .. } = sp;
 
   let node = &body.graph[op_node_id.usize()];
@@ -434,7 +482,13 @@ struct RegAssignResult {
   new_var:       VarId,
 }
 
-fn set_register(val: RegAssignResult, node_id: IRGraphId, op_index: usize, sp: &mut SelectionPack<'_, '_, '_>) {
+fn set_register(
+  val: RegAssignResult,
+  node_id: IRGraphId,
+  op_index: usize,
+  sp: &mut SelectionPack<'_, '_, '_>,
+)
+{
   let RegAssignResult { reg_index, spill_var, requires_load, new_var } = val;
 
   if let Some(store_location) = sp.vars_loaded_from_predecessors[sp.current_block.usize()].get(&new_var) {
@@ -465,7 +519,7 @@ fn get_register_for_var(
   ty: RumType,
   blocked_register: Option<usize>,
   sp: &mut SelectionPack<'_, '_, '_>,
-) -> Option<RegAssignResult> {
+) -> Option<RegAssignResult>{
   // Make sure we select a register from the list of allowed registers for this
   // type.
 
@@ -552,7 +606,7 @@ fn get_register_for_var(
   }
 }
 
-fn measure_allocation_cost(sp: &SelectionPack<'_, '_, '_>, register_index: usize, node_id: IRGraphId, block_node_index: usize) -> (i32, Option<VarId>) {
+fn measure_allocation_cost(sp: &SelectionPack<'_, '_, '_>, register_index: usize, node_id: IRGraphId, block_node_index: usize) -> (i32, Option<VarId>){
   let SelectionPack { reg_vars: reg_data, body, reg_pack, reg_assigns, ctx, current_block: block_id, .. } = sp;
   let block_id = *block_id;
   let (var, _) = reg_assigns[block_id][register_index];
@@ -598,7 +652,7 @@ fn measure_allocation_cost(sp: &SelectionPack<'_, '_, '_>, register_index: usize
   (score, spill)
 }
 
-fn get_arg_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, reg_index: usize, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>> {
+fn get_arg_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, reg_index: usize, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>>{
   // Acquire the set of register indices that can store the given type.
   let reg_vars = &reg_vars.call_register_list[reg_index];
   if ty.ptr_depth() > 0 {
@@ -616,7 +670,7 @@ fn get_arg_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, re
   }
 }
 
-fn get_ret_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, reg_index: usize, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>> {
+fn get_ret_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, reg_index: usize, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>>{
   // Acquire the set of register indices that can store the given type.
   let reg_vars = &reg_vars.call_register_list[reg_index];
   if ty.ptr_depth() > 0 {
@@ -634,7 +688,7 @@ fn get_ret_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, re
   }
 }
 
-fn get_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>> {
+fn get_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, ctx: &TypeVarContext) -> Option<&'imm Vec<usize>>{
   // Acquire the set of register indices that can store the given type.
   if ty.ptr_depth() > 0 {
     if reg_vars.ptr_registers.is_empty() {
@@ -651,7 +705,7 @@ fn get_register_set<'imm>(ty: RumType, reg_vars: &'imm RegisterVariables, ctx: &
   }
 }
 
-pub fn get_block_direct_predecessors(ctx: &RoutineBody) -> Vec<Vec<BlockId>> {
+pub fn get_block_direct_predecessors(ctx: &RoutineBody) -> Vec<Vec<BlockId>>{
   let mut out_vecs = vec![vec![]; ctx.blocks.len()];
 
   for block_id in 0..ctx.blocks.len() {
@@ -672,7 +726,7 @@ pub fn get_block_direct_predecessors(ctx: &RoutineBody) -> Vec<Vec<BlockId>> {
 
 /// Create an ordering for block register assignment based on block features
 /// such as loops and return values.
-pub fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockId>]) -> Vec<usize> {
+pub fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockId>]) -> Vec<usize>{
   let RoutineBody { graph, blocks, .. } = ctx;
 
   let mut block_ordering = vec![];
@@ -709,7 +763,11 @@ pub fn create_block_ordering(ctx: &RoutineBody, block_predecessors: &[Vec<BlockI
 
 /// Ensures VarIds are present on all graph nodes and operands that are not
 /// constants or vars.
-fn create_and_diffuse_temp_variables(ctx: &RoutineBody, reg_data: &mut [RegisterAssignement]) {
+fn create_and_diffuse_temp_variables(
+  ctx: &RoutineBody,
+  reg_data: &mut [RegisterAssignement],
+)
+{
   let RoutineBody { graph, .. } = ctx;
 
   let mut var_remap = HashMap::<VarId, VarId>::new();
