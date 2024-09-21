@@ -7,8 +7,8 @@ use crate::{
   container::get_aligned_value,
   error::RumResult,
   ir::{
-    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, IROp, VarId},
-    ir_register_allocator::RegisterAssignement,
+    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, IROp, SSAGraphNode, VarId},
+    ir_register_allocator::RegisterAssignement, ir_register_allocator_ssa::RegisterAssignments,
   },
   istring::IString,
   linker::{LinkableBinary, RetargetingLink},
@@ -41,42 +41,46 @@ impl JumpResolution {
 
 pub fn compile_from_ssa_fn(
   routine_name: IString,
-  type_scope: &TypeDatabase,
-  register_assignments: &[RegisterAssignement],
+
+
+  blocks: &[Box<IRBlock>],
+  ssa_graph: &[SSAGraphNode],
+  register_assignments: &RegisterAssignments,
+
   spilled_variables: &[VarId],
-) -> RumResult<LinkableBinary> {
-  let Some((ty_ref, _)) = type_scope.get_type(routine_name) else {
-    panic!("Could not find routine type: {routine_name}",);
-  };
+) -> RumResult<LinkableBinary>{
+  let mut binary = LinkableBinary { binary: Default::default(), name: routine_name, link_map: Default::default() };
+  todo!("compile fn");
+ /*  
 
-  match ty_ref {
-    Type::Routine(rt) => {
-      let body = &rt.body;
-
-      let mut binary = LinkableBinary { binary: Default::default(), name: routine_name, link_map: Default::default() };
-
-      let mut cc = CompileContext {
+  let mut cc = CompileContext {
         stack_size: 0,
         jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
         link: &mut binary,
         body,
       };
 
-      // store pointers to free and malloc at base binaries
-      let mut offset = 0;
+  // store pointers to free and malloc at base binaries
+  let mut offset = 0;
 
-      // Move stack by needed bytes to allocate memory for our stack elements
-      // and local pointer references
+  // Move stack by needed bytes to allocate memory for our stack elements
+  // and local pointer references
 
-      // Create area on the stack for local declarations
+  // Create area on the stack for local declarations
 
-      let mut offsets = BTreeMap::<VarId, u64>::new();
-      let mut rsp_offset = 0;
+  let mut offsets = BTreeMap::<VarId, u64>::new();
+  let mut rsp_offset = 0;
 
-      fn fun_name(id: VarId, body: &RoutineBody, offsets: &mut BTreeMap<VarId, u64>, rsp_offset: &mut u64) {
-        debug_assert!(id.is_valid());
+  fn fun_name(
+    id: VarId,
+    body: &RoutineBody,
+    offsets: &mut BTreeMap<VarId, u64>,
+    rsp_offset: &mut u64,
+  )
+  {
+    debug_assert!(id.is_valid());
 
-        if let Some(var) = body.ctx.vars.get(id.usize()) {
+    if let Some(var) = body.ctx.vars.get(id.usize()) {
           unimplemented!()
           /*       let ty = var.ty.ty(&body.ctx);
           if ty.is_pointer() {
@@ -91,21 +95,21 @@ pub fn compile_from_ssa_fn(
             _ => todo!("Handle this??"),
           } */
         }
-        // /}
-      }
+    // /}
+  }
 
-      for var_id in spilled_variables {
+  for var_id in spilled_variables {
         dbg!(var_id);
         if !offsets.contains_key(var_id) {
           fun_name(*var_id, body, &mut offsets, &mut rsp_offset);
         }
       }
 
-      rsp_offset = get_aligned_value(rsp_offset, 16);
+  rsp_offset = get_aligned_value(rsp_offset, 16);
 
-      funct_preamble(&mut cc, rsp_offset);
+  funct_preamble(&mut cc, rsp_offset);
 
-      for block in body.blocks.iter() {
+  for block in body.blocks.iter() {
         let mut jump_resolved = false;
 
         cc.jmp_resolver.block_offset.push(cc.link.binary.len());
@@ -145,7 +149,7 @@ pub fn compile_from_ssa_fn(
         }
       }
 
-      for (instruction_index, block_id) in &cc.jmp_resolver.jump_points {
+  for (instruction_index, block_id) in &cc.jmp_resolver.jump_points {
         let block_address = cc.jmp_resolver.block_offset[*block_id];
         let instruction_end_point = *instruction_index;
         let relative_offset = block_address as i32 - instruction_end_point as i32;
@@ -153,15 +157,16 @@ pub fn compile_from_ssa_fn(
         unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
       }
 
-      print_instructions(&cc.link.binary[0..], 0);
+  print_instructions(&cc.link.binary[0..], 0); */
 
-      Ok(binary)
-    }
-    _ => unreachable!(),
-  }
+  Ok(binary)
 }
 
-fn funct_preamble(cc: &mut CompileContext, rsp_offset: u64) {
+fn funct_preamble(
+  cc: &mut CompileContext,
+  rsp_offset: u64,
+)
+{
   let bin = &mut cc.link.binary;
   encode_unary(bin, &push, 64, Arg::Reg(RBX));
   encode_unary(bin, &push, 64, Arg::Reg(RBP));
@@ -176,7 +181,11 @@ fn funct_preamble(cc: &mut CompileContext, rsp_offset: u64) {
   }
 }
 
-fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
+fn funct_postamble(
+  cc: &mut CompileContext,
+  rsp_offset: u64,
+)
+{
   let bin = &mut cc.link.binary;
   if rsp_offset > 0 {
     encode_binary(bin, &add, 64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset as i64));
@@ -189,59 +198,31 @@ fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
   encode_unary(bin, &pop, 64, Arg::Reg(RBX));
 }
 
-pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IRBlock, cc: &mut CompileContext, so: &BTreeMap<VarId, u64>, rsp_offset: u64) -> bool {
-  const POINTER_SIZE: u64 = 64;
+pub fn compile_op(
+  node_index: usize, 
+  block_index: usize,  
+  
+  so: &BTreeMap<VarId, u64>, 
+  rsp_offset: u64,
 
-  let db = cc.body.ctx.db();
-  let node_ty = node.ty();
-  let node_ty_is_pointer = node_ty.ptr_depth() > 0;
+  blocks: &[IRBlock],
+  ssa_graph: &[SSAGraphNode],
+  register_assignments: &RegisterAssignments,
 
-  if node_ty.is_generic() {
-    println!("TODO(anthony): All types should be resolved at this point");
-    return false;
-  }
+) -> bool{
+  /* const POINTER_SIZE: u64 = 64;
 
-  use Arg::*;
-  if let IRGraphNode::OpNode { op, block_id, operands, .. } = node {
-    let regs = reg_data.reg;
-    let vars = reg_data.vars;
-    let spills = reg_data.spills;
+  if let SSAGraphNode::Node { op, ty, operands, .. } = ssa_graph[node_index] {
+    
+    let [dst, op1, op2] = register_assignments.assignments[node_index];
+
     println!("{op:?} to x86:->");
 
-    // Perform spills
-    for (op_index, spill_var) in spills[0..3].iter().enumerate() {
-      if spill_var.is_valid() {
-        let node = &cc.body.graph[*spill_var];
-        let bit_size = node_ty.bit_size();
-        let offset = *so.get(spill_var).unwrap();
-        let reg = match op_index {
-          0 => regs[0].as_reg_op(),
-          1 => regs[1].as_reg_op(),
-          2 => regs[2].as_reg_op(),
-          _ => unreachable!(),
-        };
-        encode(&mut cc.link.binary, &mov, bit_size, RSP_REL(offset), reg, None);
-      }
-    }
+    // if op1.flags() & SPILL { register_assignments.assignments[operands[0].usize()].spill_location }
+    // if op2.flags() & SPILL { register_assignments.assignments[operands[1].usize()].spill_location }
 
-    // Perform loads from spills.
-    for load_index in 0..3 {
-      let need_load = (reg_data.loads >> load_index) & 1 > 0;
-      if need_load {
-        let var_id = vars[load_index];
-
-        let node = &cc.body.graph[var_id];
-
-        let bit_size = node_ty.bit_size();
-
-        dbg!(var_id, so);
-        let offset = *so.get(&var_id).unwrap();
-
-        let reg = regs[load_index].as_reg_op();
-
-        encode(&mut cc.link.binary, &mov, bit_size, reg, RSP_REL(offset), None);
-      }
-    }
+    // if op1.flags() & LOAD { register_assignments.assignments[operands[0].usize()].spill_location }
+    // if op2.flags() & LOAD { register_assignments.assignments[operands[1].usize()].spill_location }
 
     match op {
       /*
@@ -309,8 +290,8 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
         // Otherwise, the store will be made to stack slot, which may not actually
         // need to be stored to memory, and can be just preserved in the op1 register.
 
-        let bit_size = node_ty.bit_size();
-        let dst_arg = if node_ty_is_pointer { regs[0].as_mem_op() } else { regs[0].as_reg_op() };
+        let bit_size = ty.bit_size();
+        let dst_arg = if ty.ptr_depth() > 0 { regs[0].as_mem_op() } else { regs[0].as_reg_op() };
 
         match node_ty.sub_type() {
           RumSubType::Float => {
@@ -747,7 +728,7 @@ pub fn compile_op(node: &IRGraphNode, reg_data: &RegisterAssignement, block: &IR
       IROp::PARAM_VAL | IROp::VAR_DECL => {}
       op => todo!("Handle {op:?}"),
     }
-  };
+  }; */
 
   false
 }

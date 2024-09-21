@@ -613,7 +613,9 @@ impl<const SIZE: usize> StaticBuffer<SIZE> {
 }
 
 #[test]
-fn fill_with_array() {
+fn fill_with_array(
+)
+{
   const ITEMS: [u32; 6] = [0 as u32, 1, 2, 3, 4, 5];
 
   let b = SmallBuffer::from_items(ITEMS).unwrap();
@@ -631,7 +633,9 @@ fn fill_with_array() {
 }
 
 #[test]
-fn offset_fill_with_truncation() {
+fn offset_fill_with_truncation(
+)
+{
   const ITEMS: [u32; 6] = [1, 2, 3, 4, 5, 6];
   const SIZE: usize = 4 * ITEMS.len();
 
@@ -648,7 +652,9 @@ fn offset_fill_with_truncation() {
 }
 
 #[test]
-fn offset_fill_out_of_bounds() {
+fn offset_fill_out_of_bounds(
+)
+{
   const ITEMS: [u32; 6] = [1, 2, 3, 4, 5, 6];
   const SIZE: usize = 4 * ITEMS.len();
 

@@ -4,16 +4,19 @@ use crate::types::BitSize;
 
 use super::{Lifetime, Type, TypeDatabase};
 
-
-pub enum TypeConstraints { 
+pub
+enum TypeConstraints
+{
   Numeric,
-  Float, 
+  Float,
   Aggregate,
 }
 
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub enum RumSubType {
+pub
+enum RumSubType
+{
   Undefined       = 0,
   Unsigned        = 1,
   Signed          = 2,
@@ -408,7 +411,9 @@ impl std::ops::BitOr<BitSize> for RumType {
 }
 
 #[test]
-fn test_primitive_type() {
+fn test_primitive_type(
+)
+{
   assert_eq!(format!("{}", RumType::i8), "i8");
   assert_eq!(format!("{}", RumType::i16), "i16");
   assert_eq!(format!("{}", RumType::i32), "i32");

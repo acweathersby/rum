@@ -105,7 +105,7 @@ match ptr to:
 
 */
 
-pub fn build_module(module: &Arc<RawModule<Token>>) -> Box<TypeDatabase> {
+pub fn build_module(module: &Arc<RawModule<Token>>) -> Box<TypeDatabase>{
   // Step 1: Scan and reserve slots for types. Also do this for any scope, and so
   // on and so forth.
   // Step 2: Build definitions for all types, in this order: 0:zero_types
@@ -130,13 +130,13 @@ pub fn build_module(module: &Arc<RawModule<Token>>) -> Box<TypeDatabase> {
   ty_db
 }
 
-pub fn process_module_members<'a>(members: &'a RawModMembers<Token>, ty_db: &mut TypeDatabase) -> Vec<IString> {
+pub fn process_module_members<'a>(members: &'a RawModMembers<Token>, ty_db: &mut TypeDatabase) -> Vec<IString>{
   let routines = declare_types(members, "./".intern(), ty_db);
 
   return routines;
 }
 
-fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mut TypeDatabase) -> Vec<IString> {
+fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mut TypeDatabase) -> Vec<IString>{
   // TODO, get hash of node. If hash already exists in system there is no
   // need to rebuild this node. Otherwise we evict any existing
   // type mapped to this name and proceed to evaluate and proceed this
@@ -270,7 +270,12 @@ fn declare_types(members: &RawModMembers<Token>, scope_name: IString, ty_db: &mu
   return routines;
 }
 
-fn process_array(array: &Type_Array<Token>, ty_db: &mut TypeDatabase, name: IString) {
+fn process_array(
+  array: &Type_Array<Token>,
+  ty_db: &mut TypeDatabase,
+  name: IString,
+)
+{
   if let Some(base_type) = get_type(&array.base_type.clone().into(), ty_db, true) {
     let size = array.size as usize;
 
@@ -282,7 +287,12 @@ fn process_array(array: &Type_Array<Token>, ty_db: &mut TypeDatabase, name: IStr
   }
 }
 
-fn process_enum(enumarator: &Type_Enum<Token>, ty_db: &mut TypeDatabase, name: IString) {
+fn process_enum(
+  enumarator: &Type_Enum<Token>,
+  ty_db: &mut TypeDatabase,
+  name: IString,
+)
+{
   if let Some(base_type) = get_type(&enumarator.base_type.clone().into(), ty_db, true) {
     if base_type.is_primitive() {
       let members = enumarator.values.iter().map(|v| v.name.id.intern()).collect();
@@ -298,7 +308,12 @@ fn process_enum(enumarator: &Type_Enum<Token>, ty_db: &mut TypeDatabase, name: I
   }
 }
 
-fn process_flag_enum(flag: &Type_Flag<Token>, ty_db: &mut TypeDatabase, name: IString) {
+fn process_flag_enum(
+  flag: &Type_Flag<Token>,
+  ty_db: &mut TypeDatabase,
+  name: IString,
+)
+{
   let size = flag.flag_size;
 
   match size {
@@ -313,7 +328,12 @@ fn process_flag_enum(flag: &Type_Flag<Token>, ty_db: &mut TypeDatabase, name: IS
   ty_db.insert_type(name, Type::Flag(ty));
 }
 
-fn process_struct(strct: &Type_Struct<Token>, ty_db: &mut TypeDatabase, name: IString) {
+fn process_struct(
+  strct: &Type_Struct<Token>,
+  ty_db: &mut TypeDatabase,
+  name: IString,
+)
+{
   let Some((ty_ref, _)) = ty_db.get_type_mut(name) else {
     panic!("Could not find Struct type: {name}",);
   };
@@ -403,7 +423,11 @@ fn process_struct(strct: &Type_Struct<Token>, ty_db: &mut TypeDatabase, name: IS
   };
 }
 
-fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeDatabase) {
+fn process_routine_signature(
+  routine: &Arc<RawRoutine<Token>>,
+  ty_db: &mut TypeDatabase,
+)
+{
   let name = routine.name.id.intern();
 
   let Some((ty_ref, _)) = ty_db.get_type_mut(name) else {
@@ -469,7 +493,11 @@ fn process_routine_signature(routine: &Arc<RawRoutine<Token>>, ty_db: &mut TypeD
   }
 }
 
-fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
+fn process_routine(
+  routine_name: IString,
+  type_scope: &mut TypeDatabase,
+)
+{
   let Some((ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find Struct type: {routine_name}",);
   };
@@ -513,7 +541,11 @@ fn process_routine(routine_name: IString, type_scope: &mut TypeDatabase) {
 /// Processes the signature of a routine and stores the result into the type
 /// context.
 
-fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
+fn process_expression(
+  expr: &expression_Value<Token>,
+  ib: &mut IRBuilder,
+)
+{
   // Create type for the expression.
 
   match expr {
@@ -539,7 +571,7 @@ fn process_expression(expr: &expression_Value<Token>, ib: &mut IRBuilder) {
   }
 }
 
-fn resolve_variable(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder) -> Option<Variable> {
+fn resolve_variable(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder) -> Option<Variable>{
   let base_var = &mem.root;
 
   let var_name = base_var.name.id.intern();
@@ -607,7 +639,11 @@ fn resolve_variable(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder) -> O
   }
 }
 
-fn process_member_load(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder<'_>) {
+fn process_member_load(
+  mem: &MemberCompositeAccess<Token>,
+  ib: &mut IRBuilder<'_>,
+)
+{
   if let Some(var) = resolve_variable(mem, ib) {
     if var.ty.is_generic() {
       ib.push_ssa(LOAD, var.ty.into(), &[StackOp], VarId::NONE, mem.tok.clone());
@@ -619,68 +655,112 @@ fn process_member_load(mem: &MemberCompositeAccess<Token>, ib: &mut IRBuilder<'_
   }
 }
 
-fn process_add(add: &Add<Token>, ib: &mut IRBuilder) {
+fn process_add(
+  add: &Add<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(add.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(add.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(ADD, Inherit, &[StackOp, StackOp], VarId::NONE, add.tok.clone());
 }
 
-fn process_sub(sub: &Sub<Token>, ib: &mut IRBuilder) {
+fn process_sub(
+  sub: &Sub<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(sub.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sub.right.clone().to_ast().into_expression_Value().unwrap()), ib);
 
   ib.push_ssa(SUB, Inherit, &[StackOp, StackOp], VarId::NONE, sub.tok.clone());
 }
 
-fn process_mul(mul: &Mul<Token>, ib: &mut IRBuilder) {
+fn process_mul(
+  mul: &Mul<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(mul.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(mul.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(MUL, Inherit, &[StackOp, StackOp], VarId::NONE, mul.tok.clone());
 }
 
-fn process_div(div: &Div<Token>, ib: &mut IRBuilder) {
+fn process_div(
+  div: &Div<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(div.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(div.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(DIV, Inherit, &[StackOp, StackOp], VarId::NONE, div.tok.clone());
 }
 
-fn process_pow(pow: &Pow<Token>, ib: &mut IRBuilder) {
+fn process_pow(
+  pow: &Pow<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(pow.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(pow.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(POW, Inherit, &[StackOp, StackOp], VarId::NONE, pow.tok.clone());
 }
 
-fn process_sl(sl: &BIT_SL<Token>, ib: &mut IRBuilder) {
+fn process_sl(
+  sl: &BIT_SL<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(sl.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sl.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(SHL, Inherit, &[StackOp, StackOp], VarId::NONE, Default::default());
 }
 
-fn process_sr(sr: &BIT_SR<Token>, ib: &mut IRBuilder) {
+fn process_sr(
+  sr: &BIT_SR<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(sr.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(sr.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(SHR, Inherit, &[StackOp, StackOp], VarId::NONE, Default::default());
 }
 
-fn process_or(or: &BIT_OR<Token>, ib: &mut IRBuilder) {
+fn process_or(
+  or: &BIT_OR<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(or.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(or.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(OR, Inherit, &[StackOp, StackOp], VarId::NONE, Default::default());
 }
 
-fn process_xor(xor: &BIT_XOR<Token>, ib: &mut IRBuilder) {
+fn process_xor(
+  xor: &BIT_XOR<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(xor.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(xor.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(XOR, Inherit, &[StackOp, StackOp], VarId::NONE, Default::default());
 }
 
-fn process_and(and: &BIT_AND<Token>, ib: &mut IRBuilder) {
+fn process_and(
+  and: &BIT_AND<Token>,
+  ib: &mut IRBuilder,
+)
+{
   process_expression(&(and.left.clone().to_ast().into_expression_Value().unwrap()), ib);
   process_expression(&(and.right.clone().to_ast().into_expression_Value().unwrap()), ib);
   ib.push_ssa(AND, Inherit, &[StackOp, StackOp], VarId::NONE, Default::default());
 }
 
-fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
+fn process_const_number(
+  num: &RawNum<Token>,
+  ib: &mut IRBuilder,
+)
+{
   let string_val = num.tok.to_string();
 
   ib.push_const(
@@ -696,7 +776,11 @@ fn process_const_number(num: &RawNum<Token>, ib: &mut IRBuilder) {
 const SYS_CALL_TARGETS: [&'static str; 2] = ["_sys_allocate", "_sys_free"];
 const DBG_CALL_TARGETS: [&'static str; 1] = ["_malloc"];
 
-fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
+fn process_call(
+  call_node: &RawCall<Token>,
+  ib: &mut IRBuilder,
+)
+{
   // Member call resolution may involve lookup on compatible functions in the
   // type scope stack.
 
@@ -790,7 +874,11 @@ fn process_call(call_node: &RawCall<Token>, ib: &mut IRBuilder) {
   }
 }
 
-fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token>, ib: &mut IRBuilder) {
+fn process_aggregate_instantiation(
+  struct_decl: &RawAggregateInstantiation<Token>,
+  ib: &mut IRBuilder,
+)
+{
   // note(Anthony): All struct instantiations should be on known types. If the struct to be instantiate is incomplete, this should signal that
   // downstream processing of this routine should not continue.
 
@@ -849,7 +937,11 @@ fn process_aggregate_instantiation(struct_decl: &RawAggregateInstantiation<Token
   } */
 }
 
-fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
+fn process_block(
+  ast_block: &RawBlock<Token>,
+  ib: &mut IRBuilder,
+)
+{
   ib.body.ctx.push_scope();
 
   let len = ast_block.statements.len();
@@ -920,7 +1012,11 @@ fn process_block(ast_block: &RawBlock<Token>, ib: &mut IRBuilder) {
   ib.body.ctx.pop_scope();
 }
 
-fn process_statement(stmt: &statement_Value<Token>, ib: &mut IRBuilder) {
+fn process_statement(
+  stmt: &statement_Value<Token>,
+  ib: &mut IRBuilder,
+)
+{
   use statement_Value::*;
   match stmt {
     RawAssignment(assign) => process_assign_statement(assign, ib),
@@ -931,7 +1027,11 @@ fn process_statement(stmt: &statement_Value<Token>, ib: &mut IRBuilder) {
   }
 }
 
-fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
+fn process_match(
+  match_: &RawMatch<Token>,
+  ib: &mut IRBuilder<'_>,
+)
+{
   process_expression(&match_.expression.clone().into(), ib);
 
   let expr_id = ib.pop_stack().unwrap();
@@ -999,7 +1099,11 @@ fn process_match(match_: &RawMatch<Token>, ib: &mut IRBuilder<'_>) {
   //ib.push_node(store_target);
 }
 
-fn process_loop(loop_: &RawLoop<Token>, ib: &mut IRBuilder<'_>) {
+fn process_loop(
+  loop_: &RawLoop<Token>,
+  ib: &mut IRBuilder<'_>,
+)
+{
   match &loop_.scope {
     loop_statement_group_1_Value::RawIterStatement(iter_stmt) => process_iter_loop(iter_stmt, loop_.label.id.intern(), ib),
     _ => {
@@ -1019,13 +1123,22 @@ fn process_loop(loop_: &RawLoop<Token>, ib: &mut IRBuilder<'_>) {
   }
 }
 
-fn process_iter_block(iter: &IterReentrance<Token>, ib: &mut IRBuilder<'_>) {
+fn process_iter_block(
+  iter: &IterReentrance<Token>,
+  ib: &mut IRBuilder<'_>,
+)
+{
   let IterReentrance { tok, expr } = iter;
 
   process_expression(&expr.clone().to_ast().into_expression_Value().unwrap(), ib);
 }
 
-fn process_iter_loop(iter_stmt: &RawIterStatement<Token>, loop_name: IString, ib: &mut IRBuilder<'_>) {
+fn process_iter_loop(
+  iter_stmt: &RawIterStatement<Token>,
+  loop_name: IString,
+  ib: &mut IRBuilder<'_>,
+)
+{
   let RawIterStatement { var, iter, block, tok } = iter_stmt;
   ib.push_lexical_scope();
   // Create variables for the yield
@@ -1107,11 +1220,19 @@ fn process_iter_loop(iter_stmt: &RawIterStatement<Token>, loop_name: IString, ib
   ib.pop_lexical_scope()
 }
 
-fn process_expression_statement(expr: &Expression<Token>, ib: &mut IRBuilder<'_>) {
+fn process_expression_statement(
+  expr: &Expression<Token>,
+  ib: &mut IRBuilder<'_>,
+)
+{
   process_expression(&expr.expr, ib);
 }
 
-fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_>) {
+fn process_assign_statement(
+  assign: &RawAssignment<Token>,
+  ib: &mut IRBuilder<'_>,
+)
+{
   let db = ib.body.ctx.db();
   // Process assignments.
 
@@ -1179,13 +1300,15 @@ fn process_assign_statement(assign: &RawAssignment<Token>, ib: &mut IRBuilder<'_
   // Match assignments to targets.
 }
 
-pub fn get_type_from_sm(ir_type: &type_Value<Token>, ib: &mut IRBuilder) -> Option<(Type, PtrType)> {
+pub fn get_type_from_sm(ir_type: &type_Value<Token>, ib: &mut IRBuilder) -> Option<(Type, PtrType)>{
   todo!("get_type_from_sm");
   //get_type(ir_type, ib.global_ty_ctx)
 }
 
 #[derive(Default)]
-pub enum PtrType {
+pub
+enum PtrType
+{
   #[default]
   None,
   Reference,
@@ -1193,7 +1316,7 @@ pub enum PtrType {
   Name(IString),
 }
 
-pub fn get_type(ir_type: &type_Value<Token>, type_db: &mut TypeDatabase, insert_unresolved: bool) -> Option<RumType> {
+pub fn get_type(ir_type: &type_Value<Token>, type_db: &mut TypeDatabase, insert_unresolved: bool) -> Option<RumType>{
   use type_Value::*;
   match ir_type {
     Type_Flag(_) => Some(RumType::Flag),
@@ -1250,7 +1373,7 @@ pub fn get_type(ir_type: &type_Value<Token>, type_db: &mut TypeDatabase, insert_
   }
 }
 
-pub fn get_type_name(ir_type: &type_Value<Token>) -> IString {
+pub fn get_type_name(ir_type: &type_Value<Token>) -> IString{
   use type_Value::*;
   match ir_type {
     Type_Flag(_) => "Flag".intern(),

@@ -2,7 +2,9 @@
 #[repr(u32)]
 #[derive(Hash, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[allow(unused, non_camel_case_types, non_upper_case_globals)]
-pub enum BitSize {
+pub
+enum BitSize
+{
   b0   = 0,
   b1   = 1,
   b8   = 8,
@@ -34,7 +36,9 @@ impl BitSize {
 }
 
 #[test]
-pub fn test_bitsize() {
+pub fn test_bitsize(
+)
+{
   assert_eq!(BitSize::b1.u64(), 1);
   assert_eq!(BitSize::b8.u64(), 8);
   assert_eq!(BitSize::b16.u64(), 16);

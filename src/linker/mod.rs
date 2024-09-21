@@ -1,13 +1,17 @@
 use crate::istring::IString;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Endianess {
+pub
+enum Endianess
+{
   Big,
   Little,
 }
 
 #[derive(Clone, Copy)]
-pub enum LinkType {
+pub
+enum LinkType
+{
   Block(IString),
   Routine(IString),
   DBGRoutine(IString),

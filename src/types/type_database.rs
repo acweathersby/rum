@@ -413,7 +413,9 @@ mod type_slot {
   use super::{ty::TypeRef, Type, TypeDatabase, TypeVarContext};
 }
 
-pub enum MemName {
+pub
+enum MemName
+{
   String(IString),
   Index(usize),
 }
@@ -529,7 +531,9 @@ mod ty {
 
   use super::{RumType, TypeDatabase};
 
-  pub enum Type {
+  pub
+  enum Type
+  {
     Scope(ScopeType),
     Structure(StructType),
     Union(UnionType),
@@ -543,7 +547,11 @@ mod ty {
   }
 
   #[derive(Clone, Copy)]
-  pub enum TypeRef<'a> {
+  pub
+  enum TypeRef<
+    'a,
+  >
+  {
     UNRESOLVED { var_name: &'a IString, var_index: &'a u32, slot_index: &'a u32 },
     Scope(&'a ScopeType),
     Struct(&'a StructType),

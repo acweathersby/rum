@@ -45,7 +45,9 @@ add_two_numbers (l: u32, r: u32) => u32 {
 "##;
 
 #[test]
-fn compile_structures() {
+fn compile_structures(
+)
+{
   let mut db = build_module(&crate::parser::script_parser::parse_raw_module(&build_up_test_string).unwrap());
 
   let (entry_offset, binary) = compile_binary_from_entry("add_two_numbers".intern(), vec![], db.as_mut());

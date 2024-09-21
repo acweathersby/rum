@@ -1,7 +1,9 @@
 use super::{CachedString, GLOBAL_STORE};
 
 #[test]
-fn interning_empty_string() {
+fn interning_empty_string(
+)
+{
   let empty_string = "";
 
   let tok = empty_string.intern();
@@ -13,7 +15,9 @@ fn interning_empty_string() {
 }
 
 #[test]
-fn interning_small_string() {
+fn interning_small_string(
+)
+{
   let small_string = "test";
 
   let tok = small_string.intern();
@@ -27,7 +31,9 @@ fn interning_small_string() {
 }
 
 #[test]
-fn interning_large_string() {
+fn interning_large_string(
+)
+{
   let large_string = "
   Lumina eiusdem a sororibus est agant montis tu urbes succedit gavisa dolore
 Perseus incerti, repente pariter. Omnes morsu rediit flores, nisi scelus
@@ -44,7 +50,9 @@ Cyparisse multarum!";
 }
 
 #[test]
-fn interning_same_large_string() {
+fn interning_same_large_string(
+)
+{
   let large_str = "
   Lumina eiusdem a sororibus est agant montis tu urbes succedit gavisa dolore
 Perseus incerti, repente pariter. Omnes morsu rediit flores, nisi scelus
@@ -65,7 +73,9 @@ Cyparisse multarum!";
 }
 
 #[test]
-fn interning_different_large_string() {
+fn interning_different_large_string(
+)
+{
   let large_str_a = "1: Lumina eiusdem a sororibus est agant montis tu urbes succedit gavisa dolore
 Perseus incerti, repente pariter. Omnes morsu rediit flores, nisi scelus
 confessis cristati ramis silentum arentis centimanum sacrilegae pone. Silvas
@@ -96,7 +106,9 @@ Cyparisse multarum!";
 }
 
 #[test]
-fn interning_strings_on_different_threads() {
+fn interning_strings_on_different_threads(
+)
+{
   std::thread::scope(|scope| {
     for u in 0..4 {
       scope.spawn(move || {

@@ -34,7 +34,9 @@ use crate::{
 type Type = ();
 
 #[test]
-fn test() {
+fn test(
+)
+{
   parser::script_parser::parse_raw_expr("2*8").unwrap();
 }
 
@@ -43,7 +45,7 @@ use std::{
   hash::{Hash, Hasher},
 };
 
-pub fn create_u64_hash<T: Hash>(t: T) -> u64 {
+pub fn create_u64_hash<T: Hash>(t: T) -> u64{
   let mut s = DefaultHasher::new();
 
   t.hash(&mut s);

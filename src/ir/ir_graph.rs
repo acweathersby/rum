@@ -87,7 +87,9 @@ impl Debug for VarId {
 
 #[derive(Clone)]
 #[repr(u8)]
-pub enum SSAGraphNode {
+pub
+enum SSAGraphNode
+{
   Data { byte_size: u32, data: *const u8 },
   Const { val: ConstVal },
   Node { op: IROp, block: u16, var: VarId, ty: RumType, operands: [IRGraphId; 2] },
@@ -118,7 +120,9 @@ impl Display for SSAGraphNode {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
-pub enum IRGraphNode {
+pub
+enum IRGraphNode
+{
   Const { val: ConstVal },
   OpNode { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], ty: RumType, var_id: VarId },
 }
@@ -206,7 +210,9 @@ impl IRGraphNode {
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum IROp {
+pub
+enum IROp
+{
   // Encoding Oriented operators
   /// Calculates a ptr to a member variable based on a base aggregate pointer
   /// and a const offset. This is also used to get the address of a stack
@@ -295,7 +301,9 @@ impl<T> std::ops::IndexMut<IRGraphId> for Vec<T> {
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
-pub enum GraphIdType {
+pub
+enum GraphIdType
+{
   SSA,
   CALL,
   STORED_REGISTER,

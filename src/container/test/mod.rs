@@ -1,7 +1,9 @@
 use crate::container::ArrayVec;
 
 #[test]
-pub fn allocates_on_stack_only() {
+pub fn allocates_on_stack_only(
+)
+{
   let mut vec = ArrayVec::<1024, u32>::new();
 
   vec.push(1);
@@ -21,7 +23,9 @@ pub fn allocates_on_stack_only() {
 }
 
 #[test]
-pub fn over_allocates_are_moved_into_vector() {
+pub fn over_allocates_are_moved_into_vector(
+)
+{
   let mut vec = ArrayVec::<3, u32>::new();
 
   vec.push(1);
@@ -41,7 +45,9 @@ pub fn over_allocates_are_moved_into_vector() {
 }
 
 #[test]
-pub fn sorted_insert() {
+pub fn sorted_insert(
+)
+{
   let mut vec = ArrayVec::<11, u32>::new();
 
   vec.insert_ordered(9);
@@ -70,7 +76,9 @@ pub fn sorted_insert() {
 }
 
 #[test]
-pub fn over_allocates_are_moved_into_vector_large_stack_allocation() {
+pub fn over_allocates_are_moved_into_vector_large_stack_allocation(
+)
+{
   let mut vec = ArrayVec::<30000, _>::new();
 
   vec.push(1);
@@ -90,7 +98,9 @@ pub fn over_allocates_are_moved_into_vector_large_stack_allocation() {
 }
 
 #[test]
-pub fn remove_elements_from_array() {
+pub fn remove_elements_from_array(
+)
+{
   let mut vec = ArrayVec::<4, _>::new();
 
   vec.push(1);
@@ -113,7 +123,9 @@ pub fn remove_elements_from_array() {
 }
 
 #[test]
-pub fn data_with_drop_trait_is_properly_handle_from_vec() {
+pub fn data_with_drop_trait_is_properly_handle_from_vec(
+)
+{
   static mut DROPPED: isize = 0;
 
   #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +157,9 @@ pub fn data_with_drop_trait_is_properly_handle_from_vec() {
 }
 
 #[test]
-pub fn data_with_drop_trait_is_properly_handled_on_stack() {
+pub fn data_with_drop_trait_is_properly_handled_on_stack(
+)
+{
   static mut DROPPED: isize = 0;
 
   #[derive(Debug, Clone, PartialEq, Eq)]

@@ -818,6 +818,3 @@ fn create_and_diffuse_temp_variables(
     }
   }
 }
-
-#[cfg(test)]
-mod test;

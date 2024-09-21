@@ -15,7 +15,7 @@ mod test;
 
 use crate::x86::x86_types::*;
 
-pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, db: &mut TypeDatabase) -> (usize, Vec<u8>) {
+pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, db: &mut TypeDatabase) -> (usize, Vec<u8>){
   // extract routine tree from entry routine, and setup a queue to build routine binaries
 
   let struct_names = get_struct_names(db);
@@ -75,17 +75,9 @@ pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, d
 
     let (ssa_blocks, ssa_graph) = lower_into_ssa(pending, db);
 
-    ir_register_allocator_ssa::generate_register_assignments(&ssa_blocks, &ssa_graph);
-    dbg!(ssa_graph);
+    let assignements = ir_register_allocator_ssa::generate_register_assignments(&ssa_blocks, &ssa_graph);
 
-    // lower_iops(pending, db);
-    // optimize_routine(pending, db);
-
-    let (spilled_variables, assignments) = generate_register_assignments(pending, db, &x86_REG_PACK);
-
-    dbg!(&spilled_variables, &assignments);
-
-    let linkable = compile_from_ssa_fn(pending, db, &assignments, &spilled_variables).expect("Could not create linkable");
+    let linkable = compile_from_ssa_fn(pending, &ssa_blocks, &ssa_graph, &assignements,  &[]).expect("Could not create linkable");
 
     processed_routines.push((0, linkable));
   }
@@ -130,7 +122,7 @@ pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, d
   (processed_routines.iter().find(|(.., l)| l.name == entry_routine).map(|(offset, ..)| *offset).unwrap(), binary)
 }
 
-fn get_struct_names(db: &mut TypeDatabase) -> Vec<IString> {
+fn get_struct_names(db: &mut TypeDatabase) -> Vec<IString>{
   db.types
     .iter()
     .filter_map(|d| match d.as_ref() {

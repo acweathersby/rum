@@ -247,7 +247,7 @@ impl Debug for ConstVal {
   }
 }
 
-pub fn from_uint(val: ConstVal) -> u64 {
+pub fn from_uint(val: ConstVal) -> u64{
   let info = val.ty;
   debug_assert!(info.sub_type() == RumSubType::Unsigned);
   match info.bit_size() {
@@ -259,7 +259,7 @@ pub fn from_uint(val: ConstVal) -> u64 {
   }
 }
 
-pub fn from_int(val: ConstVal) -> i64 {
+pub fn from_int(val: ConstVal) -> i64{
   let info = val.ty;
   debug_assert!(info.sub_type() == RumSubType::Signed, "{:?} {}", info.sub_type(), info);
   match info.bit_size() {
@@ -271,7 +271,7 @@ pub fn from_int(val: ConstVal) -> i64 {
   }
 }
 
-pub fn from_flt(val: ConstVal) -> f64 {
+pub fn from_flt(val: ConstVal) -> f64{
   let info = val.ty;
   debug_assert!(info.sub_type() == RumSubType::Float);
   match info.bit_size() {
@@ -281,7 +281,7 @@ pub fn from_flt(val: ConstVal) -> f64 {
   }
 }
 
-fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
+fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal{
   debug_assert!(l_val.ty.sub_type() == RumSubType::Float);
   match (l_val.ty.bit_size()) {
     32 => l_val.store(val.to_f32().unwrap()),
@@ -290,7 +290,7 @@ fn to_flt<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
   }
 }
 
-fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
+fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal{
   debug_assert!(l_val.ty.sub_type() == RumSubType::Signed);
   match (l_val.ty.bit_size()) {
     8 => l_val.store(val.to_i8().unwrap()),
@@ -301,7 +301,7 @@ fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
   }
 }
 
-fn to_uint<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
+fn to_uint<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal{
   debug_assert!(l_val.ty.sub_type() == RumSubType::Unsigned);
   match (l_val.ty.bit_size()) {
     8 => l_val.store(val.to_u8().unwrap()),

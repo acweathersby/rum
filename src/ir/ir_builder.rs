@@ -7,7 +7,9 @@ use crate::{
 pub use radlr_rust_runtime::types::Token;
 use std::fmt::Debug;
 
-pub enum SuccessorMode {
+pub
+enum SuccessorMode
+{
   Default,
   Fail,
   Succeed,
@@ -56,7 +58,9 @@ impl<'body> IRBuilder<'body> {
 }
 
 #[derive(Clone, Copy)]
-pub enum SMO {
+pub
+enum SMO
+{
   StackOp,
   IROp(IRGraphId),
   Var(IString),
@@ -69,7 +73,9 @@ impl From<IRGraphId> for SMO {
 }
 
 #[derive(Clone)]
-pub enum SMT {
+pub
+enum SMT
+{
   Data(RumType),
   /// Inherits the type of the first operand
   Inherit,

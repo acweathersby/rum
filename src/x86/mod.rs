@@ -7,7 +7,7 @@ pub(crate) mod x86_types;
 
 #[inline]
 /// Pushes an arbitrary number of bytes to into a binary buffer.
-pub fn push_bytes<T: Sized>(binary: &mut Vec<u8>, data: T) {
+pub fn push_bytes<T: Sized>(binary: &mut Vec<u8>, data: T){
   let byte_size = std::mem::size_of::<T>();
   let data_as_bytes = &data as *const _ as *const u8;
   binary.extend(unsafe { std::slice::from_raw_parts(data_as_bytes, byte_size) });
@@ -15,20 +15,22 @@ pub fn push_bytes<T: Sized>(binary: &mut Vec<u8>, data: T) {
 
 #[inline]
 /// Pushes an arbitrary number of bytes to into a binary buffer.
-pub fn set_bytes<T: Sized>(binary: &mut Vec<u8>, offset: usize, data: T) {
+pub fn set_bytes<T: Sized>(binary: &mut Vec<u8>, offset: usize, data: T){
   let byte_size = std::mem::size_of::<T>();
   let data_as_bytes = &data as *const _ as *const u8;
 
   debug_assert!(offset + byte_size <= binary.len());
 
-  unsafe { binary.as_mut_ptr().offset(offset as isize).copy_from(data_as_bytes, byte_size) }
+  unsafe {
+    binary.as_mut_ptr().offset(offset as isize).copy_from(data_as_bytes, byte_size)
+  }
 }
 
 mod test {
   #![cfg(test)]
 }
 
-pub fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {
+pub fn print_instructions(binary: &[u8], mut offset: u64) -> u64{
   use iced_x86::{Decoder, DecoderOptions, Formatter, MasmFormatter};
 
   let mut decoder = Decoder::with_ip(64, &binary, offset, DecoderOptions::NONE);
@@ -53,7 +55,7 @@ pub fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {
   offset
 }
 
-fn print_instruction(binary: &[u8]) -> String {
+fn print_instruction(binary: &[u8]) -> String{
   use iced_x86::{Decoder, DecoderOptions, Formatter, MasmFormatter};
 
   let mut decoder = Decoder::with_ip(64, &binary, 0, DecoderOptions::NONE);

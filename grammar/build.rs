@@ -10,8 +10,8 @@ const RUM_SCRIPT_ROOT: &'static str = "rum_lang.radlr";
 const RAW_SCRIPT_ROOT: &'static str = "raw/raw.radlr";
 const BUILD_OUTPUT_PATH: &'static str = "./compiler/parser/";
 
-fn main() -> RadlrResult<()> {
-  //return Ok(());
+fn main() -> RadlrResult<()>{
+  return Ok(());
   let workspace_dir = Path::new(GRAMMAR_PATH).parent().unwrap();
 
   let grammar_root_dir = workspace_dir.join(GRAMMAR_PATH).canonicalize().expect("Could not find RADLR grammar dir");
@@ -32,7 +32,7 @@ fn main() -> RadlrResult<()> {
   Ok(())
 }
 
-fn build_rum_script(grammar_root_dir: &Path, out_dir: &Path) -> std::process::Child {
+fn build_rum_script(grammar_root_dir: &Path, out_dir: &Path) -> std::process::Child{
   let mut radlr = Command::new("radlr");
 
   if radlr.get_program().is_empty() {
