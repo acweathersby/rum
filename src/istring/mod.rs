@@ -238,6 +238,7 @@ pub trait CachedString {
     }
   }
 
+  #[allow(unused)]
   fn intern_global(&self) -> IString {
     let bytes = self.get_bytes();
     let token = IString::from_bytes(bytes);

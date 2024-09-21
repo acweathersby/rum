@@ -5,7 +5,7 @@ use crate::{
 };
 use std::fmt::{Debug, Display};
 
-use super::ir_builder::{SMO, SMT};
+use super::{ir_block::BlockId, ir_builder::{SMO, SMT}};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(pub u32);
@@ -355,93 +355,5 @@ impl Debug for IRGraphId {
 impl From<IRGraphId> for usize {
   fn from(value: IRGraphId) -> Self {
     value.0 as usize
-  }
-}
-
-// ---------------------------------------------------------------------
-// RawBlock
-
-#[derive(Clone, Debug)]
-pub struct IRBlock {
-  pub id:              BlockId,
-  pub nodes:           Vec<IRGraphId>,
-  pub branch_succeed:  Option<BlockId>,
-  pub branch_fail:     Option<BlockId>,
-  pub name:            IString,
-  pub is_loop_head:    bool,
-  pub loop_components: Vec<BlockId>,
-}
-
-impl Display for IRBlock {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let id = self.id;
-    let ops = self.nodes.iter().enumerate().map(|(index, val)| format!("{val:?}")).collect::<Vec<_>>().join("\n  ");
-
-    let branch = /* if let Some(ret) = self.return_val {
-      format!("\n\n  return: {ret:?}")
-    } else  */if let (Some(fail), Some(pass)) = (self.branch_fail, self.branch_succeed) {
-      format!("\n\n  pass: Block-{pass:03}\n  fail: Block-{fail:03}")
-    } else if let Some(branch) = self.branch_succeed {
-      format!("\n\n  jump: Block-{branch:03}")
-    } else {
-      Default::default()
-    };
-
-    f.write_fmt(format_args!(
-      r###"
-Block-{id:03} {} {{
-  
-{ops}{branch}
-}}"###,
-      self.name.to_str().as_str()
-    ))
-  }
-}
-
-#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Default, Hash)]
-pub struct BlockId(pub u32);
-
-impl BlockId {
-  pub fn usize(&self) -> usize {
-    self.0 as usize
-  }
-}
-
-impl Display for BlockId {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self.0, f)
-  }
-}
-
-impl Debug for BlockId {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self.0, f)
-  }
-}
-
-impl<T> std::ops::Index<BlockId> for Vec<T> {
-  type Output = T;
-  fn index(&self, index: BlockId) -> &Self::Output {
-    &self[index.0 as usize]
-  }
-}
-
-impl<T> std::ops::IndexMut<BlockId> for Vec<T> {
-  fn index_mut(&mut self, index: BlockId) -> &mut Self::Output {
-    &mut self[index.0 as usize]
-  }
-}
-
-impl<T, const SIZE: usize> std::ops::Index<BlockId> for ArrayVec<SIZE, T> {
-  type Output = T;
-
-  fn index(&self, index: BlockId) -> &Self::Output {
-    &self[index.0 as usize]
-  }
-}
-
-impl<T, const SIZE: usize> std::ops::IndexMut<BlockId> for ArrayVec<SIZE, T> {
-  fn index_mut(&mut self, index: BlockId) -> &mut Self::Output {
-    &mut self[index.0 as usize]
   }
 }

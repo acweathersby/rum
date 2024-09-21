@@ -1,27 +1,14 @@
-use super::{
-  ir_builder::{IRBuilder, SuccessorMode},
-  ir_graph::{IRGraphId, VarId},
-};
+use super::ir_graph::{IRGraphId, VarId};
 use crate::{
   container::get_aligned_value,
-  ir::{
-    ir_builder::{SMO, SMT},
-    ir_graph::{IRGraphNode, IROp},
-  },
+  ir::ir_graph::{IRGraphNode, IROp},
   istring::IString,
-  parser::script_parser::RawModule,
-  types::{ArrayType, MemberName, RoutineBody, RoutineType, RumType, Type, TypeDatabase, TypeRef, TypeVarContext},
+  types::{RoutineBody, RoutineType, RumType, Type, TypeDatabase, TypeRef},
 };
 use core::panic;
-use radlr_rust_runtime::types::BlameColor;
 pub use radlr_rust_runtime::types::Token;
-use std::{
-  collections::{HashMap, VecDeque},
-  sync::Arc,
-};
+use std::collections::VecDeque;
 use IROp::*;
-use SMO::*;
-use SMT::Inherit;
 
 pub
 enum LifeTimeRuleset

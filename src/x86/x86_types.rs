@@ -1,6 +1,6 @@
 use crate::{
-  ir::{ir_graph::IRGraphId, ir_register_allocator::Reg},
-  types::ConstVal,
+  ir::ir_graph::IRGraphId,
+  types::{ConstVal, Reg},
 };
 use std::collections::BTreeMap;
 

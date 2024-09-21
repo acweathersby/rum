@@ -12,7 +12,7 @@ use core::panic;
 pub use radlr_rust_runtime::types::Token;
 use IROp::*;
 
-use super::ir_graph::{IRBlock, SSAGraphNode};
+use super::{ir_block::IRBlock, ir_graph::SSAGraphNode};
 
 /// Lowers high level IR into SSA for optimization and target machine encoding
 pub fn lower_iops(

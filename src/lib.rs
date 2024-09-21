@@ -21,7 +21,6 @@ use std::{
 };
 
 use ir::ir_graph;
-use ir_graph::BlockId;
 pub use radlr_rust_runtime::types::Token;
 
 use crate::{

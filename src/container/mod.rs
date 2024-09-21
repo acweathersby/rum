@@ -4,13 +4,7 @@
 
 #[cfg(test)]
 mod test;
-
-mod buffer;
-mod circular_buffer;
 mod stack_vec;
-
-pub use buffer::*;
-pub use circular_buffer::*;
 pub use stack_vec::*;
 
 /// Returns `base` padded to be a multiple of `alignment` in bytes

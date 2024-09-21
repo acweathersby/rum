@@ -2,11 +2,7 @@ use radlr_rust_runtime::types::TokenRange;
 
 use super::*;
 use crate::{
-  ir::{
-    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, VarId},
-    ir_register_allocator::{create_block_ordering, get_block_direct_predecessors},
-  },
-  parser::script_parser::{RawRoutine, Token},
+  ir::{ir_block::{create_block_ordering, get_block_direct_predecessors, IRBlock}, ir_graph::{IRGraphNode, VarId}}, parser::script_parser::{RawRoutine, Token}
 };
 use std::{
   collections::VecDeque,
@@ -166,7 +162,7 @@ impl Display for RoutineBody {
       }
     }
 
-    for index in create_block_ordering(self, &get_block_direct_predecessors(self)) {
+    for index in create_block_ordering(&self.blocks) {
       let block = &self.blocks[index];
       //for (index, block) in self.blocks.iter().enumerate() {
       f.write_fmt(format_args!("\nblock_{index:0>5}: \n"));

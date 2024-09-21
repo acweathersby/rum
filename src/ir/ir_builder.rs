@@ -1,6 +1,6 @@
-use super::ir_graph::{IRGraphId, VarId};
+use super::{ir_block::{BlockId, IRBlock}, ir_graph::{IRGraphId, VarId}};
 use crate::{
-  ir::ir_graph::{BlockId, IRBlock, IRGraphNode, IROp},
+  ir::ir_graph::{ IRGraphNode, IROp},
   istring::*,
   types::{ConstVal, MemberName, RoutineBody, RumType, TypeRef, Variable},
 };

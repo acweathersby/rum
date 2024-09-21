@@ -1,11 +1,10 @@
 use crate::{
   ir::{
-    ir_lowering::{lower_into_ssa, lower_iops},
-    ir_register_allocator::{generate_register_assignments, CallRegisters, RegisterVariables},
+    ir_lowering::lower_into_ssa,
     ir_register_allocator_ssa,
     ir_type_analysis::{resolve_routine, resolve_struct_offset},
   },
-  istring::{CachedString, IString},
+  istring::IString,
   types::{Type, TypeDatabase},
 };
 use std::collections::{HashSet, VecDeque};
@@ -13,9 +12,7 @@ use std::collections::{HashSet, VecDeque};
 #[cfg(test)]
 mod test;
 
-use crate::x86::x86_types::*;
-
-pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, db: &mut TypeDatabase) -> (usize, Vec<u8>){
+pub fn compile_binary_from_entry(entry_routine: IString, _errors: Vec<IString>, db: &mut TypeDatabase) -> (usize, Vec<u8>){
   // extract routine tree from entry routine, and setup a queue to build routine binaries
 
   let struct_names = get_struct_names(db);

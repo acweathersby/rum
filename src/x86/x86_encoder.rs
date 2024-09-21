@@ -1,4 +1,4 @@
-use super::{print_instruction, set_bytes, x86_types::*, *};
+use super::{print_instruction, set_bytes, x86_types::*};
 use crate::x86::push_bytes;
 
 pub type OpSignature = (u16, OperandType, OperandType, OperandType);

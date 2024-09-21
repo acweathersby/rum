@@ -1,12 +1,9 @@
 use std::{collections::{HashSet, VecDeque}, fmt::{Debug, Display, Write}, vec};
 
-use super::ir_graph::{BlockId, IRBlock, SSAGraphNode};
+use super::{ir_block::IRBlock, ir_graph::SSAGraphNode};
 use crate::{
   container::ArrayVec,
-  ir::{
-    ir_graph::IROp,
-    ir_register_allocator::{CallRegisters, Reg},
-  },
+  ir::{ir_block::create_block_ordering, ir_graph::IROp}, types::Reg,
 };
 use crate::x86::x86_types::*;
 #[derive(Clone)]
@@ -81,19 +78,6 @@ impl<'reg> Registers<'reg> {
       None
     }
   }
-}
-
-/// Architectural specific register mappings
-pub struct RegisterVariables {
-  pub call_register_list: Vec<CallRegisters>,
-  // Register indices that can be used to process integer values
-  pub ptr_registers:      Vec<usize>,
-  // Register indices that can be used to process integer values
-  pub int_registers:      Vec<usize>,
-  // Register indices that can be used to process float values
-  pub float_registers:    Vec<usize>,
-  // All allocatable registers
-  pub registers:          Vec<Reg>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -399,39 +383,4 @@ fn get_op_allocation_policy(op: IROp) -> AllocationPolicy{
   };
 
   AllocationPolicy { ty: out.0, operands: [out.1, out.2] }
-}
-
-/// Create an ordering for block register assignment based on block features
-/// such as loops and return values.
-pub fn create_block_ordering(blocks: &[Box<IRBlock>]) -> Vec<usize>{
-  let mut block_ordering = vec![];
-
-  let mut queue = VecDeque::from_iter(vec![BlockId(0)]);
-  let mut seen: HashSet<BlockId> = HashSet::new();
-
-  'outer: while let Some(block) = queue.pop_front() {
-    if seen.contains(&block) {
-      continue;
-    }
-
-    /* for predecessor in &block_predecessors[block.usize()] {
-      if !seen.contains(predecessor) {
-        queue.push_front(block);
-        queue.push_front(*predecessor);
-        continue 'outer;
-      }
-    } */
-    if let Some(other_block_id) = blocks[block.usize()].branch_succeed {
-      queue.push_front(other_block_id);
-    }
-
-    if let Some(other_block_id) = blocks[block.usize()].branch_fail {
-      queue.push_back(other_block_id);
-    }
-
-    seen.insert(block);
-    block_ordering.push(block.usize());
-  }
-
-  block_ordering
 }

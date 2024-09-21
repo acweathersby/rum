@@ -1,22 +1,16 @@
-use std::{collections::BTreeMap, fmt::Formatter};
-
-use radlr_rust_runtime::types::NodeTraits;
-
+use std::collections::BTreeMap;
 use super::{x86_encoder::*, x86_instructions::*, x86_types::*};
 use crate::{
-  container::get_aligned_value,
   error::RumResult,
   ir::{
-    ir_graph::{BlockId, IRBlock, IRGraphId, IRGraphNode, IROp, SSAGraphNode, VarId},
-    ir_register_allocator::RegisterAssignement, ir_register_allocator_ssa::RegisterAssignments,
+    ir_graph::{ IROp, SSAGraphNode, VarId},
+    ir_block::{BlockId, IRBlock,},
+    ir_register_allocator_ssa::RegisterAssignments,
   },
   istring::IString,
-  linker::{LinkableBinary, RetargetingLink},
-  types::{RoutineBody, RumSubType, Type, TypeDatabase, TypeRef},
-  x86::{print_instructions, push_bytes},
+  linker::LinkableBinary,
+  x86::print_instructions,
 };
-
-const PAGE_SIZE: usize = 4096;
 
 struct CompileContext<'a> {
   stack_size:   u64,
@@ -50,11 +44,7 @@ pub fn compile_from_ssa_fn(
 ) -> RumResult<LinkableBinary>{
   let mut binary = LinkableBinary { binary: Default::default(), name: routine_name, link_map: Default::default() };
 
-  for var in spilled_variables {
-    println!("TODO: Allocate space for spilled variable");
-  }
-
-  let mut rsp_offset = register_assignments.stack_size as u64;
+  let rsp_offset = register_assignments.stack_size as u64;
 
   let mut cc = CompileContext {
     stack_size: 0,
@@ -63,7 +53,6 @@ pub fn compile_from_ssa_fn(
   };
 
   let mut offset = 0;
-
   let mut offsets = BTreeMap::<VarId, u64>::new();
 
   funct_preamble(&mut cc, rsp_offset);
@@ -78,14 +67,11 @@ pub fn compile_from_ssa_fn(
       let node = &ssa_graph[node_index];
       let assigns = &register_assignments.assigns[node_index];
 
-      //println!("{index:8}: {node:}");
-      let mut string = "".to_string();
-
       println!("\n{node_index:06}: {node}\n               {assigns:?}:\n\n");
 
       let old_offset = cc.link.binary.len();
 
-      jump_resolved |= compile_op(node_index, block_index, &offsets, rsp_offset, blocks,ssa_graph,register_assignments, &mut cc);
+      jump_resolved |= compile_op(node_index, block_index, &offsets,  blocks,ssa_graph,register_assignments, &mut cc);
       offset = print_instructions(&cc.link.binary[old_offset..], offset);
 
       println!("\n")
@@ -158,12 +144,11 @@ fn funct_postamble(
   encode_unary(bin, &pop, 64, Arg::Reg(RBX));
 }
 
-pub fn compile_op(
+fn compile_op(
   node_index: usize,
   block_index: usize,
 
   so: &BTreeMap<VarId, u64>,
-  rsp_offset: u64,
 
   blocks: &[Box<IRBlock>],
   ssa_graph: &[SSAGraphNode],

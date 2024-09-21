@@ -5,7 +5,7 @@ use crate::{
   x86::{print_instructions, x86_eval::x86Function},
 };
 
-const target_test_string: &'static str = r##"
+const TARGET_TEST_STRING: &'static str = r##"
 
 BaseArray => [i32; 6]
 
@@ -35,9 +35,9 @@ main (nest: u32) => D? {
 
   "##;
 
-const build_up_test_string: &'static str = r##"
+const BUILD_UP_TEST_STRING: &'static str = r##"
 
-add_two_numbers (l: u32, r: u32) => u32 {
+add_two_numbers (l: u32, r: D?) => D? {
   l + r
 }
 
@@ -48,7 +48,7 @@ add_two_numbers (l: u32, r: u32) => u32 {
 fn compile_structures(
 )
 {
-  let mut db = build_module(&crate::parser::script_parser::parse_raw_module(&build_up_test_string).unwrap());
+  let mut db = build_module(&crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).unwrap());
 
   let (entry_offset, binary) = compile_binary_from_entry("add_two_numbers".intern(), vec![], db.as_mut());
 

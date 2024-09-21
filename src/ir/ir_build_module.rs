@@ -1,7 +1,4 @@
-use super::{
-  ir_builder::{IRBuilder, SuccessorMode},
-  ir_graph::{BlockId, IRGraphNode},
-};
+use super::ir_builder::{IRBuilder, SuccessorMode};
 use crate::{
   container::get_aligned_value,
   ir::{
@@ -56,54 +53,12 @@ use crate::{
 use core::panic;
 pub use radlr_rust_runtime::types::Token;
 use std::{
-  collections::{BTreeMap, VecDeque},
+  collections::BTreeMap,
   sync::Arc,
 };
 use IROp::*;
 use SMO::*;
 use SMT::Inherit;
-
-type TypeIndex = u32;
-
-struct PTR {
-  t:   TypeIndex,
-  ptr: *mut u8,
-}
-
-/*
-
-let type_info: TypeInfo = TypeDB[t];
-
-
-type_info->type_index
-type_info->size
-type_info->uniform
-type_info->source_location
-type_info->heap_compatibility
-type_info->members.enumerate
-  (Name, Offset, Index, TypeIndex)
-
-
-rules'ptr?  (TypeIndex, rules* Address)         (nullable)* [  capacity:32, len: u32; data: T[...] ]
-                                               [  #len: u32; (nullable)* data: T[...] ]
-
-match ptr to:
-"""
-  let ty_index = ptr.0;
-  branch to Manager if ty_index == Manager#index
-  branch to Employee if ty_index == Manager#index
-  branch end
-"""
-
-  Manager: {
-    ptr.department
-  }
-  Employee: {
-    ptr.desk
-  }
-  end
-
-*/
 
 pub fn build_module(module: &Arc<RawModule<Token>>) -> Box<TypeDatabase>{
   // Step 1: Scan and reserve slots for types. Also do this for any scope, and so
@@ -645,11 +600,7 @@ fn process_member_load(
 )
 {
   if let Some(var) = resolve_variable(mem, ib) {
-    if var.ty.is_generic() {
-      ib.push_ssa(LOAD, var.ty.into(), &[StackOp], VarId::NONE, mem.tok.clone());
-    } else {
-      ib.push_ssa(LOAD, var.ty.decrement_pointer().into(), &[StackOp], VarId::NONE, mem.tok.clone());
-    }
+    ib.push_ssa(LOAD, var.ty.decrement_pointer().into(), &[StackOp], VarId::NONE, mem.tok.clone());
   } else {
     // Create error for undefined variable.
   }
