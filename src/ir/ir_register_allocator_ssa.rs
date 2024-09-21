@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::{collections::{HashSet, VecDeque}, fmt::{Debug, Display, Write}, vec};
 
 use super::ir_graph::{BlockId, IRBlock, SSAGraphNode};
 use crate::{
@@ -56,10 +56,16 @@ impl<'reg> Registers<'reg> {
   }
 
   fn remove_unused(&mut self, reg: Reg) {
+    if reg.unique_index() > 198 {
+      return
+    }
     self.indices_lu ^= self.indices_lu & (1 << reg.unique_index());
   }
 
   fn add_unused(&mut self, reg: Reg) {
+    if reg.unique_index() > 198 {
+      return
+    }
     self.indices_lu |= 1 << reg.unique_index();
   }
 
@@ -87,14 +93,36 @@ pub struct RegisterVariables {
   // Register indices that can be used to process float values
   pub float_registers:    Vec<usize>,
   // All allocatable registers
-  pub registers:          Vec<Reg>, 
+  pub registers:          Vec<Reg>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct RegMemData
+{
+  pub stack_offset: u32,
+  pub regs: [Reg;3]
+}
+
+impl Debug for RegMemData {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      Display::fmt(&self, f)
+  }
+}
+
+impl Display for RegMemData {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      let stack = self.stack_offset;
+      let [dst, op1, op2] = self.regs;
+      f.write_fmt(format_args!("{dst} <= {op1} {op2} : 0x{stack:04x}"))
+  }
 }
 
 pub struct RegisterAssignments
 {
-  pub assignments: Vec<[Reg; 3]>
+  pub assigns: Vec<RegMemData>,
+  pub stack_size: usize,
+  pub used_registers: Vec<Reg>,
 }
-
 
 enum RegAllocateType
 {
@@ -107,6 +135,8 @@ enum RegAllocateType
   CallArg,
   CallRet,
   Return,
+  /// Represents a memory location on the stack
+  Stack
 }
 
 struct AllocationPolicy {
@@ -120,7 +150,7 @@ const REGISTERS: [Reg; 88] = [
   ZMM17, ZMM18, ZMM19, ZMM20, ZMM21, ZMM22, ZMM23, ZMM24, ZMM25, ZMM26, ZMM27, ZMM28, ZMM29, ZMM30, ZMM31, K0, K1, K2, K3, K4, K5, K6, K7,
 ];
 
-pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphNode]) -> RegisterAssignments {
+pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphNode]) -> RegisterAssignments{
   let mut int_registers = Registers::initialize(&[RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15], &REGISTERS, &[&[
     RDI, RSI, RDX, RCX, R8, R9
   ]], &[&[
@@ -128,7 +158,7 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
   ]]);
 
   let mut active_tracker = vec![(Reg::default(), vec![], 0usize); nodes.len()];
-  let mut reg_assignments = vec![[Reg::default(), Reg::default(), Reg::default()]; nodes.len()];
+  let mut reg_assigns = vec![RegMemData::default(); nodes.len()];
 
   let block_ordering = create_block_ordering(blocks);
 
@@ -162,6 +192,8 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
    * - Block Variable Merging
    */
 
+  let mut stack_frame_size = 0;
+
   for block in &block_ordering {
 
     let mut param_index = 0;
@@ -180,19 +212,27 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
             if !operand.is_invalid() && policy.operands[operand_index] {
               println!("{operand_index}, {operand} {operand_index}");
 
-              pick_assign_register(op_index, operand_index + 1, operand.usize(), &mut active_tracker, &mut reg_assignments, &mut int_registers);
+              pick_assign_register(op_index, operand_index + 1, operand.usize(), &mut active_tracker, &mut reg_assigns, &mut int_registers);
             }
           }
 
           match policy.ty {
+            RegAllocateType::Stack => {
+              let stack = Reg::new(255, 255, 0, STACK_PTR);
+              reg_assigns[op_index].regs[0] = stack;
+              reg_assigns[op_index].stack_offset = stack_frame_size;
+              stack_frame_size += ty.byte_size() as u32;
+              active_tracker[op_index].0 = stack;
+
+            }
             RegAllocateType::Return => {
               let registers = &mut int_registers;
               if registers.ret_registers[0].len() > ret_index {
-                let reg = registers.call_registers[0][ret_index];
+                let reg = registers.ret_registers[0][ret_index];
 
-                reg_assignments[op_index][0] = reg;
+                reg_assigns[op_index].regs[0] = reg;
 
-                force_pick_register(reg, op_index, 0, op_index, &mut active_tracker, &mut reg_assignments, &mut int_registers);
+                force_pick_register(reg, op_index, 0, op_index, &mut active_tracker, &mut reg_assigns, &mut int_registers);
 
                 ret_index += 1;
               } else {
@@ -204,9 +244,9 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
               if registers.call_registers[0].len() > param_index {
                 let reg = registers.call_registers[0][param_index];
 
-                reg_assignments[op_index][0] = reg;
+                reg_assigns[op_index].regs[0] = reg;
 
-                force_pick_register(reg, op_index, 0, op_index, &mut active_tracker, &mut reg_assignments, &mut int_registers);
+                force_pick_register(reg, op_index, 0, op_index, &mut active_tracker, &mut reg_assigns, &mut int_registers);
 
                 param_index += 1;
               } else {
@@ -214,7 +254,7 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
               }
             }
             RegAllocateType::Allocate | RegAllocateType::Return => {
-              pick_assign_register(op_index, 0, op_index, &mut active_tracker, &mut reg_assignments, &mut int_registers);
+              pick_assign_register(op_index, 0, op_index, &mut active_tracker, &mut reg_assigns, &mut int_registers);
             }
             _ => {}
           }
@@ -224,9 +264,13 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
     }
   }
 
-  dbg!(active_tracker, &reg_assignments);
+  dbg!(active_tracker, &reg_assigns);
 
-  RegisterAssignments { assignments: reg_assignments } 
+  RegisterAssignments {
+    assigns: reg_assigns,
+    stack_size: stack_frame_size as usize,
+    used_registers: vec![]
+  }
 }
 
 fn pick_assign_register(
@@ -234,7 +278,7 @@ fn pick_assign_register(
   reg_slot: usize,
   ssa_var_index: usize,
   active_tracker: &mut Vec<(Reg, Vec<u32>, usize)>,
-  reg_assignments: &mut Vec<[Reg; 3]>,
+  reg_assignments: &mut Vec<RegMemData>,
   registers: &mut Registers,
 )
 {
@@ -242,10 +286,10 @@ fn pick_assign_register(
 
   if active_tracker[new_var].0.is_valid() {
     let reg = active_tracker[new_var].0;
-    reg_assignments[reg_op_index][reg_slot] = reg;
+    reg_assignments[reg_op_index].regs[reg_slot] = reg;
     registers.assignments.add(new_var);
   } else if let Some(reg) = registers.get_unused() {
-    reg_assignments[reg_op_index][reg_slot] = reg;
+    reg_assignments[reg_op_index].regs[reg_slot] = reg;
     registers.assignments.add(new_var);
     active_tracker[new_var].0 = reg;
   } else {
@@ -260,7 +304,7 @@ fn pick_assign_register(
       }
     }
 
-    reg_assignments[reg_op_index][reg_slot] = reg;
+    reg_assignments[reg_op_index].regs[reg_slot] = reg;
 
     registers.assignments.remove(spill_var);
     registers.assignments.add(new_var);
@@ -283,7 +327,7 @@ fn force_pick_register(
   reg_slot: usize,
   ssa_var_index: usize,
   active_tracker: &mut Vec<(Reg, Vec<u32>, usize)>,
-  reg_assignments: &mut Vec<[Reg; 3]>,
+  reg_assigns: &mut Vec<RegMemData>,
   registers: &mut Registers,
 )
 {
@@ -292,7 +336,7 @@ fn force_pick_register(
   if registers.is_unused(reg) {
     active_tracker[new_var].0 = reg;
     registers.remove_unused(reg);
-    reg_assignments[reg_op_index][reg_slot] = reg;
+    reg_assigns[reg_op_index].regs[reg_slot] = reg;
     registers.assignments.add(new_var);
   } else {
     let reg = Reg::default();
@@ -310,7 +354,7 @@ fn force_pick_register(
       }
     }
 
-    reg_assignments[reg_op_index][reg_slot] = reg;
+    reg_assigns[reg_op_index].regs[reg_slot] = reg;
 
     registers.assignments.remove(spill_var);
     registers.assignments.add(new_var);
@@ -320,7 +364,6 @@ fn force_pick_register(
   }
 }
 
-
 #[inline]
 fn get_op_allocation_policy(op: IROp) -> AllocationPolicy{
   use RegAllocateType::*;
@@ -328,8 +371,8 @@ fn get_op_allocation_policy(op: IROp) -> AllocationPolicy{
   type AllocateOp2Reg = bool;
 
   let out: (RegAllocateType, AllocateOp1Reg, AllocateOp2Reg) = match op {
-    IROp::VAR_DECL => (Allocate, false, false),
-    IROp::PARAM_DECL => (Allocate, false, false),
+    IROp::VAR_DECL => (Stack, false, false),
+    IROp::PARAM_DECL => (Stack, false, false),
     IROp::PARAM_VAL => (Parameter, false, false),
     IROp::AGG_DECL => (Allocate, false, false),
     IROp::MEMB_PTR_CALC => (Allocate, true, true),

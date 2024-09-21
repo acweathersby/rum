@@ -22,7 +22,6 @@ struct CompileContext<'a> {
   stack_size:   u64,
   jmp_resolver: JumpResolution,
   link:         &'a mut LinkableBinary,
-  body:         &'a RoutineBody,
 }
 
 #[derive(Debug)]
@@ -50,114 +49,75 @@ pub fn compile_from_ssa_fn(
   spilled_variables: &[VarId],
 ) -> RumResult<LinkableBinary>{
   let mut binary = LinkableBinary { binary: Default::default(), name: routine_name, link_map: Default::default() };
-  todo!("compile fn");
- /*  
 
-  let mut cc = CompileContext {
-        stack_size: 0,
-        jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
-        link: &mut binary,
-        body,
-      };
-
-  // store pointers to free and malloc at base binaries
-  let mut offset = 0;
-
-  // Move stack by needed bytes to allocate memory for our stack elements
-  // and local pointer references
-
-  // Create area on the stack for local declarations
-
-  let mut offsets = BTreeMap::<VarId, u64>::new();
-  let mut rsp_offset = 0;
-
-  fn fun_name(
-    id: VarId,
-    body: &RoutineBody,
-    offsets: &mut BTreeMap<VarId, u64>,
-    rsp_offset: &mut u64,
-  )
-  {
-    debug_assert!(id.is_valid());
-
-    if let Some(var) = body.ctx.vars.get(id.usize()) {
-          unimplemented!()
-          /*       let ty = var.ty.ty(&body.ctx);
-          if ty.is_pointer() {
-            todo!("Handle Pointer Semantics {ty}");
-          }
-
-          match ty {
-            TypeRef::Primitive(ty) => {
-              offsets.insert(id, get_aligned_value(*rsp_offset, ty.alignment() as u64));
-              *rsp_offset = offsets.get(&id).unwrap() + ty.byte_size() as u64;
-            }
-            _ => todo!("Handle this??"),
-          } */
-        }
-    // /}
+  for var in spilled_variables {
+    println!("TODO: Allocate space for spilled variable");
   }
 
-  for var_id in spilled_variables {
-        dbg!(var_id);
-        if !offsets.contains_key(var_id) {
-          fun_name(*var_id, body, &mut offsets, &mut rsp_offset);
-        }
-      }
+  let mut rsp_offset = register_assignments.stack_size as u64;
 
-  rsp_offset = get_aligned_value(rsp_offset, 16);
+  let mut cc = CompileContext {
+    stack_size: 0,
+    jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
+    link: &mut binary,
+  };
+
+  let mut offset = 0;
+
+  let mut offsets = BTreeMap::<VarId, u64>::new();
 
   funct_preamble(&mut cc, rsp_offset);
 
-  for block in body.blocks.iter() {
-        let mut jump_resolved = false;
+  for (block_index, block) in blocks.iter().enumerate() {
+    let mut jump_resolved = false;
 
-        cc.jmp_resolver.block_offset.push(cc.link.binary.len());
-        println!("START_BLOCK {} ---------------- \n", block.id);
-        for op_expr in &block.nodes {
-          let index = op_expr.usize();
-          let node = &body.graph[index];
-          let assigns = &register_assignments[index];
+    cc.jmp_resolver.block_offset.push(cc.link.binary.len());
+    println!("START_BLOCK {} ---------------- \n", block.id);
+    for op_expr in &block.nodes {
+      let node_index = op_expr.usize();
+      let node = &ssa_graph[node_index];
+      let assigns = &register_assignments.assigns[node_index];
 
-          //println!("{index:8}: {node:}");
-          let mut string = "".to_string();
+      //println!("{index:8}: {node:}");
+      let mut string = "".to_string();
 
-          println!("\n\n{}\n               {assigns:}:\n\n", cc.body.node_to_string(index));
+      println!("\n{node_index:06}: {node}\n               {assigns:?}:\n\n");
 
-          let old_offset = cc.link.binary.len();
-          jump_resolved |= compile_op(node, assigns, &block, &mut cc, &offsets, rsp_offset);
-          offset = print_instructions(&cc.link.binary[old_offset..], offset);
+      let old_offset = cc.link.binary.len();
 
-          println!("\n")
-        }
+      jump_resolved |= compile_op(node_index, block_index, &offsets, rsp_offset, blocks,ssa_graph,register_assignments, &mut cc);
+      offset = print_instructions(&cc.link.binary[old_offset..], offset);
 
-        if !jump_resolved {
-          if let Some(block_id) = block.branch_succeed {
-            use Arg::*;
-            if block_id != BlockId(block.id.0 + 1) {
-              let CompileContext { stack_size, jmp_resolver, link, body: ctx } = &mut cc;
-              encode(&mut link.binary, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
-              jmp_resolver.add_jump(&mut link.binary, block_id.0 as usize);
-              println!("JL BLOCK({block_id})");
-            }
-          }
-        }
+      println!("\n")
+    }
 
-        if !block.branch_fail.is_some() && !block.branch_succeed.is_some() {
-          funct_postamble(&mut cc, rsp_offset);
-          encode(&mut cc.link.binary, &ret, 64, Arg::None, Arg::None, Arg::None);
+    if !jump_resolved {
+      if let Some(block_id) = block.branch_succeed {
+        use Arg::*;
+        if block_id != BlockId(block.id.0 + 1) {
+          let CompileContext { stack_size, jmp_resolver, link } = &mut cc;
+          encode(&mut link.binary, &jmp, 32, Imm_Int(block_id.0 as i64), None, None);
+          jmp_resolver.add_jump(&mut link.binary, block_id.0 as usize);
+          println!("JL BLOCK({block_id})");
         }
       }
+    }
+
+    if !block.branch_fail.is_some() && !block.branch_succeed.is_some() {
+      funct_postamble(&mut cc, rsp_offset);
+      encode(&mut cc.link.binary, &ret, 64, Arg::None, Arg::None, Arg::None);
+    }
+  }
 
   for (instruction_index, block_id) in &cc.jmp_resolver.jump_points {
-        let block_address = cc.jmp_resolver.block_offset[*block_id];
-        let instruction_end_point = *instruction_index;
-        let relative_offset = block_address as i32 - instruction_end_point as i32;
-        let ptr = cc.link.binary[instruction_end_point - 4..].as_mut_ptr();
-        unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
-      }
+    let block_address = cc.jmp_resolver.block_offset[*block_id];
+    let instruction_end_point = *instruction_index;
+    let relative_offset = block_address as i32 - instruction_end_point as i32;
+    let ptr = cc.link.binary[instruction_end_point - 4..].as_mut_ptr();
+    unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
+  }
 
-  print_instructions(&cc.link.binary[0..], 0); */
+  print_instructions(&cc.link.binary[0..], 0);
 
   Ok(binary)
 }
@@ -199,22 +159,23 @@ fn funct_postamble(
 }
 
 pub fn compile_op(
-  node_index: usize, 
-  block_index: usize,  
-  
-  so: &BTreeMap<VarId, u64>, 
+  node_index: usize,
+  block_index: usize,
+
+  so: &BTreeMap<VarId, u64>,
   rsp_offset: u64,
 
-  blocks: &[IRBlock],
+  blocks: &[Box<IRBlock>],
   ssa_graph: &[SSAGraphNode],
   register_assignments: &RegisterAssignments,
-
+  
+  cc: &mut CompileContext<'_>
 ) -> bool{
-  /* const POINTER_SIZE: u64 = 64;
+  const POINTER_SIZE: u64 = 64;
 
-  if let SSAGraphNode::Node { op, ty, operands, .. } = ssa_graph[node_index] {
-    
-    let [dst, op1, op2] = register_assignments.assignments[node_index];
+  if let node @ SSAGraphNode::Node { op, ty, operands, .. } = &ssa_graph[node_index] {
+
+    let [dst, op1, op2] = register_assignments.assigns[node_index].regs;
 
     println!("{op:?} to x86:->");
 
@@ -225,6 +186,44 @@ pub fn compile_op(
     // if op2.flags() & LOAD { register_assignments.assignments[operands[1].usize()].spill_location }
 
     match op {
+      IROp::STORE => {
+        // Store val in op2 into memory location defined by op1
+
+        if op1.flags() & STACK_PTR > 0 {
+          let off = register_assignments.assigns[operands[0]].stack_offset as u64;
+          encode(&mut cc.link.binary, &mov, POINTER_SIZE, Arg::RSP_REL(off), Arg::Reg(op2), Arg::None);
+        } else {
+          encode(&mut cc.link.binary, &mov, POINTER_SIZE, Arg::Mem(op1), Arg::Reg(op2), Arg::None);
+        }
+      }
+      IROp::LOAD => {
+        // Store val in op2 into memory location defined by op1
+
+        if op1.flags() & STACK_PTR > 0 {
+          let off = register_assignments.assigns[operands[0]].stack_offset as u64;
+          encode(&mut cc.link.binary, &mov, POINTER_SIZE, Arg::Reg(dst), Arg::RSP_REL(off), Arg::None);
+        } else {
+          encode(&mut cc.link.binary, &mov, ty.bit_size(), Arg::Reg(dst), Arg::Mem(op1), Arg::None);
+        }
+      }
+      IROp::ADD => {
+        // Store val in op2 into memory location defined by op1
+
+        if op1 != dst {
+          encode(&mut cc.link.binary, &mov, ty.bit_size(), Arg::Reg(dst), Arg::Reg(op1), Arg::None);
+        }
+
+        encode(&mut cc.link.binary, &add, ty.bit_size(), Arg::Reg(dst), Arg::Reg(op2), Arg::None);
+      }
+
+      IROp::RET_VAL => {
+        // Store val in op2 into memory location defined by op1
+
+        if op1 != dst {
+          encode(&mut cc.link.binary, &mov, ty.bit_size(), Arg::Reg(dst), Arg::Reg(op1), Arg::None);
+        }
+      }
+      /*
       /*
        * Store represents a move of a primitive value into either a stack slot, or a memory
        * location.
@@ -723,12 +722,12 @@ pub fn compile_op(
             }
             IROp::NE => todo!("TODO: {node:?}"),
             IROp::EQ => todo!("TODO: {node:?}"),
-      */
+      */*/
       IROp::OR | IROp::XOR | IROp::AND | IROp::NOT | IROp::DIV | IROp::LOG | IROp::POW | IROp::LS | IROp::LE => todo!("TODO: {node:?}"),
-      IROp::PARAM_VAL | IROp::VAR_DECL => {}
+      IROp::PARAM_DECL | IROp::PARAM_VAL | IROp::VAR_DECL => {}
       op => todo!("Handle {op:?}"),
     }
-  }; */
+  };
 
   false
 }

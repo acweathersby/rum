@@ -25,27 +25,8 @@ pub fn compile_binary_from_entry(entry_routine: IString, errors: Vec<IString>, d
   }
 
   let mut seen = HashSet::<IString>::new();
-  let mut pending_routines = VecDeque::from_iter(vec![entry_routine, "heap_allocate".intern()]);
+  let mut pending_routines = VecDeque::from_iter(vec![entry_routine/* , "heap_allocate".intern() */]);
   let mut processed_routines = Vec::new();
-
-  let x86_REG_PACK: RegisterVariables = RegisterVariables {
-    call_register_list: vec![CallRegisters {
-      policy_name:         "default".to_token(),
-      arg_int_registers:   vec![7, 6, 3, 1, 8, 9],
-      arg_float_registers: vec![],
-      arg_ptr_registers:   vec![],
-      ret_int_registers:   vec![0], // (([ 0 ], len(1)) : address)  => (address, len(1))
-      ret_float_registers: vec![],
-      ret_ptr_registers:   vec![],
-    }],
-    ptr_registers:      vec![],
-    int_registers:      vec![8, 9, 10, 11, 12, 14, 15, 7, 6, 3, 1, 8, 9, 0, 13],
-    float_registers:    vec![16, 17],
-    registers:          vec![
-      RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
-      XMM15,
-    ],
-  };
 
   while let Some(pending) = pending_routines.pop_front() {
     println!("#### Building routine {pending}");

@@ -97,7 +97,7 @@ const GENERAL_REGISTER: u8 = 1;
 const VECTOR_REGISTER: u8 = 2;
 const MASK_REGISTER: u8 = 4;
 const RELATIVE: u8 = 8;
-const MEM_PTR: u8 = 8;
+pub const STACK_PTR: u8 = 8;
 
 pub const RAX: Reg = Reg::new(00, 00, 8, GENERAL_REGISTER);
 pub const RCX: Reg = Reg::new(01, 01, 8, GENERAL_REGISTER);
