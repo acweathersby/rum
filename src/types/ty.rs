@@ -44,7 +44,7 @@ impl RumType {
 
 impl Display for RumSubType {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    const TYPE_NAMES: [&'static str; 10] = ["_", "u", "i", "f", "dsc", "flg", "ptr_u", "ptr_i", "agg", "???"];
+    const TYPE_NAMES: [&'static str; 10] = ["und", "u", "i", "f", "dsc", "flg", "ptr_u", "ptr_i", "agg", "???"];
     let index = *self as usize;
     Display::fmt(&TYPE_NAMES[index], f)
   }

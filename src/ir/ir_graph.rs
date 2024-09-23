@@ -3,7 +3,7 @@ use crate::{
   istring::*,
   types::{ConstVal, RumType, Type, TypeRef, TypeVarContext, Variable},
 };
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Write};
 
 use super::{
   ir_block::BlockId,
@@ -337,7 +337,7 @@ impl IRGraphId {
 
 impl Display for IRGraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    std::fmt::Display::fmt(&self.0, f)
+    f.write_fmt(format_args!("{:>3}'", self.0))
   }
 }
 

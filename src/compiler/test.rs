@@ -25,6 +25,7 @@ loop_iter(array: T?) => &i32 {
 main (nest: u32) => D? {
   test: BaseArray = :[ 1 ]
 
+  
   loop a in loop_iter(test) {
     a = 300 + nest
   }
