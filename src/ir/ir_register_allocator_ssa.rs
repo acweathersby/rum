@@ -1,11 +1,16 @@
-use std::{collections::{HashSet, VecDeque}, fmt::{Debug, Display, Write}, vec};
+use std::{
+  collections::{HashSet, VecDeque},
+  fmt::{Debug, Display, Write},
+  vec,
+};
 
 use super::{ir_block::IRBlock, ir_graph::SSAGraphNode};
 use crate::{
   container::ArrayVec,
-  ir::{ir_block::create_block_ordering, ir_graph::IROp}, types::Reg,
+  ir::{ir_block::create_block_ordering, ir_graph::IROp},
+  types::Reg,
+  x86::x86_types::*,
 };
-use crate::x86::x86_types::*;
 #[derive(Clone)]
 struct RegisterVarAssignments {
   vars: ArrayVec<16, usize>,
@@ -28,23 +33,23 @@ impl RegisterVarAssignments {
 
 #[derive(Clone)]
 pub struct Registers<'reg> {
-  indices:     Vec<Reg>,
-  assignments: RegisterVarAssignments,
-  indices_lu:  u64,
-  registers:   &'reg [Reg],
+  indices:        Vec<Reg>,
+  assignments:    RegisterVarAssignments,
+  indices_lu:     u64,
+  registers:      &'reg [Reg],
   call_registers: &'reg [&'reg [Reg]],
-  ret_registers: &'reg [&'reg [Reg]]
+  ret_registers:  &'reg [&'reg [Reg]],
 }
 
 impl<'reg> Registers<'reg> {
-  pub fn initialize(register_indices: &[Reg], registers: &'reg [Reg], call_registers: &'reg [&'reg [Reg]], ret_registers: &'reg [&'reg [Reg]],) -> Self {
+  pub fn initialize(register_indices: &[Reg], registers: &'reg [Reg], call_registers: &'reg [&'reg [Reg]], ret_registers: &'reg [&'reg [Reg]]) -> Self {
     Self {
       indices: register_indices.to_vec(),
       assignments: RegisterVarAssignments { vars: Default::default() },
       indices_lu: register_indices.iter().fold(0u64, |v, a| (v | 1 << a.unique_index())),
       call_registers,
       registers,
-      ret_registers
+      ret_registers,
     }
   }
 
@@ -54,14 +59,14 @@ impl<'reg> Registers<'reg> {
 
   fn remove_unused(&mut self, reg: Reg) {
     if reg.unique_index() > 198 {
-      return
+      return;
     }
     self.indices_lu ^= self.indices_lu & (1 << reg.unique_index());
   }
 
   fn add_unused(&mut self, reg: Reg) {
     if reg.unique_index() > 198 {
-      return
+      return;
     }
     self.indices_lu |= 1 << reg.unique_index();
   }
@@ -81,35 +86,32 @@ impl<'reg> Registers<'reg> {
 }
 
 #[derive(Clone, Copy, Default)]
-pub struct RegMemData
-{
+pub struct RegMemData {
   pub stack_offset: u32,
-  pub regs: [Reg;3]
+  pub regs:         [Reg; 3],
 }
 
 impl Debug for RegMemData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      Display::fmt(&self, f)
+    Display::fmt(&self, f)
   }
 }
 
 impl Display for RegMemData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      let stack = self.stack_offset;
-      let [dst, op1, op2] = self.regs;
-      f.write_fmt(format_args!("{dst} <= {op1} {op2} : 0x{stack:04x}"))
+    let stack = self.stack_offset;
+    let [dst, op1, op2] = self.regs;
+    f.write_fmt(format_args!("{dst} <= {op1} {op2} : 0x{stack:04x}"))
   }
 }
 
-pub struct RegisterAssignments
-{
-  pub assigns: Vec<RegMemData>,
-  pub stack_size: usize,
+pub struct RegisterAssignments {
+  pub assigns:        Vec<RegMemData>,
+  pub stack_size:     usize,
   pub used_registers: Vec<Reg>,
 }
 
-enum RegAllocateType
-{
+enum RegAllocateType {
   None,
   CopyOp1,
   Allocate,
@@ -120,7 +122,7 @@ enum RegAllocateType
   CallRet,
   Return,
   /// Represents a memory location on the stack
-  Stack
+  Stack,
 }
 
 struct AllocationPolicy {
@@ -129,17 +131,17 @@ struct AllocationPolicy {
 }
 
 const REGISTERS: [Reg; 88] = [
-  RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15, YMM0, YMM1, YMM2,
-  YMM3, YMM4, YMM5, YMM6, YMM7, YMM8, YMM9, YMM10, YMM11, YMM12, YMM13, YMM14, YMM15, ZMM0, ZMM1, ZMM2, ZMM3, ZMM4, ZMM5, ZMM6, ZMM7, ZMM8, ZMM9, ZMM10, ZMM11, ZMM12, ZMM13, ZMM14, ZMM15, ZMM16,
-  ZMM17, ZMM18, ZMM19, ZMM20, ZMM21, ZMM22, ZMM23, ZMM24, ZMM25, ZMM26, ZMM27, ZMM28, ZMM29, ZMM30, ZMM31, K0, K1, K2, K3, K4, K5, K6, K7,
+  RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11,
+  XMM12, XMM13, XMM14, XMM15, YMM0, YMM1, YMM2, YMM3, YMM4, YMM5, YMM6, YMM7, YMM8, YMM9, YMM10, YMM11, YMM12, YMM13, YMM14, YMM15, ZMM0, ZMM1, ZMM2, ZMM3,
+  ZMM4, ZMM5, ZMM6, ZMM7, ZMM8, ZMM9, ZMM10, ZMM11, ZMM12, ZMM13, ZMM14, ZMM15, ZMM16, ZMM17, ZMM18, ZMM19, ZMM20, ZMM21, ZMM22, ZMM23, ZMM24, ZMM25, ZMM26,
+  ZMM27, ZMM28, ZMM29, ZMM30, ZMM31, K0, K1, K2, K3, K4, K5, K6, K7,
 ];
 
-pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphNode]) -> RegisterAssignments{
-  let mut int_registers = Registers::initialize(&[RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15], &REGISTERS, &[&[
-    RDI, RSI, RDX, RCX, R8, R9
-  ]], &[&[
-    RAX
-  ]]);
+pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphNode]) -> RegisterAssignments {
+  let mut int_registers =
+    Registers::initialize(&[RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15], &REGISTERS, &[&[RDI, RSI, RDX, RCX, R8, R9]], &[&[
+      RAX,
+    ]]);
 
   let mut active_tracker = vec![(Reg::default(), vec![], 0usize); nodes.len()];
   let mut reg_assigns = vec![RegMemData::default(); nodes.len()];
@@ -179,7 +181,6 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
   let mut stack_frame_size = 0;
 
   for block in &block_ordering {
-
     let mut param_index = 0;
     let mut ret_index = 0;
 
@@ -207,7 +208,6 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
               reg_assigns[op_index].stack_offset = stack_frame_size;
               stack_frame_size += ty.byte_size() as u32;
               active_tracker[op_index].0 = stack;
-
             }
             RegAllocateType::Return => {
               let registers = &mut int_registers;
@@ -250,11 +250,7 @@ pub fn generate_register_assignments(blocks: &[Box<IRBlock>], nodes: &[SSAGraphN
 
   dbg!(active_tracker, &reg_assigns);
 
-  RegisterAssignments {
-    assigns: reg_assigns,
-    stack_size: stack_frame_size as usize,
-    used_registers: vec![]
-  }
+  RegisterAssignments { assigns: reg_assigns, stack_size: stack_frame_size as usize, used_registers: vec![] }
 }
 
 fn pick_assign_register(
@@ -264,8 +260,7 @@ fn pick_assign_register(
   active_tracker: &mut Vec<(Reg, Vec<u32>, usize)>,
   reg_assignments: &mut Vec<RegMemData>,
   registers: &mut Registers,
-)
-{
+) {
   let new_var = ssa_var_index;
 
   if active_tracker[new_var].0.is_valid() {
@@ -313,8 +308,7 @@ fn force_pick_register(
   active_tracker: &mut Vec<(Reg, Vec<u32>, usize)>,
   reg_assigns: &mut Vec<RegMemData>,
   registers: &mut Registers,
-)
-{
+) {
   let new_var = ssa_var_index;
 
   if registers.is_unused(reg) {
@@ -349,7 +343,7 @@ fn force_pick_register(
 }
 
 #[inline]
-fn get_op_allocation_policy(op: IROp) -> AllocationPolicy{
+fn get_op_allocation_policy(op: IROp) -> AllocationPolicy {
   use RegAllocateType::*;
   type AllocateOp1Reg = bool;
   type AllocateOp2Reg = bool;

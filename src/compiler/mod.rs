@@ -12,7 +12,7 @@ use std::collections::{HashSet, VecDeque};
 #[cfg(test)]
 mod test;
 
-pub fn compile_binary_from_entry(entry_routine: IString, _errors: Vec<IString>, db: &mut TypeDatabase) -> (usize, Vec<u8>){
+pub fn compile_binary_from_entry(entry_routine: IString, _errors: Vec<IString>, db: &mut TypeDatabase) -> (usize, Vec<u8>) {
   // extract routine tree from entry routine, and setup a queue to build routine binaries
 
   let struct_names = get_struct_names(db);
@@ -22,7 +22,7 @@ pub fn compile_binary_from_entry(entry_routine: IString, _errors: Vec<IString>, 
   }
 
   let mut seen = HashSet::<IString>::new();
-  let mut pending_routines = VecDeque::from_iter(vec![entry_routine/* , "heap_allocate".intern() */]);
+  let mut pending_routines = VecDeque::from_iter(vec![entry_routine /* , "heap_allocate".intern() */]);
   let mut processed_routines = Vec::new();
 
   while let Some(pending) = pending_routines.pop_front() {
@@ -55,7 +55,7 @@ pub fn compile_binary_from_entry(entry_routine: IString, _errors: Vec<IString>, 
 
     let assignements = ir_register_allocator_ssa::generate_register_assignments(&ssa_blocks, &ssa_graph);
 
-    let linkable = compile_from_ssa_fn(pending, &ssa_blocks, &ssa_graph, &assignements,  &[]).expect("Could not create linkable");
+    let linkable = compile_from_ssa_fn(pending, &ssa_blocks, &ssa_graph, &assignements, &[]).expect("Could not create linkable");
 
     processed_routines.push((0, linkable));
   }
@@ -100,7 +100,7 @@ pub fn compile_binary_from_entry(entry_routine: IString, _errors: Vec<IString>, 
   (processed_routines.iter().find(|(.., l)| l.name == entry_routine).map(|(offset, ..)| *offset).unwrap(), binary)
 }
 
-fn get_struct_names(db: &mut TypeDatabase) -> Vec<IString>{
+fn get_struct_names(db: &mut TypeDatabase) -> Vec<IString> {
   db.types
     .iter()
     .filter_map(|d| match d.as_ref() {

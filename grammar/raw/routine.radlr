@@ -22,16 +22,15 @@ IMPORT ../common/comment as cmt
     :ast { t_RawProcedureType, params  }
 
 <> params 
-  
+
   > "\(" param_binding(*",") "\)" 
-    
+
     :ast { t_Params, params: $2 }
 
 +> ty::type > routine_type
 
-
 <> param_binding 
-  
+
   > prim::var^var ":" param_type^ty
 
     :ast { t_RawParamBinding, var, ty, tok }

@@ -5,7 +5,6 @@
 Parsing is a standard task that is used throughout programming paradigms. Any data that is not native to the host programming
 environment must be interpreted in some capacity.
 
-
 # Isolation Error Compilation model 
 
 Errors in parts of code not directly used in a given entrypoint will not prevent that entry point from being built.
@@ -19,7 +18,6 @@ Visibility:
   How you are able to visualize your data determines how well you can gain insights and inspirations for changes. 
   The more work it takes to understand the state of your data, the less you will be able to exploit it.
 
-
 # Wishlist
 
 - Opt-in-to-default warnings and errors to notify program of ill advised practices. 
@@ -32,7 +30,6 @@ not guarantee that memory will be mutated. The mutation of an object is somethin
 so). This should be fairly straight forward for data with known bounds, otherwise runtime or programmar tracking must be employed to detect
 mutation of allocations that have bound determined at runtime.
 
-
 # Testing
 
 # Debugging
@@ -42,7 +39,6 @@ mutation of allocations that have bound determined at runtime.
 # Types
 
 - primitives
- 
 
 - callable
 - struct
@@ -61,7 +57,6 @@ mutation of allocations that have bound determined at runtime.
 # Polymorphism
 
 # Mutability
-
 
 # Aggregates 
 
@@ -109,7 +104,6 @@ Reference -> pointer to an object. The object should not be update until the ref
 
   A
 
-
 # Addresses
 
 # Descriminant
@@ -130,7 +124,6 @@ When a quallifying challange statement is used to determine the underling struct
 
 If all struct members of a union contain a member such that the name, type, and offset of the member is identical in all struct types, then an access to this member may be made from a union variable without first qualifying the union strut subtype. This also applies to inlined sub-structure variables.
 
-
 # iterators
 
 Frequently, there is a need to access members of aggregate structures in a specific pattern. Whether its sequentially accessing members of an array, or 
@@ -141,11 +134,10 @@ Rum iterators are not functions, but rather special code blocks that provide a c
 the programmer gains access to two statements not available outside iterators, the *iter* statement and the *yield* statement.
 
 # Structures 
-  
+
 # Inlining 
 
 A struct may be placed in a containing struct such that the members of the subtruct may be accessed at the same level as the member of the containing struct. In such cases, if a member name of a substruct conflicts with a name of the container struct, the container struct name takes precedence, and will be resolved to the corresponding type and data within the container struct. Inlining may occur at any level, and the name resolution shall occur in kind.
-
 
 # Pointers and Allocators
 
@@ -158,7 +150,6 @@ All pointers should have these properties, save for the ZERO pointer:
 - A pointer that is not ZERO SHALL be bound to a specific type. 
 - A pointer that is passed to a call SHALL be bound to one and only one argument.
 
-
 A global allocator is made available to allocate memory from heap resources. All default memory locations are made through the default 
 allocator. Specific allocators may be defined and used to handle memory for different use cases. A allocator interface defines the syntax and semantics necessary to declare and describe the behaviours of allocators.
 
@@ -168,8 +159,6 @@ Pointer semantics:
   Sharable - pointer can be accessed through different variables 
   Mutable - underlying data can be mutated
   Freeing - pointer must be freed by a specific allocator
-
-
 
 - Pointer tagging - 
 
@@ -192,14 +181,12 @@ Invariants
   Everything has a known size. 
     For non-primitive types dynamically allocated, the size is stored within the allocation of the type instance.   
 
-
 ## Numbers
   Float, Integer, Unsigned, Complex
 
 ## Strings
 
   Strings are utf8 encoded sequences of bytes.
-
 
 ## Inference
 
@@ -241,10 +228,6 @@ d:u32v4 = 2, 3, 3
 
 (taco, diva) = if a is == 2: (dad, 2) or: (dallas, 1)
 
-
-
-
-
 global = t_cal(taco, global)
 
 day_data: i32v2
@@ -264,14 +247,11 @@ day = if (action_man, beaver) is
         { (i = 2,  neighbor(u))  }
   }
 
-
 name = 
 
 Ease of flags 
 bit fields 
 bitwise operations
-
-
 
 Raw Table
 Pointers are stored - 
@@ -279,14 +259,11 @@ Pointers are stored -
   - Any pointer that is a member of the garbage collector framework must be trackable through root objects.
   - 
 
-
-
 table Allocator { u32, *u8 }
-
 
 global_module :  {
   vk: Vulkan, 
-  
+
 }
 
 Function 
@@ -311,7 +288,6 @@ Type system
 
   An aggregate is 2 or more instances of the same type stored in sequential memory.
 
-
 FP ADD
 FP SUB
 FP MUL 
@@ -321,24 +297,20 @@ IN ADD
 IN SUB
 IN DIV
 
-
 let A = 0;
 
 FI ADD ( INT FP ) -> FP
 A = FI ADD ( FP A ) -> FP
 
-
 Rum Raw provides an out of the box programming experience. 
 With a self contained, dynamic code editor and debugger, state-of-the-art low level programming language, and support for world-class libraries and APIs, 
 Rum is geared and ready to tackle the most demanding programming challenges.
-
 
 Editor: 
   Native support for tabular / relational data.
   Suport for graphical representations.
   Built in testing and debugging tools
   Written in RAW/RUM - extensible
-
 
 Heap Values - 
 
@@ -361,9 +333,7 @@ Value:
   operation domain
     float(ieee 754) | ml-float | uint | int | fixed | flag
 
-
 prim type - operation domain - bit length | order |
-
 
 float - bit length 
 
@@ -378,9 +348,9 @@ float - bit length
 Containers: 
 
   Arrays
-    
+
     Stack
-    
+
     Heap -> Fixed Length | Variable Length
 
     Dimensionality - n dimensional array
@@ -398,15 +368,11 @@ Containers:
       Empty
       Extend
 
-
 [set: "test"]  = 2;
-
 
 Must be able to rewrite radlr in raw.
 
 MVP - Repl written in Raw
-
-
 
 Option<GrammarProduction> <- build_grammar (source_string: Path) {
 
@@ -418,7 +384,6 @@ Option<GrammarProduction> <- build_grammar (source_string: Path) {
 ## assert! 
   A statement for making invariants that can be optionally be removed for release builds.
 
-
 struct Path {
   string inner
 }
@@ -428,7 +393,6 @@ bool <- path_is_valid(path: &Path) std::os::path_is_valid(path.inner.c_str)
 # No type inference initially
 
 # Template Code
-
 
 bool <- name<G, R, operator, val>{ 
   G operator R 
@@ -475,7 +439,6 @@ Debugging
 - 0 - stdout
 - 1 - stdin
 - 2 - stderr
-
 
 # Linux System Calls
 
@@ -544,11 +507,7 @@ Debugging
 | x32      | syscall              | rax    |  rax     |  rdx     | -      |    5 |
 | xtensa   | syscall              | a2     |  a2      |  -       | -      |      |
 
-
-
-
 Posix Syscall - User space OS interrupts that allow a programm to communicate with the OS.
-
 
 |                | RAX | RCX | RDX | RBX | RSP | RBP | RSI | RDI | R08 | R09 | R10 | R11 | R12 | R13 | R14 | R15 |
 | :---------     | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
@@ -556,9 +515,7 @@ Posix Syscall - User space OS interrupts that allow a programm to communicate wi
 | Syscall Args   |     |     |  3  |     |     |     |  2  |  1  |  5  |  6  |  4  |     |     |     |     |     |
 | Syscall Return |  1  |     |  2  |     |     |     |     |     |     |     |     |     |     |     |     |     |
 
-
 C Linux ABI Call Registers
-
 
 |                | RAX | RCX | RDX | RBX | RSP | RBP | RSI | RDI | R08 | R09 | R10 | R11 | R12 | R13 | R14 | R15 |
 | :---------     | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
@@ -603,17 +560,11 @@ UI + Graphic Work + Complex Relationships
 Pointers are for BIG things. Pointers are always bound to memory and have a known size at all times, or are undefined. Ownership of pointers is passed
 into functions, and must be explicitly returned in order to keep alive. (What about FFI? C, obviously, but ownership is still up in the air.) 
 
-
-
-
-
-
 Function calls - 
 
   FFI is C only. Use C convention for all calls external functions. 
 
   Internal. Calls can have multiple return arguments. These are stored in registers, and optionally on the stack, if necessary.
- 
 
  Register allocation - 
 
@@ -625,7 +576,6 @@ Transient vars are those whose value is already defined and is not used in a sub
 
 If all registers are used and there need's to be allocation for a new variable, stores in all previous blocks need to be created for that variable.
 
-
 # "Method" matching and naive Currying
 
   TODO
@@ -635,8 +585,6 @@ If all registers are used and there need's to be allocation for a new variable, 
   A block context can be passed to special "routines" that run within the context of the block. These routines
   are inlined during IR lowering, allowing for a flexible way to define iterators, generators, and even concurrent
   abstractions.
-
-
 
 # References
 

@@ -72,6 +72,12 @@ impl<const STACK_SIZE: usize, T: Debug> Debug for ArrayVec<STACK_SIZE, T> {
   }
 }
 
+impl<const STACK_SIZE: usize, T: Display> Display for ArrayVec<STACK_SIZE, T> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("{}", self.iter().map(|n| format!("{n}")).collect::<Vec<_>>().join(",\n")))
+  }
+}
+
 impl<const STACK_SIZE: usize, T> Index<usize> for ArrayVec<STACK_SIZE, T> {
   type Output = T;
 

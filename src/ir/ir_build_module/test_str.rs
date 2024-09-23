@@ -6,5 +6,4 @@ Item => [
   sym_offset: u8,
 ]
 
-
 ";

@@ -7,8 +7,6 @@
 - format
 - ls - Run RumC in language server mode.
 
-
-
 arithmetic_add (ir: 'IRBuilder) =| {
   l = pop_stack(ir)
   r = pop_stack(ir)

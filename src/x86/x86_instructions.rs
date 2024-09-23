@@ -27,9 +27,7 @@ op_table!(
 );
 
 #[test]
-fn test_syscall(
-)
-{
+fn test_syscall() {
   assert_eq!("syscall", test_enc_uno(&syscall, 8, Arg::None));
   assert_eq!("syscall", test_enc_uno(&syscall, 16, Arg::None));
   assert_eq!("syscall", test_enc_uno(&syscall, 32, Arg::None));
@@ -46,9 +44,7 @@ op_table!(call [
 ]);
 
 #[test]
-fn test_call(
-)
-{
+fn test_call() {
   assert_eq!("call 37", test_enc_uno(&call, 32, Arg::Imm_Int(32)));
   assert_eq!("call r8", test_enc_uno(&call, 64, R8.as_reg_op()));
   assert_eq!("call qword ptr [r8]", test_enc_uno(&call, 64, R8.as_mem_op()));
@@ -111,9 +107,7 @@ op_table!(jb [
 ]);
 
 #[test]
-fn test_jb(
-)
-{
+fn test_jb() {
   assert_eq!("jb short 18_446_744_073_709_551_586", test_enc_uno(&jb, 8, Arg::Imm_Int(-32)));
   assert_eq!("jb near ptr 38", test_enc_uno(&jb, 32, Arg::Imm_Int(32)));
 }
@@ -125,9 +119,7 @@ op_table!(jae [
 ]);
 
 #[test]
-fn test_jae(
-)
-{
+fn test_jae() {
   assert_eq!("jae short 18_446_744_073_709_551_586", test_enc_uno(&jae, 8, Arg::Imm_Int(-32)));
   assert_eq!("jae near ptr 38", test_enc_uno(&jae, 32, Arg::Imm_Int(32)));
 }
@@ -139,9 +131,7 @@ op_table!(je [
 ]);
 
 #[test]
-fn test_je(
-)
-{
+fn test_je() {
   assert_eq!("je short 18_446_744_073_709_551_586", test_enc_uno(&je, 8, Arg::Imm_Int(-32)));
   assert_eq!("je near ptr 38", test_enc_uno(&je, 32, Arg::Imm_Int(32)));
 }
@@ -153,9 +143,7 @@ op_table!(jne [
 ]);
 
 #[test]
-fn test_jne(
-)
-{
+fn test_jne() {
   assert_eq!("jne short 18_446_744_073_709_551_586", test_enc_uno(&jne, 8, Arg::Imm_Int(-32)));
   assert_eq!("jne near ptr 38", test_enc_uno(&jne, 32, Arg::Imm_Int(32)));
 }
@@ -167,9 +155,7 @@ op_table!(jbe [
 ]);
 
 #[test]
-fn test_jbe(
-)
-{
+fn test_jbe() {
   assert_eq!("jbe short 18_446_744_073_709_551_586", test_enc_uno(&jbe, 8, Arg::Imm_Int(-32)));
   assert_eq!("jbe near ptr 38", test_enc_uno(&jbe, 32, Arg::Imm_Int(32)));
 }
@@ -181,9 +167,7 @@ op_table!(ja [
 ]);
 
 #[test]
-fn test_ja(
-)
-{
+fn test_ja() {
   assert_eq!("ja short 18_446_744_073_709_551_586", test_enc_uno(&ja, 8, Arg::Imm_Int(-32)));
   assert_eq!("ja near ptr 38", test_enc_uno(&ja, 32, Arg::Imm_Int(32)));
 }
@@ -195,9 +179,7 @@ op_table!(js [
 ]);
 
 #[test]
-fn test_js(
-)
-{
+fn test_js() {
   assert_eq!("js short 18_446_744_073_709_551_586", test_enc_uno(&js, 8, Arg::Imm_Int(-32)));
   assert_eq!("js near ptr 38", test_enc_uno(&js, 32, Arg::Imm_Int(32)));
 }
@@ -209,9 +191,7 @@ op_table!(jns [
 ]);
 
 #[test]
-fn test_jns(
-)
-{
+fn test_jns() {
   assert_eq!("jns short 18_446_744_073_709_551_586", test_enc_uno(&jns, 8, Arg::Imm_Int(-32)));
   assert_eq!("jns near ptr 38", test_enc_uno(&jns, 32, Arg::Imm_Int(32)));
 }
@@ -223,9 +203,7 @@ op_table!(jp [
 ]);
 
 #[test]
-fn test_jp(
-)
-{
+fn test_jp() {
   assert_eq!("jp short 18_446_744_073_709_551_586", test_enc_uno(&jp, 8, Arg::Imm_Int(-32)));
   assert_eq!("jp near ptr 38", test_enc_uno(&jp, 32, Arg::Imm_Int(32)));
 }
@@ -237,9 +215,7 @@ op_table!(jnp [
 ]);
 
 #[test]
-fn test_jnp(
-)
-{
+fn test_jnp() {
   assert_eq!("jnp short 18_446_744_073_709_551_586", test_enc_uno(&jnp, 8, Arg::Imm_Int(-32)));
   assert_eq!("jnp near ptr 38", test_enc_uno(&jnp, 32, Arg::Imm_Int(32)));
 }
@@ -251,9 +227,7 @@ op_table!(jl [
 ]);
 
 #[test]
-fn test_jl(
-)
-{
+fn test_jl() {
   assert_eq!("jl short 18_446_744_073_709_551_586", test_enc_uno(&jl, 8, Arg::Imm_Int(-32)));
   assert_eq!("jl near ptr 38", test_enc_uno(&jl, 32, Arg::Imm_Int(32)));
 }
@@ -265,9 +239,7 @@ op_table!(jge [
 ]);
 
 #[test]
-fn test_jge(
-)
-{
+fn test_jge() {
   assert_eq!("jge short 18_446_744_073_709_551_586", test_enc_uno(&jge, 8, Arg::Imm_Int(-32)));
   assert_eq!("jge near ptr 38", test_enc_uno(&jge, 32, Arg::Imm_Int(32)));
 }
@@ -279,9 +251,7 @@ op_table!(jle [
 ]);
 
 #[test]
-fn test_jle(
-)
-{
+fn test_jle() {
   assert_eq!("jle short 18_446_744_073_709_551_586", test_enc_uno(&jle, 8, Arg::Imm_Int(-32)));
   assert_eq!("jle near ptr 38", test_enc_uno(&jle, 32, Arg::Imm_Int(32)));
 }
@@ -293,9 +263,7 @@ op_table!(jg [
 ]);
 
 #[test]
-fn test_jg(
-)
-{
+fn test_jg() {
   assert_eq!("jg short 18_446_744_073_709_551_586", test_enc_uno(&jg, 8, Arg::Imm_Int(-32)));
   assert_eq!("jg near ptr 38", test_enc_uno(&jg, 32, Arg::Imm_Int(32)));
 }
@@ -311,9 +279,7 @@ op_table!(mov_o [
 ]);
 
 #[test]
-fn test_mov_o(
-)
-{
+fn test_mov_o() {
   assert_eq!("cmovo r8d,r11d", test_enc_dos(&mov_o, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovo r8,r11", test_enc_dos(&mov_o, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -332,9 +298,7 @@ op_table!(mov_no [
 ]);
 
 #[test]
-fn test_mov_no(
-)
-{
+fn test_mov_no() {
   assert_eq!("cmovno r8d,r11d", test_enc_dos(&mov_no, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovno r8,r11", test_enc_dos(&mov_no, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -363,9 +327,7 @@ op_table!(mov_ae [
 ]);
 
 #[test]
-fn test_mov_ae(
-)
-{
+fn test_mov_ae() {
   assert_eq!("cmovae r8d,r11d", test_enc_dos(&mov_ae, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovae r8,r11", test_enc_dos(&mov_ae, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -384,9 +346,7 @@ op_table!(mov_e [
 ]);
 
 #[test]
-fn test_mov_e(
-)
-{
+fn test_mov_e() {
   assert_eq!("cmove r8d,r11d", test_enc_dos(&mov_e, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmove r8,r11", test_enc_dos(&mov_e, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -405,9 +365,7 @@ op_table!(mov_ne [
 ]);
 
 #[test]
-fn test_mov_ne(
-)
-{
+fn test_mov_ne() {
   assert_eq!("cmovne r8d,r11d", test_enc_dos(&mov_ne, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovne r8,r11", test_enc_dos(&mov_ne, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -426,9 +384,7 @@ op_table!(mov_be [
 ]);
 
 #[test]
-fn test_mov_be(
-)
-{
+fn test_mov_be() {
   assert_eq!("cmovbe r8d,r11d", test_enc_dos(&mov_be, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovbe r8,r11", test_enc_dos(&mov_be, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -447,9 +403,7 @@ op_table!(mov_a [
 ]);
 
 #[test]
-fn test_mov_a(
-)
-{
+fn test_mov_a() {
   assert_eq!("cmova r8d,r11d", test_enc_dos(&mov_a, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmova r8,r11", test_enc_dos(&mov_a, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -468,9 +422,7 @@ op_table!(mov_s [
 ]);
 
 #[test]
-fn test_mov_s(
-)
-{
+fn test_mov_s() {
   assert_eq!("cmovs r10d,r11d", test_enc_dos(&mov_s, 32, R10.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovs r10,r11", test_enc_dos(&mov_s, 64, R10.as_reg_op(), R11.as_reg_op()));
 
@@ -489,9 +441,7 @@ op_table!(mov_ns [
 ]);
 
 #[test]
-fn test_mov_ns(
-)
-{
+fn test_mov_ns() {
   assert_eq!("cmovns r8d,r11d", test_enc_dos(&mov_ns, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovns r8,r11", test_enc_dos(&mov_ns, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -510,9 +460,7 @@ op_table!(mov_pe [
 ]);
 
 #[test]
-fn test_mov_pe(
-)
-{
+fn test_mov_pe() {
   assert_eq!("cmovp r8d,r11d", test_enc_dos(&mov_pe, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovp r8,r11", test_enc_dos(&mov_pe, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -531,9 +479,7 @@ op_table!(mov_po [
 ]);
 
 #[test]
-fn test_mov_po(
-)
-{
+fn test_mov_po() {
   assert_eq!("cmovnp r8d,r11d", test_enc_dos(&mov_po, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovnp r8,r11", test_enc_dos(&mov_po, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -552,9 +498,7 @@ op_table!(mov_l [
 ]);
 
 #[test]
-fn test_mov_l(
-)
-{
+fn test_mov_l() {
   assert_eq!("cmovl r8d,r11d", test_enc_dos(&mov_l, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovl r8,r11", test_enc_dos(&mov_l, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -573,9 +517,7 @@ op_table!(mov_ge [
 ]);
 
 #[test]
-fn test_mov_ge(
-)
-{
+fn test_mov_ge() {
   assert_eq!("cmovge r8d,r11d", test_enc_dos(&mov_ge, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovge r8,r11", test_enc_dos(&mov_ge, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -594,9 +536,7 @@ op_table!(mov_le [
 ]);
 
 #[test]
-fn test_mov_le(
-)
-{
+fn test_mov_le() {
   assert_eq!("cmovle r8d,r11d", test_enc_dos(&mov_le, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovle r8,r11", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -615,9 +555,7 @@ op_table!(mov_g [
 ]);
 
 #[test]
-fn test_mov_g(
-)
-{
+fn test_mov_g() {
   assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovg r8,r11", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_reg_op()));
 
@@ -663,9 +601,7 @@ op_table!(lea [
 ]);
 
 #[test]
-fn test_lea(
-)
-{
+fn test_lea() {
   assert_eq!("lea r8d,[r11]", test_enc_dos(&lea, 32, R8.as_reg_op(), R11.as_reg_op().to_mem()));
   assert_eq!("cmovg r8,r11", test_enc_dos(&lea, 64, R8.as_reg_op(), Arg::RSP_REL(128)));
 }
@@ -689,9 +625,7 @@ op_table!(vmov64_align [
 ]);
 
 #[test]
-fn test_vec_mov(
-)
-{
+fn test_vec_mov() {
   assert_eq!("vmovdqa64 zmm31{k1},zmm31", test_enc_tres(&vmov64_align, 512, ZMM31.as_reg_op(), ZMM31.as_reg_op(), K1.as_reg_op()));
 
   assert_eq!("vmovdqa32 zmm31,zmm31", test_enc_dos(&vmov32_align, 512, ZMM31.as_reg_op(), ZMM31.as_reg_op()));
@@ -802,9 +736,7 @@ op_table!(imul [  //
 ]);
 
 #[test]
-fn test_imul(
-)
-{
+fn test_imul() {
   assert_eq!("imul r8,r8", test_enc_dos(&imul, 64, R8.as_reg_op(), R8.as_reg_op()));
   assert_eq!("imul rax,r15", test_enc_dos(&imul, 64, RAX.as_reg_op(), R15.as_reg_op()));
 }

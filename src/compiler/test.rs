@@ -11,7 +11,6 @@ BaseArray => [i32; 6]
 
 heap_allocate ( size: u64, alignment: u64 ) => *u8 _malloc( size )
 
-
 dandy () => u32 0
 
 loop_iter(array: T?) => &i32 {
@@ -41,13 +40,10 @@ add_two_numbers (l: u32, r: D?) => D? {
   l + r
 }
 
-
 "##;
 
 #[test]
-fn compile_structures(
-)
-{
+fn compile_structures() {
   let mut db = build_module(&crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).unwrap());
 
   let (entry_offset, binary) = compile_binary_from_entry("add_two_numbers".intern(), vec![], db.as_mut());

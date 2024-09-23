@@ -1,5 +1,5 @@
 [ Canvas: homogenous ]( ivec4 )
-  
+
 [Health:Players] [health] (f32)
 
 [ Soldiers ] ( f32, f32, f32 )
@@ -9,14 +9,12 @@
 global players:Players
 global npcs:Soldiers
 
-
-
 init {
   player :init[100,100] paint_canvas
 }
 
 main {
-  
+
   let image = :load("image_path.png") Canvas
 
   :GPU {
@@ -29,21 +27,21 @@ main {
       abs(brush.pos.y - f32(row#i)) < brush.diameter / 2
     }
     {
-      
+
     }
   }
 }
-  
+
   main_loop {
     let dead_players;
     let active_players;
-  
+
     for [player: players, npc: npcs] where { 
       let x = player.x-y-z as vec3;
       let b = npc.x-y-z as vec3;
-      
+
       sqrt(abs(x - b)) < 2.0;
-      
+
       player.x == npc.x; 
       player.x > 100; 
       npx.x > 100; 
@@ -55,9 +53,9 @@ main {
         active_players <- (player#key, 0.0, 0.8, 0.2);
       }
     }
-    
+
     for [player: dead_players]{ print("You Lose!") }
-  
+
     for [#index, player: active_players, box: ui_boxes] where box.player = player
     {
       box.index_pos = index 
@@ -72,21 +70,20 @@ main {
           $val = &box.index_pos;
         }
       }
-  
+
       box.display_length = box.width / player.health :changed { 
         animating_boxes <- &box
       }
     }
-    
+
     for anim: animating_boxes {
       .time += fps_time;
-      
+
       .val = .start_value + (a) time
-  
+
       sync(.val)
     }
-  
-  
+
     :GPU {
       for [ui_box: boxes, ]{
         /** GLSL **/

@@ -1,9 +1,9 @@
-use crate::{
-  container::ArrayVec,
-  istring::*,
-};
-use std::{collections::{HashSet, VecDeque}, fmt::{Debug, Display}};
 use super::ir_graph::IRGraphId;
+use crate::{container::ArrayVec, istring::*};
+use std::{
+  collections::{HashSet, VecDeque},
+  fmt::{Debug, Display},
+};
 
 #[derive(Clone, Debug)]
 pub struct IRBlock {
@@ -34,7 +34,7 @@ impl Display for IRBlock {
     f.write_fmt(format_args!(
       r###"
 Block-{id:03} {} {{
-  
+
 {ops}{branch}
 }}"###,
       self.name.to_str().as_str()
@@ -90,8 +90,7 @@ impl<T, const SIZE: usize> std::ops::IndexMut<BlockId> for ArrayVec<SIZE, T> {
   }
 }
 
-
-pub fn get_block_direct_predecessors(blocks: &[Box<IRBlock>]) -> Vec<Vec<BlockId>>{
+pub fn get_block_direct_predecessors(blocks: &[Box<IRBlock>]) -> Vec<Vec<BlockId>> {
   let mut out_vecs = vec![vec![]; blocks.len()];
 
   for block_id in 0..blocks.len() {
@@ -112,7 +111,7 @@ pub fn get_block_direct_predecessors(blocks: &[Box<IRBlock>]) -> Vec<Vec<BlockId
 
 /// Create an ordering for block register assignment based on block features
 /// such as loops and return values.
-pub fn create_block_ordering(blocks: &[Box<IRBlock>]) -> Vec<usize>{
+pub fn create_block_ordering(blocks: &[Box<IRBlock>]) -> Vec<usize> {
   let mut block_ordering = vec![];
 
   let mut queue = VecDeque::from_iter(vec![BlockId(0)]);

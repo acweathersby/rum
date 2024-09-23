@@ -15,11 +15,7 @@ use IROp::*;
 use super::{ir_block::IRBlock, ir_graph::SSAGraphNode};
 
 /// Lowers high level IR into SSA for optimization and target machine encoding
-pub fn lower_iops(
-  routine_name: IString,
-  type_scope: &mut TypeDatabase,
-)
-{
+pub fn lower_iops(routine_name: IString, type_scope: &mut TypeDatabase) {
   /*/
   // load the target routine
   let Some((mut ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
@@ -104,7 +100,7 @@ pub fn lower_iops(
 }
 
 /// Lowers high level IR into SSA for optimization and target machine encoding
-pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> (Vec<Box<IRBlock>>, Vec<SSAGraphNode>){
+pub fn lower_into_ssa(routine_name: IString, type_scope: &mut TypeDatabase) -> (Vec<Box<IRBlock>>, Vec<SSAGraphNode>) {
   // load the target routine
   let Some((mut ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find Struct type: {routine_name}",);

@@ -5,7 +5,6 @@ IGNORE { c:sp c:nl }
 
   :ast { t_AnnotationVariable, name: $1, expr }
 
-
 <> annotation_expression >
 
   annotation_expression "+"{2} annotation_expression{1}
@@ -18,18 +17,13 @@ IGNORE { c:sp c:nl }
 
   | bindable_name
 
-    
-
-
 <> annotation >  tk:( "#" bindable_name )
 
   :ast { t_Annotation, val: str($1<1,0>) }
 
-
 <> lifetime_variable > lifetime "=>" prim::var(+"+")^lifetimes
 
   :ast { t_LifetimeVariable, name: $1, lifetimes }
-
 
 <> lifetime 
 
@@ -38,9 +32,8 @@ IGNORE { c:sp c:nl }
     :ast { t_ScopedLifetime, val: str($1<0,1>) }
 
   | "*"
-  
-    :ast { t_GlobalLifetime }
 
+    :ast { t_GlobalLifetime }
 
 <> bindable_name 
 

@@ -15,13 +15,11 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawModule, members: $1 }
 
-
 <> module_members 
 
   > ( annotated_module_member | anno::lifetime_variable | anno::annotation_declaration )(+)^members
 
     :ast { t_RawModMembers, members }
-
 
 <> annotated_module_member 
 
@@ -30,11 +28,10 @@ IMPORT ../common/comment as cmt
     :ast { t_AnnotatedModMember, annotation, member }
 
 <> module_member 
-  
+
   > bound_type
   | rt::routine 
   | scope
-
 
 <> bound_type 
 
@@ -42,12 +39,9 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawBoundType, name, ty, tok }
 
-
 <> scope 
 
   > prim::var "{" module_members "}"
 
     :ast { t_RawScope, name: $1, members: $3   }
-
-
 

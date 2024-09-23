@@ -1,16 +1,16 @@
-use std::collections::BTreeMap;
 use super::{x86_encoder::*, x86_instructions::*, x86_types::*};
 use crate::{
   error::RumResult,
   ir::{
-    ir_graph::{ IROp, SSAGraphNode, VarId},
-    ir_block::{BlockId, IRBlock,},
+    ir_block::{BlockId, IRBlock},
+    ir_graph::{IROp, SSAGraphNode, VarId},
     ir_register_allocator_ssa::RegisterAssignments,
   },
   istring::IString,
   linker::LinkableBinary,
   x86::print_instructions,
 };
+use std::collections::BTreeMap;
 
 struct CompileContext<'a> {
   stack_size:   u64,
@@ -35,21 +35,20 @@ impl JumpResolution {
 pub fn compile_from_ssa_fn(
   routine_name: IString,
 
-
   blocks: &[Box<IRBlock>],
   ssa_graph: &[SSAGraphNode],
   register_assignments: &RegisterAssignments,
 
   spilled_variables: &[VarId],
-) -> RumResult<LinkableBinary>{
+) -> RumResult<LinkableBinary> {
   let mut binary = LinkableBinary { binary: Default::default(), name: routine_name, link_map: Default::default() };
 
   let rsp_offset = register_assignments.stack_size as u64;
 
   let mut cc = CompileContext {
-    stack_size: 0,
+    stack_size:   0,
     jmp_resolver: JumpResolution { block_offset: Default::default(), jump_points: Default::default() },
-    link: &mut binary,
+    link:         &mut binary,
   };
 
   let mut offset = 0;
@@ -71,7 +70,7 @@ pub fn compile_from_ssa_fn(
 
       let old_offset = cc.link.binary.len();
 
-      jump_resolved |= compile_op(node_index, block_index, &offsets,  blocks,ssa_graph,register_assignments, &mut cc);
+      jump_resolved |= compile_op(node_index, block_index, &offsets, blocks, ssa_graph, register_assignments, &mut cc);
       offset = print_instructions(&cc.link.binary[old_offset..], offset);
 
       println!("\n")
@@ -108,11 +107,7 @@ pub fn compile_from_ssa_fn(
   Ok(binary)
 }
 
-fn funct_preamble(
-  cc: &mut CompileContext,
-  rsp_offset: u64,
-)
-{
+fn funct_preamble(cc: &mut CompileContext, rsp_offset: u64) {
   let bin = &mut cc.link.binary;
   encode_unary(bin, &push, 64, Arg::Reg(RBX));
   encode_unary(bin, &push, 64, Arg::Reg(RBP));
@@ -127,11 +122,7 @@ fn funct_preamble(
   }
 }
 
-fn funct_postamble(
-  cc: &mut CompileContext,
-  rsp_offset: u64,
-)
-{
+fn funct_postamble(cc: &mut CompileContext, rsp_offset: u64) {
   let bin = &mut cc.link.binary;
   if rsp_offset > 0 {
     encode_binary(bin, &add, 64, Arg::Reg(RSP), Arg::Imm_Int(rsp_offset as i64));
@@ -147,19 +138,15 @@ fn funct_postamble(
 fn compile_op(
   node_index: usize,
   block_index: usize,
-
   so: &BTreeMap<VarId, u64>,
-
   blocks: &[Box<IRBlock>],
   ssa_graph: &[SSAGraphNode],
   register_assignments: &RegisterAssignments,
-  
-  cc: &mut CompileContext<'_>
-) -> bool{
+  cc: &mut CompileContext<'_>,
+) -> bool {
   const POINTER_SIZE: u64 = 64;
 
   if let node @ SSAGraphNode::Node { op, ty, operands, .. } = &ssa_graph[node_index] {
-
     let [dst, op1, op2] = register_assignments.assigns[node_index].regs;
 
     println!("{op:?} to x86:->");
@@ -557,7 +544,6 @@ fn compile_op(
         return true;
       }
       /*
-
 
       IROp::CALL => {
         // Fudging this for calling syswrite. Rax needs to be set to the system call id

@@ -1,8 +1,7 @@
 Allocator Bindings and Pointer semantics
 
-
 ### Primitive Attribute
-    
+
 - atomic - Operations on this value are atomic. Pair with memory ordering for lockless. Cannot point to 
 
 - immutable - The data of the primitive cannot be changed
@@ -46,25 +45,19 @@ Allocator Bindings and Pointer semantics
 
   - static - The allocator has the same lifetime as the program
 
-  
-
 ### Allocator Stack
 
 - Two or more allocators cannot be bound to the same allocator binding in the same scope. However, a new allocator can be bound within a subordinate scope, and will then
   service all allocations for that particular binding. Such an allocator is called a sub-allocator. When a sub-allocator's scope is exited, the allocator binding
   reverts back to the previous allocator, or to the global allocator.
 
-
 - Lifetime are checked at compile time unless the protocol allows for ```ptr`lifetime == `allocator`lifetime```
 
 - An object can have multiple lifetimes, but they must follow several conventions to ensure compatible behiavor with
 
-
 ```rust
 
-
 gc* = exclusive + thread-share + nullable + clonable
-
 
 Test = [
   name: str
@@ -82,7 +75,7 @@ test (other: 'mut Test) => *'global + 'gc Bindable { // Bindable's lifetimes are
 main () =| {
 
   outside = Test [ name = "david" ]
-  
+
   member = { 
 
     gc* = GarbageCollector('gc)
@@ -103,7 +96,7 @@ main () =| {
 
   // Required again, since name has been assigned and test cannot be verified to return a valid pointer. 
     if member.name {
-      
+
     }
 
     loop lock member {
@@ -115,22 +108,15 @@ main () =| {
 }
 ```
 
-
 ### Allocator Declaration
 
-
-
-
-
 ```
-
 
 Temporary { 
   tmp* Data
 }
 
 ```
-
 
 A resolution oft he path to specific variable member to is restricted by the resolution semantics of each membership dereferenceing step.
 
@@ -155,7 +141,6 @@ Optional<member_pointer>     // This can be assigned to a new member location if
 
 ```
 
-
 member.d ( d = *d || d ) => {
   d = 0 // Works for (d) but would be error for (*d)
   d = Struct { } // Works for (d), not for (*d)
@@ -169,12 +154,7 @@ member.d ( d = *d || d ) => {
 
   member_reference(var) = 0
 
-
   ----
 
-
-
 }
-
-
 

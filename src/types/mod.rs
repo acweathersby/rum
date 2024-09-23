@@ -11,9 +11,9 @@ mod type_database;
 pub use bitsize::*;
 pub use complex::*;
 pub use const_val::*;
+pub use reg::*;
 use std::collections::HashMap;
 pub use ty::*;
-pub use reg::*;
 pub use type_context::*;
 pub use type_database::*;
 

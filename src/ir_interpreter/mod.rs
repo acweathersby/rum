@@ -1,4 +1,1 @@
-pub fn interpret(
-)
-{
-}
+pub fn interpret() {}

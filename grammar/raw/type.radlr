@@ -14,7 +14,7 @@ IGNORE { c:sp c:nl }
 <> reference_type > "&" base_type^ty :ast { t_Type_Reference, ty }
 
 <> base_type 
-  
+
   > primitive_type
 
   | named_type
@@ -40,7 +40,6 @@ IGNORE { c:sp c:nl }
   | "f64v2" :ast { t_Type_f64v2 }
   | "f64v4" :ast { t_Type_f64v4 }
 
-
 <> primitive_int 
   > "i8"    :ast { t_Type_i8 }
   | "i16"   :ast { t_Type_i16 }
@@ -53,20 +52,17 @@ IGNORE { c:sp c:nl }
   | "u32"   :ast { t_Type_u32 }
   | "u64"   :ast { t_Type_u64 }
 
-
 <> complex_type > structure_type | array_type | empty_type | union_type | enum_type | flag_type
 
 <> structure_type
-  
+
   > "[" property(+",")^properties ","(*) "]"
 
     :ast { t_Type_Struct, properties, tok }
 
-
 <> property 
 
   > single_prop | bitfield_type
-
 
 <> single_prop 
 
@@ -74,13 +70,11 @@ IGNORE { c:sp c:nl }
 
       :ast  { t_Property, name, ty, tok  }
 
-
 <> array_type
 
   > "[" type^base_type (";" prim::int )?^size "]"
 
     :ast { t_Type_Array, base_type, size: u32($size), tok }
-
 
 <> empty_type
 
@@ -88,13 +82,11 @@ IGNORE { c:sp c:nl }
 
     :ast { t_Type_Empty, tok }
 
-
 <> union_type 
 
   > prim::var "|" prim::var(+"|")^ids
 
     :ast  { t_Type_Union, ids: $1 + $3, tok }
-
 
 <> enum_type 
 
@@ -102,13 +94,11 @@ IGNORE { c:sp c:nl }
 
     :ast  { t_Type_Enum, base_type, values, tok }
 
-
 <> enum_value 
 
   > prim::var^name ( "=>" expr::expression )?^expression
 
     :ast  { t_EnumValue, name, expression  }
-
 
 <> flag_type 
 
@@ -116,9 +106,7 @@ IGNORE { c:sp c:nl }
 
     :ast  { t_Type_Flag, flag_size: u32($flag_val<4, 0>), values, tok }
 
-
 <> flag_val > tk:( "flag" c:num+ )
-
 
 <> bitfield_type 
 
@@ -126,13 +114,11 @@ IGNORE { c:sp c:nl }
 
     :ast  { t_RawBitCompositeProp, bit_count: u32($base_type<2,0>), props  }
 
-  
 <> bitfield_element
 
   > prim::var^name ":" (primitive_type | discriminator_type)^type
 
       :ast  { t_BitFieldProp, name, type, tok  }
-
 
 <> discriminator_type > 
 

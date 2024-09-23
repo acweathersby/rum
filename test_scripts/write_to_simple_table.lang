@@ -7,12 +7,12 @@
 global players:Players
 
 global npcs:Players
-  
+
 main { test }
 
 /// This allows the module's tables to be initialized
 init {
-  
+
   // Resets player data
   for player :init[2] players { player.x = 10 player.y = 1000 }
 
@@ -20,19 +20,16 @@ init {
   for d :init[200] npcs { d.x = 2 d.y = 2 d.b = 3 d.g = -1e-3 }
 }
 
-
 /*
 
 :index Space3D {}
-
-
 
 main { 
 
   let SPACE :index Space3D<astroid.pos, projectile.pos, player.pos>;
 
   loop [^A] {
-    
+
     for key : keyboard where { 
       key.id == space && key.is_down == true
     } {

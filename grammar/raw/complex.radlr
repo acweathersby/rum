@@ -5,13 +5,11 @@ IMPORT annotation as anno
 IMPORT ../common/primitive as prim
 IMPORT ../common/comment as cmt
 
-
 +> expr::expression > aggregate_instantiation
-  
+
   :ast { t_Expression, expr: $1, tok }
 
 +> expr::term > pointer_cast_to_value
-
 
 <> aggregate_instantiation 
 
@@ -19,13 +17,11 @@ IMPORT ../common/comment as cmt
 
     :ast  { t_RawAggregateInstantiation, allocator_binding, inits, tok }
 
-
 <> pointer_cast_to_value
 
   > "[[" prim::var^type_name ":" ( prim::var | pointer_cast_to_value )^base  ( "+" + expr::pointer_offset^expression )?^offset_expression "]]"{1} "*"{3}?^to_pointer
 
     :ast  { t_PointerCastToAddress, type_name, base, offset_expression, to_pointer:bool($to_pointer), tok }
-
 
 <> aggregate_member_initializer 
 

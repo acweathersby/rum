@@ -35,7 +35,7 @@ pub(super) fn encode_zero<'bin>(
   binary: &'bin mut Vec<u8>,
   table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
   bit_size: u64,
-) -> InstructionProps<'bin>{
+) -> InstructionProps<'bin> {
   encode(binary, table, bit_size, Arg::None, Arg::None, Arg::None)
 }
 
@@ -44,24 +44,35 @@ pub(super) fn encode_unary<'bin>(
   table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
   bit_size: u64,
   op1: Arg,
-) -> InstructionProps<'bin>{
+) -> InstructionProps<'bin> {
   encode(binary, table, bit_size, op1, Arg::None, Arg::None)
 }
 
-pub(super) fn test_enc_uno<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg) -> String{
+pub(super) fn test_enc_uno<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg) -> String {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, Arg::None, Arg::None);
   print_instruction(&bin)
 }
 
-pub(super) fn test_enc_dos<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg) -> String{
+pub(super) fn test_enc_dos<'bin>(
+  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
+  bit_size: u64,
+  op1: Arg,
+  op2: Arg,
+) -> String {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, op2, Arg::None);
   //println!("{:02X?}", &bin);
   print_instruction(&bin)
 }
 
-pub(super) fn test_enc_tres<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg, op3: Arg) -> String{
+pub(super) fn test_enc_tres<'bin>(
+  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
+  bit_size: u64,
+  op1: Arg,
+  op2: Arg,
+  op3: Arg,
+) -> String {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, op2, op3);
   //println!("{:02X?}", &bin);
@@ -74,7 +85,7 @@ pub(super) fn encode_binary<'bin>(
   bit_size: u64,
   op1: Arg,
   op2: Arg,
-) -> InstructionProps<'bin>{
+) -> InstructionProps<'bin> {
   encode(binary, table, bit_size, op1, op2, Arg::None)
 }
 
@@ -85,7 +96,7 @@ pub(super) fn encode<'bin>(
   op1: Arg,
   op2: Arg,
   op3: Arg,
-) -> InstructionProps<'bin>{
+) -> InstructionProps<'bin> {
   debug_assert!(bit_size <= 512);
 
   if bit_size == 16 {
@@ -114,23 +125,19 @@ pub(super) fn encode<'bin>(
   );
 }
 
-pub(super) fn encoded_vec(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg, op3: Arg) -> usize{
+pub(super) fn encoded_vec(
+  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
+  bit_size: u64,
+  op1: Arg,
+  op2: Arg,
+  op3: Arg,
+) -> usize {
   let mut bin = vec![];
   encode(&mut bin, table, bit_size, op1, op2, op3);
   bin.len()
 }
 
-pub(super) fn gen_zero_op(
-  props: &mut InstructionProps,
-  op_code: u32,
-  bit_size: u64,
-  enc: OpEncoding,
-  _: Arg,
-  _: Arg,
-  _: Arg,
-  ext: u8,
-)
-{
+pub(super) fn gen_zero_op(props: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, _: Arg, _: Arg, _: Arg, ext: u8) {
   use Arg::*;
   use OpEncoding::*;
 
@@ -142,17 +149,7 @@ pub(super) fn gen_zero_op(
   }
 }
 
-pub(super) fn gen_unary_op(
-  props: &mut InstructionProps,
-  op_code: u32,
-  bit_size: u64,
-  enc: OpEncoding,
-  op1: Arg,
-  _: Arg,
-  _: Arg,
-  ext: u8,
-)
-{
+pub(super) fn gen_unary_op(props: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, _: Arg, _: Arg, ext: u8) {
   use Arg::*;
   use OpEncoding::*;
 
@@ -198,17 +195,7 @@ pub(super) fn gen_unary_op(
   }
 }
 
-pub(super) fn gen_multi_op(
-  props: &mut InstructionProps,
-  op_code: u32,
-  bit_size: u64,
-  enc: OpEncoding,
-  op1: Arg,
-  op2: Arg,
-  op3: Arg,
-  ext: u8,
-)
-{
+pub(super) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, op2: Arg, op3: Arg, ext: u8) {
   use Arg::*;
   use OpEncoding::*;
 
@@ -298,12 +285,7 @@ pub(super) fn gen_multi_op(
   }
 }
 
-pub(crate) fn encode_mod_rm_reg(
-  props: &mut InstructionProps,
-  r_m: Arg,
-  reg: Arg,
-)
-{
+pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
   const SIB_SCALE_OFFSET: u8 = 6;
   const SIB_INDEX_OFFSET: u8 = 3;
   const SIB_INDEX_NOT_USED: u8 = 0b100 << SIB_INDEX_OFFSET;
@@ -390,13 +372,7 @@ pub(crate) fn encode_mod_rm_reg(
   }
 }
 
-pub(crate) fn encode_rex(
-  props: &mut InstructionProps,
-  bit_size: u64,
-  r_m: Arg,
-  reg: Arg,
-)
-{
+pub(crate) fn encode_rex(props: &mut InstructionProps, bit_size: u64, r_m: Arg, reg: Arg) {
   const REX_W_64B: u8 = 0b0100_1000;
   const REX_R_REG_EX: u8 = 0b0100_0100;
   const REX_X_SIP: u8 = 0b0100_0010;
@@ -411,7 +387,7 @@ pub(crate) fn encode_rex(
   }
 }
 
-pub(crate) fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: u64, props: &mut InstructionProps<'_>, w: u8) -> u32{
+pub(crate) fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: u64, props: &mut InstructionProps<'_>, w: u8) -> u32 {
   insert_op_code_bytes(props.bin, 0x62);
 
   let rex_b = ((r_m.is_upper_8_reg() as u8) ^ 1) << 5;
@@ -471,7 +447,7 @@ pub(crate) fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: 
   op_ext[0] as u32
 }
 
-pub(crate) fn encode_vex(op_code: u32, op2: Arg, op1: Arg, bit_size: u64, props: &mut InstructionProps<'_>) -> u32{
+pub(crate) fn encode_vex(op_code: u32, op2: Arg, op1: Arg, bit_size: u64, props: &mut InstructionProps<'_>) -> u32 {
   // two byte form
   let op_ext: [u8; 4] = unsafe { std::mem::transmute(op_code) };
   let mut pp = 0;
@@ -524,17 +500,7 @@ pub(crate) fn encode_vex(op_code: u32, op2: Arg, op1: Arg, bit_size: u64, props:
   op_code
 }
 
-pub(super) fn gen_tri_op(
-  props: &mut InstructionProps,
-  op_code: u32,
-  bit_size: u64,
-  enc: OpEncoding,
-  op1: Arg,
-  op2: Arg,
-  op3: Arg,
-  ext: u8,
-)
-{
+pub(super) fn gen_tri_op(props: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, op2: Arg, op3: Arg, ext: u8) {
   use Arg::*;
   use OpEncoding::*;
 
@@ -556,11 +522,7 @@ pub(super) fn gen_tri_op(
   }
 }
 
-pub(crate) fn insert_op_code_bytes(
-  binary: &mut Vec<u8>,
-  op_code: u32,
-)
-{
+pub(crate) fn insert_op_code_bytes(binary: &mut Vec<u8>, op_code: u32) {
   for byte in op_code.to_be_bytes() {
     if byte != 0 {
       push_bytes(binary, byte);

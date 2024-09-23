@@ -16,9 +16,7 @@ use crate::{
 use super::{ArrayType, BitFieldType, EnumType, RoutineType, ScopeType, StructType, UnionType};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub
-enum MemberName
-{
+pub enum MemberName {
   String(IString),
   Index(usize),
 }
@@ -45,9 +43,7 @@ impl Debug for MemberName {
 }
 
 #[derive(Clone)]
-pub
-enum VariableType
-{
+pub enum VariableType {
   InternalPointer { parent: VarId },
   Param { index: usize },
   Root,

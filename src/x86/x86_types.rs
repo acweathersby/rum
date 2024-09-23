@@ -5,9 +5,7 @@ use crate::{
 use std::collections::BTreeMap;
 
 #[derive(Debug, Hash, Clone, Copy)]
-pub(super)
-enum OpEncoding
-{
+pub(super) enum OpEncoding {
   Zero,
   VEX_MR,
   VEX_RM,
@@ -240,9 +238,7 @@ impl Reg {
 }
 
 #[derive(PartialEq, Debug, Hash)]
-pub(super)
-enum OperandType
-{
+pub(super) enum OperandType {
   REG,
   MEM,
   IMM_INT,
@@ -250,9 +246,7 @@ enum OperandType
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super)
-enum Arg
-{
+pub(super) enum Arg {
   Reg(Reg),
   Mem(Reg),
   RSP_REL(u64),

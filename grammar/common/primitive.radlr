@@ -3,11 +3,11 @@
   :ast { t_Label, id, tok }
 
 <> var > id  
-  
+
   :ast { t_Var, id, tok }
 
 <> id 
-  
+
   > tk:(  
           ( c:id | "_" ) ( c:id | "_" | c:num )(*) 
           | 
@@ -17,37 +17,35 @@
     :ast str($1)
 
 <> sci_num 
-   
+
    > tk:( c:num(+) ( "." ( c:num(+) )? )? ( ("e" | "E") "-"? c:num(*) )? )
 
 <> int 
-   
+
    > tk:( "-"? uint )
 
 <> uint 
-   
+
    > tk:( c:num(+) )
 
 <> true
-   
+
    > "true" 
 
 <> false
-   
+
    > "false"
 
 <> comment 
-  
+
   > line_comment | block_comment
 
-
 <> line_comment
-  
+
   > '/' "/" ( c:id | c:sp | c:sym | c:num )(*) c:nl
 
-
 <> block_comment
-  
+
   > '/' "*"  ( c:id | c:sp | c:sym | c:num | c:nl )(*) '*' "/"
 
 <> string 
@@ -55,7 +53,7 @@
   > tk:( "\"" ( c:id | c:num | c:nl | c:sym | c:sp | escaped )(*) "\"" )
 
 <> quote 
-  
+
   > tk:( "'" ( c:id | c:num | c:nl | c:sym | c:sp | escaped )(*) "'" )
 
 <> escaped 

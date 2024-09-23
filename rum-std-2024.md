@@ -3,7 +3,6 @@ term: exception - an error caused by a violation of a runtime invariant
 
 ## Errors:
 
-
 # STD 1103 - Illegal pointer arithmetic assignment:  
   - block override : #allow-ptr-arithmetic
 

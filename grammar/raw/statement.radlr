@@ -23,20 +23,17 @@ IMPORT ../common/comment as cmt
 
 +> expr::term > block_expression
 
-
 <> iterator_definition 
-  
+
   >  "iter" ( block_expression | match_expression )^expr
 
     :ast { t_IterReentrance, expr, tok }
 
-
 <> allocator_binding 
-  
+
   > anno::lifetime^binding_name "=>" prim::var^allocator_name "(" anno::lifetime?^parent_allocator ")"
 
     :ast { t_RawAllocatorBinding, binding_name, allocator_name, parent_allocator }
-
 
 <> assignment_statement 
 
@@ -48,7 +45,6 @@ IMPORT ../common/comment as cmt
 
     :ast { t_CallAssignment, vars, call_expression, tok  }
 
-
 <> assignment_var 
 
   > prim::var^var ":" ty::type
@@ -59,13 +55,11 @@ IMPORT ../common/comment as cmt
 
   | complex::pointer_cast_to_value
 
-
 <> break_statement 
 
   > "break" ("#" prim::var)?^label
 
     :ast { t_RawBreak, label, tok  }
-
 
 <> yield_statement 
 
@@ -73,20 +67,17 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawYield, expr, tok  }
 
-  
 <> return_statement
 
   > "ret" expr::expression^expression
 
     :ast { t_BlockExitExpressions, expression }
 
-
 <> loop_statement 
 
   > "loop" ("#" prim::var)?^label ( match_expression | block_expression | iter_statement)^scope
-    
-    :ast { t_RawLoop, label, scope, tok  }
 
+    :ast { t_RawLoop, label, scope, tok  }
 
 <> match_expression 
 
@@ -94,27 +85,23 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawMatch, expression, clauses, tok  }
 
-
 +> expr::term > match_expression
-
 
 <> match_clause 
 
   > match_condition block_expression
-    
+
     :ast { t_RawMatchClause, default: false, expr:$1, scope: $2 }
 
   | ( "or" | "else" | "otherwise" ) block_expression
 
     :ast { t_RawMatchClause, default: true, scope: $2 }
 
-
 <> match_condition
 
   > ( ">" | "<" | ">=" | "<=" | "==" | "!=" ) expr::r_val^expr
 
     :ast { t_RawExprMatch, op:str($1), expr: $2, tok  }
-
 
 <> iter_statement 
 

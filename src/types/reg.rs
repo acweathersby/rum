@@ -13,7 +13,7 @@ pub struct Reg(pub u32);
 
 impl Debug for Reg {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      Display::fmt(&self, f)
+    Display::fmt(&self, f)
   }
 }
 
@@ -47,7 +47,12 @@ impl Reg {
   const FLAG_OFFSET: u32 = 24;
 
   pub const fn new(unique_index: u8, real_index: u8, byte_size: u8, flags: u8) -> Reg {
-    Self((unique_index as u32) << Self::UNIQUE_INDEX_OFFSET | (real_index as u32) << Self::REAL_INDEX_OFFSET | (byte_size as u32) << Self::BYTE_SIZE_OFFSET | (flags as u32) << Self::FLAG_OFFSET)
+    Self(
+      (unique_index as u32) << Self::UNIQUE_INDEX_OFFSET
+        | (real_index as u32) << Self::REAL_INDEX_OFFSET
+        | (byte_size as u32) << Self::BYTE_SIZE_OFFSET
+        | (flags as u32) << Self::FLAG_OFFSET,
+    )
   }
 
   pub const fn is_valid(&self) -> bool {

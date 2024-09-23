@@ -22,11 +22,7 @@ pub struct InductionVar {
   pub init_expr: ArrayVec<12, InductionVal>,
 }
 
-pub fn process_expression(
-  op: GraphId,
-  ctx: &mut OptimizerContext,
-  i_ctx: &mut InductionCTX,
-) -> Option<ArrayVec<12, InductionVal>> {
+pub fn process_expression(op: GraphId, ctx: &mut OptimizerContext, i_ctx: &mut InductionCTX) -> Option<ArrayVec<12, InductionVal>> {
   let mut expr = ArrayVec::new();
   if process_expression_inner(op, ctx, &mut expr, i_ctx) {
     expr.reverse();
@@ -36,11 +32,7 @@ pub fn process_expression(
   }
 }
 
-fn is_induction_variable<'a>(
-  id: GraphId,
-  ctx: &mut OptimizerContext,
-  i_ctx: &'a mut InductionCTX,
-) -> bool {
+fn is_induction_variable<'a>(id: GraphId, ctx: &mut OptimizerContext, i_ctx: &'a mut InductionCTX) -> bool {
   if let IRGraphNode::PHI { operands, .. } = &ctx.graph[id.graph_id()] {
     let operands = operands.clone();
 
@@ -50,12 +42,7 @@ fn is_induction_variable<'a>(
         let mut phi_ids = ArrayVec::new();
         phi_ids.insert_ordered(id).unwrap();
 
-        let mut induction_var = InductionVar {
-          id,
-          inc_loc: GraphId::default(),
-          rate_expr: Default::default(),
-          init_expr: Default::default(),
-        };
+        let mut induction_var = InductionVar { id, inc_loc: GraphId::default(), rate_expr: Default::default(), init_expr: Default::default() };
 
         phi_ids.extend(operands.iter().cloned());
 
@@ -70,13 +57,7 @@ fn is_induction_variable<'a>(
           let block_id = node.block_id();
 
           if i_ctx.region_blocks.contains(&block_id) {
-            let invalid_inc = !process_induction_variable(
-              id,
-              ctx,
-              &mut induction_var.rate_expr,
-              &mut phi_ids,
-              false,
-            );
+            let invalid_inc = !process_induction_variable(id, ctx, &mut induction_var.rate_expr, &mut phi_ids, false);
 
             if have_inc || invalid_inc {
               return false;
@@ -85,13 +66,7 @@ fn is_induction_variable<'a>(
               induction_var.inc_loc = id;
             }
           } else {
-            let invalid_const = !process_induction_variable(
-              id,
-              ctx,
-              &mut induction_var.init_expr,
-              &mut phi_ids,
-              true,
-            );
+            let invalid_const = !process_induction_variable(id, ctx, &mut induction_var.init_expr, &mut phi_ids, true);
 
             if have_const || invalid_const {
               return false;
@@ -179,12 +154,7 @@ fn process_induction_variable<const SIZE: usize>(
   }
 }
 
-fn process_expression_inner(
-  id: GraphId,
-  ctx: &mut OptimizerContext,
-  expr: &mut ArrayVec<12, InductionVal>,
-  i_ctx: &mut InductionCTX,
-) -> bool {
+fn process_expression_inner(id: GraphId, ctx: &mut OptimizerContext, expr: &mut ArrayVec<12, InductionVal>, i_ctx: &mut InductionCTX) -> bool {
   match &ctx.graph[id.graph_id()] {
     IRGraphNode::Const { val: const_val, .. } => {
       expr.push(InductionVal::constant(const_val.to_f32().unwrap()));
@@ -304,9 +274,7 @@ impl Eq for InductionVal {}
 
 impl PartialEq for InductionVal {
   fn eq(&self, other: &Self) -> bool {
-    unsafe {
-      std::mem::transmute::<_, u128>(*self).cmp(&std::mem::transmute::<_, u128>(*other)).is_eq()
-    }
+    unsafe { std::mem::transmute::<_, u128>(*self).cmp(&std::mem::transmute::<_, u128>(*other)).is_eq() }
   }
 }
 
@@ -388,12 +356,7 @@ impl InductionVal {
   }
 }
 
-pub fn calculate_init(
-  mut stack: Vec<InductionVal>,
-  root_node: GraphId,
-  ctx: &mut OptimizerContext,
-  i_ctx: &InductionCTX,
-) -> Vec<InductionVal> {
+pub fn calculate_init(mut stack: Vec<InductionVal>, root_node: GraphId, ctx: &mut OptimizerContext, i_ctx: &InductionCTX) -> Vec<InductionVal> {
   let mut stack_counter = stack.len() as isize - 1;
 
   'outer: while stack_counter >= 0 {
@@ -453,12 +416,7 @@ pub fn calculate_init(
   stack
 }
 
-pub fn calculate_rate(
-  mut stack: Vec<InductionVal>,
-  root_node: GraphId,
-  ctx: &mut OptimizerContext,
-  i_ctx: &InductionCTX,
-) -> Vec<InductionVal> {
+pub fn calculate_rate(mut stack: Vec<InductionVal>, root_node: GraphId, ctx: &mut OptimizerContext, i_ctx: &InductionCTX) -> Vec<InductionVal> {
   let mut stack_counter = stack.len() as isize - 1;
   while stack_counter >= 0 {
     let i = stack_counter as usize;
@@ -540,9 +498,7 @@ pub fn generate_ssa(
         let ssa = GraphId::ssa(ctx.graph.len());
         ctx.graph.push(IRGraphNode::Const {
           id:  ssa,
-          val: ConstVal::new(IRPrimitiveType::Float | IRPrimitiveType::b32)
-            .store(left.0.constant)
-            .convert(ty),
+          val: ConstVal::new(IRPrimitiveType::Float | IRPrimitiveType::b32).store(left.0.constant).convert(ty),
         });
         id_stack.push(ssa);
       },

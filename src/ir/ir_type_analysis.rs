@@ -10,9 +10,7 @@ pub use radlr_rust_runtime::types::Token;
 use std::collections::VecDeque;
 use IROp::*;
 
-pub
-enum LifeTimeRuleset
-{
+pub enum LifeTimeRuleset {
   /// Pointers of this type can be assigned the NULL value. Access to these pointers must be challenged to
   /// ensure null access violations cannot occur.
   NULL = 0x001,
@@ -39,11 +37,7 @@ enum LifeTimeRuleset
   DSTR = 0x100,
 }
 
-pub fn resolve_struct_offset(
-  struct_name: IString,
-  type_scope: &mut TypeDatabase, /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */
-)
-{
+pub fn resolve_struct_offset(struct_name: IString, type_scope: &mut TypeDatabase /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */) {
   let Some((ty_ref, _)) = type_scope.get_type_mut(struct_name) else {
     panic!("Could not find Structured Memory type: {struct_name}",);
   };
@@ -71,11 +65,7 @@ pub fn resolve_struct_offset(
 }
 
 /// Reports errors in type resolution, and adds type conversion instruction where necessary
-pub fn resolve_routine(
-  routine_name: IString,
-  type_scope: &mut TypeDatabase, /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */
-)
-{
+pub fn resolve_routine(routine_name: IString, type_scope: &mut TypeDatabase /* lifetime_rules: HashMap<IString, LifeTimeRuleset> */) {
   // load the target routine
   let Some((ty_ref, _)) = type_scope.get_type_mut(routine_name) else {
     panic!("Could not find routine type: {routine_name}",);
@@ -381,18 +371,14 @@ pub fn resolve_routine(
 }
 
 #[derive(Debug, Clone, Copy)]
-enum TypeInferenceTask
-{
+enum TypeInferenceTask {
   ResolveVar(IRGraphId, VarId, RumType),
   ResolveGenericNodeTD(IRGraphId, usize, RumType),
   SetVarBU(IRGraphId, RumType, RumType),
   Propagate(IRGraphId, RumType),
 }
 
-fn resolve_generic_members(
-  rt: &mut RoutineType,
-)
-{
+fn resolve_generic_members(rt: &mut RoutineType) {
   // create a link matrix
 
   let node_depth = rt.body.graph.len();
@@ -642,7 +628,7 @@ fn resolve_generic_members(
   }
 }
 
-pub fn last_index_of(target_ty: IROp, node_id: usize, rt: &RoutineBody, forward: bool) -> usize{
+pub fn last_index_of(target_ty: IROp, node_id: usize, rt: &RoutineBody, forward: bool) -> usize {
   if forward {
     for node_id in (node_id..rt.graph.len()) {
       match &rt.graph[node_id] {

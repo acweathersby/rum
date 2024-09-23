@@ -2,7 +2,11 @@ use radlr_rust_runtime::types::TokenRange;
 
 use super::*;
 use crate::{
-  ir::{ir_block::{create_block_ordering, get_block_direct_predecessors, IRBlock}, ir_graph::{IRGraphNode, VarId}}, parser::script_parser::{RawRoutine, Token}
+  ir::{
+    ir_block::{create_block_ordering, get_block_direct_predecessors, IRBlock},
+    ir_graph::{IRGraphNode, VarId},
+  },
+  parser::script_parser::{RawRoutine, Token},
 };
 use std::{
   collections::VecDeque,
@@ -38,9 +42,7 @@ pub struct StructMemberType {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub
-enum CallConvention
-{
+pub enum CallConvention {
   Rum,
   C,
   System,
@@ -216,9 +218,7 @@ pub struct UnionType {
 }
 
 #[derive(Debug)]
-pub
-enum DiscriminantType
-{
+pub enum DiscriminantType {
   Inline { size: usize },
   External { size: usize },
 }

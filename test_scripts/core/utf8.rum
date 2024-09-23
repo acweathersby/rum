@@ -1,11 +1,8 @@
 Codepoint => [ #flat val:u32 = 0 ]
 
-
 scan_to_next_cp => ( stream: u8[], cursor: u32 ) : Codepoint?, next:  { 
 
   cp: Codepoint 
-
-  
 
   cp
 }
