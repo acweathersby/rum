@@ -1,14 +1,6 @@
-use crate::{
-  container::ArrayVec,
-  istring::*,
-  types::{ConstVal, RumType, Type, TypeRef, TypeVarContext, Variable},
-};
-use std::fmt::{Debug, Display, Write};
-
-use super::{
-  ir_block::BlockId,
-  ir_builder::{SMO, SMT},
-};
+use super::ir_block::BlockId;
+use crate::types::{ConstVal, RumType, TypeVarContext, Variable};
+use std::fmt::{Debug, Display};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(pub u32);
@@ -337,7 +329,11 @@ impl IRGraphId {
 
 impl Display for IRGraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("{:>3}'", self.0))
+    if self.is_invalid() {
+      f.write_fmt(format_args!("xxx "))
+    } else {
+      f.write_fmt(format_args!("{:>3} ", format!("`{}", self.0)))
+    }
   }
 }
 

@@ -7,6 +7,7 @@ use crate::{
 use std::fmt::Display;
 
 pub mod lower;
+pub mod type_solver;
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 enum RVSDGNodeType {
@@ -23,8 +24,8 @@ enum RVSDGNodeType {
 pub struct RVSDGNode {
   id:      usize,
   ty:      RVSDGNodeType,
-  inputs:  ArrayVec<4, RSDVGInput>,
-  outputs: ArrayVec<4, RSDVGInput>,
+  inputs:  ArrayVec<4, RSDVGBinding>,
+  outputs: ArrayVec<4, RSDVGBinding>,
   nodes:   Vec<RVSDGInternalNode>,
 }
 
@@ -64,16 +65,27 @@ impl Display for RVSDGNode {
 }
 
 #[derive(Clone, Copy, Default)]
-pub struct RSDVGInput {
-  //origin_node: usize,
+pub struct RSDVGBinding {
+  // Temporary identifier of the binding
   name:        IString,
+  /// The input node id of the binding
+  ///
+  /// if the binding is an input then this value corresponds to a node in the parent scope
+  ///
+  /// if the binding is an output then this value corresponds to a local node
   in_id:       IRGraphId,
+  /// The output node id of the binding
+  ///
+  /// if the binding is an input then this value corresponds to a local node
+  ///
+  /// if the binding is an output then this value corresponds to a node in the parent scope
   out_id:      IRGraphId,
+  /// The type of the binding. This must match the types of the in_id and out_id nodes
   ty:          RumType,
   input_index: u32,
 }
 
-impl Display for RSDVGInput {
+impl Display for RSDVGBinding {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_fmt(format_args!("{:>3} => {:<3} {:>3} [{}]", self.in_id, self.out_id, self.ty, self.name.to_string(),))
   }
@@ -97,7 +109,7 @@ impl Display for RVSDGInternalNode {
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
-      RVSDGInternalNode::Input { id, ty, input_index } => f.write_fmt(format_args!("[@{:03}] => {}:{} ", input_index, id, ty)),
+      RVSDGInternalNode::Input { id, ty, input_index } => f.write_fmt(format_args!("{}:=: {} ", id, ty)),
       RVSDGInternalNode::Output { id, ty, output_index } => f.write_fmt(format_args!("{}:{:5} => [@{:03}]", id, ty, output_index)),
     }
   }

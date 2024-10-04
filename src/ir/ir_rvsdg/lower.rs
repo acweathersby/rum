@@ -5,7 +5,7 @@ use crate::{
   parser::script_parser::*,
   types::TypeDatabase,
 };
-use std::{collections::VecDeque, default};
+use std::collections::VecDeque;
 
 pub fn lower_ast_to_rvsdg(fn_decl: &std::sync::Arc<RawRoutine<Token>>, mut ty_db: TypeDatabase) -> Box<RVSDGNode> {
   let routine_type_Value::RawFunctionType(fn_ty) = &fn_decl.ty else { panic!("") };
@@ -16,38 +16,23 @@ pub fn lower_ast_to_rvsdg(fn_decl: &std::sync::Arc<RawRoutine<Token>>, mut ty_db
   let mut fn_node = RVSDGNode::default();
   fn_node.ty = RVSDGNodeType::Function;
 
-  let mut node_id = 0;
+  node_stack.push_front((Box::new(fn_node), 0));
 
   for param in &fn_ty.params.params {
-    let mut input = RSDVGInput::default();
-    let ty = get_type(&param.ty.ty, &mut ty_db, false).unwrap();
-    let id = IRGraphId::new(node_id);
-    input.name = param.var.id.intern();
-    input.ty = ty;
-    input.out_id = id;
-    input.input_index = fn_node.inputs.len() as u32;
-
-    node_id += 1;
-
-    fn_node.inputs.push(input);
-
-    input.in_id = input.out_id;
-    input.out_id = IRGraphId::default();
-
-    fn_node.outputs.push(input);
-    fn_node.nodes.push(RVSDGInternalNode::Input { id, ty: input.ty, input_index: input.input_index as usize });
+    let ty = get_type(&param.ty.ty, &mut ty_db, false).unwrap_or_default();
+    let name = param.var.id.intern();
+    create_input_binding(node_stack.front_mut().unwrap(), name, ty, Default::default());
   }
 
   let expr = &fn_decl.expression.expr;
-  node_stack.push_front((Box::new(fn_node), node_id));
 
   let ret_val = process_expression(expr, &mut node_stack, &mut ty_db);
-  let (mut fn_node, mut node_id) = node_stack.pop_front().unwrap();
+  let (mut fn_node, _) = node_stack.pop_front().unwrap();
 
   if !ret_val.is_invalid() {
     let ret = &fn_ty.return_type;
-    let mut input = RSDVGInput::default();
-    let ty = get_type(&ret.ty, &mut ty_db, false).unwrap();
+    let mut input = RSDVGBinding::default();
+    let ty = get_type(&ret.ty, &mut ty_db, false).unwrap_or_default();
     input.name = "RET".intern();
     input.ty = ty;
     input.in_id = ret_val;
@@ -69,6 +54,39 @@ pub fn lower_ast_to_rvsdg(fn_decl: &std::sync::Arc<RawRoutine<Token>>, mut ty_db
   fn_node.outputs = new_outputs;
 
   fn_node
+}
+
+fn create_input_binding(node_data: &mut (Box<RVSDGNode>, usize), name: IString, ty: RumType, in_id: IRGraphId) -> IRGraphId {
+  let (node, node_id) = node_data;
+  let mut input_binding = RSDVGBinding::default();
+  let id = create_id(node_id);
+
+  input_binding.name = name;
+  input_binding.ty = ty;
+  input_binding.in_id = in_id;
+  input_binding.out_id = id;
+  input_binding.input_index = node.inputs.len() as u32;
+
+  node.inputs.push(input_binding);
+
+  let mut output_binding = input_binding;
+
+  output_binding.in_id = output_binding.out_id;
+
+  node.outputs.push(output_binding);
+  node.nodes.push(RVSDGInternalNode::Input { id, ty: output_binding.ty, input_index: output_binding.input_index as usize });
+
+  output_binding.in_id
+}
+
+fn create_var_binding(node_stack: &mut VecDeque<(Box<RVSDGNode>, usize)>, name: IString, in_id: IRGraphId, ty: RumType) {
+  let mut output_binding = RSDVGBinding::default();
+  output_binding.name = name;
+  output_binding.ty = ty;
+  output_binding.in_id = in_id;
+  output_binding.out_id = in_id;
+  output_binding.input_index = 0;
+  node_stack.front_mut().unwrap().0.outputs.push(output_binding);
 }
 
 fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> IRGraphId {
@@ -193,14 +211,14 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       let (node, _) = node_stack.front_mut().unwrap();
 
       for arg in args {
-        let mut input = RSDVGInput::default();
+        let mut input = RSDVGBinding::default();
         input.ty = Default::default();
         input.in_id = arg;
         input.input_index = node.inputs.len() as u32;
         node.inputs.push(input);
       }
 
-      let mut input = RSDVGInput::default();
+      let mut input = RSDVGBinding::default();
       input.name = "RET".intern();
       input.out_id = ret_id;
       node.outputs.push(input);
@@ -235,12 +253,9 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       let eval_id = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
-      let mut input = RSDVGInput::default();
-      input.name = "__match__expr__".intern();
-      input.in_id = eval_id;
-      input.out_id = Default::default();
-      input.input_index = 0;
-      node_stack.front_mut().unwrap().0.outputs.push(input);
+      let temp_binding_name = "__match__expr__".intern();
+
+      create_var_binding(node_stack, temp_binding_name, eval_id, Default::default());
 
       let mut merges = vec![];
 
@@ -267,7 +282,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
           };
 
           {
-            let eval_id = get_var("__match__expr__".intern(), node_stack).unwrap().in_id;
+            let eval_id = get_var(temp_binding_name, node_stack).unwrap().in_id;
             let (node, node_id) = node_stack.front_mut().unwrap();
             let id = IRGraphId::new(*node_id);
             *node_id += 1;
@@ -304,7 +319,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
         for child in children.iter() {
           for output in child.outputs.iter() {
-            if output.in_id != child.inputs[output.input_index as usize].out_id {
+            if output.in_id != output.out_id {
               changed_vars.push_unique(output.name).expect("");
             } else {
               unchanged_vars.push_unique(output.name).expect("");
@@ -313,6 +328,8 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         }
 
         for var_name in changed_vars.iter().cloned() {
+          let mut resolved = false;
+
           for (_, par_out) in outputs.iter_mut().enumerate() {
             if par_out.name == var_name {
               let id = create_id(node_id);
@@ -325,6 +342,19 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
                     output.out_id = id;
                     break;
                   }
+                }
+              }
+              resolved = true;
+              break;
+            }
+          }
+
+          if !resolved {
+            for child in children.iter_mut() {
+              for output in child.outputs.iter_mut() {
+                if output.name == var_name {
+                  output.out_id = Default::default();
+                  break;
                 }
               }
             }
@@ -373,13 +403,12 @@ fn pop_and_merge_single_node(node_stack: &mut VecDeque<(Box<RVSDGNode>, usize)>)
   let mut pending_nodes = vec![];
 
   for output in child.outputs.iter_mut() {
+    let mut resolved = false;
+
     for (_, par_out) in outputs.iter_mut().enumerate() {
       if par_out.name == output.name {
-        let starting_id = child.inputs[output.input_index as usize].out_id;
-        let par_starting_id = inputs[par_out.input_index as usize].out_id;
-
-        let internal_id_has_changed = starting_id != output.in_id;
-        let parent_id_hash_changed = par_starting_id != par_out.in_id;
+        let internal_id_has_changed = output.out_id != output.in_id;
+        let parent_id_hash_changed = par_out.out_id != par_out.in_id;
 
         if internal_id_has_changed && !parent_id_hash_changed {
           let id = create_id(node_id);
@@ -389,7 +418,15 @@ fn pop_and_merge_single_node(node_stack: &mut VecDeque<(Box<RVSDGNode>, usize)>)
         } else {
           output.out_id = par_out.in_id;
         }
+
+        resolved = true;
+
+        break;
       }
+    }
+
+    if !resolved {
+      output.out_id = Default::default()
     }
   }
 
@@ -430,17 +467,10 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
 
   match var {
     assignment_var_Value::RawAssignmentDeclaration(decl) => {
-      let (node, node_id) = node_stack.front_mut().unwrap();
-
       let root_name = decl.var.id.intern();
       let ty = get_type(&decl.ty, ty_db, false).unwrap();
 
-      let mut input = RSDVGInput::default();
-      input.name = root_name;
-      input.ty = ty;
-      input.in_id = graph_id;
-      input.out_id = Default::default();
-      node.outputs.push(input);
+      create_var_binding(node_stack, root_name, graph_id, ty);
     }
     assignment_var_Value::MemberCompositeAccess(mem) => {
       let root_name = mem.root.name.id.intern();
@@ -449,13 +479,7 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
         output.in_id = graph_id;
         return;
       } else {
-        let (node, node_id) = node_stack.front_mut().unwrap();
-        let mut input = RSDVGInput::default();
-        input.name = root_name;
-        input.ty = Default::default();
-        input.in_id = graph_id;
-        input.out_id = Default::default();
-        node.outputs.push(input);
+        create_var_binding(node_stack, root_name, graph_id, Default::default());
       }
     }
     _ => todo!(),
@@ -475,7 +499,7 @@ fn pop_node(node_stack: &mut VecDeque<(Box<RVSDGNode>, usize)>) -> usize {
   front_nodes.len() - 1
 }
 
-fn get_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Option<&'a mut RSDVGInput> {
+fn get_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Option<&'a mut RSDVGBinding> {
   let mut found_in_index = -1;
   let mut id = IRGraphId::default();
   let mut ty = RumType::Undefined;
@@ -502,27 +526,11 @@ fn get_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Opti
     return None;
   } else {
     for curr_index in (0..found_in_index).rev() {
-      let (par, var_id) = unsafe { &mut *stack }.get_mut(curr_index as usize).unwrap();
+      let par_data = unsafe { &mut *stack }.get_mut(curr_index as usize).unwrap();
 
-      let mut input = RSDVGInput::default();
-      input.name = var_name;
-      input.ty = ty;
-      input.in_id = id;
-      input.out_id = IRGraphId::new(*var_id);
-      input.input_index = par.inputs.len() as u32;
+      id = create_input_binding(par_data, var_name, ty, id);
 
-      *var_id += 1;
-
-      par.inputs.push(input);
-
-      let mut output = input;
-
-      output.in_id = output.out_id;
-      output.out_id = IRGraphId::default();
-
-      id = output.in_id;
-
-      par.outputs.push(output);
+      let (par, _) = par_data;
 
       if curr_index == 0 {
         let index = par.outputs.len() - 1;

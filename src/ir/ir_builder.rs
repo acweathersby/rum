@@ -5,7 +5,7 @@ use super::{
 use crate::{
   ir::ir_graph::{IRGraphNode, IROp},
   istring::*,
-  types::{ConstVal, MemberName, RoutineBody, RumType, TypeRef, Variable},
+  types::{ConstVal, MemberName, RoutineBody, RumType, Variable},
 };
 pub use radlr_rust_runtime::types::Token;
 use std::fmt::Debug;
