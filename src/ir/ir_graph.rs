@@ -223,6 +223,8 @@ pub enum IROp {
   /// Declares a constant and its type
   CONST_DECL,
 
+  REF,
+
   // Arithmetic & Logic functions - MATH
   ADD,
   SUB,

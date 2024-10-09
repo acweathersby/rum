@@ -1,6 +1,6 @@
 use crate::{
   ir::ir_rvsdg::{lower, type_solver},
-  parser::script_parser::*,
+  istring::CachedString,
   types::TypeDatabase,
 };
 
@@ -36,13 +36,9 @@ fn test() {
 
   // dbg!(parsed);
 
-  let func = &parsed.members.members[0];
+  let mut module = lower::lower_ast_to_rvsdg(parsed, ty_db);
 
-  let module_members_group_Value::AnnotatedModMember(func) = &func else { panic!("") };
-
-  let module_member_Value::RawRoutine(fn_decl) = &func.member else { panic!("") };
-
-  let fn_node = lower::lower_ast_to_rvsdg(fn_decl, ty_db);
+  let Some(fn_node) = module.functs.get_mut(&"add_two_numbers".to_token()) else { panic!("Function does not exists for some reason!") };
 
   println!("{:#}", fn_node);
 }
@@ -50,8 +46,10 @@ fn test() {
 #[test]
 fn test_simple_type_solve_with_binary_expression() {
   const BUILD_UP_TEST_STRING: &'static str = "
-  add_two_numbers (l: T?, r: T?, j: u32) => u64 {
-    l + j
+  add_two_numbers (l: u8, d: u32) => T {
+    l + d.test
+    d.test = 2 + d.test + d.var
+    d.test
   }
   ";
 
@@ -59,17 +57,53 @@ fn test_simple_type_solve_with_binary_expression() {
 
   let parsed = &crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).expect("Parsing Failed");
 
-  let func = &parsed.members.members[0];
+  let mut module = lower::lower_ast_to_rvsdg(parsed, ty_db);
 
-  let module_members_group_Value::AnnotatedModMember(func) = &func else { panic!("") };
+  println!("{:#?}", &module);
 
-  let module_member_Value::RawRoutine(fn_decl) = &func.member else { panic!("") };
+  let Some(fn_node) = module.functs.get_mut(&"add_two_numbers".to_token()) else { panic!("Function does not exists for some reason!") };
 
-  let mut fn_node = lower::lower_ast_to_rvsdg(fn_decl, ty_db);
+  let constraints = type_solver::solve(fn_node);
 
-  println!("{:#}", &fn_node);
+  dbg!(&constraints);
 
-  let ty_expr = type_solver::solve(&mut fn_node);
+  assert!(constraints.is_ok(), "Expression type should be solved for this node \n {:?}", constraints);
+  assert!(constraints.unwrap().is_some(), "Expression type should be solved for this node");
+}
 
-  assert!(ty_expr.is_some(), "Expression type should be solved for this node");
+#[test]
+fn test_struct_lowered_to_rvsg() {
+  const BUILD_UP_TEST_STRING: &'static str = "
+  
+  string => [
+    len: u32, 
+    data: *u8
+  ]
+
+  bindingname => [
+    test: undef, 
+    b: u32, 
+  ]
+
+  b () => bindingname {
+    :[ test = 2, b = 22 ]
+  }
+
+  ";
+
+  let ty_db = TypeDatabase::new();
+
+  let parsed = &crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).expect("Parsing Failed");
+
+  let mut module = lower::lower_ast_to_rvsdg(parsed, ty_db);
+
+  println!("{:#?}", &module);
+
+  let Some(fn_node) = module.structs.get_mut(&"bindingname".to_token()) else { panic!("Function does not exists for some reason!") };
+
+  let constraints = type_solver::solve(fn_node);
+
+  dbg!(&constraints);
+
+  assert!(constraints.is_ok(), "Expression type should be solved for this node");
 }
