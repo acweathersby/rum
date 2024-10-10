@@ -1,9 +1,12 @@
 #![allow(non_upper_case_globals)]
 
-use radlr_rust_runtime::types::BlameColor;
-
 use super::{RVSDGInternalNode, RVSDGNode};
-use crate::{container::ArrayVec, ir::ir_graph::IROp, istring::IString, types::RumType};
+use crate::{
+  container::ArrayVec,
+  ir::{ir_graph::IROp, ir_rvsdg::type_check::primitive_check},
+  istring::IString,
+  types::RumType,
+};
 use std::{
   cmp::Ordering,
   fmt::{Debug, Display},
@@ -39,8 +42,6 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   // If we are able to get back to the root without any errors then we have "solved" the type.
 
   // Apply types to the node and return the top level type expression
-
-  create_type_vars();
 
   // get types for ports
   let num_of_nodes = node.nodes.len();
@@ -239,16 +240,11 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   for (id, var) in ty_vars.iter().enumerate() {
     let ty = var.var.ty;
     if var.var.id as usize == id && !{ ty.is_undefined() || ty.is_generic() } {
-      dbg!(var);
-      if var.var.constraints.len() > 0 {
-        if var.has(VarConstraint::Member) {
-          let mut constraint_errors = String::new();
-          for (id, constraint) in &var.annotations {
-            if *constraint == VarConstraint::Member && *id != u32::MAX {
-              constraint_errors += &(format!("{}", tokens[*id as usize].blame(1, 1, "constrained to have member", BlameColor::RED)));
-            }
-          }
-          errors.push(format!("{ty} does not have members:\n{constraint_errors}"));
+      if var.var.ty.is_primitive() {
+        let new_errors = primitive_check(var.var.ty, var, tokens);
+
+        if !new_errors.is_empty() {
+          errors.extend(new_errors.to_vec());
         }
       }
     }
@@ -325,17 +321,6 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   }
 }
 
-fn create_type_vars() {
-  let mut u8_type_var = AnnotatedTypeVar::new(0);
-  u8_type_var.var.ty = RumType::u8;
-  u8_type_var.add(VarConstraint::ByteSize(1), u32::MAX);
-  u8_type_var.add(VarConstraint::BitSize(8), u32::MAX);
-  u8_type_var.add(VarConstraint::Unsigned, u32::MAX);
-  u8_type_var.add(VarConstraint::Numeric, u32::MAX);
-
-  dbg!(u8_type_var);
-}
-
 fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVec<3, OPConstraints> {
   let i = index as u32;
   match &nodes[index as usize] {
@@ -408,8 +393,8 @@ fn create_var_id(ty_vars: &mut Vec<AnnotatedTypeVar>) -> i32 {
 
 #[derive(Default, Debug)]
 pub struct AnnotatedTypeVar {
-  var:         TypeVar,
-  annotations: Vec<(u32, VarConstraint)>,
+  pub var:         TypeVar,
+  pub annotations: Vec<(u32, VarConstraint)>,
 }
 
 impl AnnotatedTypeVar {
@@ -456,10 +441,10 @@ impl AnnotatedTypeVar {
 
 #[derive(Clone, Default)]
 pub struct TypeVar {
-  id:          u32,
-  ty:          RumType,
-  constraints: ArrayVec<4, VarConstraint>,
-  members:     ArrayVec<3, (IString, RumType)>,
+  pub id:          u32,
+  pub ty:          RumType,
+  pub constraints: ArrayVec<4, VarConstraint>,
+  pub members:     ArrayVec<3, (IString, RumType)>,
 }
 
 impl Debug for TypeVar {

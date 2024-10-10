@@ -253,7 +253,10 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
   /// the process.
   pub fn to_vec(mut self) -> Vec<T> {
     if self.data_is_vectorized() {
-      unsafe { ManuallyDrop::take(&mut self.inner.vec) }
+      let vec = unsafe { ManuallyDrop::take(&mut self.inner.vec) };
+      self.flags &= !VECTORIZED_MASK;
+      self.inner.array.0 = 0;
+      vec
     } else {
       let (len, array) = unsafe { &mut self.inner.array };
       let mut vec = Vec::<T>::with_capacity(*len);

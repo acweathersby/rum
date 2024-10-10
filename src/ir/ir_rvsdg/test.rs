@@ -46,7 +46,7 @@ fn test() {
 #[test]
 fn test_simple_type_solve_with_binary_expression() {
   const BUILD_UP_TEST_STRING: &'static str = "
-  add_two_numbers (l: u8, d: u32) => T {
+  add_two_numbers (l: u8, d: T) => T {
     l + d.test
     d.test = 2 + d.test + d.var
     d.test
