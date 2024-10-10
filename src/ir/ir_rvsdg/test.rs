@@ -1,5 +1,5 @@
 use crate::{
-  ir::ir_rvsdg::{lower, type_solver},
+  ir::ir_rvsdg::{lower, type_solve},
   istring::CachedString,
   types::TypeDatabase,
 };
@@ -63,7 +63,7 @@ fn test_simple_type_solve_with_binary_expression() {
 
   let Some(fn_node) = module.functs.get_mut(&"add_two_numbers".to_token()) else { panic!("Function does not exists for some reason!") };
 
-  let constraints = type_solver::solve(fn_node);
+  let constraints = type_solve::solve(fn_node);
 
   dbg!(&constraints);
 
@@ -101,7 +101,7 @@ fn test_struct_lowered_to_rvsg() {
 
   let Some(fn_node) = module.structs.get_mut(&"bindingname".to_token()) else { panic!("Function does not exists for some reason!") };
 
-  let constraints = type_solver::solve(fn_node);
+  let constraints = type_solve::solve(fn_node);
 
   dbg!(&constraints);
 

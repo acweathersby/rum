@@ -9,7 +9,8 @@ use crate::{
 use std::fmt::{Debug, Display};
 
 pub mod lower;
-pub mod type_solver;
+pub mod type_check;
+pub mod type_solve;
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 enum RVSDGNodeType {
