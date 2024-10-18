@@ -48,18 +48,18 @@ pub fn parse_raw(input: &str) -> Result<Arc<RawRoutine<Token>>, String> {
   }
 }
 
-pub fn parse_raw_expr(input: &str) -> Result<bitwise_Value<Token>, String> {
+pub fn parse_raw_call(input: &str) -> Result<Arc<RawCall<Token>>, String> {
   let parser_db = parser::ParserDB::new();
   match parser_db.build_ast(
     &mut StringInput::from(input),
-    parser_db.get_entry_data_from_name("raw_expression").unwrap(),
+    parser_db.get_entry_data_from_name("raw_call").unwrap(),
     ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
   ) {
     Err(err) => {
       println!("{err:?}");
       Err("Failed to parse input".to_string())
     }
-    Ok(node) => Ok(node.into_bitwise_Value().unwrap()),
+    Ok(node) => Ok(node.into_RawCall().unwrap()),
   }
 }
 

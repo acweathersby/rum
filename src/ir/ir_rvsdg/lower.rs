@@ -1,6 +1,9 @@
 type WIPNode = Builder;
 use crate::{
-  ir::{ir_graph::IRGraphId, ir_rvsdg::*},
+  ir::{
+    ir_graph::{IRGraphId, IRGraphNode},
+    ir_rvsdg::*,
+  },
   istring::CachedString,
   parser::script_parser::*,
   types::TypeDatabase,
@@ -17,11 +20,17 @@ struct Builder {
   node:         Box<RVSDGNode>,
   node_id:      usize,
   label_lookup: HashMap<IString, IRGraphId>,
+  val_lookup:   HashMap<ConstVal, IRGraphId>,
 }
 
 impl Builder {
   pub fn new() -> Self {
-    Builder { node: Default::default(), node_id: Default::default(), label_lookup: Default::default() }
+    Builder {
+      node:         Default::default(),
+      node_id:      Default::default(),
+      label_lookup: Default::default(),
+      val_lookup:   Default::default(),
+    }
   }
 
   fn create_id(node_id: &mut usize) -> IRGraphId {
@@ -63,14 +72,15 @@ impl Builder {
   }
 
   pub fn add_const(&mut self, const_val: ConstVal, tok: &Token) -> IRGraphId {
+    let const_id = self.get_const(const_val);
     let id = Self::create_id(&mut self.node_id);
-    self.node.nodes.push(RVSDGInternalNode::Const(id.0, const_val));
+    self.node.nodes.push(RVSDGInternalNode::Simple { id, op: IROp::CONST_DECL, operands: [const_id, Default::default()], ty: Default::default() });
     self.node.source_tokens.push(tok.clone());
     id
   }
 
   pub fn get_label(&mut self, name: IString) -> IRGraphId {
-    let Self { label_lookup, node_id, node } = self;
+    let Self { label_lookup, node_id, node, .. } = self;
     match label_lookup.entry(name) {
       std::collections::hash_map::Entry::Occupied(v) => *v.get(),
       std::collections::hash_map::Entry::Vacant(val) => {
@@ -81,25 +91,57 @@ impl Builder {
       }
     }
   }
+
+  pub fn get_const(&mut self, const_val: ConstVal) -> IRGraphId {
+    let Self { val_lookup, node_id, node, .. } = self;
+    match val_lookup.entry(const_val) {
+      std::collections::hash_map::Entry::Occupied(v) => *v.get(),
+      std::collections::hash_map::Entry::Vacant(val) => {
+        let id = Self::create_id(node_id);
+        node.nodes.push(RVSDGInternalNode::Const(id.0, const_val));
+        node.source_tokens.push(Default::default());
+        *val.insert(id)
+      }
+    }
+  }
 }
 
-pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, mut ty_db: TypeDatabase) -> RumIRModule {
+pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
   let members = &module.members;
 
   let mut module = RumIRModule { functs: Default::default(), structs: Default::default() };
+
+  let mut build_module = Builder::new();
+
+  build_module.node.id = "Module".intern();
 
   for mem in &members.members {
     match mem {
       module_members_group_Value::AnnotatedModMember(annotation) => match &annotation.member {
         module_member_Value::RawBoundType(bound_type) => match &bound_type.ty {
           type_Value::Type_Struct(strct) => {
+            let name = bound_type.name.id.intern();
             let funct: Box<RVSDGNode> = lower_struct_to_rsvdg(bound_type.name.id.intern(), strct);
+
+            let struct_id = Builder::create_id(&mut build_module.node_id);
+            build_module.node.nodes.push(RVSDGInternalNode::Complex(funct.clone()));
+            build_module.node.source_tokens.push(strct.tok.clone());
+            build_module.add_output(RSDVGBinding { name, in_id: struct_id, out_id: Default::default(), ty: Default::default(), input_index: 0 });
+
             module.structs.insert(funct.id, funct);
           }
           _ => unreachable!(),
         },
         module_member_Value::RawRoutine(rt) => {
           let funct = lower_fn_to_rsvdg(rt);
+
+          let name = funct.id;
+
+          let funct_id = Builder::create_id(&mut build_module.node_id);
+          build_module.node.nodes.push(RVSDGInternalNode::Complex(funct.clone()));
+          build_module.node.source_tokens.push(Default::default());
+          build_module.add_output(RSDVGBinding { name, in_id: funct_id, out_id: Default::default(), ty: Default::default(), input_index: 0 });
+
           module.functs.insert(funct.id, funct);
         }
         module_member_Value::RawScope(scope) => {}
@@ -111,7 +153,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, mut ty_db: 
     }
   }
 
-  module
+  build_module.node
 }
 
 fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>) -> Box<RVSDGNode> {
@@ -244,7 +286,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       VarLookup::Mem(output) => output,
       VarLookup::Var(var) => var.in_id,
       VarLookup::None => {
-        todo!("report error on lookup of {}", mem.tok.blame(1, 1, "", None))
+        todo!("report error on lookup of \n{}", mem.tok.blame(0, 0, "", None))
       }
     },
 
@@ -448,8 +490,8 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         let builder = node_stack.front_mut().unwrap();
 
         let pending_nodes = {
-          let Builder { node, node_id, label_lookup } = builder;
-          let RVSDGNode { id, ty, inputs, outputs, nodes, .. } = node.as_mut();
+          let Builder { node, node_id, .. } = builder;
+          let RVSDGNode { outputs, nodes, .. } = node.as_mut();
 
           let mut children = nodes
             .iter_mut()
@@ -538,7 +580,24 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       Default::default()
     }
-    _ => todo!(),
+    expression_Value::RawAggregateInstantiation(agg) => {
+      let builder = node_stack.front_mut().unwrap();
+      let agg_id = builder.add_simple(IROp::AGG_DECL, [Default::default(), Default::default()], Default::default(), &agg.tok);
+
+      for init in &agg.inits {
+        let expr_id = process_expression(&init.expression.expr, node_stack);
+
+        let builder = node_stack.front_mut().unwrap();
+
+        let label_id = builder.get_label(init.name.id.intern());
+        let ref_id = builder.add_simple(IROp::REF, [agg_id, label_id], Default::default(), &init.name.tok);
+
+        builder.add_simple(IROp::ASSIGN, [ref_id, expr_id], Default::default(), &init.name.tok);
+      }
+
+      agg_id
+    }
+    node => todo!("{node:#?}"),
   }
 }
 

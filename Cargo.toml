@@ -5,6 +5,11 @@ edition = "2021"
 
 build = "./grammar/build.rs"
 
+
+[[bin]]
+name = "rum"
+path = "./src/bin.rs"
+
 [lib]
 path = "./src/lib.rs"
 

@@ -13,7 +13,7 @@ pub mod type_check;
 pub mod type_solve;
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
-enum RVSDGNodeType {
+pub enum RVSDGNodeType {
   #[default]
   Undefined,
   Function,
@@ -23,16 +23,17 @@ enum RVSDGNodeType {
   Call,
   Struct,
   Array,
+  Module,
 }
 
 #[derive(Default, Clone, Debug)]
 pub struct RVSDGNode {
-  id:            IString,
-  ty:            RVSDGNodeType,
-  inputs:        ArrayVec<4, RSDVGBinding>,
-  outputs:       ArrayVec<4, RSDVGBinding>,
-  nodes:         Vec<RVSDGInternalNode>,
-  source_tokens: Vec<Token>,
+  pub id:            IString,
+  pub ty:            RVSDGNodeType,
+  pub inputs:        ArrayVec<4, RSDVGBinding>,
+  pub outputs:       ArrayVec<4, RSDVGBinding>,
+  pub nodes:         Vec<RVSDGInternalNode>,
+  pub source_tokens: Vec<Token>,
 }
 
 impl Display for RVSDGNode {
@@ -73,22 +74,22 @@ impl Display for RVSDGNode {
 #[derive(Clone, Copy, Default)]
 pub struct RSDVGBinding {
   // Temporary identifier of the binding
-  name:        IString,
+  pub name:        IString,
   /// The input node id of the binding
   ///
   /// if the binding is an input then this value corresponds to a node in the parent scope
   ///
   /// if the binding is an output then this value corresponds to a local node
-  in_id:       IRGraphId,
+  pub in_id:       IRGraphId,
   /// The output node id of the binding
   ///
   /// if the binding is an input then this value corresponds to a local node
   ///
   /// if the binding is an output then this value corresponds to a node in the parent scope
-  out_id:      IRGraphId,
+  pub out_id:      IRGraphId,
   /// The type of the binding. This must match the types of the in_id and out_id nodes
-  ty:          RumType,
-  input_index: u32,
+  pub ty:          RumType,
+  pub input_index: u32,
 }
 
 impl Debug for RSDVGBinding {
@@ -122,7 +123,7 @@ impl Debug for RVSDGInternalNode {
 impl Display for RVSDGInternalNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      RVSDGInternalNode::Label(id, name) => f.write_fmt(format_args!("{}LBL({:#})", id, name)),
+      RVSDGInternalNode::Label(id, name) => f.write_fmt(format_args!("{}: \"{:#}\"", id, name)),
       RVSDGInternalNode::Complex(complex) => f.write_fmt(format_args!("{:#}", complex)),
       RVSDGInternalNode::Const(id, r#const) => f.write_fmt(format_args!("{id:3} : {}", r#const)),
       RVSDGInternalNode::Simple { id, op, operands, ty } => f.write_fmt(format_args!(
@@ -131,7 +132,7 @@ impl Display for RVSDGInternalNode {
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
-      RVSDGInternalNode::Input { id, ty, input_index } => f.write_fmt(format_args!("{}:=: {} ", id, ty)),
+      RVSDGInternalNode::Input { id, ty, .. } => f.write_fmt(format_args!("{}:=: {} ", id, ty)),
       RVSDGInternalNode::Output { id, ty, output_index } => f.write_fmt(format_args!("{}:{:5} => [@{:03}]", id, ty, output_index)),
     }
   }

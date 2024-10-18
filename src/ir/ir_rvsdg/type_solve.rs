@@ -9,6 +9,7 @@ use crate::{
 };
 use std::{
   cmp::Ordering,
+  collections::VecDeque,
   fmt::{Debug, Display},
   u32,
 };
@@ -16,6 +17,12 @@ use std::{
 #[derive(Debug)]
 pub struct NodeConstraints {
   vars: Vec<TypeVar>,
+}
+
+enum NodeConstraint {
+  TypeVar(TypeVar),
+  ConstType(u32, RumType),
+  Conversion(u32, u32),
 }
 
 pub struct TypeErrors {
@@ -47,9 +54,8 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   let num_of_nodes = node.nodes.len();
   let mut errors = ArrayVec::<32, String>::new();
   let mut type_maps = Vec::with_capacity(num_of_nodes);
-  let mut ty_vars = Vec::with_capacity(num_of_nodes);
+  let mut ty_vars: Vec<AnnotatedTypeVar> = Vec::with_capacity(num_of_nodes);
   let mut op_constraints = Vec::with_capacity(num_of_nodes);
-  let mut var_constraints = Vec::with_capacity(num_of_nodes);
 
   let nodes = &mut node.nodes;
   let inputs = &mut node.inputs;
@@ -57,18 +63,20 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   let tokens = &node.source_tokens;
 
   for i in 0..num_of_nodes {
-    let mut cstr = get_ssa_constraints(i, nodes);
+    for constraint in get_ssa_constraints(i, nodes).iter() {
+      op_constraints.push(*constraint);
+    }
+
     if let Some(ty) = get_ssa_ty(i, nodes).cloned() {
       if !ty.is_undefined() {
-        cstr.push(OPConstraints::OpToTy(i as u32, ty));
+        op_constraints.push(OPConstraints::OpToTy(i as u32, ty));
       }
     }
 
     type_maps.push((i as u32, -1 as i32));
-    op_constraints.push(cstr);
   }
 
-  let mut return_constraints = ArrayVec::new();
+  let mut return_constraints: ArrayVec<32, OPConstraints> = ArrayVec::new();
   for output in outputs.iter_mut() {
     if !output.ty.is_undefined() {
       return_constraints.push(OPConstraints::OpToTy(output.in_id.0, output.ty));
@@ -77,161 +85,156 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
     }
   }
 
-  op_constraints.push(return_constraints);
+  op_constraints.extend(return_constraints.iter().cloned());
+
+  op_constraints.sort();
+
+  dbg!(&op_constraints);
+
+  // Unify type constraints on the way back up.
+  let mut queue = VecDeque::from_iter(op_constraints.iter().cloned());
 
   // Unify type constraints on the way back up.
 
-  for constraint in op_constraints.into_iter().rev() {
-    const ty: RumType = RumType::Undefined;
-    for constraint in constraint.iter() {
-      match constraint {
-        OPConstraints::OpToOp(op1, op2, i) => {
-          let var_a = type_maps[*op1 as usize].1;
-          let var_b = type_maps[*op2 as usize].1;
-          let has_left_var = var_a >= 0;
-          let has_right_var = var_b >= 0;
-
-          if has_left_var && has_right_var {
-            var_constraints.push(OPConstraints::VarToVar(var_a as u32, var_b as u32, *i as u32));
-          } else if has_left_var {
-            type_maps[*op2 as usize].1 = type_maps[*op1 as usize].1
-          } else if has_right_var {
-            type_maps[*op1 as usize].1 = type_maps[*op2 as usize].1
-          } else {
-            let var_id = create_var_id(&mut ty_vars);
-            let var = var_id as i32;
-            type_maps[*op1 as usize].1 = var;
-            type_maps[*op2 as usize].1 = var;
-          }
-        }
-        OPConstraints::Num(op) => {
-          let mut var_a = type_maps[*op as usize].1;
-          let has_left_var = var_a >= 0;
-          if !has_left_var {
-            let var_id = create_var_id(&mut ty_vars);
-            type_maps[*op as usize].1 = var_id as i32;
-            var_a = var_id as i32;
-          }
-
-          ty_vars[var_a as usize].add(VarConstraint::Numeric, *op);
-        }
-
-        OPConstraints::OpToTy(op, op_ty) => {
-          let var_a = get_var_id(&mut type_maps, op, &mut ty_vars);
-          var_constraints.push(OPConstraints::VarToTy(var_a as u32, *op_ty));
-        }
-        OPConstraints::CallArg(call_op, cal_arg_pos, input_op) => {
-          let var_a = type_maps[*input_op as usize].1;
-          let has_left_var = var_a >= 0;
-          if !has_left_var {
-            let var_id = create_var_id(&mut ty_vars);
-            type_maps[*input_op as usize].1 = var_id as i32;
-          }
-        }
-
-        OPConstraints::Member(par_op, mem_op_index, name) => {
-          let mem_var = get_var_id(&mut type_maps, mem_op_index, &mut ty_vars);
-          let par_var = get_var_id(&mut type_maps, par_op, &mut ty_vars);
-
-          if let Some(id) = ty_vars[par_var as usize].get_mem(*name).and_then(|v| v.generic_id()) {
-            debug_assert!(ty.is_generic());
-            var_constraints.push(OPConstraints::VarToVar(id as u32, mem_var as u32, *mem_op_index as u32));
-          } else {
-            ty_vars[par_var as usize].add_mem(*name, RumType::Undefined.to_generic_id(mem_var as usize), *mem_op_index);
-            var_constraints.push(OPConstraints::Member(par_var as u32, mem_var as u32, *name));
-          };
-        }
-        _ => {}
-      }
-    }
-  }
-
-  fn get_var_id(type_maps: &mut [(u32, i32)], par_op: &u32, ty_vars: &mut Vec<AnnotatedTypeVar>) -> i32 {
-    let var_a = type_maps[*par_op as usize].1;
-    let has_par_var = var_a >= 0;
-
-    if !has_par_var {
-      let id = create_var_id(ty_vars);
-      type_maps[*par_op as usize].1 = id as i32;
-      id
-    } else {
-      var_a
-    }
-  }
-
-  // Handle Type Var Constraints
-  var_constraints.sort();
-  println!("NEW: {var_constraints:#?} {ty_vars:#?}");
-
-  for constraint in var_constraints {
+  while let Some(constraint) = queue.pop_front() {
+    const def_ty: RumType = RumType::Undefined;
     match constraint {
-      OPConstraints::VarToTy(var_id, ty) => {
-        let var_id = ty_vars[var_id as usize].var.id as usize;
-        let var = &mut ty_vars[var_id as usize];
+      OPConstraints::OpToTy(op, op_ty) => {
+        let var_a = get_or_create_var_id(&mut type_maps, &op, &mut ty_vars);
+        let var = &mut ty_vars[var_a as usize];
 
         if !var.var.ty.is_undefined() {
-          todo!("resolve {var:?} == {ty:?}")
+          todo!("resolve {var:?} == {def_ty:?}")
         } else {
-          var.var.ty = ty;
+          var.var.ty = op_ty;
         }
       }
-      OPConstraints::VarToVar(var_a_id, var_b_id, origin) => {
-        let var_a_id: usize = ty_vars[var_a_id as usize].var.id as usize;
-        let var_b_id = ty_vars[var_b_id as usize].var.id as usize;
-
-        if var_a_id == var_b_id {
-          continue;
-        }
-
-        let ty_vars_ptr = ty_vars.as_mut_ptr();
-
-        let var_a = unsafe { &mut (*ty_vars_ptr.offset(var_a_id as isize)) };
-        let var_b = unsafe { &mut (*ty_vars_ptr.offset(var_b_id as isize)) };
-
-        const numeric: VarConstraint = VarConstraint::Numeric;
-
-        let (prime, other) = if var_a.var.id < var_b.var.id { (var_a, var_b) } else { (var_b, var_a) };
-
-        let less = prime.var.id.min(other.var.id);
-        prime.var.id = less;
-        other.var.id = less;
-
-        if other.has(numeric) {
-          prime.add(numeric, u32::MAX);
-        }
-
-        let prime_ty = prime.var.ty;
-        let other_ty = other.var.ty;
-        match ({ prime_ty.is_undefined() || prime_ty.is_generic() }, { other_ty.is_undefined() || other_ty.is_generic() }) {
-          (false, false) if prime_ty != other_ty => {
-            todo!("Invalid types introduced at `{origin} of {} =/= {} \n {:#?} {:#?}", prime_ty, other_ty, prime, other)
-          }
-          (true, false) => {
-            prime.var.ty = other_ty;
-          }
-          (false, true) => {}
-          _ => {}
-        }
+      OPConstraints::OpRefOf(op1, op2, i) => {
+        let assign_id = get_or_create_var_id(&mut type_maps, &op1, &mut ty_vars);
+        let target_var_id = get_or_create_var_id(&mut type_maps, &op2, &mut ty_vars);
+        let var = &mut ty_vars[assign_id as usize];
+        var.var.ref_id = target_var_id;
       }
-      OPConstraints::Member(var_a, var_b, name) => {
-        // Var a must be a structure
-        let var_id = ty_vars[var_a as usize].var.id as usize;
-        let mem_id = ty_vars[var_b as usize].var.id as usize;
-        let mem_ty = ty_vars[mem_id as usize].var.ty;
+      OPConstraints::Mutable(op1, i) => {
+        let var_a = get_or_create_var_id(&mut type_maps, &op1, &mut ty_vars);
+        let var = &mut ty_vars[var_a as usize];
+        var.add(VarConstraint::Mutable, i);
+      }
+      OPConstraints::OpToOp(op1, op2, i) => {
+        let var_a = type_maps[op1 as usize].1;
+        let var_b = type_maps[op2 as usize].1;
+        let has_left_var = var_a >= 0;
+        let has_right_var = var_b >= 0;
 
-        match ty_vars[var_id as usize].get_mem(name) {
-          Some(ty) => {
-            if mem_ty.is_undefined() || ty == mem_ty {
-            } else if (ty.is_undefined() || ty.is_generic()) {
-              ty_vars[var_id as usize].add_mem(name, mem_ty, u32::MAX)
-            } else {
-              todo!("Resolve member constraints {ty}, {mem_ty} ");
+        if has_left_var && has_right_var {
+          let var_a_id: usize = ty_vars[var_a as usize].var.id as usize;
+          let var_b_id = ty_vars[var_b as usize].var.id as usize;
+
+          if var_a_id == var_b_id {
+            continue;
+          }
+
+          let ty_vars_ptr = ty_vars.as_mut_ptr();
+
+          let var_a = unsafe { &mut (*ty_vars_ptr.offset(var_a_id as isize)) };
+          let var_b = unsafe { &mut (*ty_vars_ptr.offset(var_b_id as isize)) };
+
+          const numeric: VarConstraint = VarConstraint::Numeric;
+
+          let (prime, other) = if var_a.var.id < var_b.var.id { (var_a, var_b) } else { (var_b, var_a) };
+
+          let mut merge = false;
+
+          let prime_ty = prime.var.ty;
+          let other_ty = other.var.ty;
+          match ({ prime_ty.is_undefined() || prime_ty.is_generic() }, { other_ty.is_undefined() || other_ty.is_generic() }) {
+            (false, false) if prime_ty != other_ty => {
+              let var_a = unsafe { &mut (*ty_vars_ptr.offset(var_a_id as isize)) };
+              let var_b = unsafe { &mut (*ty_vars_ptr.offset(var_b_id as isize)) };
+              // Two different types might still be solvable if we allow for conversion semantics. However, this is not
+              // performed until a latter step, so for now we maintain the two different types and replace the
+              // the equals constraint with a converts constraint.
+
+              println!("TODO: convert `{op2}[{}] to `x[{}] on {i}", var_b.var, var_a.var);
+            }
+            (true, false) => {
+              prime.var.ty = other_ty;
+              merge = true;
+            }
+            (false, true) => {
+              merge = true;
+            }
+            _ => {
+              merge = true;
             }
           }
-          None => ty_vars[var_id as usize].add_mem(name, mem_ty, u32::MAX),
+
+          if merge {
+            prime.annotations.append(&mut other.annotations.clone());
+
+            for (name, origin, ty) in other.var.members.iter() {
+              prime.add_mem(*name, *ty, *origin);
+            }
+
+            if other.has(numeric) {
+              prime.add(numeric, u32::MAX);
+            }
+
+            let less = prime.var.id.min(other.var.id);
+            prime.var.id = less;
+            other.var.id = less;
+          }
+        } else if has_left_var {
+          type_maps[op2 as usize].1 = type_maps[op1 as usize].1
+        } else if has_right_var {
+          type_maps[op1 as usize].1 = type_maps[op2 as usize].1
+        } else {
+          let var_id = create_var_id(&mut ty_vars);
+          let var = var_id as i32;
+          type_maps[op1 as usize].1 = var;
+          type_maps[op2 as usize].1 = var;
         }
       }
-      _ => unreachable!(),
+      OPConstraints::Num(op) => {
+        let var_a = get_or_create_var_id(&mut type_maps, &op, &mut ty_vars);
+        ty_vars[var_a as usize].add(VarConstraint::Numeric, op);
+      }
+      OPConstraints::CallArg(call_op, cal_arg_pos, input_op) => {
+        get_or_create_var_id(&mut type_maps, &input_op, &mut ty_vars);
+      }
+
+      OPConstraints::Member { base, output, lu } => {
+        let mem_var = get_or_create_var_id(&mut type_maps, &output, &mut ty_vars);
+        let par_var = get_or_create_var_id(&mut type_maps, &base, &mut ty_vars);
+
+        if let Some(origin_op) = ty_vars[par_var as usize].get_mem(lu).map(|(origin, ..)| origin) {
+          //debug_assert!(ty.is_generic());
+          queue.push_back(OPConstraints::OpToOp(origin_op as u32, output as u32, output as u32));
+        } else {
+          //ty_vars[par_var as usize].add_mem(lu, RumType::Undefined.to_generic_id(mem_var as usize), output);
+
+          // Var a must be a structure
+          let var_id = get_root_type_index(par_var, &ty_vars) as usize;
+          let mem_id = get_root_type_index(mem_var, &ty_vars) as usize;
+          let mem_ty = ty_vars[mem_id as usize].var.ty;
+
+          match ty_vars[var_id as usize].get_mem(lu) {
+            Option::Some((_, ty)) => {
+              if mem_ty.is_undefined() || ty == mem_ty {
+              } else if ty.is_undefined() || ty.is_generic() {
+                ty_vars[var_id as usize].add_mem(lu, mem_ty, output);
+              } else {
+                todo!("Resolve member constraints {ty}, {mem_ty} ");
+              }
+            }
+            Option::None => {
+              debug_assert!(mem_id < 100);
+              ty_vars[var_id as usize].add_mem(lu, RumType::Undefined.to_generic_id(mem_id), output);
+            }
+          }
+        };
+      }
+      _ => {}
     }
   }
 
@@ -250,27 +253,69 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
     }
   }
 
+  println!("NEW: \nty_vars: {ty_vars:#?} ty_maps: {type_maps:?}");
   if errors.is_empty() {
     let mut external_constraints = ArrayVec::<3, TypeVar>::new();
+    let mut ext_var_lookup = Vec::with_capacity(ty_vars.len());
+    for _ in 0..ty_vars.len() {
+      ext_var_lookup.push(-1);
+    }
 
-    for (id, var) in ty_vars.iter_mut().enumerate() {
-      if var.var.id as usize == id && var.var.ty.is_undefined() {
+    // Convert generic and undefined variables to external constraints
+    for (var_id, var) in ty_vars.iter().enumerate() {
+      if var.var.id as usize == var_id && (var.var.ty.is_undefined() || var.var.ref_id >= 0) {
         let len = external_constraints.len();
-        var.var.ty = RumType::Undefined.to_generic_id(len);
-        let mut var = var.var.clone();
-        var.id = len as u32;
-        external_constraints.push(var);
+        ext_var_lookup[var_id] = len as i32;
+
+        let mut new_var = var.var.clone();
+        //new_var.ty = RumType::Undefined.to_generic_id(len);
+        new_var.id = len as u32;
+
+        if let Some(gen_id) = var.var.ty.generic_id() {
+          let var = get_root_type_index(gen_id as i32, &ty_vars);
+          new_var.ty = ty_vars[var as usize].var.ty;
+        }
+
+        external_constraints.push(new_var);
       }
     }
-    println!("AFTER: {ty_vars:#?}");
 
-    for (i, b) in &mut type_maps {
+    // Remap local constraints references to external references
+    for i in 0..external_constraints.len() {
+      let var = &mut external_constraints[i];
+      let is_target = i == 1;
+
+      if var.ty.is_undefined() {
+        var.ty = RumType::Undefined.to_generic_id(i);
+      }
+
+      if var.ref_id >= 0 {
+        /*    if is_target {
+          println!("--- {var:#?} {gen_id} {ty_vars:#?}");
+        } */
+
+        external_constraints[i].ty = get_final_var_type(var.ref_id as i32, &ty_vars, &ext_var_lookup, &external_constraints).unwrap().ty.increment_pointer();
+      }
+
+      let var = &mut external_constraints[i];
+
+      for (_, _, mem) in var.members.iter_mut() {
+        if let Some(id) = mem.generic_id() {
+          let var = get_root_type_index(id as i32, &ty_vars);
+          let extern_var = ext_var_lookup[var as usize];
+          *mem = RumType::Undefined.to_generic_id(extern_var as usize);
+        }
+      }
+    }
+
+    // Update member ids
+
+    for (i, b) in &type_maps {
       if *b >= 0 {
-        let var_id = ty_vars[*b as usize].var.id as i32;
-        let var = &ty_vars[var_id as usize];
-
         if let Some(ty) = get_ssa_ty(*i as usize, nodes) {
-          *ty = var.var.ty;
+          if let Some(var) = get_final_node_type(&type_maps, *i as usize, &ty_vars, &ext_var_lookup, &external_constraints) {
+            *ty = var.ty
+          }
         }
       }
     }
@@ -300,14 +345,16 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
     }
 
     for input in inputs.iter_mut() {
-      if let Some(ty) = get_ssa_ty(input.out_id.usize(), nodes) {
-        input.ty = *ty;
+      let node_index = input.out_id.usize();
+      if let Some(var) = get_final_node_type(&type_maps, node_index, &ty_vars, &ext_var_lookup, &external_constraints) {
+        input.ty = var.ty;
       }
     }
 
     for output in outputs.iter_mut() {
-      if let Some(ty) = get_ssa_ty(output.in_id.usize(), nodes) {
-        output.ty = *ty;
+      let node_index = output.in_id.usize();
+      if let Some(var) = get_final_node_type(&type_maps, node_index, &ty_vars, &ext_var_lookup, &external_constraints) {
+        output.ty = var.ty;
       }
     }
 
@@ -321,6 +368,61 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   }
 }
 
+fn get_or_create_var_id(type_maps: &mut [(u32, i32)], op_id: &u32, ty_vars: &mut Vec<AnnotatedTypeVar>) -> i32 {
+  let var_a = type_maps[*op_id as usize].1;
+  let has_par_var = var_a >= 0;
+
+  if !has_par_var {
+    let id = create_var_id(ty_vars);
+    type_maps[*op_id as usize].1 = id as i32;
+    id
+  } else {
+    var_a
+  }
+}
+
+fn get_final_node_type<'a>(
+  type_maps: &Vec<(u32, i32)>,
+  node_index: usize,
+  ty_vars: &'a Vec<AnnotatedTypeVar>,
+  ext_var_lookup: &Vec<i32>,
+  external_constraints: &'a ArrayVec<3, TypeVar>,
+) -> Option<&'a TypeVar> {
+  let id = type_maps[node_index].1;
+
+  if id < 0 {
+    return None;
+  }
+
+  get_final_var_type(id, ty_vars, ext_var_lookup, external_constraints)
+}
+
+fn get_final_var_type<'a>(
+  id: i32,
+  ty_vars: &'a Vec<AnnotatedTypeVar>,
+  ext_var_lookup: &Vec<i32>,
+  external_constraints: &'a ArrayVec<3, TypeVar>,
+) -> Option<&'a TypeVar> {
+  let var_id = get_root_type_index(id, ty_vars);
+  let extern_var_id = ext_var_lookup[var_id as usize];
+
+  if extern_var_id >= 0 {
+    Some(&external_constraints[extern_var_id as usize])
+  } else {
+    Some(&ty_vars[var_id as usize].var)
+  }
+}
+
+fn get_root_type_index(mut index: i32, ty_vars: &Vec<AnnotatedTypeVar>) -> i32 {
+  let mut var_id = ty_vars[index as usize].var.id as i32;
+
+  while var_id != index {
+    index = var_id;
+    var_id = ty_vars[index as usize].var.id as i32;
+  }
+  var_id
+}
+
 fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVec<3, OPConstraints> {
   let i = index as u32;
   match &nodes[index as usize] {
@@ -332,17 +434,19 @@ fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVec<3,
 
       match op {
         IROp::ADD | IROp::SUB | IROp::MUL | IROp::DIV | IROp::POW => {
-          constraints.push(OPConstraints::OpToOp(operands[0].0, operands[1].0, i));
-          constraints.push(OPConstraints::OpToOp(operands[0].0, id.0, i));
+          constraints.push(OPConstraints::OpToOp(id.0, operands[1].0, i));
+          constraints.push(OPConstraints::OpToOp(id.0, operands[0].0, i));
           constraints.push(OPConstraints::Num(id.0));
         }
+        IROp::CONST_DECL => constraints.push(OPConstraints::Num(i)),
         IROp::ASSIGN => {
-          constraints.push(OPConstraints::OpToOp(operands[0].0, operands[1].0, i));
+          constraints.push(OPConstraints::OpRefOf(operands[0].0, operands[1].0, i));
+          constraints.push(OPConstraints::Mutable(operands[0].0, i));
         }
 
         IROp::REF => match &nodes[operands[1].0 as usize] {
           RVSDGInternalNode::Label(_, name) => {
-            constraints.push(OPConstraints::Member(operands[0].0, index as u32, *name));
+            constraints.push(OPConstraints::Member { base: operands[0].0, output: index as u32, lu: *name });
           }
           _ => unreachable!(),
         },
@@ -404,13 +508,15 @@ impl AnnotatedTypeVar {
     Self { var: var, annotations: Default::default() }
   }
 
+  #[track_caller]
   pub fn has(&self, constraint: VarConstraint) -> bool {
-    debug_assert!(VarConstraint::Member != constraint);
-    self.var.constraints.find_ordered(&constraint).is_some()
+    //debug_assert!(VarConstraint::Member != constraint, "Var is not a member: {constraint:?} not applicable [has]");
+    self.var.has(constraint)
   }
 
+  #[track_caller]
   pub fn add(&mut self, constraint: VarConstraint, origin: u32) {
-    debug_assert!(VarConstraint::Member != constraint);
+    debug_assert!(VarConstraint::Member != constraint, "Var is not a member: {constraint:?} not applicable [add]");
     let _ = self.var.constraints.push_unique(constraint);
     self.annotations.push((origin, constraint));
   }
@@ -419,32 +525,53 @@ impl AnnotatedTypeVar {
     self.var.constraints.push_unique(VarConstraint::Member).unwrap();
     self.annotations.push((origin, VarConstraint::Member));
 
-    for (index, (n, _)) in self.var.members.iter().enumerate() {
+    for (index, (n, ..)) in self.var.members.iter().enumerate() {
       if *n == name {
         self.var.members.remove(index);
         break;
       }
     }
 
-    let _ = self.var.members.insert_ordered((name, ty));
+    let _ = self.var.members.insert_ordered((name, origin, ty));
   }
 
-  pub fn get_mem(&self, name: IString) -> Option<RumType> {
-    for (n, ty) in self.var.members.iter() {
+  pub fn get_mem(&self, name: IString) -> Option<(u32, RumType)> {
+    for (n, origin, ty) in self.var.members.iter() {
       if *n == name {
-        return Some(*ty);
+        return Some((*origin, *ty));
       }
     }
     None
   }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TypeVar {
   pub id:          u32,
+  pub ref_id:      i32,
   pub ty:          RumType,
-  pub constraints: ArrayVec<4, VarConstraint>,
-  pub members:     ArrayVec<3, (IString, RumType)>,
+  pub constraints: ArrayVec<2, VarConstraint>,
+  pub members:     ArrayVec<2, (IString, u32, RumType)>,
+}
+
+impl Default for TypeVar {
+  fn default() -> Self {
+    Self {
+      id:          Default::default(),
+      ref_id:      -1,
+      ty:          Default::default(),
+      constraints: Default::default(),
+      members:     Default::default(),
+    }
+  }
+}
+
+impl TypeVar {
+  #[track_caller]
+  pub fn has(&self, constraint: VarConstraint) -> bool {
+    //debug_assert!(VarConstraint::Member != constraint, "Var is not a member: {constraint:?} not applicable [has]");
+    self.constraints.find_ordered(&constraint).is_some()
+  }
 }
 
 impl Debug for TypeVar {
@@ -455,9 +582,9 @@ impl Debug for TypeVar {
 
 impl Display for TypeVar {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let Self { id, ty, constraints, members } = self;
+    let Self { id, ty, constraints, members, ref_id } = self;
 
-    f.write_fmt(format_args!("v{id}: {ty: >6}",))?;
+    f.write_fmt(format_args!("{}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
     if !constraints.is_empty() {
       f.write_str(" <")?;
       for constraint in constraints.iter() {
@@ -468,8 +595,8 @@ impl Display for TypeVar {
 
     if !members.is_empty() {
       f.write_str(" [\n")?;
-      for (name, ty) in members.iter() {
-        f.write_fmt(format_args!("  {name}: {ty},\n"))?;
+      for (name, origin, ty) in members.iter() {
+        f.write_fmt(format_args!("  {name}: {ty} @ `{origin},\n"))?;
       }
       f.write_str("]")?;
     }
@@ -491,15 +618,19 @@ pub enum VarConstraint {
   BitSize(u32),
   Other(u32),
   Callable,
+  Convert(u32),
+  Mutable,
 }
 
 impl Debug for VarConstraint {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     use VarConstraint::*;
     match self {
+      Convert(other) => f.write_fmt(format_args!("* -c> {other}",)),
       Callable => f.write_fmt(format_args!("* => x -> x",)),
       Method => f.write_fmt(format_args!("*.X => x -> x",)),
       Member => f.write_fmt(format_args!("*.X",)),
+      Mutable => f.write_fmt(format_args!("mut *",)),
       Index(index) => f.write_fmt(format_args!("*.[{index}]",)),
       Numeric => f.write_fmt(format_args!("numeric",)),
       Float => f.write_fmt(format_args!("floating-point",)),
@@ -516,31 +647,25 @@ impl Debug for VarConstraint {
 #[repr(u8)]
 enum OPConstraints {
   OpToTy(u32, RumType),
-  VarToTy(u32, RumType),
   OpToOp(u32, u32, u32),
-  /// (v1, v2, x)
-  /// Requires both v1 and v2 are the same type, constrained at node x
-  VarToVar(u32, u32, u32),
+  OpRefOf(u32, u32, u32),
   Num(u32),
   CallArg(u32, u32, u32),
-  Generic(u32),
-  Member(u32, u32, IString),
-  Index(u32, usize),
+  Member { base: u32, output: u32, lu: IString },
+  Mutable(u32, u32),
 }
 
 impl PartialOrd for OPConstraints {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
     fn get_ord_val(val: &OPConstraints) -> usize {
       match val {
-        OPConstraints::Generic(..) => 0,
-        OPConstraints::VarToTy(..) => 1,
-        OPConstraints::Index(..) => 3,
-        OPConstraints::Num(..) => 4,
-        OPConstraints::OpToTy(..) => 5,
-        OPConstraints::OpToOp(..) => 6,
-        OPConstraints::VarToVar(..) => 7,
-        OPConstraints::CallArg(..) => 8,
-        OPConstraints::Member(..) => 20,
+        OPConstraints::OpToTy(..) => 2 * 1_0000_0000,
+        OPConstraints::Num(..) => 5 * 1_0000_0000,
+        OPConstraints::OpRefOf(..) => 6 * 1_0000_0000,
+        OPConstraints::OpToOp(op1, op2, ..) => 7 * 1_0000_0000 + 1_0000_0000 - ((*op1) as usize * 10_000 + (*op2) as usize),
+        OPConstraints::CallArg(..) => 9 * 1_0000_0000,
+        OPConstraints::Member { .. } => 20 * 1_0000_0000,
+        OPConstraints::Mutable(..) => 21 * 1_0000_0000,
       }
     }
     let a = get_ord_val(self);
@@ -560,13 +685,11 @@ impl Debug for OPConstraints {
     match self {
       OPConstraints::OpToOp(op1, op2, origin) => f.write_fmt(format_args!("`{op1} = `{op2} @{origin}",)),
       OPConstraints::OpToTy(op1, ty) => f.write_fmt(format_args!("`{op1} =: {ty}",)),
-      OPConstraints::VarToTy(op1, ty) => f.write_fmt(format_args!("v{op1} is {ty}",)),
+      OPConstraints::OpRefOf(op1, op2, ..) => f.write_fmt(format_args!("`{op1} => {op2}",)),
       OPConstraints::Num(op1) => f.write_fmt(format_args!("`{op1} is numeric",)),
       OPConstraints::CallArg(call, pos, op) => f.write_fmt(format_args!("`{call}({pos} => `{op})",)),
-      OPConstraints::VarToVar(v1, v2, origin) => f.write_fmt(format_args!("v{v1} = v{v2} @ `{origin}",)),
-      OPConstraints::Generic(var) => f.write_fmt(format_args!("∀{var}",)),
-      OPConstraints::Member(op1, op2, name) => f.write_fmt(format_args!("`{op1}.{name} => {op2}",)),
-      OPConstraints::Index(op1, index) => f.write_fmt(format_args!("`{op1}[{index}]",)),
+      OPConstraints::Member { base, output, lu } => f.write_fmt(format_args!("`{base}.{lu} => {output}",)),
+      OPConstraints::Mutable(op1, index) => f.write_fmt(format_args!("mut `{op1}[{index}]",)),
     }
   }
 }

@@ -12,7 +12,7 @@ pub fn primitive_check(primitive: RumType, checked_type: &AnnotatedTypeVar, toke
   if let Some(prim_var) = get_primitive_var(primitive) {
     if checked_type.var.constraints.len() > 0 {
       if checked_type.has(VarConstraint::Member) {
-        for (name, ty) in checked_type.var.members.iter() {
+        /*   for (name, ty) in checked_type.var.members.iter() {
           if let Some(prim_mem_ty) = prim_var.get_mem(*name) {
             if (prim_mem_ty != *ty) {
               let mut constraint_errors = String::new();
@@ -32,11 +32,11 @@ pub fn primitive_check(primitive: RumType, checked_type: &AnnotatedTypeVar, toke
             }
             errors.push(format!("{primitive} does not have member {name}:\n{constraint_errors}"));
           }
-        }
+        } */
       }
     }
   } else {
-    todo!("Add primitive var for {primitive}")
+    //todo!("Add primitive var for {primitive}")
   }
 
   errors
