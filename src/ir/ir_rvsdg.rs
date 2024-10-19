@@ -36,6 +36,19 @@ pub struct RVSDGNode {
   pub source_tokens: Vec<Token>,
 }
 
+impl RVSDGNode {
+  pub fn new_module() -> Box<Self> {
+    Box::new(RVSDGNode {
+      id:            Default::default(),
+      ty:            RVSDGNodeType::Module,
+      inputs:        Default::default(),
+      outputs:       Default::default(),
+      nodes:         Default::default(),
+      source_tokens: Default::default(),
+    })
+  }
+}
+
 impl Display for RVSDGNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut s = f.debug_struct("Node");

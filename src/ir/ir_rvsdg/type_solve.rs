@@ -42,7 +42,15 @@ impl Debug for TypeErrors {
   }
 }
 
-pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors> {
+#[derive(Debug)]
+pub struct NodeTypeInfo {
+  pub constraints: Vec<TypeVar>,
+  pub node_types:  Vec<RumType>,
+  pub inputs:      Vec<RumType>,
+  pub outputs:     Vec<RumType>,
+}
+
+pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeErrors> {
   // The process:
   // Traverse the node from top - to bottom, gathering types and constraints
   // Walk up constraint stack, unifying when able, and reporting errors where ever they occur.
@@ -57,28 +65,87 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   let mut ty_vars: Vec<AnnotatedTypeVar> = Vec::with_capacity(num_of_nodes);
   let mut op_constraints = Vec::with_capacity(num_of_nodes);
 
-  let nodes = &mut node.nodes;
-  let inputs = &mut node.inputs;
-  let outputs = &mut node.outputs;
+  let nodes = &node.nodes;
+  let inputs = &node.inputs;
+  let outputs = &node.outputs;
   let tokens = &node.source_tokens;
+
+  let mut ty_info = NodeTypeInfo {
+    constraints: Default::default(),
+    node_types:  vec![Default::default(); num_of_nodes],
+    outputs:     vec![Default::default(); outputs.len()],
+    inputs:      vec![Default::default(); inputs.len()],
+  };
+
+  for input in inputs.iter() {
+    if !input.ty.is_undefined() {
+      op_constraints.push(OPConstraints::OpToTy(input.out_id.0, input.ty))
+    }
+  }
+
+  for output in outputs.iter() {
+    if !output.ty.is_undefined() {
+      op_constraints.push(OPConstraints::OpToTy(output.in_id.0, output.ty))
+    }
+  }
 
   for i in 0..num_of_nodes {
     for constraint in get_ssa_constraints(i, nodes).iter() {
       op_constraints.push(*constraint);
     }
 
-    if let Some(ty) = get_ssa_ty(i, nodes).cloned() {
-      if !ty.is_undefined() {
-        op_constraints.push(OPConstraints::OpToTy(i as u32, ty));
+    match &nodes[i] {
+      RVSDGInternalNode::Complex(cplx) => match cplx.ty {
+        crate::ir::ir_rvsdg::RVSDGNodeType::Call => {
+          // lookup name
+          let name_input = cplx.inputs[0];
+          let in_id = name_input.in_id;
+
+          match &nodes[in_id] {
+            RVSDGInternalNode::Label(_, name) => {
+              // Find the name in the current module.
+
+              for output in module.outputs.iter() {
+                if output.name == *name {
+                  // Issue a request for a solve on the node, and place this node in waiting.
+                  if let RVSDGInternalNode::Complex(funct) = &module.nodes[output.in_id] {
+                    if let Ok(info) = solve(funct, module) {
+                      for (ty, binding) in info.inputs.iter().zip(cplx.inputs.as_slice()[1..].iter()) {
+                        if !ty.is_undefined() && !ty.is_generic() {
+                          op_constraints.push(OPConstraints::OpToTy(binding.in_id.0, *ty))
+                        }
+                      }
+
+                      for (ty, binding) in info.outputs.iter().zip(cplx.outputs.as_slice()[1..].iter()) {
+                        if !ty.is_undefined() && !ty.is_generic() {
+                          op_constraints.push(OPConstraints::OpToTy(binding.out_id.0, *ty))
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            _ => todo!(""),
+          }
+        }
+        ty => todo!("Handle node type: {ty:?}"),
+      },
+      _ => {
+        let ty = get_ssa_ty(i, &mut ty_info);
+
+        if !ty.is_undefined() {
+          op_constraints.push(OPConstraints::OpToTy(i as u32, *ty));
+        }
       }
     }
-
     type_maps.push((i as u32, -1 as i32));
   }
 
   let mut return_constraints: ArrayVec<32, OPConstraints> = ArrayVec::new();
-  for output in outputs.iter_mut() {
+  for (index, output) in outputs.iter().enumerate() {
     if !output.ty.is_undefined() {
+      ty_info.outputs[index] = output.ty;
       return_constraints.push(OPConstraints::OpToTy(output.in_id.0, output.ty));
     } else {
       return_constraints.push(OPConstraints::CallArg(0, 0, output.in_id.0));
@@ -88,8 +155,6 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
   op_constraints.extend(return_constraints.iter().cloned());
 
   op_constraints.sort();
-
-  dbg!(&op_constraints);
 
   // Unify type constraints on the way back up.
   let mut queue = VecDeque::from_iter(op_constraints.iter().cloned());
@@ -253,9 +318,9 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
     }
   }
 
-  println!("NEW: \nty_vars: {ty_vars:#?} ty_maps: {type_maps:?}");
+  //println!("NEW: \nty_vars: {ty_vars:#?} ty_maps: {type_maps:?}");
   if errors.is_empty() {
-    let mut external_constraints = ArrayVec::<3, TypeVar>::new();
+    let mut external_constraints = &mut ty_info.constraints;
     let mut ext_var_lookup = Vec::with_capacity(ty_vars.len());
     for _ in 0..ty_vars.len() {
       ext_var_lookup.push(-1);
@@ -312,57 +377,27 @@ pub fn solve(node: &mut RVSDGNode) -> Result<Option<NodeConstraints>, TypeErrors
 
     for (i, b) in &type_maps {
       if *b >= 0 {
-        if let Some(ty) = get_ssa_ty(*i as usize, nodes) {
-          if let Some(var) = get_final_node_type(&type_maps, *i as usize, &ty_vars, &ext_var_lookup, &external_constraints) {
-            *ty = var.ty
-          }
+        if let Some(var) = get_final_node_type(&type_maps, *i as usize, &ty_vars, &ext_var_lookup, &ty_info.constraints) {
+          *get_ssa_ty(*i as usize, &mut ty_info) = var.ty
         }
       }
     }
 
-    for (i, b) in &mut type_maps {
-      if let RVSDGInternalNode::Complex(node) = &mut nodes[*i as usize] {
-        let node = node.as_mut() as *mut _ as *mut RVSDGNode;
-        let node = unsafe { &mut *node };
-
-        match node.ty {
-          crate::ir::ir_rvsdg::RVSDGNodeType::Call => {
-            for input in node.inputs.iter_mut() {
-              if let Some(ty) = get_ssa_ty(input.in_id.usize(), nodes) {
-                input.ty = *ty;
-              }
-            }
-
-            for output in node.outputs.iter_mut() {
-              if let Some(ty) = get_ssa_ty(output.out_id.usize(), nodes) {
-                output.ty = *ty;
-              }
-            }
-          }
-          _ => {}
-        }
-      }
-    }
-
-    for input in inputs.iter_mut() {
+    for (index, input) in inputs.iter().enumerate() {
       let node_index = input.out_id.usize();
-      if let Some(var) = get_final_node_type(&type_maps, node_index, &ty_vars, &ext_var_lookup, &external_constraints) {
-        input.ty = var.ty;
+      if let Some(var) = get_final_node_type(&type_maps, node_index, &ty_vars, &ext_var_lookup, &ty_info.constraints) {
+        ty_info.inputs[index] = var.ty;
       }
     }
 
-    for output in outputs.iter_mut() {
+    for (index, output) in outputs.iter().enumerate() {
       let node_index = output.in_id.usize();
-      if let Some(var) = get_final_node_type(&type_maps, node_index, &ty_vars, &ext_var_lookup, &external_constraints) {
-        output.ty = var.ty;
+      if let Some(var) = get_final_node_type(&type_maps, node_index, &ty_vars, &ext_var_lookup, &ty_info.constraints) {
+        ty_info.outputs[index] = var.ty;
       }
     }
 
-    if external_constraints.len() > 0 {
-      Ok(Some(NodeConstraints { vars: external_constraints.to_vec() }))
-    } else {
-      Ok(None)
-    }
+    Ok(ty_info)
   } else {
     Err(TypeErrors { errors: errors.to_vec() })
   }
@@ -386,7 +421,7 @@ fn get_final_node_type<'a>(
   node_index: usize,
   ty_vars: &'a Vec<AnnotatedTypeVar>,
   ext_var_lookup: &Vec<i32>,
-  external_constraints: &'a ArrayVec<3, TypeVar>,
+  external_constraints: &'a [TypeVar],
 ) -> Option<&'a TypeVar> {
   let id = type_maps[node_index].1;
 
@@ -397,12 +432,7 @@ fn get_final_node_type<'a>(
   get_final_var_type(id, ty_vars, ext_var_lookup, external_constraints)
 }
 
-fn get_final_var_type<'a>(
-  id: i32,
-  ty_vars: &'a Vec<AnnotatedTypeVar>,
-  ext_var_lookup: &Vec<i32>,
-  external_constraints: &'a ArrayVec<3, TypeVar>,
-) -> Option<&'a TypeVar> {
+fn get_final_var_type<'a>(id: i32, ty_vars: &'a Vec<AnnotatedTypeVar>, ext_var_lookup: &Vec<i32>, external_constraints: &'a [TypeVar]) -> Option<&'a TypeVar> {
   let var_id = get_root_type_index(id, ty_vars);
   let extern_var_id = ext_var_lookup[var_id as usize];
 
@@ -477,16 +507,8 @@ fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVec<3,
   }
 }
 
-fn get_ssa_ty(index: usize, nodes: &mut [RVSDGInternalNode]) -> Option<&mut RumType> {
-  match &mut nodes[index as usize] {
-    RVSDGInternalNode::Input { id, ty, input_index } => Some(ty),
-    RVSDGInternalNode::Output { id, ty, output_index } => Some(ty),
-    RVSDGInternalNode::Const(_, ty) => None, //Some(&mut ty.ty),
-    RVSDGInternalNode::Simple { id, op, operands, ty } => Some(ty),
-    RVSDGInternalNode::Complex(node) => None,
-    RVSDGInternalNode::Label(..) => None,
-    node => unreachable!("Not implemented for {node}"),
-  }
+fn get_ssa_ty(index: usize, ty_info: &mut NodeTypeInfo) -> &mut RumType {
+  &mut ty_info.node_types[index as usize]
 }
 
 fn create_var_id(ty_vars: &mut Vec<AnnotatedTypeVar>) -> i32 {

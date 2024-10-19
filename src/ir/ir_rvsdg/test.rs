@@ -1,5 +1,5 @@
 use crate::{
-  ir::ir_rvsdg::{lower, type_solve, RSDVGBinding, RVSDGInternalNode, RVSDGNodeType},
+  ir::ir_rvsdg::{lower, type_solve, RSDVGBinding, RVSDGInternalNode, RVSDGNode, RVSDGNodeType},
   istring::CachedString,
   types::TypeDatabase,
 };
@@ -30,13 +30,13 @@ fn test() {
   }
   ";
 
-  let mut ty_db = TypeDatabase::new();
+  let mut module = RVSDGNode::new_module();
 
   let parsed = &crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).expect("Parsing Failed");
 
   // dbg!(parsed);
 
-  let mut module = lower::lower_ast_to_rvsdg(parsed, &mut ty_db);
+  let mut module = lower::lower_ast_to_rvsdg(parsed, RVSDGNode::new_module());
 
   for RSDVGBinding { name, in_id, out_id, ty, input_index } in module.outputs.to_vec() {
     if let RVSDGInternalNode::Complex(cplx) = &mut module.nodes[in_id] {
@@ -59,11 +59,9 @@ fn test_simple_type_solve_with_binary_expression() {
   }
   ";
 
-  let mut ty_db = TypeDatabase::new();
-
   let parsed = &crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).expect("Parsing Failed");
 
-  let mut module = lower::lower_ast_to_rvsdg(parsed, &mut ty_db);
+  let mut module = lower::lower_ast_to_rvsdg(parsed, RVSDGNode::new_module());
 
   println!("{:#?}", &module);
 
@@ -97,11 +95,9 @@ fn test_struct_lowered_to_rvsg() {
 
   ";
 
-  let mut ty_db = TypeDatabase::new();
-
   let parsed = &crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).expect("Parsing Failed");
 
-  let mut module = lower::lower_ast_to_rvsdg(parsed, &mut ty_db);
+  let module = lower::lower_ast_to_rvsdg(parsed, RVSDGNode::new_module());
 
   println!("{:#?}", &module);
 

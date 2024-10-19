@@ -1,20 +1,10 @@
 type WIPNode = Builder;
 use crate::{
-  ir::{
-    ir_graph::{IRGraphId, IRGraphNode},
-    ir_rvsdg::*,
-  },
+  ir::{ir_graph::IRGraphId, ir_rvsdg::*},
   istring::CachedString,
   parser::script_parser::*,
-  types::TypeDatabase,
 };
 use std::collections::{HashMap, VecDeque};
-
-#[derive(Debug, Clone)]
-pub struct RumIRModule {
-  pub structs: HashMap<IString, Box<RVSDGNode>>,
-  pub functs:  HashMap<IString, Box<RVSDGNode>>,
-}
 
 struct Builder {
   node:         Box<RVSDGNode>,
@@ -33,10 +23,46 @@ impl Builder {
     }
   }
 
+  pub fn from_existing_module(module: Box<RVSDGNode>) -> Self {
+    debug_assert!(module.ty == RVSDGNodeType::Module);
+    Self {
+      node_id:      module.nodes.len(),
+      label_lookup: module
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| match node {
+          RVSDGInternalNode::Label(_, name) => Some((name.clone(), IRGraphId::new(index))),
+          _ => None,
+        })
+        .collect(),
+      val_lookup:   module
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| match node {
+          RVSDGInternalNode::Const(_, const_) => Some((const_.clone(), IRGraphId::new(index))),
+          _ => None,
+        })
+        .collect(),
+      node:         module,
+    }
+  }
+
   fn create_id(node_id: &mut usize) -> IRGraphId {
     let id = IRGraphId::new(*node_id);
     *node_id += 1;
     id
+  }
+
+  pub fn set_type(&mut self, op_id: IRGraphId, new_ty: RumType) {
+    match &mut self.node.nodes[op_id.usize()] {
+      RVSDGInternalNode::Simple { id, op, operands, ty } => {
+        debug_assert!(ty.is_undefined());
+        *ty = new_ty
+      }
+      _ => {}
+    }
   }
 
   pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 2], ty: RumType, tok: &Token) -> IRGraphId {
@@ -106,12 +132,10 @@ impl Builder {
   }
 }
 
-pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
+pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_module: Box<RVSDGNode>) -> Box<RVSDGNode> {
   let members = &module.members;
 
-  let mut module = RumIRModule { functs: Default::default(), structs: Default::default() };
-
-  let mut build_module = Builder::new();
+  let mut build_module = Builder::from_existing_module(existing_module);
 
   build_module.node.id = "Module".intern();
 
@@ -127,8 +151,6 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
             build_module.node.nodes.push(RVSDGInternalNode::Complex(funct.clone()));
             build_module.node.source_tokens.push(strct.tok.clone());
             build_module.add_output(RSDVGBinding { name, in_id: struct_id, out_id: Default::default(), ty: Default::default(), input_index: 0 });
-
-            module.structs.insert(funct.id, funct);
           }
           _ => unreachable!(),
         },
@@ -141,8 +163,6 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
           build_module.node.nodes.push(RVSDGInternalNode::Complex(funct.clone()));
           build_module.node.source_tokens.push(Default::default());
           build_module.add_output(RSDVGBinding { name, in_id: funct_id, out_id: Default::default(), ty: Default::default(), input_index: 0 });
-
-          module.functs.insert(funct.id, funct);
         }
         module_member_Value::RawScope(scope) => {}
         _ => unreachable!(),
@@ -285,7 +305,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
     expression_Value::MemberCompositeAccess(mem) => match lookup_var(mem, node_stack) {
       VarLookup::Mem(output) => output,
       VarLookup::Var(var) => var.in_id,
-      VarLookup::None => {
+      VarLookup::None(name) => {
         todo!("report error on lookup of \n{}", mem.tok.blame(0, 0, "", None))
       }
     },
@@ -382,15 +402,27 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
     expression_Value::RawCall(call) => {
       let mut args = Vec::new();
 
+      let call_id = match lookup_var(&call.member, node_stack) {
+        VarLookup::Mem(mem_id) => mem_id,
+        VarLookup::Var(output) => output.out_id,
+        VarLookup::None(name) => node_stack.front_mut().unwrap().get_label(name),
+      };
+
       for arg in &call.args {
         args.push(process_expression(&arg.expr, node_stack));
       }
 
-      let builder = node_stack.front_mut().unwrap();
-
       push_node(node_stack, RVSDGNodeType::Call, Default::default());
 
       let call_builder = node_stack.front_mut().unwrap();
+
+      {
+        let mut input = RSDVGBinding::default();
+        input.ty = Default::default();
+        input.in_id = call_id;
+        input.name = "__NAME__".intern();
+        call_builder.add_input(input, &call.member.tok);
+      }
 
       for arg in args {
         let mut input = RSDVGBinding::default();
@@ -604,7 +636,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 enum VarLookup<'a> {
   Var(&'a mut RSDVGBinding),
   Mem(IRGraphId),
-  None,
+  None(IString),
 }
 
 fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeque<Builder>) -> VarLookup<'a> {
@@ -631,12 +663,12 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
 
       VarLookup::Mem(prev_ref)
     } else {
-      VarLookup::None
+      VarLookup::None(Default::default())
     }
   } else if let Some(output) = get_var(name, node_stack) {
     VarLookup::Var(output)
   } else {
-    VarLookup::None
+    VarLookup::None(name)
   }
 }
 
@@ -712,7 +744,7 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
           builder.add_simple(IROp::ASSIGN, [mem_id, graph_id], Default::default(), &expr.tok);
         }
         VarLookup::Var(output) => output.in_id = graph_id,
-        VarLookup::None => create_var_binding(node_stack, root_name, graph_id, Default::default()),
+        VarLookup::None(..) => create_var_binding(node_stack, root_name, graph_id, Default::default()),
       }
     }
     _ => todo!(),
