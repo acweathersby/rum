@@ -1,4 +1,4 @@
-use super::ir_block::BlockId;
+use super::{ir_block::BlockId, ir_rvsdg::Type};
 use crate::types::{ConstVal, RumType, TypeVarContext, Variable};
 use std::fmt::{Debug, Display};
 
@@ -115,7 +115,7 @@ impl Display for SSAGraphNode {
 #[repr(u8)]
 pub enum IRGraphNode {
   Const { val: ConstVal },
-  OpNode { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], ty: RumType, var_id: VarId },
+  OpNode { op: IROp, block_id: BlockId, operands: [IRGraphId; 2], ty: Type, var_id: VarId },
 }
 
 impl IRGraphNode {
@@ -130,7 +130,7 @@ impl IRGraphNode {
       _ => unreachable!(),
     };
 
-    IRGraphNode::OpNode { op, block_id: Default::default(), var_id: var, operands, ty: RumType::Undefined }
+    IRGraphNode::OpNode { op, block_id: Default::default(), var_id: var, operands, ty: Default::default() }
   }
 
   pub fn create_const(const_val: ConstVal) -> IRGraphNode {
@@ -191,9 +191,9 @@ impl IRGraphNode {
     }
   }
 
-  pub fn ty(&self) -> RumType {
+  pub fn ty(&self) -> Type {
     match self {
-      IRGraphNode::Const { val } => val.ty,
+      IRGraphNode::Const { val } => Type::Primitive(val.ty),
       IRGraphNode::OpNode { operands, ty, .. } => *ty,
     }
   }

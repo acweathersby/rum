@@ -3,6 +3,7 @@ use crate::{
   ir::{ir_graph::IRGraphId, ir_rvsdg::*},
   istring::CachedString,
   parser::script_parser::*,
+  types::RumType,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -55,7 +56,7 @@ impl Builder {
     id
   }
 
-  pub fn set_type(&mut self, op_id: IRGraphId, new_ty: RumType) {
+  pub fn set_type(&mut self, op_id: IRGraphId, new_ty: Type) {
     match &mut self.node.nodes[op_id.usize()] {
       RVSDGInternalNode::Simple { id, op, operands, ty } => {
         debug_assert!(ty.is_undefined());
@@ -65,7 +66,7 @@ impl Builder {
     }
   }
 
-  pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 2], ty: RumType, tok: &Token) -> IRGraphId {
+  pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 2], ty: Type, tok: &Token) -> IRGraphId {
     let id = Self::create_id(&mut self.node_id);
     self.node.nodes.push(RVSDGInternalNode::Simple { id, op, operands, ty });
     self.node.source_tokens.push(tok.clone());
@@ -81,12 +82,12 @@ impl Builder {
     binding
   }
 
-  pub fn add_input_node(&mut self, ty: RumType, input_index: usize, tok: &Token) -> IRGraphId {
+  pub fn add_input_node(&mut self, ty: Type, input_index: usize, tok: &Token) -> IRGraphId {
     let id = Self::create_id(&mut self.node_id);
     self.add_input_node_internal(id, ty, input_index, tok)
   }
 
-  fn add_input_node_internal(&mut self, id: IRGraphId, ty: RumType, input_index: usize, tok: &Token) -> IRGraphId {
+  fn add_input_node_internal(&mut self, id: IRGraphId, ty: Type, input_index: usize, tok: &Token) -> IRGraphId {
     self.node.nodes.push(RVSDGInternalNode::Input { id, ty, input_index });
     self.node.source_tokens.push(tok.clone());
     id
@@ -132,7 +133,7 @@ impl Builder {
   }
 }
 
-pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_module: Box<RVSDGNode>) -> Box<RVSDGNode> {
+pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_module: Box<RVSDGNode>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
   let members = &module.members;
 
   let mut build_module = Builder::from_existing_module(existing_module);
@@ -145,7 +146,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_mo
         module_member_Value::RawBoundType(bound_type) => match &bound_type.ty {
           type_Value::Type_Struct(strct) => {
             let name = bound_type.name.id.intern();
-            let funct: Box<RVSDGNode> = lower_struct_to_rsvdg(bound_type.name.id.intern(), strct);
+            let funct: Box<RVSDGNode> = lower_struct_to_rsvdg(bound_type.name.id.intern(), strct, ty_db);
 
             let struct_id = Builder::create_id(&mut build_module.node_id);
             build_module.node.nodes.push(RVSDGInternalNode::Complex(funct.clone()));
@@ -155,7 +156,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_mo
           _ => unreachable!(),
         },
         module_member_Value::RawRoutine(rt) => {
-          let funct = lower_fn_to_rsvdg(rt);
+          let funct = lower_fn_to_rsvdg(rt, ty_db);
 
           let name = funct.id;
 
@@ -176,7 +177,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_mo
   build_module.node
 }
 
-fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>) -> Box<RVSDGNode> {
+fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
   let mut node = RVSDGNode::default();
 
   node.ty = RVSDGNodeType::Struct;
@@ -188,7 +189,7 @@ fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>) ->
     match prop {
       property_Value::Property(prop) => {
         let name = prop.name.id.intern();
-        let ty = get_type(&prop.ty, false).unwrap_or_default();
+        let ty = get_type(&prop.ty, false, ty_db).unwrap_or_default();
 
         let mut output_binding = RSDVGBinding::default();
         let id = Builder::create_id(&mut node_id);
@@ -211,7 +212,7 @@ fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>) ->
   Box::new(node)
 }
 
-fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>) -> Box<RVSDGNode> {
+fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
   let params = match &fn_decl.ty {
     routine_type_Value::RawFunctionType(ty) => &ty.params,
     routine_type_Value::RawProcedureType(ty) => &ty.params,
@@ -228,15 +229,15 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>) -> Box<RVSDGNode> {
 
   node_stack.push_front(builder);
 
-  insert_params(params, &mut node_stack);
+  insert_params(params, &mut node_stack, ty_db);
 
-  let ret_val = process_expression(expr, &mut node_stack);
+  let ret_val = process_expression(expr, &mut node_stack, ty_db);
 
   let mut fn_node = node_stack.pop_front().unwrap().node;
 
   match &fn_decl.ty {
     routine_type_Value::RawFunctionType(fn_ty) => {
-      insert_returns(ret_val, fn_ty, &mut fn_node);
+      insert_returns(ret_val, fn_ty, &mut fn_node, ty_db);
     }
     _ => {}
   };
@@ -256,11 +257,11 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>) -> Box<RVSDGNode> {
   fn_node
 }
 
-fn insert_returns(ret_val: IRGraphId, fn_ty: &std::sync::Arc<RawFunctionType<Token>>, fn_node: &mut Box<RVSDGNode>) {
+fn insert_returns(ret_val: IRGraphId, fn_ty: &std::sync::Arc<RawFunctionType<Token>>, fn_node: &mut Box<RVSDGNode>, ty_db: &mut TypeDatabase) {
   if !ret_val.is_invalid() {
     let ret = &fn_ty.return_type;
     let mut input = RSDVGBinding::default();
-    let ty = get_type(&ret.ty, false).unwrap_or_default();
+    let ty = get_type(&ret.ty, false, ty_db).unwrap_or_default();
     input.name = "RET".intern();
     input.ty = ty;
     input.in_id = ret_val;
@@ -270,15 +271,15 @@ fn insert_returns(ret_val: IRGraphId, fn_ty: &std::sync::Arc<RawFunctionType<Tok
   }
 }
 
-fn insert_params(params: &std::sync::Arc<Params<Token>>, node_stack: &mut VecDeque<Builder>) {
+fn insert_params(params: &std::sync::Arc<Params<Token>>, node_stack: &mut VecDeque<Builder>, ty_db: &mut TypeDatabase) {
   for param in &params.params {
-    let ty = get_type(&param.ty.ty, false).unwrap_or_default();
+    let ty = get_type(&param.ty.ty, false, ty_db).unwrap_or_default();
     let name = param.var.id.intern();
     create_input_binding(node_stack.front_mut().unwrap(), name, ty, Default::default(), param.tok.clone());
   }
 }
 
-fn create_input_binding(node_data: &mut Builder, name: IString, ty: RumType, in_id: IRGraphId, tok: Token) -> IRGraphId {
+fn create_input_binding(node_data: &mut Builder, name: IString, ty: Type, in_id: IRGraphId, tok: Token) -> IRGraphId {
   let builder = node_data;
 
   let mut output_binding = builder.add_input(RSDVGBinding { name, in_id, ty, ..Default::default() }, &tok);
@@ -290,7 +291,7 @@ fn create_input_binding(node_data: &mut Builder, name: IString, ty: RumType, in_
   output_binding.in_id
 }
 
-fn create_var_binding(node_stack: &mut VecDeque<Builder>, name: IString, in_id: IRGraphId, ty: RumType) {
+fn create_var_binding(node_stack: &mut VecDeque<Builder>, name: IString, in_id: IRGraphId, ty: Type) {
   let mut output_binding = RSDVGBinding::default();
   output_binding.name = name;
   output_binding.ty = ty;
@@ -300,7 +301,7 @@ fn create_var_binding(node_stack: &mut VecDeque<Builder>, name: IString, in_id: 
   node_stack.front_mut().unwrap().add_output(output_binding);
 }
 
-fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>) -> IRGraphId {
+fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> IRGraphId {
   match expr {
     expression_Value::MemberCompositeAccess(mem) => match lookup_var(mem, node_stack) {
       VarLookup::Mem(output) => output,
@@ -314,9 +315,9 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       let string_val = num.tok.to_string();
       node_stack.front_mut().unwrap().add_const(
         if string_val.contains(".") {
-          ConstVal::new(RumType::Float | RumType::b64, num.val)
+          ConstVal::new(ty_db.get_ty("f64").expect("f64 should exist").to_primitive().unwrap(), num.val)
         } else {
-          ConstVal::new(RumType::Unsigned | RumType::b64, string_val.parse::<u64>().unwrap())
+          ConstVal::new(ty_db.get_ty("u64").expect("u64 should exist").to_primitive().unwrap(), string_val.parse::<u64>().unwrap())
         },
         &num.tok,
       )
@@ -328,6 +329,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       op.right.clone().to_ast().into_expression_Value().unwrap(),
       node_stack,
       op.tok.clone(),
+      ty_db,
     ),
 
     expression_Value::Mul(op) => binary_expr(
@@ -336,6 +338,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       op.right.clone().to_ast().into_expression_Value().unwrap(),
       node_stack,
       op.tok.clone(),
+      ty_db,
     ),
 
     expression_Value::Div(op) => binary_expr(
@@ -344,6 +347,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       op.right.clone().to_ast().into_expression_Value().unwrap(),
       node_stack,
       op.tok.clone(),
+      ty_db,
     ),
 
     expression_Value::Sub(op) => binary_expr(
@@ -352,6 +356,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       op.right.clone().to_ast().into_expression_Value().unwrap(),
       node_stack,
       op.tok.clone(),
+      ty_db,
     ),
 
     expression_Value::BIT_XOR(op) => binary_expr(
@@ -360,6 +365,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       op.right.clone().to_ast().into_expression_Value().unwrap(),
       node_stack,
       op.tok.clone(),
+      ty_db,
     ),
 
     expression_Value::BIT_OR(op) => binary_expr(
@@ -368,6 +374,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       op.right.clone().to_ast().into_expression_Value().unwrap(),
       node_stack,
       op.tok.clone(),
+      ty_db,
     ),
 
     expression_Value::BIT_AND(op) => binary_expr(
@@ -376,6 +383,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       op.right.clone().to_ast().into_expression_Value().unwrap(),
       node_stack,
       op.tok.clone(),
+      ty_db,
     ),
 
     expression_Value::RawBlock(block) => {
@@ -383,10 +391,10 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       for expr in &block.statements {
         match expr {
           statement_Value::Expression(expr) => {
-            last_id = process_expression(&expr.expr, node_stack);
+            last_id = process_expression(&expr.expr, node_stack, ty_db);
           }
           statement_Value::RawAssignment(assign) => {
-            process_assign(&assign, node_stack);
+            process_assign(&assign, node_stack, ty_db);
             last_id = IRGraphId::default()
           }
           _ => todo!(),
@@ -394,7 +402,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       }
 
       match &block.exit {
-        block_expression_group_3_Value::BlockExitExpressions(e) => process_expression(&e.expression.expr, node_stack),
+        block_expression_group_3_Value::BlockExitExpressions(e) => process_expression(&e.expression.expr, node_stack, ty_db),
         _ => last_id,
       }
     }
@@ -409,7 +417,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       };
 
       for arg in &call.args {
-        args.push(process_expression(&arg.expr, node_stack));
+        args.push(process_expression(&arg.expr, node_stack, ty_db));
       }
 
       push_node(node_stack, RVSDGNodeType::Call, Default::default());
@@ -471,7 +479,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       // create the match entry
       push_node(node_stack, RVSDGNodeType::MatchHead, Default::default());
 
-      let eval_id = process_expression(&mtch.expression.clone().into(), node_stack);
+      let eval_id = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
       let temp_binding_name = "__match__expr__".intern();
 
@@ -485,11 +493,11 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         if clause.default {
           push_node(node_stack, RVSDGNodeType::SwitchBody, Default::default());
 
-          process_expression(&clause.scope.clone().into(), node_stack);
+          process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
           pop_and_merge_single_node(node_stack);
         } else {
-          let v = process_expression(&clause.expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack);
+          let v = process_expression(&clause.expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
 
           let op_ty = match clause.expr.op.as_str() {
             ">" => crate::ir::ir_graph::IROp::GR,
@@ -509,7 +517,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
           push_node(node_stack, RVSDGNodeType::SwitchBody, Default::default());
 
-          process_expression(&clause.scope.clone().into(), node_stack);
+          process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
           pop_and_merge_single_node(node_stack);
         }
@@ -617,7 +625,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       let agg_id = builder.add_simple(IROp::AGG_DECL, [Default::default(), Default::default()], Default::default(), &agg.tok);
 
       for init in &agg.inits {
-        let expr_id = process_expression(&init.expression.expr, node_stack);
+        let expr_id = process_expression(&init.expression.expr, node_stack, ty_db);
 
         let builder = node_stack.front_mut().unwrap();
 
@@ -714,24 +722,31 @@ fn pop_and_merge_single_node(node_stack: &mut VecDeque<Builder>) {
   }
 }
 
-fn binary_expr(op: IROp, left: expression_Value<Token>, right: expression_Value<Token>, node_stack: &mut VecDeque<Builder>, tok: Token) -> IRGraphId {
-  let left_id = process_expression(&left, node_stack);
-  let right_id = process_expression(&right, node_stack);
+fn binary_expr(
+  op: IROp,
+  left: expression_Value<Token>,
+  right: expression_Value<Token>,
+  node_stack: &mut VecDeque<Builder>,
+  tok: Token,
+  ty_db: &mut TypeDatabase,
+) -> IRGraphId {
+  let left_id = process_expression(&left, node_stack, ty_db);
+  let right_id = process_expression(&right, node_stack, ty_db);
 
   let builder = node_stack.front_mut().unwrap();
 
   builder.add_simple(op, [left_id, right_id], Default::default(), &tok)
 }
 
-fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode>) {
+fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) {
   let var = &expr.var;
   let expr = &expr.expression;
-  let graph_id = process_expression(&expr.expr, node_stack);
+  let graph_id = process_expression(&expr.expr, node_stack, ty_db);
 
   match var {
     assignment_var_Value::RawAssignmentDeclaration(decl) => {
       let root_name = decl.var.id.intern();
-      let ty = get_type(&decl.ty, false).unwrap();
+      let ty = get_type(&decl.ty, false, ty_db).unwrap();
 
       create_var_binding(node_stack, root_name, graph_id, ty);
     }
@@ -768,7 +783,7 @@ fn pop_node(node_stack: &mut VecDeque<Builder>) -> usize {
 fn get_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Option<&'a mut RSDVGBinding> {
   let mut found_in_index = -1;
   let mut id = IRGraphId::default();
-  let mut ty = RumType::Undefined;
+  let mut ty = Type::Undefined;
 
   let stack = node_stack as *mut VecDeque<WIPNode>;
 
@@ -806,43 +821,42 @@ fn get_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Opti
   }
 }
 
-pub fn get_type(ir_type: &type_Value<Token>, insert_unresolved: bool) -> Option<RumType> {
+pub fn get_type(ir_type: &type_Value<Token>, insert_unresolved: bool, ty_db: &mut TypeDatabase) -> Option<Type> {
   use type_Value::*;
   match ir_type {
-    Type_Flag(_) => Some(RumType::Flag),
-    Type_u8(_) => Some(RumType::u8),
-    Type_u16(_) => Some(RumType::u16),
-    Type_u32(_) => Some(RumType::u32),
-    Type_u64(_) => Some(RumType::u64),
-    Type_i8(_) => Some(RumType::i8),
-    Type_i16(_) => Some(RumType::i16),
-    Type_i32(_) => Some(RumType::i32),
-    Type_i64(_) => Some(RumType::i64),
-    Type_f32(_) => Some(RumType::f32),
-    Type_f64(_) => Some(RumType::f64),
-    Type_f32v2(_) => Some(RumType::f32v2),
-    Type_f32v4(_) => Some(RumType::f32v4),
-    Type_f64v2(_) => Some(RumType::f64v2),
-    Type_f64v4(_) => Some(RumType::f64v4),
-
+    Type_Flag(_) => Option::None,
+    Type_u8(_) => ty_db.get_ty("u8"),
+    Type_u16(_) => ty_db.get_ty("u16"),
+    Type_u32(_) => ty_db.get_ty("u32"),
+    Type_u64(_) => ty_db.get_ty("u64"),
+    Type_i8(_) => ty_db.get_ty("i8"),
+    Type_i16(_) => ty_db.get_ty("i16"),
+    Type_i32(_) => ty_db.get_ty("i32"),
+    Type_i64(_) => ty_db.get_ty("i64"),
+    Type_f32(_) => ty_db.get_ty("f32"),
+    Type_f64(_) => ty_db.get_ty("f64"),
+    /* Type_f32v2(_) => ty_db.get_ty("f32v2"),
+    Type_f32v4(_) => ty_db.get_ty("f32v4"),
+    Type_f64v2(_) => ty_db.get_ty("f64v2"),
+    Type_f64v4(_) => ty_db.get_ty("f64v4"), */
     Type_Reference(ptr) => {
-      if let Some(base_type) = get_type(&ptr.ty.clone().to_ast().into_type_Value().unwrap(), insert_unresolved) {
-        Some(base_type.increment_pointer())
+      if let Some(base_type) = get_type(&ptr.ty.clone().to_ast().into_type_Value().unwrap(), insert_unresolved, ty_db) {
+        ty_db.get_ptr(base_type)
       } else {
         Option::None
       }
     }
     Type_Pointer(ptr) => {
-      if let Some(base_type) = get_type(&ptr.ty.clone().to_ast().into_type_Value().unwrap(), insert_unresolved) {
+      if let Some(base_type) = get_type(&ptr.ty.clone().to_ast().into_type_Value().unwrap(), insert_unresolved, ty_db) {
         use lifetime_Value::*;
         match &ptr.ptr_type {
           GlobalLifetime(_) => {
-            Some(base_type.increment_pointer())
+            ty_db.get_ptr(base_type)
             //Some(TypeSlot::GlobalIndex(0, type_db.get_or_add_type_index(format!("*{}", base_type.ty_gb(type_db)).intern(), Type::Pointer(Default::default(), 0, base_type)) as u32))
           }
           ScopedLifetime(scope)  =>
 
-          Some(base_type.increment_pointer())/* Some(TypeSlot::GlobalIndex(
+          ty_db.get_ptr(base_type)/* Some(TypeSlot::GlobalIndex(
             0,
             type_db.get_or_add_type_index(format!("{}*{}", scope.val, base_type.ty_gb(type_db)).intern(), Type::Pointer(scope.val.intern(), 0, base_type)) as u32,
           )) */,
@@ -852,7 +866,7 @@ pub fn get_type(ir_type: &type_Value<Token>, insert_unresolved: bool) -> Option<
         Option::None
       }
     }
-    Type_Variable(type_var) => Some(RumType::default()),
+    Type_Variable(type_var) => Some(Type::default()),
     _t => Option::None,
   }
 }

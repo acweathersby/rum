@@ -1,15 +1,15 @@
-use super::type_solve::AnnotatedTypeVar;
+use super::{type_solve::AnnotatedTypeVar, Type};
 use crate::{container::ArrayVec, ir::ir_rvsdg::type_solve::VarConstraint, types::RumType};
 use radlr_rust_runtime::types::{BlameColor, Token};
 
-pub fn primitive_check(primitive: RumType, checked_type: &AnnotatedTypeVar, tokens: &[Token]) -> ArrayVec<1, String> {
+pub fn primitive_check(primitive: Type, checked_type: &AnnotatedTypeVar, tokens: &[Token]) -> ArrayVec<1, String> {
   let mut errors = ArrayVec::new();
 
   if !primitive.is_primitive() {
     return errors;
   }
 
-  if let Some(prim_var) = get_primitive_var(primitive) {
+  /*   if let Some(prim_var) = get_primitive_var(primitive) {
     if checked_type.var.constraints.len() > 0 {
       if checked_type.has(VarConstraint::Member) {
         /*   for (name, ty) in checked_type.var.members.iter() {
@@ -37,14 +37,14 @@ pub fn primitive_check(primitive: RumType, checked_type: &AnnotatedTypeVar, toke
     }
   } else {
     //todo!("Add primitive var for {primitive}")
-  }
+  } */
 
   errors
 }
 
-fn create_type_var_u8() -> AnnotatedTypeVar {
+/* fn create_type_var_u8() -> AnnotatedTypeVar {
   let mut type_var: AnnotatedTypeVar = AnnotatedTypeVar::new(0);
-  type_var.var.ty = RumType::u8;
+  type_var.var.ty = Type::u8;
   type_var.add(VarConstraint::ByteSize(1), u32::MAX);
   type_var.add(VarConstraint::BitSize(8), u32::MAX);
   type_var.add(VarConstraint::Unsigned, u32::MAX);
@@ -54,7 +54,7 @@ fn create_type_var_u8() -> AnnotatedTypeVar {
 
 fn create_type_var_u16() -> AnnotatedTypeVar {
   let mut type_var: AnnotatedTypeVar = AnnotatedTypeVar::new(0);
-  type_var.var.ty = RumType::u8;
+  type_var.var.ty = Type::u8;
   type_var.add(VarConstraint::ByteSize(2), u32::MAX);
   type_var.add(VarConstraint::BitSize(16), u32::MAX);
   type_var.add(VarConstraint::Unsigned, u32::MAX);
@@ -64,7 +64,7 @@ fn create_type_var_u16() -> AnnotatedTypeVar {
 
 fn create_type_var_u32() -> AnnotatedTypeVar {
   let mut type_var: AnnotatedTypeVar = AnnotatedTypeVar::new(0);
-  type_var.var.ty = RumType::u8;
+  type_var.var.ty = Type::u8;
   type_var.add(VarConstraint::ByteSize(4), u32::MAX);
   type_var.add(VarConstraint::BitSize(32), u32::MAX);
   type_var.add(VarConstraint::Unsigned, u32::MAX);
@@ -72,7 +72,7 @@ fn create_type_var_u32() -> AnnotatedTypeVar {
   type_var
 }
 
-fn get_primitive_var(prim: RumType) -> Option<AnnotatedTypeVar> {
+fn get_primitive_var(prim: Type) -> Option<AnnotatedTypeVar> {
   match prim {
     RumType::u8 => Some(create_type_var_u8()),
     RumType::u16 => Some(create_type_var_u16()),
@@ -80,3 +80,4 @@ fn get_primitive_var(prim: RumType) -> Option<AnnotatedTypeVar> {
     _ => None,
   }
 }
+ */

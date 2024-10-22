@@ -135,7 +135,7 @@ impl IString {
     }
   }
 
-  pub fn is_large(&self) -> bool {
+  pub fn is_large(&self) -> bool { 
     !self.is_small()
   }
 

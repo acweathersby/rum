@@ -1,11 +1,10 @@
 #![allow(non_upper_case_globals)]
 
-use super::{RVSDGInternalNode, RVSDGNode};
+use super::{RVSDGInternalNode, RVSDGNode, Type, TypeDatabase};
 use crate::{
   container::ArrayVec,
   ir::{ir_graph::IROp, ir_rvsdg::type_check::primitive_check},
   istring::IString,
-  types::RumType,
 };
 use std::{
   cmp::Ordering,
@@ -21,7 +20,7 @@ pub struct NodeConstraints {
 
 enum NodeConstraint {
   TypeVar(TypeVar),
-  ConstType(u32, RumType),
+  ConstType(u32, Type),
   Conversion(u32, u32),
 }
 
@@ -45,12 +44,12 @@ impl Debug for TypeErrors {
 #[derive(Debug)]
 pub struct NodeTypeInfo {
   pub constraints: Vec<TypeVar>,
-  pub node_types:  Vec<RumType>,
-  pub inputs:      Vec<RumType>,
-  pub outputs:     Vec<RumType>,
+  pub node_types:  Vec<Type>,
+  pub inputs:      Vec<Type>,
+  pub outputs:     Vec<Type>,
 }
 
-pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeErrors> {
+pub fn solve(node: &RVSDGNode, module: &RVSDGNode, ty_db: &mut TypeDatabase) -> Result<NodeTypeInfo, TypeErrors> {
   // The process:
   // Traverse the node from top - to bottom, gathering types and constraints
   // Walk up constraint stack, unifying when able, and reporting errors where ever they occur.
@@ -109,7 +108,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
                 if output.name == *name {
                   // Issue a request for a solve on the node, and place this node in waiting.
                   if let RVSDGInternalNode::Complex(funct) = &module.nodes[output.in_id] {
-                    if let Ok(info) = solve(funct, module) {
+                    if let Ok(info) = solve(funct, module, ty_db) {
                       for (ty, binding) in info.inputs.iter().zip(cplx.inputs.as_slice()[1..].iter()) {
                         if !ty.is_undefined() && !ty.is_generic() {
                           op_constraints.push(OPConstraints::OpToTy(binding.in_id.0, *ty))
@@ -162,7 +161,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
   // Unify type constraints on the way back up.
 
   while let Some(constraint) = queue.pop_front() {
-    const def_ty: RumType = RumType::Undefined;
+    const def_ty: Type = Type::Undefined;
     match constraint {
       OPConstraints::OpToTy(op, op_ty) => {
         let var_a = get_or_create_var_id(&mut type_maps, &op, &mut ty_vars);
@@ -276,7 +275,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
           //debug_assert!(ty.is_generic());
           queue.push_back(OPConstraints::OpToOp(origin_op as u32, output as u32, output as u32));
         } else {
-          //ty_vars[par_var as usize].add_mem(lu, RumType::Undefined.to_generic_id(mem_var as usize), output);
+          //ty_vars[par_var as usize].add_mem(lu, Type::generic(mem_var as usize), output);
 
           // Var a must be a structure
           let var_id = get_root_type_index(par_var, &ty_vars) as usize;
@@ -294,7 +293,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
             }
             Option::None => {
               debug_assert!(mem_id < 100);
-              ty_vars[var_id as usize].add_mem(lu, RumType::Undefined.to_generic_id(mem_id), output);
+              ty_vars[var_id as usize].add_mem(lu, Type::generic(mem_id), output);
             }
           }
         };
@@ -333,7 +332,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
         ext_var_lookup[var_id] = len as i32;
 
         let mut new_var = var.var.clone();
-        //new_var.ty = RumType::Undefined.to_generic_id(len);
+        //new_var.ty = Type::generic(len);
         new_var.id = len as u32;
 
         if let Some(gen_id) = var.var.ty.generic_id() {
@@ -351,7 +350,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
       let is_target = i == 1;
 
       if var.ty.is_undefined() {
-        var.ty = RumType::Undefined.to_generic_id(i);
+        var.ty = Type::generic(i);
       }
 
       if var.ref_id >= 0 {
@@ -359,7 +358,8 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
           println!("--- {var:#?} {gen_id} {ty_vars:#?}");
         } */
 
-        external_constraints[i].ty = get_final_var_type(var.ref_id as i32, &ty_vars, &ext_var_lookup, &external_constraints).unwrap().ty.increment_pointer();
+        external_constraints[i].ty =
+          ty_db.get_ptr(get_final_var_type(var.ref_id as i32, &ty_vars, &ext_var_lookup, &external_constraints).unwrap().ty).expect("");
       }
 
       let var = &mut external_constraints[i];
@@ -368,7 +368,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode) -> Result<NodeTypeInfo, TypeE
         if let Some(id) = mem.generic_id() {
           let var = get_root_type_index(id as i32, &ty_vars);
           let extern_var = ext_var_lookup[var as usize];
-          *mem = RumType::Undefined.to_generic_id(extern_var as usize);
+          *mem = Type::generic(extern_var as usize);
         }
       }
     }
@@ -453,7 +453,7 @@ fn get_root_type_index(mut index: i32, ty_vars: &Vec<AnnotatedTypeVar>) -> i32 {
   var_id
 }
 
-fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVec<3, OPConstraints> {
+pub fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVec<3, OPConstraints> {
   let i = index as u32;
   match &nodes[index as usize] {
     RVSDGInternalNode::Input { .. } => ArrayVec::new(),
@@ -507,7 +507,7 @@ fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVec<3,
   }
 }
 
-fn get_ssa_ty(index: usize, ty_info: &mut NodeTypeInfo) -> &mut RumType {
+fn get_ssa_ty(index: usize, ty_info: &mut NodeTypeInfo) -> &mut Type {
   &mut ty_info.node_types[index as usize]
 }
 
@@ -543,7 +543,7 @@ impl AnnotatedTypeVar {
     self.annotations.push((origin, constraint));
   }
 
-  pub fn add_mem(&mut self, name: IString, ty: RumType, origin: u32) {
+  pub fn add_mem(&mut self, name: IString, ty: Type, origin: u32) {
     self.var.constraints.push_unique(VarConstraint::Member).unwrap();
     self.annotations.push((origin, VarConstraint::Member));
 
@@ -557,7 +557,7 @@ impl AnnotatedTypeVar {
     let _ = self.var.members.insert_ordered((name, origin, ty));
   }
 
-  pub fn get_mem(&self, name: IString) -> Option<(u32, RumType)> {
+  pub fn get_mem(&self, name: IString) -> Option<(u32, Type)> {
     for (n, origin, ty) in self.var.members.iter() {
       if *n == name {
         return Some((*origin, *ty));
@@ -571,9 +571,9 @@ impl AnnotatedTypeVar {
 pub struct TypeVar {
   pub id:          u32,
   pub ref_id:      i32,
-  pub ty:          RumType,
+  pub ty:          Type,
   pub constraints: ArrayVec<2, VarConstraint>,
-  pub members:     ArrayVec<2, (IString, u32, RumType)>,
+  pub members:     ArrayVec<2, (IString, u32, Type)>,
 }
 
 impl Default for TypeVar {
@@ -667,8 +667,8 @@ impl Debug for VarConstraint {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-enum OPConstraints {
-  OpToTy(u32, RumType),
+pub enum OPConstraints {
+  OpToTy(u32, Type),
   OpToOp(u32, u32, u32),
   OpRefOf(u32, u32, u32),
   Num(u32),
