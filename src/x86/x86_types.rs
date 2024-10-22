@@ -1,7 +1,4 @@
-use crate::{
-  ir::ir_graph::IRGraphId,
-  types::{ConstVal, Reg},
-};
+use crate::types::{ConstVal, Reg};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Hash, Clone, Copy)]

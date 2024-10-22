@@ -3,7 +3,7 @@
 use super::{RVSDGInternalNode, RVSDGNode, Type, TypeDatabase};
 use crate::{
   container::ArrayVec,
-  ir::{ir_graph::IROp, ir_rvsdg::type_check::primitive_check},
+  ir::ir_rvsdg::{type_check::primitive_check, IROp},
   istring::IString,
 };
 use std::{

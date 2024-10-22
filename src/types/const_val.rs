@@ -1,6 +1,5 @@
 use crate::ir::ir_rvsdg::{PrimitiveBaseType, PrimitiveType};
 
-use super::RumType;
 use num_traits::{Num, NumCast};
 use std::{
   self,

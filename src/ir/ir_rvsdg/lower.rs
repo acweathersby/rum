@@ -1,9 +1,8 @@
 type WIPNode = Builder;
 use crate::{
-  ir::{ir_graph::IRGraphId, ir_rvsdg::*},
+  ir::ir_rvsdg::{IROp, *},
   istring::CachedString,
   parser::script_parser::*,
-  types::RumType,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -500,12 +499,12 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
           let v = process_expression(&clause.expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
 
           let op_ty = match clause.expr.op.as_str() {
-            ">" => crate::ir::ir_graph::IROp::GR,
-            "<" => crate::ir::ir_graph::IROp::LS,
-            ">=" => crate::ir::ir_graph::IROp::GE,
-            "<=" => crate::ir::ir_graph::IROp::LE,
-            "==" => crate::ir::ir_graph::IROp::EQ,
-            "!=" => crate::ir::ir_graph::IROp::NE,
+            ">" => IROp::GR,
+            "<" => IROp::LS,
+            ">=" => IROp::GE,
+            "<=" => IROp::LE,
+            "==" => IROp::EQ,
+            "!=" => IROp::NE,
             _ => todo!(),
           };
 

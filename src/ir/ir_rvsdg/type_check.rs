@@ -1,5 +1,5 @@
 use super::{type_solve::AnnotatedTypeVar, Type};
-use crate::{container::ArrayVec, ir::ir_rvsdg::type_solve::VarConstraint, types::RumType};
+use crate::{container::ArrayVec, ir::ir_rvsdg::type_solve::VarConstraint};
 use radlr_rust_runtime::types::{BlameColor, Token};
 
 pub fn primitive_check(primitive: Type, checked_type: &AnnotatedTypeVar, tokens: &[Token]) -> ArrayVec<1, String> {

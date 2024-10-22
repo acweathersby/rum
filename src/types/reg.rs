@@ -1,8 +1,4 @@
-use crate::{
-  ir::ir_graph::{IRGraphNode, IROp},
-  istring::*,
-  types::{RoutineBody, RumSubType, RumType, Type, TypeDatabase, TypeRef, TypeVarContext},
-};
+use crate::istring::*;
 use std::{
   collections::{HashMap, HashSet, VecDeque},
   fmt::{Debug, Display},

@@ -1,4 +1,4 @@
-use super::ir_graph::IRGraphId;
+use super::ir_rvsdg::IRGraphId;
 use crate::{container::ArrayVec, istring::*};
 use std::{
   collections::{HashSet, VecDeque},

@@ -3,8 +3,7 @@ use crate::{
   error::RumResult,
   ir::{
     ir_block::{BlockId, IRBlock},
-    ir_graph::{IROp, SSAGraphNode, VarId},
-    ir_register_allocator_ssa::RegisterAssignments,
+    ir_graph::IROp,
   },
   istring::IString,
   linker::LinkableBinary,

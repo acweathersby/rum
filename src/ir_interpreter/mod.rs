@@ -8,7 +8,6 @@ use crate::{
     TypeDatabase,
   },
   istring::IString,
-  types::RumType,
 };
 use std::{collections::VecDeque, iter::Map};
 
@@ -63,7 +62,7 @@ fn executor(
   let RVSDGNode { id, ty, inputs, outputs, nodes, source_tokens } = fn_node;
 
   for (index, node) in nodes.iter().enumerate() {
-    use crate::ir::ir_graph::IROp::*;
+    use crate::ir::ir_rvsdg::IROp::*;
     let ty = type_info.node_types[index];
     match node {
       RVSDGInternalNode::Input { id, ty, input_index } => stack.push_back(args[*input_index]),

@@ -1,6 +1,5 @@
 use radlr_rust_runtime::types::Token;
 
-use super::ir_graph::{IRGraphId, IROp};
 use crate::{
   container::ArrayVec,
   istring::{CachedString, IString},
@@ -422,4 +421,156 @@ fn test_primitive_type() {
 
   let s8 = ty.get_ty_entry("s8").expect("Should have s8").ty;
   assert_eq!(format!("{s8}"), "s8");
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IROp {
+  // Encoding Oriented operators
+  /// Calculates a ptr to a member variable based on a base aggregate pointer
+  /// and a const offset. This is also used to get the address of a stack
+  /// variable, by taking address of the difference between the sp and stack
+  /// offset.
+  MEMB_PTR_CALC,
+  /// Declares a stack or heap variable and its type
+  MATCH_LOC,
+  /// Declares a stack or heap variable and its type
+  VAR_DECL,
+  /// Declares a location to store a local value
+  AGG_DECL,
+  ///
+  PARAM_VAL,
+  /// Declares a location to store a parameter value
+  PARAM_DECL,
+  /// Declares a location to store a return value
+  RET_VAL,
+  /// Declares a constant and its type
+  CONST_DECL,
+
+  REF,
+
+  // Arithmetic & Logic functions - MATH
+  ADD,
+  SUB,
+  MUL,
+  DIV,
+  LOG,
+  POW,
+  GR,
+  LE,
+  GE,
+  LS,
+  NE,
+  EQ,
+  OR,
+  XOR,
+  AND,
+  NOT,
+  NEG,
+  SHL,
+  SHR,
+  // End MATH --------------------------
+  /// Stores a value into a memory location denoted by a pointer.
+  STORE,
+  /// Loads must proceed from a STORE, a PARAM_DECL, or a RET_VAL
+  LOAD,
+  /// Zeroes all bytes of a type pointer or an array pointer.
+  ZERO,
+  /// Copies data from one type pointer to another type pointer.
+  COPY,
+
+  /// Declares a variable output value for an iteration step
+  ITER_OUT_VAL,
+  ITER_IN_VAL,
+  ITER_ARG,
+
+  DBG_CALL,
+  CALL,
+  CALL_ARG,
+  CALL_RET,
+  // Deliberate movement of data from one location to another
+  MOVE,
+  // Clone one memory structure to another memory structure. Operands MUST be pointer values.
+  // Depending on type, may require deep cloning, which will probably be handled through a dynamically generated function.
+  CLONE,
+  ASSIGN,
+  /// Returns the address of op1 as a pointer
+  LOAD_ADDR,
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub struct IRGraphId(pub u32);
+
+impl<T> std::ops::Index<IRGraphId> for Vec<T> {
+  type Output = T;
+  fn index(&self, index: IRGraphId) -> &Self::Output {
+    &self[index.0 as usize]
+  }
+}
+
+impl<T> std::ops::IndexMut<IRGraphId> for Vec<T> {
+  fn index_mut(&mut self, index: IRGraphId) -> &mut Self::Output {
+    &mut self[index.0 as usize]
+  }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub enum GraphIdType {
+  SSA,
+  CALL,
+  STORED_REGISTER,
+  REGISTER,
+  VAR_LOAD,
+  VAR_STORE,
+  INVALID = 0xF,
+}
+
+impl Default for IRGraphId {
+  fn default() -> Self {
+    Self::INVALID
+  }
+}
+
+impl IRGraphId {
+  pub const INVALID: IRGraphId = IRGraphId(u32::MAX);
+  pub const INDEX_MASK: u64 = 0x0000_0000_00FF_FFFF;
+  pub const VAR_MASK: u64 = 0x0000_FFFF_FF00_0000;
+  pub const REG_MASK: u64 = 0x0FFF_0000_0000_0000;
+  pub const NEEDS_LOAD_VAL: u64 = 0x7000_0000_0000_0000;
+  pub const LOAD_MASK_OUT: u64 = 0x0FFF_FFFF_FFFF_FFFF;
+
+  pub const fn usize(&self) -> usize {
+    self.0 as usize
+  }
+
+  pub const fn new(index: usize) -> IRGraphId {
+    IRGraphId(index as u32)
+  }
+
+  pub const fn is_invalid(&self) -> bool {
+    self.0 == Self::INVALID.0
+  }
+}
+
+impl Display for IRGraphId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if self.is_invalid() {
+      f.write_fmt(format_args!("xxx "))
+    } else {
+      f.write_fmt(format_args!("{:>3} ", format!("`{}", self.0)))
+    }
+  }
+}
+
+impl Debug for IRGraphId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(self, f)
+  }
+}
+
+impl From<IRGraphId> for usize {
+  fn from(value: IRGraphId) -> Self {
+    value.0 as usize
+  }
 }
