@@ -21,9 +21,9 @@ IGNORE { c:sp c:nl }
 
   | complex_type
 
-  | void_type
+  | generic_type
 
-<> void_type > "_" :ast { t_Type_Void }
+<> generic_type > "?" :ast { t_Type_Generic }
 
 <> named_type > prim::var^name :ast { t_Type_Variable, name }
 
@@ -52,7 +52,7 @@ IGNORE { c:sp c:nl }
   | "u32"   :ast { t_Type_u32 }
   | "u64"   :ast { t_Type_u64 }
 
-<> complex_type > structure_type | array_type | empty_type | union_type | enum_type | flag_type
+<> complex_type > structure_type | array_type | union_type | enum_type | flag_type
 
 <> structure_type
 
@@ -75,12 +75,6 @@ IGNORE { c:sp c:nl }
   > "[" type^base_type (";" prim::int )?^size "]"
 
     :ast { t_Type_Array, base_type, size: u32($size), tok }
-
-<> empty_type
-
-  > "[""]"
-
-    :ast { t_Type_Empty, tok }
 
 <> union_type 
 

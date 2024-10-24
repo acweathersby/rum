@@ -16,7 +16,7 @@ path = "./src/lib.rs"
 [dependencies.radlr_rust_runtime]
 path = "../lib_radlr/crates/radlr-rust-runtime"
 
-[build_dependencies.radlr_build]
+[build-dependencies.radlr_build]
 path = "../lib_radlr/crates/radlr-build"
 
 [dependencies]

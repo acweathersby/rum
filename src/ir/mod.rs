@@ -7,3 +7,5 @@ pub mod ir_block;
 //pub mod ir_to_register_machine;
 //pub mod ir_lowering;
 pub mod ir_rvsdg;
+
+pub mod types;

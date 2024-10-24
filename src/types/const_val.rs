@@ -1,4 +1,4 @@
-use crate::ir::ir_rvsdg::{PrimitiveBaseType, PrimitiveType};
+use crate::ir::types::{PrimitiveBaseType, PrimitiveType};
 
 use num_traits::{Num, NumCast};
 use std::{

@@ -2,6 +2,7 @@
 #![feature(allocator_api)]
 #![feature(box_patterns)]
 #![feature(debug_closure_helpers)]
+#![allow(warnings)]
 
 pub mod bitfield;
 pub mod container;
@@ -16,9 +17,6 @@ pub mod types;
 pub mod x86;
 
 pub use radlr_rust_runtime::types::Token;
-
-// Get expression type.
-type Type = ();
 
 #[test]
 fn test() {

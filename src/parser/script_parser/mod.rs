@@ -6,7 +6,7 @@ use radlr_rust_runtime::{
 };
 
 #[allow(warnings)]
-mod ast;
+pub mod ast;
 
 #[allow(warnings)]
 mod parser;

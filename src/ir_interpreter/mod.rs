@@ -1,15 +1,20 @@
+use radlr_rust_runtime::types::{BlameColor, Token};
+
 use crate::{
-  ir::ir_rvsdg::{
-    type_solve::{solve, NodeTypeInfo},
-    PrimitiveBaseType,
-    RVSDGInternalNode,
-    RVSDGNode,
-    Type,
-    TypeDatabase,
+  container::get_aligned_value,
+  ir::{
+    ir_rvsdg::{
+      type_solve::{solve, NodeTypeInfo},
+      RVSDGInternalNode,
+      RVSDGNode,
+      RVSDGNodeType,
+    },
+    types::{PrimitiveBaseType, Type, TypeDatabase},
   },
   istring::IString,
+  parser::script_parser::ASTNode,
 };
-use std::{collections::VecDeque, iter::Map};
+use std::{alloc::Layout, collections::VecDeque, iter::Map};
 
 macro_rules! op_match {
   ($sym: tt, $l: ident, $r: ident) => {
@@ -42,24 +47,16 @@ enum Value {
   i8(i8),
   f64(f64),
   f32(f32),
-  Struct(*mut Map<IString, Value>),
-  Array(*mut Vec<Value>),
+  Agg(*mut u8),
 }
 
-pub fn interpret(fn_node: &RVSDGNode, type_info: &NodeTypeInfo, module: &RVSDGNode, ty_db: &mut TypeDatabase) {
-  let result = executor(type_info, fn_node, VecDeque::<Value>::new(), module, Default::default(), ty_db);
+pub fn interpret(fn_node: &RVSDGNode, type_info: &NodeTypeInfo, ty_db: &mut TypeDatabase) {
+  let result = executor(type_info, fn_node, VecDeque::<Value>::new(), Default::default(), ty_db);
   println!("R: {result:?}");
 }
 
-fn executor(
-  type_info: &NodeTypeInfo,
-  fn_node: &RVSDGNode,
-  mut stack: VecDeque<Value>,
-  module: &RVSDGNode,
-  mut args: Vec<Value>,
-  ty_db: &mut TypeDatabase,
-) -> Vec<Value> {
-  let RVSDGNode { id, ty, inputs, outputs, nodes, source_tokens } = fn_node;
+fn executor(type_info: &NodeTypeInfo, fn_node: &RVSDGNode, mut stack: VecDeque<Value>, mut args: Vec<Value>, ty_db: &mut TypeDatabase) -> Vec<Value> {
+  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes } = fn_node;
 
   for (index, node) in nodes.iter().enumerate() {
     use crate::ir::ir_rvsdg::IROp::*;
@@ -117,8 +114,56 @@ fn executor(
           let right = &stack[operands[1].usize()];
           stack.push_back(op_match!(*, left, right));
         }
+        REF => {}
+        AGG_DECL => {
+          // get the size of the data that needs to be allocated for this declaration.
 
-        op => panic!("Unrecognized op {op:?}"),
+          let agg_ty = type_info.node_types[index];
+
+          let Some(node) = ty_db.get_ty_entry_from_ty(agg_ty) else {
+            panic!("Could not find struct for op at {index}: {op:?} -> \n{}: {}\n{}", type_info.node_types[index], nodes[index], blame(&source_nodes[index]))
+          };
+
+          let Some(node) = node.get_node() else {
+            panic!("Agg type not defined at {index}: {op:?} -> \n{}: {}\n{}", type_info.node_types[index], nodes[index], blame(&source_nodes[index]))
+          };
+
+          match node.ty {
+            RVSDGNodeType::Array => {
+              todo!("Handle array instantiation")
+            }
+            RVSDGNodeType::Struct => {
+              // Create a new pointer to data of length something.
+              let mut size = 0;
+
+              for input in node.outputs.iter() {
+                let ty = input.ty;
+
+                let byte_size = match ty {
+                  Type::Primitive(prim) => prim.byte_size,
+                  ty => todo!("Get type size of {ty:?}"),
+                } as u64;
+
+                size = get_aligned_value(size, byte_size) + byte_size;
+              }
+
+              // Allocate space for this node.
+              let data = unsafe { std::alloc::alloc(Layout::array::<u8>(size as usize).unwrap()) };
+
+              stack.push_back(Value::Agg(data));
+            }
+            _ => {
+              panic!(
+                "Invalid agg type of {:?} at {index}: {op:?} -> \n{}: {}\n{}",
+                node.ty,
+                type_info.node_types[index],
+                nodes[index],
+                blame(&source_nodes[index])
+              )
+            }
+          }
+        }
+        op => panic!("Unrecognized op at {index}: {op:?} -> \n{}: {}\n{}", type_info.node_types[index], nodes[index], blame(&source_nodes[index])),
       },
       RVSDGInternalNode::Complex(cplx) => match cplx.ty {
         crate::ir::ir_rvsdg::RVSDGNodeType::Call => {
@@ -130,14 +175,21 @@ fn executor(
             RVSDGInternalNode::Label(_, name) => {
               // Find the name in the current module.
 
-              for output in module.outputs.iter() {
-                if output.name == *name {
-                  // Issue a request for a solve on the node, and place this node in waiting.
-                  if let RVSDGInternalNode::Complex(funct) = &module.nodes[output.in_id] {
-                    if let Ok(info) = solve(funct, module, ty_db) {
-                      args = call(funct, &info, module, cplx.inputs.as_slice()[1..].iter().map(|i| stack[i.in_id.usize()].clone()).collect(), ty_db);
-                    }
-                  }
+              if let Some(cplx) = ty_db.get_ty_entry(name.to_str().as_str()) {
+                if let Some(funct) = cplx.get_node() {
+                  todo!("Handle function call");
+                  /*  if let Ok(info) = solve(
+                    funct,
+                    &NodeTypeInfo {
+                      constraints: Default::default(),
+                      inputs:      Default::default(),
+                      node_types:  Default::default(),
+                      outputs:     Default::default(),
+                    },
+                    ty_db,
+                  ) {
+                    args = call(funct, &info, cplx.inputs.as_slice()[1..].iter().map(|i| stack[i.in_id.usize()].clone()).collect(), ty_db);
+                  } */
                 }
               }
             }
@@ -154,6 +206,19 @@ fn executor(
   fn_node.outputs.iter().map(|i| stack[i.in_id.usize()]).collect()
 }
 
-fn call(fn_node: &RVSDGNode, type_info: &NodeTypeInfo, module: &RVSDGNode, args: Vec<Value>, ty_db: &mut TypeDatabase) -> Vec<Value> {
-  executor(type_info, fn_node, VecDeque::<Value>::new(), module, args, ty_db)
+fn call(fn_node: &RVSDGNode, type_info: &NodeTypeInfo, args: Vec<Value>, ty_db: &mut TypeDatabase) -> Vec<Value> {
+  executor(type_info, fn_node, VecDeque::<Value>::new(), args, ty_db)
+}
+
+fn blame(node: &ASTNode) -> String {
+  let tok: &Token = {
+    use crate::parser::script_parser::ast::ASTNode::*;
+    match node {
+      RawAggregateInstantiation(node) => &node.tok,
+      Var(node) => &node.tok,
+      node => panic!("unrecognized node: {node:#?}"),
+    }
+  };
+
+  tok.blame(1, 1, "", BlameColor::RED)
 }

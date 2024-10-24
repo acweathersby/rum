@@ -1,8 +1,8 @@
 use super::{type_solve::AnnotatedTypeVar, Type};
-use crate::{container::ArrayVec, ir::ir_rvsdg::type_solve::VarConstraint};
+use crate::{container::ArrayVec, ir::ir_rvsdg::type_solve::VarConstraint, parser::script_parser::ASTNode};
 use radlr_rust_runtime::types::{BlameColor, Token};
 
-pub fn primitive_check(primitive: Type, checked_type: &AnnotatedTypeVar, tokens: &[Token]) -> ArrayVec<1, String> {
+pub fn primitive_check(primitive: Type, checked_type: &AnnotatedTypeVar, tokens: &[ASTNode]) -> ArrayVec<1, String> {
   let mut errors = ArrayVec::new();
 
   if !primitive.is_primitive() {

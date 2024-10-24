@@ -1,9 +1,12 @@
 #![allow(non_upper_case_globals)]
 
-use super::{RVSDGInternalNode, RVSDGNode, Type, TypeDatabase};
+use super::{RVSDGInternalNode, RVSDGNode, Type};
 use crate::{
   container::ArrayVec,
-  ir::ir_rvsdg::{type_check::primitive_check, IROp},
+  ir::{
+    ir_rvsdg::{type_check::primitive_check, IROp},
+    types::TypeDatabase,
+  },
   istring::IString,
 };
 use std::{
@@ -67,7 +70,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode, ty_db: &mut TypeDatabase) -> 
   let nodes = &node.nodes;
   let inputs = &node.inputs;
   let outputs = &node.outputs;
-  let tokens = &node.source_tokens;
+  let tokens = &node.source_nodes;
 
   let mut ty_info = NodeTypeInfo {
     constraints: Default::default(),
@@ -173,7 +176,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode, ty_db: &mut TypeDatabase) -> 
           var.var.ty = op_ty;
         }
       }
-      OPConstraints::OpRefOf(op1, op2, i) => {
+      OPConstraints::OpAssignedTo(op1, op2, i) => {
         let assign_id = get_or_create_var_id(&mut type_maps, &op1, &mut ty_vars);
         let target_var_id = get_or_create_var_id(&mut type_maps, &op2, &mut ty_vars);
         let var = &mut ty_vars[assign_id as usize];
@@ -236,8 +239,8 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode, ty_db: &mut TypeDatabase) -> 
           if merge {
             prime.annotations.append(&mut other.annotations.clone());
 
-            for (name, origin, ty) in other.var.members.iter() {
-              prime.add_mem(*name, *ty, *origin);
+            for MemberEntry { name, origin_node, ty } in other.var.members.iter() {
+              prime.add_mem(*name, *ty, *origin_node);
             }
 
             if other.has(numeric) {
@@ -267,7 +270,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode, ty_db: &mut TypeDatabase) -> 
         get_or_create_var_id(&mut type_maps, &input_op, &mut ty_vars);
       }
 
-      OPConstraints::Member { base, output, lu } => {
+      OPConstraints::Member { base, output, lu, .. } => {
         let mem_var = get_or_create_var_id(&mut type_maps, &output, &mut ty_vars);
         let par_var = get_or_create_var_id(&mut type_maps, &base, &mut ty_vars);
 
@@ -364,7 +367,7 @@ pub fn solve(node: &RVSDGNode, module: &RVSDGNode, ty_db: &mut TypeDatabase) -> 
 
       let var = &mut external_constraints[i];
 
-      for (_, _, mem) in var.members.iter_mut() {
+      for MemberEntry { name, origin_node, ty: mem } in var.members.iter_mut() {
         if let Some(id) = mem.generic_id() {
           let var = get_root_type_index(id as i32, &ty_vars);
           let extern_var = ext_var_lookup[var as usize];
@@ -470,13 +473,13 @@ pub fn get_ssa_constraints(index: usize, nodes: &[RVSDGInternalNode]) -> ArrayVe
         }
         IROp::CONST_DECL => constraints.push(OPConstraints::Num(i)),
         IROp::ASSIGN => {
-          constraints.push(OPConstraints::OpRefOf(operands[0].0, operands[1].0, i));
+          constraints.push(OPConstraints::OpAssignedTo(operands[0].0, operands[1].0, i));
           constraints.push(OPConstraints::Mutable(operands[0].0, i));
         }
 
         IROp::REF => match &nodes[operands[1].0 as usize] {
           RVSDGInternalNode::Label(_, name) => {
-            constraints.push(OPConstraints::Member { base: operands[0].0, output: index as u32, lu: *name });
+            constraints.push(OPConstraints::Member { base: operands[0].0, output: index as u32, lu: *name, node_id: index as u32 });
           }
           _ => unreachable!(),
         },
@@ -543,28 +546,35 @@ impl AnnotatedTypeVar {
     self.annotations.push((origin, constraint));
   }
 
-  pub fn add_mem(&mut self, name: IString, ty: Type, origin: u32) {
+  pub fn add_mem(&mut self, name: IString, ty: Type, origin_node: u32) {
     self.var.constraints.push_unique(VarConstraint::Member).unwrap();
-    self.annotations.push((origin, VarConstraint::Member));
+    self.annotations.push((origin_node, VarConstraint::Member));
 
-    for (index, (n, ..)) in self.var.members.iter().enumerate() {
+    for (index, MemberEntry { name: n, origin_node, ty }) in self.var.members.iter().enumerate() {
       if *n == name {
         self.var.members.remove(index);
         break;
       }
     }
 
-    let _ = self.var.members.insert_ordered((name, origin, ty));
+    let _ = self.var.members.insert_ordered(MemberEntry { name, origin_node, ty });
   }
 
   pub fn get_mem(&self, name: IString) -> Option<(u32, Type)> {
-    for (n, origin, ty) in self.var.members.iter() {
+    for MemberEntry { name: n, origin_node, ty } in self.var.members.iter() {
       if *n == name {
-        return Some((*origin, *ty));
+        return Some((*origin_node, *ty));
       }
     }
     None
   }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemberEntry {
+  pub name:        IString,
+  pub origin_node: u32,
+  pub ty:          Type,
 }
 
 #[derive(Clone)]
@@ -573,7 +583,7 @@ pub struct TypeVar {
   pub ref_id:      i32,
   pub ty:          Type,
   pub constraints: ArrayVec<2, VarConstraint>,
-  pub members:     ArrayVec<2, (IString, u32, Type)>,
+  pub members:     ArrayVec<2, MemberEntry>,
 }
 
 impl Default for TypeVar {
@@ -617,8 +627,8 @@ impl Display for TypeVar {
 
     if !members.is_empty() {
       f.write_str(" [\n")?;
-      for (name, origin, ty) in members.iter() {
-        f.write_fmt(format_args!("  {name}: {ty} @ `{origin},\n"))?;
+      for MemberEntry { name, origin_node, ty } in members.iter() {
+        f.write_fmt(format_args!("  {name}: {ty} @ `{origin_node},\n"))?;
       }
       f.write_str("]")?;
     }
@@ -670,10 +680,16 @@ impl Debug for VarConstraint {
 pub enum OPConstraints {
   OpToTy(u32, Type),
   OpToOp(u32, u32, u32),
-  OpRefOf(u32, u32, u32),
+  /// type of arg1 is a pointer to type of arg2
+  OpAssignedTo(u32, u32, u32),
   Num(u32),
   CallArg(u32, u32, u32),
-  Member { base: u32, output: u32, lu: IString },
+  Member {
+    base:    u32,
+    output:  u32,
+    lu:      IString,
+    node_id: u32,
+  },
   Mutable(u32, u32),
 }
 
@@ -683,7 +699,7 @@ impl PartialOrd for OPConstraints {
       match val {
         OPConstraints::OpToTy(..) => 2 * 1_0000_0000,
         OPConstraints::Num(..) => 5 * 1_0000_0000,
-        OPConstraints::OpRefOf(..) => 6 * 1_0000_0000,
+        OPConstraints::OpAssignedTo(..) => 6 * 1_0000_0000,
         OPConstraints::OpToOp(op1, op2, ..) => 7 * 1_0000_0000 + 1_0000_0000 - ((*op1) as usize * 10_000 + (*op2) as usize),
         OPConstraints::CallArg(..) => 9 * 1_0000_0000,
         OPConstraints::Member { .. } => 20 * 1_0000_0000,
@@ -707,10 +723,10 @@ impl Debug for OPConstraints {
     match self {
       OPConstraints::OpToOp(op1, op2, origin) => f.write_fmt(format_args!("`{op1} = `{op2} @{origin}",)),
       OPConstraints::OpToTy(op1, ty) => f.write_fmt(format_args!("`{op1} =: {ty}",)),
-      OPConstraints::OpRefOf(op1, op2, ..) => f.write_fmt(format_args!("`{op1} => {op2}",)),
+      OPConstraints::OpAssignedTo(op1, op2, ..) => f.write_fmt(format_args!("`{op1} => {op2}",)),
       OPConstraints::Num(op1) => f.write_fmt(format_args!("`{op1} is numeric",)),
       OPConstraints::CallArg(call, pos, op) => f.write_fmt(format_args!("`{call}({pos} => `{op})",)),
-      OPConstraints::Member { base, output, lu } => f.write_fmt(format_args!("`{base}.{lu} => {output}",)),
+      OPConstraints::Member { base, output, lu, .. } => f.write_fmt(format_args!("`{base}.{lu} => {output}",)),
       OPConstraints::Mutable(op1, index) => f.write_fmt(format_args!("mut `{op1}[{index}]",)),
     }
   }
