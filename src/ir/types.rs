@@ -10,8 +10,11 @@ use super::ir_rvsdg::RVSDGNode;
 
 #[derive(Clone, Copy)]
 pub struct TypeEntry {
-  pub ty:          Type,
-  pub(crate) node: Option<*mut RVSDGNode>,
+  pub ty:                 Type,
+  pub(crate) node:        Option<*mut RVSDGNode>,
+  pub(crate) type_data:   Option<(usize, usize, *mut Type)>,
+  pub(crate) offset_data: Option<(usize, usize, *mut usize)>,
+  pub(crate) size:        usize,
 }
 
 impl Debug for TypeEntry {
@@ -32,6 +35,14 @@ impl TypeEntry {
   pub fn get_node_mut(&mut self) -> Option<&mut RVSDGNode> {
     self.node.map(|n| unsafe { &mut *n })
   }
+
+  pub fn get_type_data(&self) -> Option<&[Type]> {
+    self.type_data.map(|(len, capacity, data)| unsafe { std::slice::from_raw_parts(data, len as usize) })
+  }
+
+  pub fn get_offset_data(&self) -> Option<&[usize]> {
+    self.offset_data.map(|(len, capacity, data)| unsafe { std::slice::from_raw_parts(data, len as usize) })
+  }
 }
 
 #[derive(Debug)]
@@ -50,7 +61,7 @@ macro_rules! create_primitive {
   ($db:ident $primitive_name:tt,  $size:literal  $ele_count:literal  $($name:literal)+) => {
     let index = $db.types.len();
     let ty = Type::Primitive(PrimitiveType{  base_ty: PrimitiveBaseType::$primitive_name,  base_index: index as u8,  byte_size: $size, ele_count: $ele_count   });
-    $db.types.push(TypeEntry { ty, node: None });
+    $db.types.push(TypeEntry { ty, node: None, type_data: None, offset_data:None, size: 0 });
     create_primitive!($db index $($name)+)
   };
 }
@@ -78,14 +89,20 @@ impl TypeDatabase {
 
     db
   }
-  pub fn get_or_intert_complex_type(&mut self, name: &str) -> Type {
+  pub fn get_or_insert_complex_type(&mut self, name: &str) -> Type {
     match self.name_to_entry.entry(name.intern()) {
       std::collections::btree_map::Entry::Occupied(ty) => self.types[*ty.get()].ty,
       std::collections::btree_map::Entry::Vacant(mut entry) => {
         let index = self.types.len();
         entry.insert(index);
 
-        let entry = TypeEntry { node: None, ty: Type::Complex { ty_index: index as u32 } };
+        let entry = TypeEntry {
+          node:        None,
+          ty:          Type::Complex { ty_index: index as u32 },
+          type_data:   None,
+          offset_data: None,
+          size:        0,
+        };
         self.types.push(entry);
         entry.ty
       }
@@ -144,7 +161,7 @@ impl TypeDatabase {
       }
     } else {
       self.name_to_entry.insert(name, index);
-      self.types.push(TypeEntry { ty, node: Some(Box::into_raw(node)) });
+      self.types.push(TypeEntry { ty, node: Some(Box::into_raw(node)), type_data: None, offset_data: None, size: 0 });
       Some(ty)
     }
   }
@@ -223,7 +240,7 @@ impl Display for PrimitiveType {
 
 impl Type {
   pub fn generic(ty_index: usize) -> Type {
-    Type::Pointer { count: 1, ty_index: ty_index as u32 }
+    Type::Generic { ptr_count: 0, gen_index: ty_index as u32 }
   }
 
   pub fn generic_id(&self) -> Option<usize> {
@@ -242,6 +259,10 @@ impl Type {
 
   pub fn is_primitive(&self) -> bool {
     matches!(self, Type::Primitive(..))
+  }
+
+  pub fn is_open(&self) -> bool {
+    self.is_generic() || self.is_undefined()
   }
 
   pub fn is_generic(&self) -> bool {

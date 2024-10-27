@@ -310,7 +310,9 @@ impl<const STACK_SIZE: usize, T: Sized> ArrayVec<STACK_SIZE, T> {
           let mut t = std::mem::MaybeUninit::uninit().assume_init();
           std::mem::swap(&mut t, &mut array[index]);
 
-          std::ptr::copy(&mut array[index + 1], &mut array[index], *len - (index + 1));
+          if (index as i64) < ((*len as i64) - 1) {
+            std::ptr::copy(&mut array[index + 1], &mut array[index], *len - (index + 1));
+          }
 
           *len -= 1;
 

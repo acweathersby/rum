@@ -1,6 +1,7 @@
 #![feature(unsized_tuple_coercion)]
 #![feature(allocator_api)]
 #![feature(box_patterns)]
+#![feature(vec_into_raw_parts)]
 #![feature(debug_closure_helpers)]
 #![allow(warnings)]
 

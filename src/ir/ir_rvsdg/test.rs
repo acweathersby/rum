@@ -39,13 +39,13 @@ fn test() {
 
   // dbg!(parsed);
 
-  let mut module = lower::lower_ast_to_rvsdg(parsed, RVSDGNode::new_module(), &mut ty_db);
+  let mut module = lower::lower_ast_to_rvsdg(parsed, &mut ty_db);
 
-  for RSDVGBinding { name, in_id, out_id, ty, input_index } in module.outputs.to_vec() {
+  /*   for RSDVGBinding { name, in_id, out_id, ty, input_index } in module.outputs.to_vec() {
     if let RVSDGInternalNode::Complex(cplx) = &mut module.nodes[in_id] {
       if cplx.ty == RVSDGNodeType::Function {}
     }
-  }
+  } */
 
   /*   let Some(fn_node) = module.functs.get_mut(&"add_two_numbers".to_token()) else { panic!("Function does not exists for some reason!") };
 
@@ -65,7 +65,7 @@ fn test_simple_type_solve_with_binary_expression() {
 
   let parsed = &crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).expect("Parsing Failed");
 
-  let mut module = lower::lower_ast_to_rvsdg(parsed, RVSDGNode::new_module(), &mut ty_db);
+  let mut module = lower::lower_ast_to_rvsdg(parsed, &mut ty_db);
 
   println!("{:#?}", &module);
 
@@ -102,7 +102,7 @@ fn test_struct_lowered_to_rvsg() {
   let mut ty_db = TypeDatabase::new();
   let parsed = &crate::parser::script_parser::parse_raw_module(&BUILD_UP_TEST_STRING).expect("Parsing Failed");
 
-  let module = lower::lower_ast_to_rvsdg(parsed, RVSDGNode::new_module(), &mut ty_db);
+  let module = lower::lower_ast_to_rvsdg(parsed, &mut ty_db);
 
   println!("{:#?}", &module);
 

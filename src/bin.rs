@@ -1,21 +1,15 @@
 use rum_lang::{
   ir::{
-    ir_rvsdg::{
-      lower::lower_ast_to_rvsdg,
-      solve_pipeline::{collect_op_constraints, get_type_from_db, solve_constraints},
-      type_solve::{self, NodeTypeInfo},
-      RSDVGBinding,
-      RVSDGInternalNode,
-      RVSDGNode,
-      RVSDGNodeType,
-    },
+    ir_rvsdg::{lower::lower_ast_to_rvsdg, solve_pipeline::solve_type},
     types::TypeDatabase,
   },
   ir_interpreter::interpret,
-  istring::CachedString,
   parser::{self, script_parser::parse_raw_module},
 };
-use std::collections::VecDeque;
+use std::{
+  collections::VecDeque,
+  path::{Path, PathBuf},
+};
 
 fn main() -> Result<(), u8> {
   let mut args: VecDeque<String> = std::env::args().collect();
@@ -29,41 +23,67 @@ fn main() -> Result<(), u8> {
       }
       "ty" => {
         let script = args.pop_front().expect("Expected an expression argument");
+
+        let script = match PathBuf::from(script.as_str()).canonicalize() {
+          Err(_) => script,
+          Ok(path) => std::fs::read_to_string(path).unwrap_or_default(),
+        };
+
         let module_ast = parse_raw_module(&format!("{script}")).expect("Could not parse call expression");
         let mut ty_db = TypeDatabase::new();
 
-        lower_ast_to_rvsdg(&module_ast, RVSDGNode::new_module(), &mut ty_db);
+        lower_ast_to_rvsdg(&module_ast, &mut ty_db);
 
         let type_target = args.pop_front().expect("Expected a type argument");
 
-        match get_type_from_db(&mut ty_db, type_target.intern()) {
-          Some(node) => {
-            let node = unsafe { &*node };
+        if let Some(ty) = ty_db.get_ty(type_target.as_str()) {
+          match solve_type(ty, &mut ty_db) {
+            Ok(entry) => {
+              let node = entry.get_node().expect("Type is not complex");
+              let types = entry.get_type_data().expect("Type has not been solved");
 
-            let op_constraints = collect_op_constraints(node);
+              println!("\n\n#############################################\n");
 
-            match solve_constraints(node, op_constraints, &mut ty_db) {
-              Ok(types) => interpret(
-                node,
-                &NodeTypeInfo {
-                  constraints: Default::default(),
-                  inputs:      Default::default(),
-                  node_types:  types,
-                  outputs:     Default::default(),
-                },
-                &mut ty_db,
-              ),
-              Err(errors) => {
-                for error in errors.iter() {
-                  println!("{error}")
+              if node.inputs.len() > 0 {
+                println!("\ninputs:");
+
+                for input in node.inputs.iter() {
+                  let index = input.out_id.usize();
+                  println!(" {input} : {}", types[index]);
                 }
               }
+
+              println!("\nnodes:");
+              for (index, node) in node.nodes.iter().enumerate() {
+                if types[index].is_undefined() {
+                  println!("{:10} => {node:8}", "");
+                } else {
+                  println!("{:10} => {node}", format!("{}", types[index]));
+                }
+              }
+
+              if node.outputs.len() > 0 {
+                println!("\noutputs:");
+
+                for output in node.outputs.iter() {
+                  let index = output.in_id.usize();
+                  println!("{:10} => {output}", types[index]);
+                }
+              }
+
+              println!("\n#############################################\n\n");
+            }
+            Err((entry, errors)) => {
+              dbg!(entry);
+              println!("\n\n#############################################");
+              for err in errors {
+                println!("{err}")
+              }
+              println!("#############################################\n\n");
+              return Err(1);
             }
           }
-          _ => panic!("Could not find {type_target}"),
         }
-
-        todo!("Return the type of the given expression")
       }
       cmd => panic!("Unrecognized command \"{cmd}\""),
     }
@@ -73,56 +93,34 @@ fn main() -> Result<(), u8> {
 }
 
 fn run_interpreter(mut args: VecDeque<String>) {
-  let mut module = RVSDGNode::new_module();
   let mut ty_db = TypeDatabase::new();
 
   while let Some(arg) = args.pop_front() {
     match arg.as_str() {
       "-c" => {
         let call_expr_str = args.pop_front().expect("Expected a call expression following -c");
-        let module_ast = parse_raw_module(&format!("main () => Y? {call_expr_str}")).expect("Could not parse call expression");
-        module = lower_ast_to_rvsdg(&module_ast, module, &mut ty_db);
+        let module_ast = parse_raw_module(&format!("main () => ? {{ {call_expr_str} }}")).expect("Could not parse call expression");
+        lower_ast_to_rvsdg(&module_ast, &mut ty_db);
 
-        for RSDVGBinding { name, in_id, .. } in module.outputs.iter() {
-          if *name == "main".to_token() {
-            if let RVSDGInternalNode::Complex(cplx) = &module.nodes[in_id.usize()] {
-              if cplx.ty == RVSDGNodeType::Function {
-                match type_solve::solve(cplx, &module, &mut ty_db) {
-                  Ok(type_info) => interpret(cplx, &type_info, &mut ty_db),
-                  Err(err) => panic!("{err:?}"),
-                }
-              }
-            }
-          }
+        let Some(entry) = ty_db.get_ty_entry("main") else { panic!("Could not load main function") };
+        let ty = entry.ty;
+
+        if (solve_type(ty, &mut ty_db).is_ok()) {
+          interpret(ty, &mut ty_db);
         }
       }
-      "-p" => {
+      "-m" => {
         let script = args.pop_front().unwrap();
 
         let module_ast = parser::script_parser::parse_raw_module(&script).expect("Parsing Failed");
 
-        module = lower_ast_to_rvsdg(&module_ast, module, &mut ty_db);
+        lower_ast_to_rvsdg(&module_ast, &mut ty_db);
 
         /*    for (_, funct) in &mut module.functs {
           let constraints = type_solve::solve(funct);
 
           dbg!(funct, &constraints);
         } */
-      }
-      "-f" => {
-        if let Some(path_str) = args.pop_front() {
-          if let Ok(path) = std::fs::canonicalize(&std::path::PathBuf::from(path_str)) {
-            if let Ok(string) = std::fs::read_to_string(path) {
-              let module_ast = parser::script_parser::parse_raw_module(&string).expect("Parsing Failed");
-              module = lower_ast_to_rvsdg(&module_ast, module, &mut ty_db);
-
-              /*       for (_, funct) in &mut module.functs {
-                let constraints = type_solve::solve(funct);
-                dbg!(funct, &constraints);
-              } */
-            }
-          }
-        }
       }
       arg => panic!("Unrecognized arg \"{arg}\""),
     }

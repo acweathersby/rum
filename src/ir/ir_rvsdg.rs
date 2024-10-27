@@ -2,6 +2,7 @@ use radlr_rust_runtime::types::Token;
 
 use crate::{
   container::ArrayVec,
+  ir_interpreter::blame,
   istring::{CachedString, IString},
   parser::script_parser::ASTNode,
   types::ConstVal,
@@ -33,7 +34,7 @@ pub enum RVSDGNodeType {
   Module,
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone)]
 pub struct RVSDGNode {
   pub id:           IString,
   pub ty:           RVSDGNodeType,
@@ -56,13 +57,22 @@ impl RVSDGNode {
   }
 }
 
+impl Debug for RVSDGNode {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self, f)
+  }
+}
+
 impl Display for RVSDGNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut s = f.debug_struct("Node");
     s.field("ty", &self.ty);
-    s.field("id", &self.id);
 
-    s.field_with("in", |f| {
+    if (!self.id.is_empty()) {
+      s.field("id", &self.id.to_str().as_str());
+    }
+
+    s.field_with("inputs", |f| {
       for i in self.inputs.iter() {
         f.write_str("\n    ")?;
         Display::fmt(&i, f)?;
@@ -72,21 +82,23 @@ impl Display for RVSDGNode {
 
     if self.nodes.len() > 0 {
       s.field_with("nodes", |f| {
-        for i in self.nodes.iter() {
+        for (index, i) in self.nodes.iter().enumerate() {
           f.write_fmt(format_args!("\n"))?;
           Display::fmt(&i, f)?;
+          f.write_fmt(format_args!("\n{:18}", blame(&self.source_nodes[index], "")))?;
         }
         Ok(())
       });
     }
 
-    s.field_with("out", |f| {
+    s.field_with("outputs", |f| {
       for i in self.outputs.iter() {
         f.write_str("\n     ")?;
         Display::fmt(&i, f)?;
       }
       Ok(())
     });
+
     s.finish()
   }
 }
@@ -250,6 +262,8 @@ pub enum IROp {
   ASSIGN,
   /// Returns the address of op1 as a pointer
   LOAD_ADDR,
+
+  BIND_TYPE,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]

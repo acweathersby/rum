@@ -138,12 +138,10 @@ impl Builder {
   }
 }
 
-pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_module: Box<RVSDGNode>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
+pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut TypeDatabase) -> Vec<IString> {
   let members = &module.members;
 
-  let mut build_module = Builder::from_existing_module(existing_module);
-
-  build_module.node.id = "Module".intern();
+  let mut output_names = Vec::new();
 
   for mem in &members.members {
     match mem {
@@ -154,11 +152,6 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_mo
             let struct_: Box<RVSDGNode> = lower_struct_to_rsvdg(bound_type.name.id.intern(), strct, ty_db);
 
             ty_db.add_ty(struct_.id, struct_.clone());
-
-            let struct_id = Builder::create_id(&mut build_module.node_id);
-            build_module.node.nodes.push(RVSDGInternalNode::Complex(struct_.clone()));
-            build_module.node.source_nodes.push(ASTNode::Type_Struct(strct.clone()));
-            build_module.add_output(RSDVGBinding { name, in_id: struct_id, out_id: Default::default(), ty: Default::default(), input_index: 0 });
           }
           _ => unreachable!(),
         },
@@ -168,11 +161,6 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_mo
           let name = funct.id;
 
           ty_db.add_ty(funct.id, funct.clone());
-
-          let funct_id = Builder::create_id(&mut build_module.node_id);
-          build_module.node.nodes.push(RVSDGInternalNode::Complex(funct.clone()));
-          build_module.node.source_nodes.push(Default::default());
-          build_module.add_output(RSDVGBinding { name, in_id: funct_id, out_id: Default::default(), ty: Default::default(), input_index: 0 });
         }
         module_member_Value::RawScope(scope) => {}
         _ => unreachable!(),
@@ -183,7 +171,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, existing_mo
     }
   }
 
-  build_module.node
+  output_names
 }
 
 fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
@@ -242,14 +230,14 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
 
   let ret_val = process_expression(expr, &mut node_stack, ty_db);
 
-  let mut fn_node = node_stack.pop_front().unwrap().node;
-
   match &fn_decl.ty {
     routine_type_Value::RawFunctionType(fn_ty) => {
-      insert_returns(ret_val, fn_ty, &mut fn_node, ty_db);
+      insert_returns(ret_val, fn_ty, &mut node_stack, ty_db);
     }
     _ => {}
   };
+
+  let mut fn_node = node_stack.pop_front().unwrap().node;
 
   // remove non return values from input
 
@@ -266,15 +254,21 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
   fn_node
 }
 
-fn insert_returns(ret_val: IRGraphId, fn_ty: &std::sync::Arc<RawFunctionType<Token>>, fn_node: &mut Box<RVSDGNode>, ty_db: &mut TypeDatabase) {
+fn insert_returns(ret_val: IRGraphId, fn_ty: &std::sync::Arc<RawFunctionType<Token>>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) {
   if !ret_val.is_invalid() {
     let ret = &fn_ty.return_type;
     let mut input = RSDVGBinding::default();
     let ty = get_type(&ret.ty, false, ty_db).unwrap_or_default();
+
+    let builder = node_stack.front_mut().unwrap();
+
+    let ret_val =
+      if !ty.is_undefined() { builder.add_simple(IROp::BIND_TYPE, [ret_val, Default::default()], ty, ASTNode::RawParamType(ret.clone())) } else { ret_val };
+
     input.name = "RET".intern();
     input.ty = ty;
     input.in_id = ret_val;
-    fn_node.outputs.push(input);
+    builder.node.outputs.push(input);
   } else {
     panic!("Create error reporting an expected return value is not found");
   }
@@ -429,7 +423,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         args.push((process_expression(&arg.expr, node_stack, ty_db), ASTNode::expression_Value(arg.expr.clone())));
       }
 
-      push_node(node_stack, RVSDGNodeType::Call, Default::default());
+      push_new_builder(node_stack, RVSDGNodeType::Call, Default::default());
 
       let call_builder = node_stack.front_mut().unwrap();
 
@@ -455,7 +449,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       // The return value should now be mapped to a new_node id in the parent scope.
 
-      let node_index = pop_node(node_stack);
+      let node_index = pop_builder(node_stack, ASTNode::RawCall(call.clone()));
 
       let par_node = node_stack.front_mut().unwrap();
 
@@ -486,7 +480,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       //todo!("Match");
 
       // create the match entry
-      push_node(node_stack, RVSDGNodeType::MatchHead, Default::default());
+      push_new_builder(node_stack, RVSDGNodeType::MatchHead, Default::default());
 
       let eval_id = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
@@ -497,10 +491,10 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       let mut merges = vec![];
 
       for clause in &mtch.clauses {
-        push_node(node_stack, RVSDGNodeType::Switch, Default::default());
+        push_new_builder(node_stack, RVSDGNodeType::Switch, Default::default());
 
         if clause.default {
-          push_node(node_stack, RVSDGNodeType::SwitchBody, Default::default());
+          push_new_builder(node_stack, RVSDGNodeType::SwitchBody, Default::default());
 
           process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
@@ -524,14 +518,14 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
             builder.add_simple(op_ty, [eval_id, v], Default::default(), ASTNode::None);
           }
 
-          push_node(node_stack, RVSDGNodeType::SwitchBody, Default::default());
+          push_new_builder(node_stack, RVSDGNodeType::SwitchBody, Default::default());
 
           process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
           pop_and_merge_single_node(node_stack);
         }
 
-        merges.push(pop_node(node_stack));
+        merges.push(pop_builder(node_stack, Default::default()));
       }
 
       // Merge match nodes - this is the only place we need to do such a complex mapping of inputs.
@@ -641,7 +635,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
         let label_id = builder.get_label(init.name.id.intern());
         let ref_id = builder.add_simple(IROp::REF, [agg_id, label_id], Default::default(), ASTNode::Var(init.name.clone()));
-        builder.add_simple(IROp::ASSIGN, [ref_id, expr_id], Default::default(), ASTNode::Var(init.name.clone()));
+        builder.add_simple(IROp::ASSIGN, [ref_id, expr_id], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
       }
 
       agg_id
@@ -690,7 +684,7 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
 }
 
 fn pop_and_merge_single_node(node_stack: &mut VecDeque<Builder>) {
-  let child_index = pop_node(node_stack);
+  let child_index = pop_builder(node_stack, Default::default());
 
   let builder = node_stack.front_mut().unwrap();
   let RVSDGNode { outputs, nodes, .. } = builder.node.as_mut();
@@ -757,6 +751,13 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
       let root_name = decl.var.id.intern();
       let ty = get_type(&decl.ty, false, ty_db).unwrap();
 
+      let graph_id = if !ty.is_generic() {
+        let builder = node_stack.front_mut().unwrap();
+        builder.add_simple(IROp::BIND_TYPE, [graph_id, Default::default()], ty, ASTNode::Var(decl.var.clone()))
+      } else {
+        graph_id
+      };
+
       create_var_binding(node_stack, root_name, graph_id, ty);
     }
     assignment_var_Value::MemberCompositeAccess(mem) => {
@@ -775,16 +776,19 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
   }
 }
 
-fn push_node(node_stack: &mut VecDeque<Builder>, ty: RVSDGNodeType, id: IString) {
+fn push_new_builder(node_stack: &mut VecDeque<Builder>, ty: RVSDGNodeType, id: IString) {
   let mut entry = Builder::new();
   entry.node.id = id;
   entry.node.ty = ty;
   node_stack.push_front(entry);
 }
 
-fn pop_node(node_stack: &mut VecDeque<Builder>) -> usize {
+fn pop_builder(node_stack: &mut VecDeque<Builder>, node: ASTNode) -> usize {
   let entry = node_stack.pop_front().unwrap();
-  let front_nodes = &mut node_stack.front_mut().unwrap().node.nodes;
+  let par_builder = node_stack.front_mut().unwrap();
+  par_builder.node.source_nodes.push(node);
+  let front_nodes = &mut par_builder.node.nodes;
+  par_builder.node_id += 1;
   front_nodes.push(RVSDGInternalNode::Complex(entry.node));
   front_nodes.len() - 1
 }
@@ -876,7 +880,7 @@ pub fn get_type(ir_type: &type_Value<Token>, insert_unresolved: bool, ty_db: &mu
         Option::None
       }
     }
-    Type_Variable(type_var) => Some(ty_db.get_or_intert_complex_type(type_var.name.id.as_str())),
+    Type_Variable(type_var) => Some(ty_db.get_or_insert_complex_type(type_var.name.id.as_str())),
     _t => Option::None,
   }
 }
