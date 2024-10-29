@@ -8,6 +8,7 @@ use crate::{
     types::TypeDatabase,
   },
   istring::IString,
+  parser::script_parser::ASTNode,
 };
 use std::{
   cmp::Ordering,

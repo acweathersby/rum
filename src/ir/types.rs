@@ -12,7 +12,6 @@ use super::ir_rvsdg::RVSDGNode;
 pub struct TypeEntry {
   pub ty:                 Type,
   pub(crate) node:        Option<*mut RVSDGNode>,
-  pub(crate) type_data:   Option<(usize, usize, *mut Type)>,
   pub(crate) offset_data: Option<(usize, usize, *mut usize)>,
   pub(crate) size:        usize,
 }
@@ -36,10 +35,6 @@ impl TypeEntry {
     self.node.map(|n| unsafe { &mut *n })
   }
 
-  pub fn get_type_data(&self) -> Option<&[Type]> {
-    self.type_data.map(|(len, capacity, data)| unsafe { std::slice::from_raw_parts(data, len as usize) })
-  }
-
   pub fn get_offset_data(&self) -> Option<&[usize]> {
     self.offset_data.map(|(len, capacity, data)| unsafe { std::slice::from_raw_parts(data, len as usize) })
   }
@@ -61,7 +56,7 @@ macro_rules! create_primitive {
   ($db:ident $primitive_name:tt,  $size:literal  $ele_count:literal  $($name:literal)+) => {
     let index = $db.types.len();
     let ty = Type::Primitive(PrimitiveType{  base_ty: PrimitiveBaseType::$primitive_name,  base_index: index as u8,  byte_size: $size, ele_count: $ele_count   });
-    $db.types.push(TypeEntry { ty, node: None, type_data: None, offset_data:None, size: 0 });
+    $db.types.push(TypeEntry { ty, node: None, offset_data:None, size: 0 });
     create_primitive!($db index $($name)+)
   };
 }
@@ -99,7 +94,6 @@ impl TypeDatabase {
         let entry = TypeEntry {
           node:        None,
           ty:          Type::Complex { ty_index: index as u32 },
-          type_data:   None,
           offset_data: None,
           size:        0,
         };
@@ -134,7 +128,7 @@ impl TypeDatabase {
 
   pub fn get_ptr(&self, ty: Type) -> Option<Type> {
     match ty {
-      Type::Undefined => None,
+      Type::Undefined => Some(Type::Undefined),
       Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count + 1, gen_index }),
       Type::Complex { ty_index } => Some(Type::Pointer { count: 1, ty_index }),
       Type::Pointer { count, ty_index } => Some(Type::Pointer { count: count + 1, ty_index }),
@@ -161,7 +155,7 @@ impl TypeDatabase {
       }
     } else {
       self.name_to_entry.insert(name, index);
-      self.types.push(TypeEntry { ty, node: Some(Box::into_raw(node)), type_data: None, offset_data: None, size: 0 });
+      self.types.push(TypeEntry { ty, node: Some(Box::into_raw(node)), offset_data: None, size: 0 });
       Some(ty)
     }
   }

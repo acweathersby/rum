@@ -54,7 +54,7 @@ impl Value {
           let data = *data;
           let node = entry.get_node().unwrap();
           let offsets = entry.get_offset_data().unwrap();
-          let types = entry.get_type_data().unwrap();
+          let types = node.types.clone().unwrap();
 
           println!("  struct {}", node.id);
           for (index, output) in node.outputs.iter().enumerate() {
@@ -96,7 +96,8 @@ impl Value {
 
 pub fn interpret(ty: Type, ty_db: &mut TypeDatabase) {
   if let Some(entry) = ty_db.get_ty_entry_from_ty(ty) {
-    if let Some((node, type_info)) = entry.get_node().zip(entry.get_type_data()) {
+    if let Some(node) = entry.get_node() {
+      let type_info = node.types.as_deref().unwrap();
       if node.ty == RVSDGNodeType::Function {
         let result = executor(node, type_info, VecDeque::<Value>::new(), Default::default(), ty_db);
         dbg!(&result);
@@ -108,7 +109,7 @@ pub fn interpret(ty: Type, ty_db: &mut TypeDatabase) {
 }
 
 fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>, mut args: Vec<Value>, ty_db: &mut TypeDatabase) -> Vec<Value> {
-  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes } = fn_node;
+  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes, .. } = fn_node;
 
   for (index, node) in nodes.iter().enumerate() {
     use crate::ir::ir_rvsdg::IROp::*;
@@ -238,44 +239,54 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
         }
         op => panic!("Unrecognized op at {index}: {op:?} -> \n{}: {}\n{}", type_info[index], nodes[index], blame(&source_nodes[index], "")),
       },
-      RVSDGInternalNode::Complex(cplx) => match cplx.ty {
-        crate::ir::ir_rvsdg::RVSDGNodeType::Call => {
-          // lookup name
-          let name_input = cplx.inputs[0];
-          let in_id = name_input.in_id;
+      RVSDGInternalNode::Complex(cplx) => {
+        use crate::ir::ir_rvsdg::RVSDGNodeType;
+        match cplx.ty {
+          RVSDGNodeType::MatchHead => {
+            todo!("Handle match head")
+            // A match head contains a match value input, and a series potential match nodes,
+           //  which must be evaluated in order to determine whether a valid match has occurred.
+           //  if such a match does occur then its match body is executed, and all other match nodes
+           //  are ignored. 
+          }
+          RVSDGNodeType::Call => {
+            // lookup name
+            let name_input = cplx.inputs[0];
+            let in_id = name_input.in_id;
 
-          match &nodes[in_id] {
-            RVSDGInternalNode::Label(_, name) => {
-              // Find the name in the current module.
+            match &nodes[in_id] {
+              RVSDGInternalNode::Label(_, name) => {
+                // Find the name in the current module.
 
-              if let Some(fn_ty_entry) = ty_db.get_ty_entry(name.to_str().as_str()) {
-                if fn_ty_entry.get_node().is_some_and(|n| n.ty == RVSDGNodeType::Function) {
-                  if let Ok(fn_ty_entry) = solve_type(fn_ty_entry.ty, ty_db) {
-                    let funct = fn_ty_entry.get_node().expect("");
+                if let Some(fn_ty_entry) = ty_db.get_ty_entry(name.to_str().as_str()) {
+                  if fn_ty_entry.get_node().is_some_and(|n| n.ty == RVSDGNodeType::Function) {
+                    if let Ok(fn_ty_entry) = solve_type(fn_ty_entry.ty, ty_db) {
+                      let funct = fn_ty_entry.get_node().expect("");
 
-                    args = call(fn_ty_entry, cplx.inputs.as_slice()[1..].iter().map(|i| stack[i.in_id.usize()].clone()).collect(), ty_db);
+                      args = call(fn_ty_entry, cplx.inputs.as_slice()[1..].iter().map(|i| stack[i.in_id.usize()].clone()).collect(), ty_db);
 
-                    dbg!(&args);
+                      dbg!(&args);
 
-                    dbg!((fn_node, funct, cplx));
+                      dbg!((fn_node, funct, cplx));
 
-                    stack.push_back(Value::Null);
+                      stack.push_back(Value::Null);
 
-                    for (fn_out, cplx_out) in funct.outputs.iter().zip(cplx.outputs.iter()) {
-                      let in_index = fn_out.in_id.usize();
-                      let out_index = cplx_out.out_id.usize();
-                      dbg!((fn_out, cplx_out));
-                      stack.push_back(args[in_index]);
+                      for (fn_out, cplx_out) in funct.outputs.iter().zip(cplx.outputs.iter()) {
+                        let in_index = fn_out.in_id.usize();
+                        let out_index = cplx_out.out_id.usize();
+                        dbg!((fn_out, cplx_out));
+                        stack.push_back(args[in_index]);
+                      }
                     }
                   }
                 }
               }
+              _ => todo!(""),
             }
-            _ => todo!(""),
           }
+          _ => {}
         }
-        _ => {}
-      },
+      }
 
       _ => stack.push_back(Value::Null),
     }
@@ -285,7 +296,8 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
 }
 
 fn call(entry: TypeEntry, args: Vec<Value>, ty_db: &mut TypeDatabase) -> Vec<Value> {
-  if let Some((node, type_info)) = entry.get_node().zip(entry.get_type_data()) {
+  if let Some((node)) = entry.get_node() {
+    let type_info = node.types.as_deref().unwrap();
     if node.ty == RVSDGNodeType::Function {
       executor(node, type_info, VecDeque::<Value>::new(), Default::default(), ty_db)
     } else {
@@ -311,6 +323,9 @@ pub fn blame(node: &ASTNode, message: &str) -> String {
       Expression(node) => &node.tok,
       Add(node) => &node.tok,
       RawParamType(node) => &node.tok,
+      RawParamBinding(node) => &node.tok,
+      RawMatchClause(node) => &node.tok,
+      RawExprMatch(node) => &node.tok,
       None => &default,
       node => panic!("unrecognized node: {node:#?}"),
     }

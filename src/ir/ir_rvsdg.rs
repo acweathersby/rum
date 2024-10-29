@@ -1,4 +1,5 @@
 use radlr_rust_runtime::types::Token;
+use type_solve::TypeVar;
 
 use crate::{
   container::ArrayVec,
@@ -26,8 +27,9 @@ pub enum RVSDGNodeType {
   Undefined,
   Function,
   MatchHead,
-  Switch,
-  SwitchBody,
+  MatchClause,
+  MatchDefault,
+  MatchBody,
   Call,
   Struct,
   Array,
@@ -42,6 +44,9 @@ pub struct RVSDGNode {
   pub outputs:      ArrayVec<4, RSDVGBinding>,
   pub nodes:        Vec<RVSDGInternalNode>,
   pub source_nodes: Vec<ASTNode>,
+  pub ty_vars:      Option<Vec<TypeVar>>,
+  pub types:        Option<Vec<Type>>,
+  pub solved:       bool,
 }
 
 impl RVSDGNode {
@@ -53,6 +58,9 @@ impl RVSDGNode {
       outputs:      Default::default(),
       nodes:        Default::default(),
       source_nodes: Default::default(),
+      ty_vars:      Default::default(),
+      types:        Default::default(),
+      solved:       Default::default(),
     })
   }
 }
@@ -60,46 +68,6 @@ impl RVSDGNode {
 impl Debug for RVSDGNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(&self, f)
-  }
-}
-
-impl Display for RVSDGNode {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let mut s = f.debug_struct("Node");
-    s.field("ty", &self.ty);
-
-    if (!self.id.is_empty()) {
-      s.field("id", &self.id.to_str().as_str());
-    }
-
-    s.field_with("inputs", |f| {
-      for i in self.inputs.iter() {
-        f.write_str("\n    ")?;
-        Display::fmt(&i, f)?;
-      }
-      Ok(())
-    });
-
-    if self.nodes.len() > 0 {
-      s.field_with("nodes", |f| {
-        for (index, i) in self.nodes.iter().enumerate() {
-          f.write_fmt(format_args!("\n"))?;
-          Display::fmt(&i, f)?;
-          f.write_fmt(format_args!("\n{:18}", blame(&self.source_nodes[index], "")))?;
-        }
-        Ok(())
-      });
-    }
-
-    s.field_with("outputs", |f| {
-      for i in self.outputs.iter() {
-        f.write_str("\n     ")?;
-        Display::fmt(&i, f)?;
-      }
-      Ok(())
-    });
-
-    s.finish()
   }
 }
 
@@ -132,7 +100,7 @@ impl Debug for RSDVGBinding {
 
 impl Display for RSDVGBinding {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("{:>3} => {:<3} {:>3} [{}]", self.in_id, self.out_id, self.ty, self.name.to_string(),))
+    f.write_fmt(format_args!("{:<4}  => {:<3} {:>3} [{}]", self.in_id, self.out_id, self.ty, self.name.to_string(),))
   }
 }
 
@@ -140,8 +108,9 @@ impl Display for RSDVGBinding {
 pub enum RVSDGInternalNode {
   Label(IRGraphId, IString),
   Const(u32, ConstVal),
+  TypeBinding(IRGraphId, Type),
   Complex(Box<RVSDGNode>),
-  Simple { id: IRGraphId, op: IROp, operands: [IRGraphId; 2], ty: Type },
+  Simple { id: IRGraphId, op: IROp, operands: [IRGraphId; 2] },
   Input { id: IRGraphId, ty: Type, input_index: usize },
   Output { id: IRGraphId, ty: Type, output_index: usize },
 }
@@ -155,17 +124,17 @@ impl Debug for RVSDGInternalNode {
 impl Display for RVSDGInternalNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      RVSDGInternalNode::Label(id, name) => f.write_fmt(format_args!("{}: \"{:#}\"", id, name)),
+      RVSDGInternalNode::Label(id, name) => f.write_fmt(format_args!("\"{:#}\"", name)),
       RVSDGInternalNode::Complex(complex) => f.write_fmt(format_args!("{:#}", complex)),
-      RVSDGInternalNode::Const(id, r#const) => f.write_fmt(format_args!("{id:3} : {}", r#const)),
-      RVSDGInternalNode::Simple { id, op, operands, ty } => f.write_fmt(format_args!(
-        "{id:03}: {:6} = {:6} {:3}",
-        format!("{:?}", ty),
+      RVSDGInternalNode::Const(id, r#const) => f.write_fmt(format_args!("{}", r#const)),
+      RVSDGInternalNode::Simple { id, op, operands } => f.write_fmt(format_args!(
+        "{:10} {:10}",
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
-      RVSDGInternalNode::Input { id, ty, .. } => f.write_fmt(format_args!("{}:=: {} ", id, ty)),
-      RVSDGInternalNode::Output { id, ty, output_index } => f.write_fmt(format_args!("{}:{:5} => [@{:03}]", id, ty, output_index)),
+      RVSDGInternalNode::TypeBinding(in_id, ty) => f.write_fmt(format_args!("BIND_TYPE  {in_id:3}",)),
+      RVSDGInternalNode::Input { id, ty, .. } => f.write_fmt(format_args!("INPUT ")),
+      RVSDGInternalNode::Output { id, ty, output_index } => f.write_fmt(format_args!("{:5} <= [@{:03}]", ty, output_index)),
     }
   }
 }
@@ -174,7 +143,7 @@ impl Display for RVSDGInternalNode {
 mod test;
 
 fn get_node_by_name(name: IString, node: &mut RVSDGNode) -> Option<&mut RVSDGNode> {
-  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes: source_tokens } = node;
+  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes: source_tokens, .. } = node;
 
   let node_ptr = nodes.as_mut_ptr();
 
@@ -262,8 +231,6 @@ pub enum IROp {
   ASSIGN,
   /// Returns the address of op1 as a pointer
   LOAD_ADDR,
-
-  BIND_TYPE,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -340,5 +307,92 @@ impl Debug for IRGraphId {
 impl From<IRGraphId> for usize {
   fn from(value: IRGraphId) -> Self {
     value.0 as usize
+  }
+}
+
+impl Display for RVSDGNode {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let types = self.types.as_ref();
+    let ty_vars = self.ty_vars.as_ref();
+
+    let index = 0;
+
+    f.write_fmt(format_args!("--- {:?} ---\n", self.ty))?;
+    if !self.solved {
+      f.write_str("!#!#!#!#!#!#!#!\n")?;
+    }
+
+    if self.inputs.len() > 0 {
+      f.write_str("\ninputs:\n")?;
+
+      for input in self.inputs.iter() {
+        f.write_fmt(format_args!("{:<49} | {:}\n", format!("{input}"), get_type_string(input.out_id.usize(), types, ty_vars)))?;
+      }
+    }
+
+    f.write_str("nodes:\n")?;
+    for (index, node) in self.nodes.iter().enumerate() {
+      match node {
+        RVSDGInternalNode::Complex(node) => {
+          f.write_fmt(format_args!(
+            "`{index:<4} ----------------\n  {} \n----------------------\n",
+            format!("{}", node).split("\n").collect::<Vec<_>>().join("\n  ")
+          ));
+        }
+        _ => {
+          f.write_fmt(format_args!("`{index:<4} <= {:<40} | {:}\n", format!("{node}"), format!("{}", get_type_string(index, types, ty_vars))));
+        }
+      }
+    }
+
+    if self.outputs.len() > 0 {
+      f.write_str("outputs:\n")?;
+
+      for output in self.outputs.iter() {
+        f.write_fmt(format_args!("{:<49} | {:}\n", format!("{output}"), get_type_string(output.in_id.usize(), types, ty_vars)))?;
+      }
+    }
+
+    if let Some(vars) = self.ty_vars.as_ref() {
+      if !vars.is_empty() {
+        f.write_str("type vars:\n")?;
+        for var in vars {
+          f.write_fmt(format_args!("  {var}\n"))?;
+        }
+      }
+    }
+
+    Ok(())
+  }
+}
+
+pub fn __debug_node_types__(node: &RVSDGNode) {
+  println!("{node}");
+}
+
+fn get_type_string(index: usize, types: Option<&Vec<Type>>, ty_vars: Option<&Vec<TypeVar>>) -> String {
+  if let Some(types) = types {
+    if index > types.len() {
+      Default::default()
+    } else {
+      let ty: Type = types[index];
+      if let Some(gen_index) = ty.generic_id() {
+        if let Some(vars) = ty_vars {
+          if gen_index > vars.len() {
+            format!("A{gen_index}")
+          } else {
+            format!("{}", vars[gen_index])
+          }
+        } else {
+          format!("{ty}:")
+        }
+      } else if ty.is_undefined() {
+        Default::default()
+      } else {
+        format!("{ty}")
+      }
+    }
+  } else {
+    Default::default()
   }
 }

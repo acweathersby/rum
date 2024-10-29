@@ -1,6 +1,6 @@
 use rum_lang::{
   ir::{
-    ir_rvsdg::{lower::lower_ast_to_rvsdg, solve_pipeline::solve_type},
+    ir_rvsdg::{__debug_node_types__, lower::lower_ast_to_rvsdg, solve_pipeline::solve_type},
     types::TypeDatabase,
   },
   ir_interpreter::interpret,
@@ -37,39 +37,15 @@ fn main() -> Result<(), u8> {
         let type_target = args.pop_front().expect("Expected a type argument");
 
         if let Some(ty) = ty_db.get_ty(type_target.as_str()) {
+          let entry = ty_db.get_ty_entry(type_target.as_str());
+
           match solve_type(ty, &mut ty_db) {
             Ok(entry) => {
               let node = entry.get_node().expect("Type is not complex");
-              let types = entry.get_type_data().expect("Type has not been solved");
 
               println!("\n\n#############################################\n");
 
-              if node.inputs.len() > 0 {
-                println!("\ninputs:");
-
-                for input in node.inputs.iter() {
-                  let index = input.out_id.usize();
-                  println!(" {input} : {}", types[index]);
-                }
-              }
-
-              println!("\nnodes:");
-              for (index, node) in node.nodes.iter().enumerate() {
-                if types[index].is_undefined() {
-                  println!("{:10} => {node:8}", "");
-                } else {
-                  println!("{:10} => {node}", format!("{}", types[index]));
-                }
-              }
-
-              if node.outputs.len() > 0 {
-                println!("\noutputs:");
-
-                for output in node.outputs.iter() {
-                  let index = output.in_id.usize();
-                  println!("{:10} => {output}", types[index]);
-                }
-              }
+              __debug_node_types__(node);
 
               println!("\n#############################################\n\n");
             }

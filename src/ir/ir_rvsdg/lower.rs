@@ -19,6 +19,12 @@ struct Builder {
   val_lookup:   HashMap<ConstVal, IRGraphId>,
 }
 
+impl Debug for Builder {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Debug::fmt(&self.node, f)
+  }
+}
+
 impl Builder {
   pub fn new() -> Self {
     Builder {
@@ -61,19 +67,16 @@ impl Builder {
     id
   }
 
-  pub fn set_type(&mut self, op_id: IRGraphId, new_ty: Type) {
-    match &mut self.node.nodes[op_id.usize()] {
-      RVSDGInternalNode::Simple { id, op, operands, ty } => {
-        debug_assert!(ty.is_undefined());
-        *ty = new_ty
-      }
-      _ => {}
-    }
-  }
-
   pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 2], ty: Type, node: ASTNode) -> IRGraphId {
     let id = Self::create_id(&mut self.node_id);
-    self.node.nodes.push(RVSDGInternalNode::Simple { id, op, operands, ty });
+    self.node.nodes.push(RVSDGInternalNode::Simple { id, op, operands });
+    self.node.source_nodes.push(node);
+    id
+  }
+
+  pub fn add_ty_binding(&mut self, in_id: IRGraphId, ty: Type, node: ASTNode) -> IRGraphId {
+    let id = Self::create_id(&mut self.node_id);
+    self.node.nodes.push(RVSDGInternalNode::TypeBinding(in_id, ty));
     self.node.source_nodes.push(node);
     id
   }
@@ -106,7 +109,7 @@ impl Builder {
   pub fn add_const(&mut self, const_val: ConstVal, node: ASTNode) -> IRGraphId {
     let const_id = self.get_const(const_val);
     let id = Self::create_id(&mut self.node_id);
-    self.node.nodes.push(RVSDGInternalNode::Simple { id, op: IROp::CONST_DECL, operands: [const_id, Default::default()], ty: Default::default() });
+    self.node.nodes.push(RVSDGInternalNode::Simple { id, op: IROp::CONST_DECL, operands: [const_id, Default::default()] });
     self.node.source_nodes.push(node);
     id
   }
@@ -232,7 +235,7 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
 
   match &fn_decl.ty {
     routine_type_Value::RawFunctionType(fn_ty) => {
-      insert_returns(ret_val, fn_ty, &mut node_stack, ty_db);
+      insert_returns(ret_val, fn_ty, &mut node_stack, ty_db, &mut Vec::new());
     }
     _ => {}
   };
@@ -254,7 +257,13 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
   fn_node
 }
 
-fn insert_returns(ret_val: IRGraphId, fn_ty: &std::sync::Arc<RawFunctionType<Token>>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) {
+fn insert_returns(
+  ret_val: IRGraphId,
+  fn_ty: &std::sync::Arc<RawFunctionType<Token>>,
+  node_stack: &mut VecDeque<WIPNode>,
+  ty_db: &mut TypeDatabase,
+  errors: &mut Vec<String>,
+) {
   if !ret_val.is_invalid() {
     let ret = &fn_ty.return_type;
     let mut input = RSDVGBinding::default();
@@ -262,15 +271,15 @@ fn insert_returns(ret_val: IRGraphId, fn_ty: &std::sync::Arc<RawFunctionType<Tok
 
     let builder = node_stack.front_mut().unwrap();
 
-    let ret_val =
-      if !ty.is_undefined() { builder.add_simple(IROp::BIND_TYPE, [ret_val, Default::default()], ty, ASTNode::RawParamType(ret.clone())) } else { ret_val };
+    let ret_val = if !ty.is_undefined() { builder.add_ty_binding(ret_val, ty, ASTNode::RawParamType(ret.clone())) } else { ret_val };
 
     input.name = "RET".intern();
     input.ty = ty;
     input.in_id = ret_val;
     builder.node.outputs.push(input);
   } else {
-    panic!("Create error reporting an expected return value is not found");
+    panic!("AAA");
+    errors.push("Create error reporting an expected return value is not found".to_string());
   }
 }
 
@@ -288,20 +297,23 @@ fn create_input_binding(node_data: &mut Builder, name: IString, ty: Type, in_id:
   let mut output_binding = builder.add_input(RSDVGBinding { name, in_id, ty, ..Default::default() }, node);
 
   output_binding.in_id = output_binding.out_id;
+  output_binding.out_id = Default::default();
 
   builder.add_output(output_binding);
 
   output_binding.in_id
 }
 
-fn create_var_binding(node_stack: &mut VecDeque<Builder>, name: IString, in_id: IRGraphId, ty: Type) {
+fn create_var_binding(node_stack: &mut VecDeque<Builder>, name: IString, in_id: IRGraphId) -> &mut RSDVGBinding {
   let mut output_binding = RSDVGBinding::default();
   output_binding.name = name;
-  output_binding.ty = ty;
+  output_binding.ty = Default::default();
   output_binding.in_id = in_id;
-  output_binding.out_id = in_id;
+  //output_binding.out_id = in_id;
   output_binding.input_index = 0;
-  node_stack.front_mut().unwrap().add_output(output_binding);
+  let top_builder = node_stack.front_mut().unwrap();
+  top_builder.add_output(output_binding);
+  top_builder.node.outputs.as_mut_slice().last_mut().unwrap()
 }
 
 fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> IRGraphId {
@@ -477,152 +489,170 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
     }
 
     expression_Value::RawMatch(mtch) => {
-      //todo!("Match");
+      let match_expression_id = "__match__expr__".intern();
+      let match_value_id = "__match__val__".intern();
 
       // create the match entry
-      push_new_builder(node_stack, RVSDGNodeType::MatchHead, Default::default());
+      create_var_binding(node_stack, match_value_id, Default::default());
 
       let eval_id = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
-      let temp_binding_name = "__match__expr__".intern();
+      push_new_builder(node_stack, RVSDGNodeType::MatchHead, Default::default());
+      {
+        create_var_binding(node_stack, match_expression_id, eval_id);
+        create_var_binding(node_stack, match_value_id, Default::default());
 
-      create_var_binding(node_stack, temp_binding_name, eval_id, Default::default());
+        let mut merges = vec![];
 
-      let mut merges = vec![];
+        let match_builder = node_stack.front_mut().unwrap();
+        let match_output_id = IRGraphId::new(match_builder.node_id + mtch.clauses.len());
 
-      for clause in &mtch.clauses {
-        push_new_builder(node_stack, RVSDGNodeType::Switch, Default::default());
+        for clause in &mtch.clauses {
+          let default_value = if clause.default {
+            push_new_builder(node_stack, RVSDGNodeType::MatchDefault, Default::default());
 
-        if clause.default {
-          push_new_builder(node_stack, RVSDGNodeType::SwitchBody, Default::default());
+            let def_id = process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
-          process_expression(&clause.scope.clone().into(), node_stack, ty_db);
+            create_var_binding(node_stack, match_value_id, def_id).out_id = match_output_id;
 
-          pop_and_merge_single_node(node_stack);
-        } else {
-          let v = process_expression(&clause.expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
+            merges.push(pop_builder(node_stack, Default::default()));
+          } else {
+            push_new_builder(node_stack, RVSDGNodeType::MatchClause, Default::default());
 
-          let op_ty = match clause.expr.op.as_str() {
-            ">" => IROp::GR,
-            "<" => IROp::LS,
-            ">=" => IROp::GE,
-            "<=" => IROp::LE,
-            "==" => IROp::EQ,
-            "!=" => IROp::NE,
-            _ => todo!(),
+            create_var_binding(node_stack, match_value_id, Default::default());
+
+            let v = process_expression(&clause.expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
+
+            let op_ty = match clause.expr.op.as_str() {
+              ">" => IROp::GR,
+              "<" => IROp::LS,
+              ">=" => IROp::GE,
+              "<=" => IROp::LE,
+              "==" => IROp::EQ,
+              "!=" => IROp::NE,
+              _ => todo!(),
+            };
+
+            {
+              let eval_id = get_var(match_expression_id, node_stack).unwrap().in_id;
+              let builder = node_stack.front_mut().unwrap();
+              builder.add_simple(op_ty, [eval_id, v], Default::default(), ASTNode::RawExprMatch(clause.expr.clone()));
+            }
+
+            push_new_builder(node_stack, RVSDGNodeType::MatchBody, Default::default());
+
+            let def_id = process_expression(&clause.scope.clone().into(), node_stack, ty_db);
+
+            create_var_binding(node_stack, match_value_id, def_id);
+
+            pop_and_merge_single_node(node_stack);
+
+            merges.push(pop_builder(node_stack, Default::default()));
           };
-
-          {
-            let eval_id = get_var(temp_binding_name, node_stack).unwrap().in_id;
-            let builder = node_stack.front_mut().unwrap();
-            builder.add_simple(op_ty, [eval_id, v], Default::default(), ASTNode::None);
-          }
-
-          push_new_builder(node_stack, RVSDGNodeType::SwitchBody, Default::default());
-
-          process_expression(&clause.scope.clone().into(), node_stack, ty_db);
-
-          pop_and_merge_single_node(node_stack);
         }
 
-        merges.push(pop_builder(node_stack, Default::default()));
-      }
+        // Merge match nodes - this is the only place we need to do such a complex mapping of inputs.
+        {
+          let builder = node_stack.front_mut().unwrap();
 
-      // Merge match nodes - this is the only place we need to do such a complex mapping of inputs.
-      {
-        let builder = node_stack.front_mut().unwrap();
+          let pending_nodes = {
+            let Builder { node, node_id, .. } = builder;
+            let RVSDGNode { outputs, nodes, .. } = node.as_mut();
 
-        let pending_nodes = {
-          let Builder { node, node_id, .. } = builder;
-          let RVSDGNode { outputs, nodes, .. } = node.as_mut();
+            let mut children = nodes
+              .iter_mut()
+              .enumerate()
+              .filter_map(|(i, n)| match (merges.contains(&i), n) {
+                (true, RVSDGInternalNode::Complex(node)) => Some(node.as_mut()),
+                _ => None,
+              })
+              .collect::<Vec<_>>();
 
-          let mut children = nodes
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(i, n)| match (merges.contains(&i), n) {
-              (true, RVSDGInternalNode::Complex(node)) => Some(node.as_mut()),
-              _ => None,
-            })
-            .collect::<Vec<_>>();
+            let mut unchanged_vars = ArrayVec::<8, _>::new();
+            let mut changed_vars = ArrayVec::<8, _>::new();
+            let mut pending_nodes = vec![];
 
-          let mut unchanged_vars = ArrayVec::<8, _>::new();
-          let mut changed_vars = ArrayVec::<8, _>::new();
-          let mut pending_nodes = vec![];
-
-          for child in children.iter() {
-            for output in child.outputs.iter() {
-              if output.in_id != output.out_id {
-                changed_vars.push_unique(output.name).expect("");
-              } else {
-                unchanged_vars.push_unique(output.name).expect("");
+            for child in children.iter() {
+              for output in child.outputs.iter() {
+                if output.in_id != output.out_id {
+                  changed_vars.push_unique(output.name).expect("");
+                } else {
+                  unchanged_vars.push_unique(output.name).expect("");
+                }
               }
             }
-          }
 
-          for var_name in changed_vars.iter().cloned() {
-            let mut resolved = false;
+            for var_name in changed_vars.iter().cloned() {
+              let mut resolved = false;
 
-            for (_, par_out) in outputs.iter_mut().enumerate() {
-              if par_out.name == var_name {
-                let id = Builder::create_id(node_id);
-                pending_nodes.push((id, par_out.ty));
-                par_out.in_id = id;
+              for (_, par_out) in outputs.iter_mut().enumerate() {
+                if par_out.name == var_name {
+                  let id = Builder::create_id(node_id);
+                  pending_nodes.push((id, par_out.ty));
+                  par_out.in_id = id;
 
-                for child in children.iter_mut() {
-                  for output in child.outputs.iter_mut() {
-                    if output.name == var_name {
-                      output.out_id = id;
-                      break;
+                  for child in children.iter_mut() {
+                    for output in child.outputs.iter_mut() {
+                      if output.name == var_name {
+                        output.out_id = id;
+                        break;
+                      }
                     }
                   }
-                }
-                resolved = true;
-                break;
-              }
-            }
-
-            if !resolved {
-              for child in children.iter_mut() {
-                for output in child.outputs.iter_mut() {
-                  if output.name == var_name {
-                    output.out_id = Default::default();
-                    break;
-                  }
+                  resolved = true;
+                  break;
                 }
               }
-            }
-          }
 
-          for var_name in changed_vars.iter().cloned() {
-            if changed_vars.contains(&var_name) {
-              continue;
-            }
-
-            for (_, par_out) in outputs.iter_mut().enumerate() {
-              if par_out.name == var_name {
+              if !resolved {
                 for child in children.iter_mut() {
                   for output in child.outputs.iter_mut() {
                     if output.name == var_name {
-                      output.out_id = par_out.in_id;
+                      output.out_id = Default::default();
                       break;
                     }
                   }
                 }
               }
             }
-          }
-          pending_nodes
-        };
 
-        for (id, ty) in pending_nodes {
-          builder.add_input_node_internal(id, ty, 0, ASTNode::None);
+            for var_name in changed_vars.iter().cloned() {
+              if changed_vars.contains(&var_name) {
+                continue;
+              }
+
+              for (_, par_out) in outputs.iter_mut().enumerate() {
+                if par_out.name == var_name {
+                  for child in children.iter_mut() {
+                    for output in child.outputs.iter_mut() {
+                      if output.name == var_name {
+                        output.out_id = par_out.in_id;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            pending_nodes
+          };
+
+          for (id, ty) in pending_nodes {
+            builder.add_input_node_internal(id, ty, 0, ASTNode::None);
+          }
         }
       }
 
       pop_and_merge_single_node(node_stack);
 
-      Default::default()
+      let out_id = get_var(match_value_id, node_stack).unwrap().in_id;
+
+      remove_output(match_value_id, node_stack);
+      remove_output(match_expression_id, node_stack);
+
+      out_id
     }
+
     expression_Value::RawAggregateInstantiation(agg) => {
       let builder = node_stack.front_mut().unwrap();
       let agg_id =
@@ -695,7 +725,7 @@ fn pop_and_merge_single_node(node_stack: &mut VecDeque<Builder>) {
   for output in child.outputs.iter_mut() {
     let mut resolved = false;
 
-    for (_, par_out) in outputs.iter_mut().enumerate() {
+    for (par_out) in outputs.iter_mut() {
       if par_out.name == output.name {
         let internal_id_has_changed = output.out_id != output.in_id;
         let parent_id_hash_changed = par_out.out_id != par_out.in_id;
@@ -753,12 +783,12 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
 
       let graph_id = if !ty.is_generic() {
         let builder = node_stack.front_mut().unwrap();
-        builder.add_simple(IROp::BIND_TYPE, [graph_id, Default::default()], ty, ASTNode::Var(decl.var.clone()))
+        builder.add_ty_binding(graph_id, ty, ASTNode::Var(decl.var.clone()))
       } else {
         graph_id
       };
 
-      create_var_binding(node_stack, root_name, graph_id, ty);
+      create_var_binding(node_stack, root_name, graph_id);
     }
     assignment_var_Value::MemberCompositeAccess(mem) => {
       let root_name = mem.root.name.id.intern();
@@ -769,7 +799,9 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
           builder.add_simple(IROp::ASSIGN, [mem_id, graph_id], Default::default(), ASTNode::Expression(expr.clone()));
         }
         VarLookup::Var(output) => output.in_id = graph_id,
-        VarLookup::None(..) => create_var_binding(node_stack, root_name, graph_id, Default::default()),
+        VarLookup::None(..) => {
+          create_var_binding(node_stack, root_name, graph_id);
+        }
       }
     }
     _ => todo!(),
@@ -831,6 +863,21 @@ fn get_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Opti
     }
 
     unreachable!("-- {found_in_index}");
+  }
+}
+
+fn remove_output<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) {
+  let mut found_in_index = 0;
+  let mut id = IRGraphId::default();
+  let mut ty = Type::Undefined;
+
+  let builder = node_stack.front_mut().unwrap();
+
+  for (i, entry) in builder.node.outputs.iter_mut().enumerate() {
+    if entry.name == var_name {
+      builder.node.outputs.remove(i);
+      return;
+    }
   }
 }
 

@@ -91,11 +91,11 @@ IMPORT ../common/comment as cmt
 
   > match_condition block_expression
 
-    :ast { t_RawMatchClause, default: false, expr:$1, scope: $2 }
+    :ast { t_RawMatchClause, default: false, expr:$1, scope: $2, tok }
 
   | ( "or" | "else" | "otherwise" ) block_expression
 
-    :ast { t_RawMatchClause, default: true, scope: $2 }
+    :ast { t_RawMatchClause, default: true, scope: $2, tok }
 
 <> match_condition
 
