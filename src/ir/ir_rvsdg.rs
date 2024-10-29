@@ -106,6 +106,7 @@ impl Display for RSDVGBinding {
 
 #[derive(Clone)]
 pub enum RVSDGInternalNode {
+  PlaceHolder,
   Label(IRGraphId, IString),
   Const(u32, ConstVal),
   TypeBinding(IRGraphId, Type),
@@ -124,6 +125,7 @@ impl Debug for RVSDGInternalNode {
 impl Display for RVSDGInternalNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
+      RVSDGInternalNode::PlaceHolder => f.write_str("--- place holder --- "),
       RVSDGInternalNode::Label(id, name) => f.write_fmt(format_args!("\"{:#}\"", name)),
       RVSDGInternalNode::Complex(complex) => f.write_fmt(format_args!("{:#}", complex)),
       RVSDGInternalNode::Const(id, r#const) => f.write_fmt(format_args!("{}", r#const)),
