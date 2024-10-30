@@ -6,7 +6,7 @@ use crate::{
     ir_rvsdg::{solve_pipeline::solve_type, RVSDGInternalNode, RVSDGNode, RVSDGNodeType},
     types::{PrimitiveBaseType, Type, TypeDatabase, TypeEntry},
   },
-  istring::IString,
+  istring::{CachedString, IString},
   parser::script_parser::ASTNode,
 };
 use std::{alloc::Layout, collections::VecDeque, iter::Map};
@@ -25,6 +25,24 @@ macro_rules! op_match {
       (Value::f64(l), Value::f64(r)) => Value::f64(l $sym r),
       (Value::f32(l), Value::f32(r)) => Value::f32(l $sym r),
       _ => unreachable!(),
+    }
+  };
+}
+
+macro_rules! cmp_match {
+  ($sym: tt, $l: ident, $r: ident) => {
+    match ($l, $r) {
+      (Value::u32(l), Value::u32(r)) => Value::u16((l $sym r) as u16),
+      (Value::u64(l), Value::u64(r)) => Value::u16((l $sym r) as u16),
+      (Value::u16(l), Value::u16(r)) => Value::u16((l $sym r) as u16),
+      (Value::u8(l), Value::u8(r)) => Value::u16((l $sym r) as u16),
+      (Value::i64(l), Value::i64(r)) => Value::u16((l $sym r) as u16),
+      (Value::i32(l), Value::i32(r)) => Value::u16((l $sym r) as u16),
+      (Value::i16(l), Value::i16(r)) => Value::u16((l $sym r) as u16),
+      (Value::i8(l), Value::i8(r)) => Value::u16((l $sym r) as u16),
+      (Value::f64(l), Value::f64(r)) => Value::u16((l $sym r) as u16),
+      (Value::f32(l), Value::f32(r)) => Value::u16((l $sym r) as u16),
+      (l, r) => unreachable!("incompatible types {l:?} {r:?}. There should have been a conversion operation inserted here."),
     }
   };
 }
@@ -99,76 +117,235 @@ pub fn interpret(ty: Type, ty_db: &mut TypeDatabase) {
     if let Some(node) = entry.get_node() {
       let type_info = node.types.as_deref().unwrap();
       if node.ty == RVSDGNodeType::Function {
-        let result = executor(node, type_info, VecDeque::<Value>::new(), Default::default(), ty_db);
-        dbg!(&result);
-        println!("R:",);
-        result.last().unwrap().dbg(&ty_db);
+        let result = executor(node, type_info, Default::default(), ty_db);
+
+        for output in node.outputs.iter() {
+          if output.name == "RET".intern() {
+            let val = result[output.in_id];
+            println!("R: {val:?}");
+            break;
+          }
+        }
       }
     }
   }
 }
 
-fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>, mut args: Vec<Value>, ty_db: &mut TypeDatabase) -> Vec<Value> {
-  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes, .. } = fn_node;
+fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {
+  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes, .. } = scope_node;
 
-  for (index, node) in nodes.iter().enumerate() {
+  let mut stack = vec![Value::Null; scope_node.nodes.len()];
+
+  map_inputs(scope_node, &mut stack, args);
+
+  for (index, op) in nodes.iter().enumerate() {
     use crate::ir::ir_rvsdg::IROp::*;
     let ty = type_info[index];
-    match node {
-      RVSDGInternalNode::Input { id, ty, input_index } => stack.push_back(args[*input_index]),
+    match op {
+      RVSDGInternalNode::TypeBinding(in_op, _) => {
+        let val = match ty {
+          Type::Primitive(prim) => match ((prim.base_ty, prim.byte_size), stack[in_op.usize()]) {
+            ((PrimitiveBaseType::Signed, 1), Value::f64(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::f32(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::u64(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::u32(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::u16(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::u8(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::i64(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::i32(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::i16(val)) => Value::i8(val as i8),
+            ((PrimitiveBaseType::Signed, 1), Value::i8(val)) => Value::i8(val as i8),
+
+            ((PrimitiveBaseType::Signed, 2), Value::f64(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::f32(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::u64(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::u32(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::u16(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::u8(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::i64(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::i32(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::i16(val)) => Value::i16(val as i16),
+            ((PrimitiveBaseType::Signed, 2), Value::i8(val)) => Value::i16(val as i16),
+
+            ((PrimitiveBaseType::Signed, 4), Value::f64(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::f32(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::u64(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::u32(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::u16(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::u8(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::i64(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::i32(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::i16(val)) => Value::i32(val as i32),
+            ((PrimitiveBaseType::Signed, 4), Value::i8(val)) => Value::i32(val as i32),
+
+            ((PrimitiveBaseType::Signed, 8), Value::f64(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::f32(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::u64(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::u32(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::u16(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::u8(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::i64(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::i32(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::i16(val)) => Value::i64(val as i64),
+            ((PrimitiveBaseType::Signed, 8), Value::i8(val)) => Value::i64(val as i64),
+
+            ((PrimitiveBaseType::Unsigned, 1), Value::f64(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::f32(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::u64(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::u32(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::u16(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::u8(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::i64(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::i32(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::i16(val)) => Value::u8(val as u8),
+            ((PrimitiveBaseType::Unsigned, 1), Value::i8(val)) => Value::u8(val as u8),
+
+            ((PrimitiveBaseType::Unsigned, 2), Value::f64(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::f32(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::u64(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::u32(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::u16(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::u8(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::i64(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::i32(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::i16(val)) => Value::u16(val as u16),
+            ((PrimitiveBaseType::Unsigned, 2), Value::i8(val)) => Value::u16(val as u16),
+
+            ((PrimitiveBaseType::Unsigned, 4), Value::f64(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::f32(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::u64(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::u32(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::u16(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::u8(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::i64(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::i32(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::i16(val)) => Value::u32(val as u32),
+            ((PrimitiveBaseType::Unsigned, 4), Value::i8(val)) => Value::u32(val as u32),
+
+            ((PrimitiveBaseType::Unsigned, 8), Value::f64(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::f32(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::u64(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::u32(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::u16(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::u8(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::i64(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::i32(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::i16(val)) => Value::u64(val as u64),
+            ((PrimitiveBaseType::Unsigned, 8), Value::i8(val)) => Value::u64(val as u64),
+
+            ((PrimitiveBaseType::Float, 4), Value::f64(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::f32(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::u64(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::u32(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::u16(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::u8(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::i64(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::i32(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::i16(val)) => Value::f32(val as f32),
+            ((PrimitiveBaseType::Float, 4), Value::i8(val)) => Value::f32(val as f32),
+
+            ((PrimitiveBaseType::Float, 8), Value::f64(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::f32(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::u64(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::u32(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::u16(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::u8(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::i64(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::i32(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::i16(val)) => Value::f64(val as f64),
+            ((PrimitiveBaseType::Float, 8), Value::i8(val)) => Value::f64(val as f64),
+            _ => todo!(),
+          },
+          ty => unreachable!("{ty:?}"),
+        };
+
+        stack[index] = val;
+      }
       RVSDGInternalNode::Simple { id, op, operands, .. } => match op {
         CONST_DECL => {
           let RVSDGInternalNode::Const(_, cst) = nodes[operands[0].usize()] else { panic!("Expected constant operand in CONST_DECL") };
 
-          assert!(!ty.is_undefined(), "Expected a primitive type for constant @ `{index} in \n{fn_node:#?} \n {type_info:#?}");
+          assert!(!ty.is_undefined(), "Expected a primitive type for constant @ `{index} in \n{op:#?} \n {type_info:#?}");
 
-          match ty {
+          let value = match ty {
             Type::Primitive(prim) => match prim.base_ty {
               PrimitiveBaseType::Signed => match prim.byte_size {
-                8 => stack.push_back(Value::i64(cst.convert(prim).load())),
-                4 => stack.push_back(Value::i32(cst.convert(prim).load())),
-                2 => stack.push_back(Value::i16(cst.convert(prim).load())),
-                1 => stack.push_back(Value::i8(cst.convert(prim).load())),
+                8 => Value::i64(cst.convert(prim).load()),
+                4 => Value::i32(cst.convert(prim).load()),
+                2 => Value::i16(cst.convert(prim).load()),
+                1 => Value::i8(cst.convert(prim).load()),
                 _ => unreachable!(),
               },
               PrimitiveBaseType::Unsigned => match prim.byte_size {
-                8 => stack.push_back(Value::u64(cst.convert(prim).load())),
-                4 => stack.push_back(Value::u32(cst.convert(prim).load())),
-                2 => stack.push_back(Value::u16(cst.convert(prim).load())),
-                1 => stack.push_back(Value::u8(cst.convert(prim).load())),
+                8 => Value::u64(cst.convert(prim).load()),
+                4 => Value::u32(cst.convert(prim).load()),
+                2 => Value::u16(cst.convert(prim).load()),
+                1 => Value::u8(cst.convert(prim).load()),
                 _ => unreachable!(),
               },
               PrimitiveBaseType::Float => match prim.byte_size {
-                8 => stack.push_back(Value::f64(cst.convert(prim).load())),
-                4 => stack.push_back(Value::f32(cst.convert(prim).load())),
+                8 => Value::f64(cst.convert(prim).load()),
+                4 => Value::f32(cst.convert(prim).load()),
                 _ => unreachable!(),
               },
             },
-            _ => println!("unexpected node type"),
-          }
+            ty => panic!("unexpected node type {ty}"),
+          };
+
+          stack[index] = value;
         }
         ADD => {
           let left = &stack[operands[0].usize()];
           let right = &stack[operands[1].usize()];
-          stack.push_back(op_match!(+, left, right));
+          stack[index] = op_match!(+, left, right);
         }
         SUB => {
           let left = &stack[operands[0].usize()];
           let right = &stack[operands[1].usize()];
-          stack.push_back(op_match!(-, left, right));
+          stack[index] = op_match!(-, left, right);
         }
         DIV => {
           let left = &stack[operands[0].usize()];
           let right = &stack[operands[1].usize()];
-          stack.push_back(op_match!(/, left, right));
+          stack[index] = op_match!(/, left, right);
         }
         MUL => {
           let left = &stack[operands[0].usize()];
           let right = &stack[operands[1].usize()];
-          stack.push_back(op_match!(*, left, right));
+          stack[index] = op_match!(*, left, right);
+        }
+        GR => {
+          let left = &stack[operands[0].usize()];
+          let right = &stack[operands[1].usize()];
+          stack[index] = cmp_match!(>, left, right);
+        }
+
+        LS => {
+          let left = &stack[operands[0].usize()];
+          let right = &stack[operands[1].usize()];
+          stack[index] = cmp_match!(<, left, right);
+        }
+        NE => {
+          let left = &stack[operands[0].usize()];
+          let right = &stack[operands[1].usize()];
+          stack[index] = cmp_match!(!=, left, right);
+        }
+        EQ => {
+          let left = &stack[operands[0].usize()];
+          let right = &stack[operands[1].usize()];
+          stack[index] = cmp_match!(==, left, right);
+        }
+        GE => {
+          let left = &stack[operands[0].usize()];
+          let right = &stack[operands[1].usize()];
+          stack[index] = cmp_match!(>=, left, right);
+        }
+        LE => {
+          let left = &stack[operands[0].usize()];
+          let right = &stack[operands[1].usize()];
+          stack[index] = cmp_match!(<=, left, right);
         }
         ASSIGN => {
-          dbg!(&stack);
           if let Value::Ptr(ptr, _) = stack[operands[0].usize()] {
             unsafe {
               match stack[operands[1].usize()] {
@@ -188,8 +365,6 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
           } else {
             todo!("Complain about target not being a pointer type")
           }
-
-          stack.push_back(Value::Null)
         }
         REF => {
           let struct_ty = type_info[operands[0].usize()];
@@ -206,7 +381,7 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
 
                 match stack[operands[0].usize()] {
                   Value::Agg(agg, _) => {
-                    stack.push_back(Value::Ptr(unsafe { agg.offset(offset as isize) } as *mut _, Type::Undefined));
+                    stack.push(Value::Ptr(unsafe { agg.offset(offset as isize) } as *mut _, Type::Undefined));
                   }
                   _ => unreachable!(),
                 }
@@ -228,7 +403,7 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
             // Allocate space for this node.
             let data = unsafe { std::alloc::alloc(Layout::array::<u8>(node.size as usize).unwrap()) };
 
-            stack.push_back((Value::Agg(data, agg_ty)));
+            stack.push((Value::Agg(data, agg_ty)));
           } else {
             panic!("Could not resolve type of {agg_ty} @ {index}: {op:?} -> \n{}: {}\n{}", type_info[index], nodes[index], blame(&source_nodes[index], ""))
           }
@@ -242,12 +417,66 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
       RVSDGInternalNode::Complex(cplx) => {
         use crate::ir::ir_rvsdg::RVSDGNodeType;
         match cplx.ty {
+          RVSDGNodeType::MatchActivation => {
+            let output_stack = inline_call(cplx, &stack, ty_db);
+
+            map_outputs(cplx, &output_stack, &mut stack);
+
+            if let Some(output) = scope_node.outputs.iter().find(|i| i.name == "__activation_val__".intern()) {
+              let is_good = match stack[output.in_id.usize()] {
+                Value::u16(val) => val > 0,
+                ty => todo!("handle value type {ty:?}"),
+              };
+
+              if !is_good {
+                return stack;
+              }
+            } else {
+              unreachable!("All node clauses should have a an activation output")
+            }
+          }
+          RVSDGNodeType::MatchBody => {
+            let args = inline_call(cplx, &stack, ty_db);
+            map_outputs(cplx, &args, &mut stack);
+          }
           RVSDGNodeType::MatchHead => {
-            todo!("Handle match head")
             // A match head contains a match value input, and a series potential match nodes,
-           //  which must be evaluated in order to determine whether a valid match has occurred.
-           //  if such a match does occur then its match body is executed, and all other match nodes
-           //  are ignored. 
+            //  which must be evaluated in order to determine whether a valid match has occurred.
+            //  if such a match does occur then its match body is executed, and all other match nodes
+            //  are ignored.
+
+            // create intermediate stack for our clauses
+            let match_node = cplx;
+
+            // find matches
+            let match_clauses = match_node.nodes.iter().filter(|f| matches!(f, RVSDGInternalNode::Complex(..)));
+
+            let mut match_stack = vec![Value::Null; match_node.nodes.len()];
+
+            map_inputs(match_node, &mut match_stack, &stack);
+
+            for clause in match_clauses {
+              let RVSDGInternalNode::Complex(node) = clause else { unreachable!() };
+
+              map_outputs(node, &inline_call(node, &match_stack, ty_db), &mut match_stack);
+
+              // check to see if the node was activated, if so, map its outputs to the node's inputs
+
+              if let Some(output) = node.outputs.iter().find(|i| i.name == "__activation_val__".intern()) {
+                let is_good = match match_stack[output.out_id.usize()] {
+                  Value::u16(val) => val > 0,
+                  ty => todo!("handle value type {ty:?}"),
+                };
+
+                if is_good {
+                  break;
+                }
+              } else {
+                unreachable!("All node clauses should have an activation output")
+              }
+            }
+
+            map_outputs(match_node, &match_stack, &mut stack);
           }
           RVSDGNodeType::Call => {
             // lookup name
@@ -261,21 +490,16 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
                 if let Some(fn_ty_entry) = ty_db.get_ty_entry(name.to_str().as_str()) {
                   if fn_ty_entry.get_node().is_some_and(|n| n.ty == RVSDGNodeType::Function) {
                     if let Ok(fn_ty_entry) = solve_type(fn_ty_entry.ty, ty_db) {
-                      let funct = fn_ty_entry.get_node().expect("");
+                      if let Some((node)) = fn_ty_entry.get_node() {
+                        let funct = fn_ty_entry.get_node().expect("");
 
-                      args = call(fn_ty_entry, cplx.inputs.as_slice()[1..].iter().map(|i| stack[i.in_id.usize()].clone()).collect(), ty_db);
+                        let fn_outputs = call(fn_ty_entry, &stack, ty_db);
 
-                      dbg!(&args);
-
-                      dbg!((fn_node, funct, cplx));
-
-                      stack.push_back(Value::Null);
-
-                      for (fn_out, cplx_out) in funct.outputs.iter().zip(cplx.outputs.iter()) {
-                        let in_index = fn_out.in_id.usize();
-                        let out_index = cplx_out.out_id.usize();
-                        dbg!((fn_out, cplx_out));
-                        stack.push_back(args[in_index]);
+                        for (f_out, c_out) in funct.outputs.iter().zip(cplx.outputs.iter()) {
+                          stack[c_out.out_id.usize()] = fn_outputs[f_out.in_id.usize()]
+                        }
+                      } else {
+                        unreachable!("fn name {name} is not callable")
                       }
                     }
                   }
@@ -287,22 +511,36 @@ fn executor(fn_node: &RVSDGNode, type_info: &[Type], mut stack: VecDeque<Value>,
           _ => {}
         }
       }
-
-      _ => stack.push_back(Value::Null),
+      _ => {}
     }
   }
 
-  fn_node.outputs.iter().map(|i| stack[i.in_id.usize()]).collect()
+  stack
 }
 
-fn call(entry: TypeEntry, args: Vec<Value>, ty_db: &mut TypeDatabase) -> Vec<Value> {
-  if let Some((node)) = entry.get_node() {
-    let type_info = node.types.as_deref().unwrap();
-    if node.ty == RVSDGNodeType::Function {
-      executor(node, type_info, VecDeque::<Value>::new(), Default::default(), ty_db)
-    } else {
-      panic!("Could not resolve call A")
+fn map_inputs(node: &RVSDGNode, stack: &mut [Value], args: &[Value]) {
+  for input in node.inputs.iter() {
+    if !input.in_id.is_invalid() && !input.out_id.is_invalid() {
+      stack[input.out_id.usize()] = args[input.in_id.usize()]
     }
+  }
+}
+
+fn map_outputs(node: &RVSDGNode, args: &[Value], stack: &mut [Value]) {
+  for output in node.outputs.iter() {
+    if !output.in_id.is_invalid() && !output.out_id.is_invalid() {
+      stack[output.out_id.usize()] = args[output.in_id.usize()]
+    }
+  }
+}
+
+fn inline_call(node: &RVSDGNode, args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {
+  executor(node, node.types.as_deref().unwrap(), args, ty_db)
+}
+
+fn call(entry: TypeEntry, args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {
+  if let Some((node)) = entry.get_node() {
+    inline_call(node, args, ty_db)
   } else {
     panic!("Could not resolve call B")
   }

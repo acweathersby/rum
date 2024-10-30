@@ -24,15 +24,9 @@ fn main() -> Result<(), u8> {
       "ty" => {
         let script = args.pop_front().expect("Expected an expression argument");
 
-        let script = match PathBuf::from(script.as_str()).canonicalize() {
-          Err(_) => script,
-          Ok(path) => std::fs::read_to_string(path).unwrap_or_default(),
-        };
-
-        let module_ast = parse_raw_module(&format!("{script}")).expect("Could not parse call expression");
         let mut ty_db = TypeDatabase::new();
 
-        lower_ast_to_rvsdg(&module_ast, &mut ty_db);
+        parse_module_data(script, &mut ty_db);
 
         let type_target = args.pop_front().expect("Expected a type argument");
 
@@ -86,19 +80,20 @@ fn run_interpreter(mut args: VecDeque<String>) {
         }
       }
       "-m" => {
-        let script = args.pop_front().unwrap();
-
-        let module_ast = parser::script_parser::parse_raw_module(&script).expect("Parsing Failed");
-
-        lower_ast_to_rvsdg(&module_ast, &mut ty_db);
-
-        /*    for (_, funct) in &mut module.functs {
-          let constraints = type_solve::solve(funct);
-
-          dbg!(funct, &constraints);
-        } */
+        parse_module_data(args.pop_front().unwrap(), &mut ty_db);
       }
       arg => panic!("Unrecognized arg \"{arg}\""),
     }
   }
+}
+
+fn parse_module_data(script: String, ty_db: &mut TypeDatabase) {
+  let script = match PathBuf::from(script.as_str()).canonicalize() {
+    Err(_) => script,
+    Ok(path) => std::fs::read_to_string(path).unwrap_or_default(),
+  };
+
+  let module_ast = parse_raw_module(&format!("{script}")).expect("Could not parse call expression");
+
+  lower_ast_to_rvsdg(&module_ast, ty_db);
 }

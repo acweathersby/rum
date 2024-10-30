@@ -28,7 +28,7 @@ pub enum RVSDGNodeType {
   Function,
   MatchHead,
   MatchClause,
-  MatchDefault,
+  MatchActivation,
   MatchBody,
   Call,
   Struct,
@@ -380,11 +380,11 @@ fn get_type_string(index: usize, types: Option<&Vec<Type>>, ty_vars: Option<&Vec
       let ty: Type = types[index];
       if let Some(gen_index) = ty.generic_id() {
         if let Some(vars) = ty_vars {
-          if gen_index > vars.len() {
-            format!("A{gen_index}")
-          } else {
-            format!("{}", vars[gen_index])
-          }
+          //if gen_index > vars.len() {
+          //  format!("A{gen_index}")
+          //} else {
+          format!("{}", vars[gen_index])
+          //``}
         } else {
           format!("{ty}:")
         }
