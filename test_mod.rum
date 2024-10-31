@@ -1,0 +1,19 @@
+dd => [ 
+  rstd: u32,
+  make: f32,
+  test: u32
+] 
+
+rdr => [rstd:u8, make:u8, test: u16]
+
+String => [len:u32, data: u32]
+
+// t () => rdr :[rstd = 2, test = 90
+
+entry () => u32 {   
+  d: u32 = 11
+  loop if d is > 20 { 202 } else { 111 }
+} 
+
+
+ 
