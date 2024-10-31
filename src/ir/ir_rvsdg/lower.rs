@@ -404,12 +404,12 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
             process_assign(&assign, node_stack, ty_db);
             last_id = IRGraphId::default()
           }
-          _ => todo!(),
+          ty => todo!("{ty:#?}"),
         }
       }
 
       match &block.exit {
-        block_expression_group_3_Value::BlockExitExpressions(e) => process_expression(&e.expression.expr, node_stack, ty_db),
+        Some(block_expression_group_3_Value::BlockExitExpressions(e)) => process_expression(&e.expression.expr, node_stack, ty_db),
         _ => last_id,
       }
     }
@@ -493,13 +493,12 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         let mut merges = vec![];
 
         let match_builder = node_stack.front_mut().unwrap();
-        let match_output_id = IRGraphId::new(match_builder.node_id + mtch.clauses.len());
 
         let match_activation_id = "__activation_val__".intern();
         let builder = node_stack.front_mut().unwrap();
         builder.create_var(match_activation_id, Default::default(), Default::default(), false);
 
-        for clause in &mtch.clauses {
+        for clause in mtch.clauses.iter().chain(mtch.default_clause.iter()) {
           push_new_builder(node_stack, RVSDGNodeType::MatchClause, Default::default());
 
           push_new_builder(node_stack, RVSDGNodeType::MatchActivation, Default::default());
@@ -507,11 +506,11 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
           let activation_op = if clause.default {
             let builder = node_stack.front_mut().unwrap();
             builder.add_const(ConstVal::new(ty_db.get_ty("u64").expect("u64 should exist").to_primitive().unwrap(), 1 as u64), Default::default())
-          } else {
+          } else if let Some(expr) = clause.expr.as_ref() {
             let builder = node_stack.front_mut().unwrap();
-            let v = process_expression(&clause.expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
+            let v = process_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
 
-            let op_ty = match clause.expr.op.as_str() {
+            let op_ty = match expr.op.as_str() {
               ">" => IROp::GR,
               "<" => IROp::LS,
               ">=" => IROp::GE,
@@ -523,7 +522,9 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
             let eval_id = get_var(match_expression_id, node_stack).unwrap();
             let builder = node_stack.front_mut().unwrap();
-            builder.add_simple(op_ty, [eval_id, v], Default::default(), ASTNode::RawExprMatch(clause.expr.clone()))
+            builder.add_simple(op_ty, [eval_id, v], Default::default(), ASTNode::RawExprMatch(expr.clone()))
+          } else {
+            unreachable!()
           };
 
           get_var(match_activation_id, node_stack);
@@ -569,9 +570,13 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
         let builder = node_stack.front_mut().unwrap();
 
-        let label_id = builder.get_label(init.name.id.intern());
-        let ref_id = builder.add_simple(IROp::REF, [agg_id, label_id], Default::default(), ASTNode::Var(init.name.clone()));
-        builder.add_simple(IROp::ASSIGN, [ref_id, expr_id], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
+        if let Some(name) = &init.name {
+          let label_id = builder.get_label(name.id.intern());
+          let ref_id = builder.add_simple(IROp::REF, [agg_id, label_id], Default::default(), ASTNode::Var(name.clone()));
+          builder.add_simple(IROp::ASSIGN, [ref_id, expr_id], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
+        } else {
+          todo!("Index based initializers are not supported yet {}", blame(&ASTNode::from(init.clone()), "prefix this with <name> ="))
+        }
       }
 
       agg_id

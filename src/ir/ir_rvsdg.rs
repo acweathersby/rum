@@ -288,6 +288,10 @@ impl IRGraphId {
   pub const fn is_invalid(&self) -> bool {
     self.0 == Self::INVALID.0
   }
+
+  pub const fn is_valid(&self) -> bool {
+    !self.is_invalid()
+  }
 }
 
 impl Display for IRGraphId {

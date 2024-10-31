@@ -3,13 +3,17 @@ use radlr_rust_runtime::types::{BlameColor, NodeType, Token};
 use crate::{
   container::get_aligned_value,
   ir::{
-    ir_rvsdg::{solve_pipeline::solve_type, RVSDGInternalNode, RVSDGNode, RVSDGNodeType},
+    ir_rvsdg::{solve_pipeline::solve_type, IRGraphId, RVSDGInternalNode, RVSDGNode, RVSDGNodeType},
     types::{PrimitiveBaseType, Type, TypeDatabase, TypeEntry},
   },
   istring::{CachedString, IString},
   parser::script_parser::ASTNode,
 };
-use std::{alloc::Layout, collections::VecDeque, iter::Map};
+use std::{
+  alloc::Layout,
+  collections::{HashSet, VecDeque},
+  iter::Map,
+};
 
 macro_rules! op_match {
   ($sym: tt, $l: ident, $r: ident) => {
@@ -47,8 +51,9 @@ macro_rules! cmp_match {
   };
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
+  Unintialized,
   Null,
   u64(u64),
   u32(u32),
@@ -134,128 +139,91 @@ pub fn interpret(ty: Type, ty_db: &mut TypeDatabase) {
 fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {
   let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes, .. } = scope_node;
 
-  let mut stack = vec![Value::Null; scope_node.nodes.len()];
+  // order our ops based on inputs.
+  let mut stack = vec![Value::Unintialized; scope_node.nodes.len()];
+  let mut queue = VecDeque::new();
+  let mut rev_data_flow = Vec::new();
+  let mut cmplx = nodes
+    .iter()
+    .enumerate()
+    .filter_map(|(i, m)| match m {
+      RVSDGInternalNode::Complex(node) => Some((i, node)),
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+
+  let mut call_first = vec![];
+
+  for output in outputs.iter() {
+    if output.in_id.is_valid() {
+      if output.name == "__activation_val__".to_token() {
+        call_first.push(output.in_id);
+      } else {
+        queue.push_front(output.in_id);
+      }
+    }
+  }
+
+  for i in call_first {
+    queue.push_back(i);
+  }
+
+  while let Some(op_index) = queue.pop_front() {
+    if stack[op_index.usize()] == Value::Unintialized {
+      stack[op_index.usize()] = Value::Null;
+
+      match &nodes[op_index] {
+        RVSDGInternalNode::Input { .. } => {
+          for (i, cmplx) in &cmplx {
+            if stack[*i] == Value::Unintialized {
+              for output in cmplx.outputs.iter() {
+                if output.out_id == op_index {
+                  queue.push_front(IRGraphId::new(*i));
+                  break;
+                }
+              }
+            }
+          }
+        }
+        RVSDGInternalNode::TypeBinding(in_op, _) => {
+          queue.push_front(*in_op);
+          rev_data_flow.push(op_index);
+        }
+        RVSDGInternalNode::Simple { id, op, operands, .. } => {
+          if operands[0].is_valid() {
+            queue.push_front(operands[0]);
+          }
+
+          if operands[1].is_valid() {
+            queue.push_front(operands[1]);
+          }
+          rev_data_flow.push(op_index);
+        }
+        RVSDGInternalNode::Complex(cplx) => {
+          for input in cplx.inputs.iter() {
+            if input.in_id.is_valid() {
+              queue.push_front(input.in_id);
+            }
+          }
+          rev_data_flow.push(op_index);
+        }
+        _ => {}
+      }
+    }
+  }
 
   map_inputs(scope_node, &mut stack, args);
 
-  for (index, op) in nodes.iter().enumerate() {
+  dbg!((&rev_data_flow, &scope_node));
+
+  for op_index in rev_data_flow.iter().rev() {
+    let index = op_index.usize();
     use crate::ir::ir_rvsdg::IROp::*;
     let ty = type_info[index];
-    match op {
+    match &nodes[index] {
       RVSDGInternalNode::TypeBinding(in_op, _) => {
         let val = match ty {
-          Type::Primitive(prim) => match ((prim.base_ty, prim.byte_size), stack[in_op.usize()]) {
-            ((PrimitiveBaseType::Signed, 1), Value::f64(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::f32(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::u64(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::u32(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::u16(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::u8(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::i64(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::i32(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::i16(val)) => Value::i8(val as i8),
-            ((PrimitiveBaseType::Signed, 1), Value::i8(val)) => Value::i8(val as i8),
-
-            ((PrimitiveBaseType::Signed, 2), Value::f64(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::f32(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::u64(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::u32(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::u16(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::u8(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::i64(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::i32(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::i16(val)) => Value::i16(val as i16),
-            ((PrimitiveBaseType::Signed, 2), Value::i8(val)) => Value::i16(val as i16),
-
-            ((PrimitiveBaseType::Signed, 4), Value::f64(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::f32(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::u64(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::u32(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::u16(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::u8(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::i64(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::i32(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::i16(val)) => Value::i32(val as i32),
-            ((PrimitiveBaseType::Signed, 4), Value::i8(val)) => Value::i32(val as i32),
-
-            ((PrimitiveBaseType::Signed, 8), Value::f64(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::f32(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::u64(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::u32(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::u16(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::u8(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::i64(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::i32(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::i16(val)) => Value::i64(val as i64),
-            ((PrimitiveBaseType::Signed, 8), Value::i8(val)) => Value::i64(val as i64),
-
-            ((PrimitiveBaseType::Unsigned, 1), Value::f64(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::f32(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::u64(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::u32(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::u16(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::u8(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::i64(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::i32(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::i16(val)) => Value::u8(val as u8),
-            ((PrimitiveBaseType::Unsigned, 1), Value::i8(val)) => Value::u8(val as u8),
-
-            ((PrimitiveBaseType::Unsigned, 2), Value::f64(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::f32(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::u64(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::u32(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::u16(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::u8(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::i64(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::i32(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::i16(val)) => Value::u16(val as u16),
-            ((PrimitiveBaseType::Unsigned, 2), Value::i8(val)) => Value::u16(val as u16),
-
-            ((PrimitiveBaseType::Unsigned, 4), Value::f64(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::f32(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::u64(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::u32(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::u16(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::u8(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::i64(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::i32(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::i16(val)) => Value::u32(val as u32),
-            ((PrimitiveBaseType::Unsigned, 4), Value::i8(val)) => Value::u32(val as u32),
-
-            ((PrimitiveBaseType::Unsigned, 8), Value::f64(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::f32(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::u64(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::u32(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::u16(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::u8(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::i64(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::i32(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::i16(val)) => Value::u64(val as u64),
-            ((PrimitiveBaseType::Unsigned, 8), Value::i8(val)) => Value::u64(val as u64),
-
-            ((PrimitiveBaseType::Float, 4), Value::f64(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::f32(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::u64(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::u32(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::u16(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::u8(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::i64(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::i32(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::i16(val)) => Value::f32(val as f32),
-            ((PrimitiveBaseType::Float, 4), Value::i8(val)) => Value::f32(val as f32),
-
-            ((PrimitiveBaseType::Float, 8), Value::f64(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::f32(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::u64(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::u32(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::u16(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::u8(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::i64(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::i32(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::i16(val)) => Value::f64(val as f64),
-            ((PrimitiveBaseType::Float, 8), Value::i8(val)) => Value::f64(val as f64),
-            _ => todo!(),
-          },
+          Type::Primitive(prim) => convert_primitive_types(prim, stack[in_op.usize()]),
           ty => unreachable!("{ty:?}"),
         };
 
@@ -516,6 +484,121 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
   }
 
   stack
+}
+
+fn convert_primitive_types(prim: crate::ir::types::PrimitiveType, in_op: Value) -> Value {
+  match ((prim.base_ty, prim.byte_size), in_op) {
+    ((PrimitiveBaseType::Signed, 1), Value::f64(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::f32(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::u64(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::u32(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::u16(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::u8(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::i64(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::i32(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::i16(val)) => Value::i8(val as i8),
+    ((PrimitiveBaseType::Signed, 1), Value::i8(val)) => Value::i8(val as i8),
+
+    ((PrimitiveBaseType::Signed, 2), Value::f64(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::f32(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::u64(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::u32(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::u16(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::u8(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::i64(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::i32(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::i16(val)) => Value::i16(val as i16),
+    ((PrimitiveBaseType::Signed, 2), Value::i8(val)) => Value::i16(val as i16),
+
+    ((PrimitiveBaseType::Signed, 4), Value::f64(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::f32(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::u64(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::u32(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::u16(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::u8(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::i64(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::i32(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::i16(val)) => Value::i32(val as i32),
+    ((PrimitiveBaseType::Signed, 4), Value::i8(val)) => Value::i32(val as i32),
+
+    ((PrimitiveBaseType::Signed, 8), Value::f64(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::f32(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::u64(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::u32(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::u16(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::u8(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::i64(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::i32(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::i16(val)) => Value::i64(val as i64),
+    ((PrimitiveBaseType::Signed, 8), Value::i8(val)) => Value::i64(val as i64),
+
+    ((PrimitiveBaseType::Unsigned, 1), Value::f64(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::f32(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::u64(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::u32(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::u16(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::u8(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::i64(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::i32(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::i16(val)) => Value::u8(val as u8),
+    ((PrimitiveBaseType::Unsigned, 1), Value::i8(val)) => Value::u8(val as u8),
+
+    ((PrimitiveBaseType::Unsigned, 2), Value::f64(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::f32(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::u64(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::u32(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::u16(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::u8(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::i64(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::i32(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::i16(val)) => Value::u16(val as u16),
+    ((PrimitiveBaseType::Unsigned, 2), Value::i8(val)) => Value::u16(val as u16),
+
+    ((PrimitiveBaseType::Unsigned, 4), Value::f64(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::f32(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::u64(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::u32(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::u16(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::u8(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::i64(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::i32(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::i16(val)) => Value::u32(val as u32),
+    ((PrimitiveBaseType::Unsigned, 4), Value::i8(val)) => Value::u32(val as u32),
+
+    ((PrimitiveBaseType::Unsigned, 8), Value::f64(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::f32(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::u64(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::u32(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::u16(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::u8(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::i64(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::i32(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::i16(val)) => Value::u64(val as u64),
+    ((PrimitiveBaseType::Unsigned, 8), Value::i8(val)) => Value::u64(val as u64),
+
+    ((PrimitiveBaseType::Float, 4), Value::f64(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::f32(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::u64(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::u32(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::u16(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::u8(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::i64(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::i32(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::i16(val)) => Value::f32(val as f32),
+    ((PrimitiveBaseType::Float, 4), Value::i8(val)) => Value::f32(val as f32),
+
+    ((PrimitiveBaseType::Float, 8), Value::f64(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::f32(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::u64(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::u32(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::u16(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::u8(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::i64(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::i32(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::i16(val)) => Value::f64(val as f64),
+    ((PrimitiveBaseType::Float, 8), Value::i8(val)) => Value::f64(val as f64),
+    val => todo!("convert {val:#?}"),
+  }
 }
 
 fn map_inputs(node: &RVSDGNode, stack: &mut [Value], args: &[Value]) {

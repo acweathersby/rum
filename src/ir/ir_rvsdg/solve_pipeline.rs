@@ -21,7 +21,7 @@ use crate::{
   },
   ir_interpreter::blame,
   istring::IString,
-  parser::script_parser::ASTNode,
+  parser::script_parser::{ASTNode, Type_Generic},
 };
 use core::panic;
 use std::{
@@ -375,7 +375,6 @@ pub fn solve_constraints(
 
                   if let Some(constraints) = constraints {
                     let original_constraints = constraints.0.clone();
-                    //dbg!((original_constraints, &sub_node));
 
                     match solve_constraints(sub_node, constraints, ty_db, false) {
                       Ok((types, vars, unsolved)) => {
@@ -651,7 +650,6 @@ pub fn solve_constraints(
               Option::Some((id, ty)) => {
                 if mem_var.ty.is_undefined() || ty == mem_var.ty {
                 } else if ty.is_undefined() || ty.is_generic() {
-                  //after_queue.push(OPConstraints::OpToOp(id as u32, output as u32, node_id as u32));
                   panic!("A");
                   ty_vars[var_id as usize].add_mem(lu, ty, mem_var_op);
                 } else {
@@ -676,17 +674,9 @@ pub fn solve_constraints(
 
   let mut unsolved_ty_vars = Vec::new();
 
-  println!("======================================================================");
-  println!("{node:?}");
-  println!("{type_maps:?}");
-  println!("{ty_vars:?}");
-
-  println!("======================================================================");
-
   if errors.is_empty() {
     let mut type_list = Vec::with_capacity(num_of_nodes);
     let mut ext_var_lookup = Vec::with_capacity(ty_vars.len());
-
     {
       let mut unsolved_ty_vars = &mut unsolved_ty_vars;
       for _ in 0..ty_vars.len() {
@@ -694,7 +684,9 @@ pub fn solve_constraints(
       }
 
       // Convert generic and undefined variables to external constraints
-      for (var_id, var) in ty_vars.iter().enumerate() {
+      for var_id in 0..ty_vars.len() {
+        let var = &ty_vars[var_id];
+
         if var.id as usize == var_id && (var.ty.is_open()) {
           let len = unsolved_ty_vars.len();
           ext_var_lookup[var_id] = len as i32;
@@ -705,6 +697,12 @@ pub fn solve_constraints(
 
           if let Some(gen_id) = var.ty.generic_id() {
             let var = get_root_type_index(gen_id as i32, &ty_vars);
+            let ty = ty_vars[var as usize].ty;
+
+            if ty.is_generic() {
+              ty_vars[var as usize].ty = Type::Generic { ptr_count: 0, gen_index: len as u32 }
+            }
+
             new_var.ty = ty_vars[var as usize].ty;
           }
 

@@ -79,23 +79,27 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawLoop, label, scope, tok  }
 
-<> match_expression 
-
-  > "if" expr::l_val^expression "is" match_clause(+)^clauses
-
-    :ast { t_RawMatch, expression, clauses, tok  }
 
 +> expr::term > match_expression
+
+<> match_expression 
+
+  > "if" expr::l_val^expression "is" match_clause(+)^clauses default_clause
+
+    :ast { t_RawMatch, expression, clauses, default_clause, tok  }
+
+
+<> default_clause 
+
+  >  ( "or" | "else" | "otherwise" ) block_expression
+
+    :ast { t_RawMatchClause, default: true, scope: $2, tok }
 
 <> match_clause 
 
   > match_condition block_expression
 
     :ast { t_RawMatchClause, default: false, expr:$1, scope: $2, tok }
-
-  | ( "or" | "else" | "otherwise" ) block_expression
-
-    :ast { t_RawMatchClause, default: true, scope: $2, tok }
 
 <> match_condition
 
