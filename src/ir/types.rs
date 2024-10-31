@@ -93,7 +93,7 @@ impl TypeDatabase {
 
         let entry = TypeEntry {
           node:        None,
-          ty:          Type::Complex { ty_index: index as u32 },
+          ty:          Type::Complex { ty_index: index as u32, hash: 0 },
           offset_data: None,
           size:        0,
         };
@@ -105,7 +105,7 @@ impl TypeDatabase {
 
   pub fn get_ty_entry_from_ty(&self, ty: Type) -> Option<TypeEntry> {
     let index = match ty {
-      Type::Complex { ty_index } => ty_index as usize,
+      Type::Complex { ty_index, .. } => ty_index as usize,
       Type::Pointer { count, ty_index } => ty_index as usize,
       Type::Primitive(prim) => usize::MAX,
       _ => usize::MAX,
@@ -128,9 +128,10 @@ impl TypeDatabase {
 
   pub fn get_ptr(&self, ty: Type) -> Option<Type> {
     match ty {
+      Type::ComplexHash(_) => Some(Type::Undefined),
       Type::Undefined => Some(Type::Undefined),
       Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count + 1, gen_index }),
-      Type::Complex { ty_index } => Some(Type::Pointer { count: 1, ty_index }),
+      Type::Complex { ty_index, .. } => Some(Type::Pointer { count: 1, ty_index }),
       Type::Pointer { count, ty_index } => Some(Type::Pointer { count: count + 1, ty_index }),
       Type::Primitive(PrimitiveType { base_index, .. }) => Some(Type::Pointer { count: 1, ty_index: base_index as u32 }),
     }
@@ -138,11 +139,11 @@ impl TypeDatabase {
 
   pub fn add_ty(&mut self, name: IString, node: Box<RVSDGNode>) -> Option<Type> {
     let index = self.types.len();
-    let ty = Type::Complex { ty_index: index as u32 };
+    let ty = Type::Complex { ty_index: index as u32, hash: 0 };
 
     if let Some(mut entry) = self.get_ty_entry(&name.to_str().as_str()) {
       if entry.node.is_none() {
-        if let Type::Complex { ty_index } = entry.ty {
+        if let Type::Complex { ty_index, .. } = entry.ty {
           let index = ty_index as usize;
           entry.node = Some(Box::into_raw(node));
           self.types[index] = entry;
@@ -162,7 +163,7 @@ impl TypeDatabase {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, Hash)]
 pub enum Type {
   #[default]
   Undefined,
@@ -173,7 +174,9 @@ pub enum Type {
   Primitive(PrimitiveType),
   Complex {
     ty_index: u32,
+    hash:     u32,
   },
+  ComplexHash(u64),
   Pointer {
     count:    u8,
     ty_index: u32,
@@ -278,10 +281,11 @@ impl Display for Type {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     use Type::*;
     match self {
+      ComplexHash(ty_hash) => f.write_fmt(format_args!("cplx#{:016X}", ty_hash)),
       Undefined => f.write_str("und"),
       Generic { ptr_count, gen_index } => f.write_fmt(format_args!("∀{}", gen_index)),
       Primitive(prim) => f.write_fmt(format_args!("{prim}")),
-      Complex { ty_index } => f.write_fmt(format_args!("cplx@[{}]", ty_index)),
+      Complex { ty_index, .. } => f.write_fmt(format_args!("cplx@[{}]", ty_index)),
       Pointer { ty_index, .. } => f.write_fmt(format_args!("* -> [{}]", ty_index)),
     }
   }
@@ -324,7 +328,7 @@ pub(crate) fn test_primitive_type() {
 
 pub fn dbg_ty(ty: Type, ty_db: &TypeDatabase) {
   match ty {
-    Type::Complex { ty_index } => {
+    Type::Complex { ty_index, .. } => {
       debug_assert!((ty_index as usize) < ty_db.types.len(), "type index is out side the range of TypeDatabase");
 
       let ty = ty_db.types[ty_index as usize];

@@ -34,6 +34,8 @@ pub enum RVSDGNodeType {
   Struct,
   Array,
   Module,
+  Loop,
+  GenericBlock,
 }
 
 #[derive(Default, Clone)]
@@ -341,8 +343,9 @@ impl Display for RVSDGNode {
       match node {
         RVSDGInternalNode::Complex(node) => {
           f.write_fmt(format_args!(
-            "`{index:<4} ----------------\n  {} \n----------------------\n",
-            format!("{}", node).split("\n").collect::<Vec<_>>().join("\n  ")
+            "`{index:<4} ---------------- {}\n  {} \n---------------------- | \n",
+            get_type_string(index, types, ty_vars),
+            format!("{}", node).split("\n").collect::<Vec<_>>().join("\n  "),
           ));
         }
         _ => {

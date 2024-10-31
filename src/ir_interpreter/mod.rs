@@ -150,6 +150,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
       RVSDGInternalNode::Complex(node) => Some((i, node)),
       _ => None,
     })
+    .rev()
     .collect::<Vec<_>>();
 
   let mut call_first = vec![];
@@ -170,8 +171,6 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
 
   while let Some(op_index) = queue.pop_front() {
     if stack[op_index.usize()] == Value::Unintialized {
-      stack[op_index.usize()] = Value::Null;
-
       match &nodes[op_index] {
         RVSDGInternalNode::Input { .. } => {
           for (i, cmplx) in &cmplx {
@@ -200,11 +199,15 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
           rev_data_flow.push(op_index);
         }
         RVSDGInternalNode::Complex(cplx) => {
+          rev_data_flow.push(op_index);
           for input in cplx.inputs.iter() {
+            println!("AAA");
             if input.in_id.is_valid() {
               queue.push_front(input.in_id);
             }
           }
+        }
+        RVSDGInternalNode::Const(..) => {
           rev_data_flow.push(op_index);
         }
         _ => {}
@@ -212,11 +215,19 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
     }
   }
 
-  map_inputs(scope_node, &mut stack, args);
-
-  dbg!((&rev_data_flow, &scope_node));
+  let mut actual_flow = Vec::new();
 
   for op_index in rev_data_flow.iter().rev() {
+    if stack[op_index.usize()] == Value::Unintialized {
+      stack[op_index.usize()] = Value::Null;
+      actual_flow.push(op_index);
+    }
+  }
+
+  map_inputs(scope_node, &mut stack, args);
+  dbg!((&actual_flow, &stack, scope_node));
+
+  for op_index in actual_flow {
     let index = op_index.usize();
     use crate::ir::ir_rvsdg::IROp::*;
     let ty = type_info[index];
