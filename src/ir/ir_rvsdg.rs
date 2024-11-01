@@ -46,9 +46,29 @@ pub struct RVSDGNode {
   pub outputs:      ArrayVec<4, RSDVGBinding>,
   pub nodes:        Vec<RVSDGInternalNode>,
   pub source_nodes: Vec<ASTNode>,
-  pub ty_vars:      Option<Vec<TypeVar>>,
-  pub types:        Option<Vec<Type>>,
-  pub solved:       bool,
+  pub ty_vars:      Vec<TypeVar>,
+  pub types:        Vec<Type>,
+  pub solved:       SolveState,
+}
+
+impl RVSDGNode {
+  pub fn set_type_if_open(&mut self, op: IRGraphId, ty: Type) -> Type {
+    let existing_type = &mut self.types[op.usize()];
+
+    if existing_type.is_undefined() {
+      *existing_type = ty;
+    }
+
+    *existing_type
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+enum SolveState {
+  #[default]
+  Unsolved,
+  Solved,
+  PartiallySolved,
 }
 
 impl RVSDGNode {
@@ -111,11 +131,10 @@ pub enum RVSDGInternalNode {
   PlaceHolder,
   Label(IRGraphId, IString),
   Const(u32, ConstVal),
-  TypeBinding(IRGraphId, Type),
+  TypeBinding(IRGraphId),
   Complex(Box<RVSDGNode>),
   Simple { id: IRGraphId, op: IROp, operands: [IRGraphId; 2] },
-  Input { id: IRGraphId, ty: Type, input_index: usize },
-  Output { id: IRGraphId, ty: Type, output_index: usize },
+  Input { id: IRGraphId, input_index: usize },
 }
 
 impl Debug for RVSDGInternalNode {
@@ -136,9 +155,8 @@ impl Display for RVSDGInternalNode {
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
-      RVSDGInternalNode::TypeBinding(in_id, ty) => f.write_fmt(format_args!("BIND_TYPE  {in_id:3}",)),
-      RVSDGInternalNode::Input { id, ty, .. } => f.write_fmt(format_args!("INPUT ")),
-      RVSDGInternalNode::Output { id, ty, output_index } => f.write_fmt(format_args!("{:5} <= [@{:03}]", ty, output_index)),
+      RVSDGInternalNode::TypeBinding(in_id) => f.write_fmt(format_args!("BIND_TYPE  {in_id:3}",)),
+      RVSDGInternalNode::Input { id, .. } => f.write_fmt(format_args!("INPUT ")),
     }
   }
 }
@@ -320,15 +338,13 @@ impl From<IRGraphId> for usize {
 
 impl Display for RVSDGNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let types = self.types.as_ref();
-    let ty_vars = self.ty_vars.as_ref();
+    let types = &self.types;
+    let ty_vars = &self.ty_vars;
 
     let index = 0;
 
     f.write_fmt(format_args!("--- {:?} ---\n", self.ty))?;
-    if !self.solved {
-      f.write_str("!#!#!#!#!#!#!#!\n")?;
-    }
+    f.write_fmt(format_args!("!# {:20} #!\n", format!("{:?}", self.solved)))?;
 
     if self.inputs.len() > 0 {
       f.write_str("\ninputs:\n")?;
@@ -362,12 +378,10 @@ impl Display for RVSDGNode {
       }
     }
 
-    if let Some(vars) = self.ty_vars.as_ref() {
-      if !vars.is_empty() {
-        f.write_str("type vars:\n")?;
-        for var in vars {
-          f.write_fmt(format_args!("  {var}\n"))?;
-        }
+    if !self.ty_vars.is_empty() {
+      f.write_str("type vars:\n")?;
+      for var in &self.ty_vars {
+        f.write_fmt(format_args!("  {var}\n"))?;
       }
     }
 
@@ -379,29 +393,21 @@ pub fn __debug_node_types__(node: &RVSDGNode) {
   println!("{node}");
 }
 
-fn get_type_string(index: usize, types: Option<&Vec<Type>>, ty_vars: Option<&Vec<TypeVar>>) -> String {
-  if let Some(types) = types {
-    if index > types.len() {
+fn get_type_string(index: usize, types: &Vec<Type>, ty_vars: &Vec<TypeVar>) -> String {
+  if index > types.len() {
+    Default::default()
+  } else {
+    let ty: Type = types[index];
+    if let Some(gen_index) = ty.generic_id() {
+      if gen_index < ty_vars.len() {
+        format!("{}", ty_vars[gen_index])
+      } else {
+        format!("A{}", gen_index)
+      }
+    } else if ty.is_undefined() {
       Default::default()
     } else {
-      let ty: Type = types[index];
-      if let Some(gen_index) = ty.generic_id() {
-        if let Some(vars) = ty_vars {
-          //if gen_index > vars.len() {
-          //  format!("A{gen_index}")
-          //} else {
-          format!("{}", vars[gen_index])
-          //``}
-        } else {
-          format!("{ty}:")
-        }
-      } else if ty.is_undefined() {
-        Default::default()
-      } else {
-        format!("{ty}")
-      }
+      format!("{ty}")
     }
-  } else {
-    Default::default()
   }
 }

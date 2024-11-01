@@ -77,7 +77,7 @@ impl Value {
           let data = *data;
           let node = entry.get_node().unwrap();
           let offsets = entry.get_offset_data().unwrap();
-          let types = node.types.clone().unwrap();
+          let types = &node.types;
 
           println!("  struct {}", node.id);
           for (index, output) in node.outputs.iter().enumerate() {
@@ -120,7 +120,7 @@ impl Value {
 pub fn interpret(ty: Type, ty_db: &mut TypeDatabase) {
   if let Some(entry) = ty_db.get_ty_entry_from_ty(ty) {
     if let Some(node) = entry.get_node() {
-      let type_info = node.types.as_deref().unwrap();
+      let type_info = &node.types;
       if node.ty == RVSDGNodeType::Function {
         let (result, _) = executor(node, type_info, Default::default(), ty_db);
 
@@ -196,7 +196,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
             }
           }
         }
-        RVSDGInternalNode::TypeBinding(in_op, _) => {
+        RVSDGInternalNode::TypeBinding(in_op) => {
           queue.push_front(*in_op);
           rev_data_flow.push(op_index);
         }
@@ -247,7 +247,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
     let ty = type_info[index];
 
     match &nodes[index] {
-      RVSDGInternalNode::TypeBinding(in_op, _) => {
+      RVSDGInternalNode::TypeBinding(in_op) => {
         let val = match ty {
           Type::Primitive(prim) => convert_primitive_types(prim, stack[in_op.usize()]),
           ty => unreachable!("{ty:?}"),
@@ -657,7 +657,7 @@ fn map_outputs(node: &RVSDGNode, args: &[Value], stack: &mut [Value]) {
 }
 
 fn inline_call(node: &RVSDGNode, args: &[Value], ty_db: &mut TypeDatabase) -> (Vec<Value>, bool) {
-  executor(node, node.types.as_deref().unwrap(), args, ty_db)
+  executor(node, &node.types, args, ty_db)
 }
 
 fn call(entry: TypeEntry, args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {

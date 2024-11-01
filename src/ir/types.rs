@@ -128,7 +128,7 @@ impl TypeDatabase {
 
   pub fn get_ptr(&self, ty: Type) -> Option<Type> {
     match ty {
-      Type::ComplexHash(_) => Some(Type::Undefined),
+      Type::NoUse | Type::ComplexHash(_) => Some(Type::Undefined),
       Type::Undefined => Some(Type::Undefined),
       Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count + 1, gen_index }),
       Type::Complex { ty_index, .. } => Some(Type::Pointer { count: 1, ty_index }),
@@ -167,6 +167,8 @@ impl TypeDatabase {
 pub enum Type {
   #[default]
   Undefined,
+  // Indicates a type that has no use in the type system
+  NoUse,
   Generic {
     ptr_count: u8,
     gen_index: u32,
@@ -281,6 +283,7 @@ impl Display for Type {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     use Type::*;
     match self {
+      NoUse => f.write_fmt(format_args!("no-use")),
       ComplexHash(ty_hash) => f.write_fmt(format_args!("cplx#{:016X}", ty_hash)),
       Undefined => f.write_str("und"),
       Generic { ptr_count, gen_index } => f.write_fmt(format_args!("∀{}", gen_index)),

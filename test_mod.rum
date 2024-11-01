@@ -4,28 +4,18 @@ dd => [
   test: u32
 ] 
 
+
+
+
 rdr => [rstd:u8, make:u8, test: u16]
 
 String => [len:u32, data: u32]
 
 // t () => rdr :[rstd = 2, test = 90]
 
-entry () => f32 {   
-  d:f32 = 2
-  
-  d = if d is > 2 {
-     222.0
-  } else {
-    333.345
-  }
-
-  r = 22 / d
-  
-  if r is > 2 {
-    22 + d
-  } else {
-    44 + d
-  }
+entry (i:u32) => f32 {   
+  if i is == 2 { ret 2 }
+  3
 } 
 
 

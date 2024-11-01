@@ -1,7 +1,7 @@
 use crate::{
   ir::{
     ir_rvsdg::{IROp, *},
-    types::TypeDatabase,
+    types::{PrimitiveType, TypeDatabase},
   },
   istring::CachedString,
   parser::script_parser::*,
@@ -11,6 +11,13 @@ use std::{
   collections::{HashMap, VecDeque},
 };
 
+const crazy_ty: Type = Type::Primitive(PrimitiveType {
+  base_index: 0,
+  base_ty:    crate::ir::types::PrimitiveBaseType::Float,
+  byte_size:  20,
+  ele_count:  20,
+});
+
 #[derive(Clone, Debug)]
 struct Var {
   name:           IString,
@@ -18,14 +25,17 @@ struct Var {
   op:             IRGraphId,
   ast:            ASTNode,
   input_only:     bool,
-  writes:         Vec<(usize, IRGraphId)>,
+  writes:         Vec<(usize, IRGraphId, Type)>,
   nonce:          usize,
+  ty:             Type,
 }
 
 #[derive(Debug)]
 struct Builder {
   id:         u32,
   id_counter: *mut u32,
+
+  ty_counter: u32,
 
   node:         Box<RVSDGNode>,
   /// Monotonically increasing identifier for the node stored in this builder
@@ -43,6 +53,7 @@ impl Builder {
   pub fn new(id: u32, counter: *mut u32) -> Self {
     Builder {
       id,
+      ty_counter: 0,
       id_counter: counter,
       node: Default::default(),
       node_id: Default::default(),
@@ -66,17 +77,15 @@ impl Builder {
     id
   }
 
-  pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 2], ty: Type, node: ASTNode) -> IRGraphId {
+  pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 2], ty: Type, ast: ASTNode) -> IRGraphId {
     let id = Self::create_id(&mut self.node_id);
-    self.node.nodes.push(RVSDGInternalNode::Simple { id, op, operands });
-    self.node.source_nodes.push(node);
+    self.add_node(RVSDGInternalNode::Simple { id, op, operands }, ast, ty);
     id
   }
 
-  pub fn add_ty_binding(&mut self, in_id: IRGraphId, ty: Type, node: ASTNode) -> IRGraphId {
+  pub fn add_ty_binding(&mut self, in_id: IRGraphId, ty: Type, ast: ASTNode) -> IRGraphId {
     let id = Self::create_id(&mut self.node_id);
-    self.node.nodes.push(RVSDGInternalNode::TypeBinding(in_id, ty));
-    self.node.source_nodes.push(node);
+    self.add_node(RVSDGInternalNode::TypeBinding(in_id), ast, ty);
     id
   }
 
@@ -94,13 +103,12 @@ impl Builder {
     self.add_input_node_internal(id, ty, input_index, node)
   }
 
-  fn add_input_node_internal(&mut self, id: IRGraphId, ty: Type, input_index: usize, node: ASTNode) -> IRGraphId {
-    self.node.nodes.push(RVSDGInternalNode::Input { id, ty, input_index });
-    self.node.source_nodes.push(node);
+  fn add_input_node_internal(&mut self, id: IRGraphId, ty: Type, input_index: usize, ast: ASTNode) -> IRGraphId {
+    self.add_node(RVSDGInternalNode::Input { id, input_index }, ast, ty);
     id
   }
 
-  pub fn add_output(&mut self, binding: RSDVGBinding) -> RSDVGBinding {
+  pub fn add_output(&mut self, mut binding: RSDVGBinding) -> RSDVGBinding {
     self.node.outputs.push(binding);
     binding
   }
@@ -108,9 +116,25 @@ impl Builder {
   pub fn add_const(&mut self, const_val: ConstVal, node: ASTNode) -> IRGraphId {
     let const_id = self.get_const(const_val);
     let id = Self::create_id(&mut self.node_id);
-    self.node.nodes.push(RVSDGInternalNode::Simple { id, op: IROp::CONST_DECL, operands: [const_id, Default::default()] });
-    self.node.source_nodes.push(node);
+
+    self.add_node(RVSDGInternalNode::Simple { id, op: IROp::CONST_DECL, operands: [const_id, Default::default()] }, node, Default::default());
+
     id
+  }
+
+  fn bump_type_vars(&mut self) -> Type {
+    let ty = Type::Generic { ptr_count: 0, gen_index: self.ty_counter };
+    let mut var = TypeVar::new(self.ty_counter);
+    self.ty_counter += 1;
+    var.ty = ty;
+    self.node.ty_vars.push(var);
+    ty
+  }
+
+  fn add_node(&mut self, node: RVSDGInternalNode, ast: ASTNode, ty: Type) {
+    self.node.nodes.push(node);
+    self.node.source_nodes.push(ast);
+    self.node.types.push(ty);
   }
 
   pub fn get_label(&mut self, name: IString) -> IRGraphId {
@@ -119,16 +143,34 @@ impl Builder {
       std::collections::hash_map::Entry::Occupied(v) => *v.get(),
       std::collections::hash_map::Entry::Vacant(val) => {
         let id = Self::create_id(node_id);
-        node.nodes.push(RVSDGInternalNode::Label(id, name));
-        node.source_nodes.push(Default::default());
-        *val.insert(id)
+        *val.insert(id);
+
+        self.add_node(RVSDGInternalNode::Label(id, name), Default::default(), Type::NoUse);
+
+        id
       }
     }
   }
 
-  pub fn create_var(&mut self, name: IString, op: IRGraphId, ast: ASTNode, input_only: bool) {
-    println!("new var: {:?}", (self.id, name));
-    self.var_lookup.insert(name, Var { name, origin_node_id: self.id, op, ast, input_only, writes: Default::default(), nonce: 0 });
+  pub fn set_type_if_open(&mut self, op: IRGraphId, ty: Type) -> Type {
+    self.node.set_type_if_open(op, ty)
+  }
+
+  pub fn create_var(&mut self, name: IString, op: IRGraphId, ast: ASTNode, input_only: bool, outer_ty: Type) {
+    let var_ty = self.bump_type_vars();
+
+    let op = if op.is_valid() {
+      self.set_type_if_open(op, var_ty);
+      if !outer_ty.is_undefined() {
+        self.add_ty_binding(op, outer_ty, Default::default())
+      } else {
+        op
+      }
+    } else {
+      op
+    };
+
+    self.var_lookup.insert(name, Var { name, origin_node_id: self.id, op, ast, input_only, writes: Default::default(), nonce: 0, ty: var_ty });
   }
 
   pub fn update_var(&mut self, name: IString, op: IRGraphId, ast: ASTNode) -> bool {
@@ -136,6 +178,9 @@ impl Builder {
       var.op = op;
       var.ast = ast;
       var.nonce += 1;
+      let var_ty = var.ty;
+
+      self.set_type_if_open(op, var_ty);
       true
     } else {
       false
@@ -148,9 +193,11 @@ impl Builder {
       std::collections::hash_map::Entry::Occupied(v) => *v.get(),
       std::collections::hash_map::Entry::Vacant(val) => {
         let id = Self::create_id(node_id);
-        node.nodes.push(RVSDGInternalNode::Const(id.0, const_val));
-        node.source_nodes.push(Default::default());
-        *val.insert(id)
+        *val.insert(id);
+
+        self.add_node(RVSDGInternalNode::Const(id.0, const_val), Default::default(), Default::default());
+
+        id
       }
     }
   }
@@ -217,8 +264,9 @@ fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>, ty
 
         node.outputs.push(output_binding);
 
-        node.nodes.push(RVSDGInternalNode::Input { id, ty: output_binding.ty, input_index: output_binding.input_index as usize });
+        node.nodes.push(RVSDGInternalNode::Input { id, input_index: output_binding.input_index as usize });
         node.source_nodes.push(ASTNode::Property(prop.clone()));
+        node.types.push(output_binding.ty);
       }
       n => todo!("Handle construction of {n:?}"),
     }
@@ -241,7 +289,7 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
 
   let mut builder = Builder::new(0, &mut counter);
   builder.node.ty = RVSDGNodeType::Undefined;
-  builder.create_var("RET".intern(), Default::default(), Default::default(), false);
+  builder.create_var("RET".intern(), Default::default(), Default::default(), false, Default::default());
 
   node_stack.push_front(builder);
 
@@ -258,8 +306,6 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
     _ => Default::default(),
   };
 
-  dbg!(ret_ty);
-
   while node_stack.len() > 2 {
     pop_and_merge_single_node_with_return(&mut node_stack, Default::default());
   }
@@ -271,6 +317,7 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
   let mut fn_node = node_stack.pop_back().unwrap().node;
 
   if let RVSDGInternalNode::Complex(node) = fn_node.nodes.remove(0) {
+    debug_assert_eq!(node.nodes.len(), node.types.len());
     dbg!(&node);
     //panic!("");
     node
@@ -314,7 +361,7 @@ fn insert_params(params: &std::sync::Arc<Params<Token>>, builder: &mut Builder, 
 
     let input = builder.add_input(RSDVGBinding { name, in_id: Default::default(), ty, ..Default::default() }, ast);
 
-    builder.create_var(name, input.out_id, ASTNode::RawParamBinding(param.clone()), true);
+    builder.create_var(name, input.out_id, ASTNode::RawParamBinding(param.clone()), true, ty);
   }
 }
 
@@ -512,22 +559,22 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       let mut call_builder = pop_builder(node_stack);
 
-      let par_node = node_stack.front_mut().unwrap();
+      let par_builder = node_stack.front_mut().unwrap();
 
       let outputs = &mut call_builder.node.outputs;
 
-      let call_index = Builder::create_id(&mut par_node.node_id).usize();
-      par_node.node.nodes.push(RVSDGInternalNode::PlaceHolder);
-      par_node.node.source_nodes.push(ASTNode::RawCall(call.clone()));
+      let call_index = Builder::create_id(&mut par_builder.node_id).usize();
+
+      par_builder.add_node(RVSDGInternalNode::PlaceHolder, call.clone().into(), Default::default());
 
       for output_index in 0..outputs.len() {
-        let id = par_node.add_input_node(output.ty, 0, ASTNode::None);
+        let id = par_builder.add_input_node(output.ty, 0, ASTNode::None);
         outputs[output_index].out_id = id;
-        par_node.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
+        par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
         return (id, false);
       }
 
-      par_node.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
+      par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
 
       Default::default()
     }
@@ -538,16 +585,16 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       // create the match entry
       let builder = node_stack.front_mut().unwrap();
-      builder.create_var(match_value_id, Default::default(), Default::default(), false);
+      builder.create_var(match_value_id, Default::default(), Default::default(), false, Default::default());
 
       let (eval_id, bool) = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
       let builder = node_stack.front_mut().unwrap();
-      builder.create_var(match_expression_id, eval_id, Default::default(), true);
+      builder.create_var(match_expression_id, eval_id, Default::default(), true, Default::default());
 
       let match_activation_id = "__activation_val__".intern();
       let builder = node_stack.front_mut().unwrap();
-      builder.create_var(match_activation_id, Default::default(), Default::default(), false);
+      builder.create_var(match_activation_id, Default::default(), Default::default(), false, Default::default());
 
       push_new_builder(node_stack, RVSDGNodeType::MatchHead, Default::default());
       {
@@ -675,34 +722,28 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
       let root_name = decl.var.id.intern();
       let ty = get_type(&decl.ty, false, ty_db).unwrap();
 
-      let graph_id = if !ty.is_generic() {
-        let builder = node_stack.front_mut().unwrap();
-        builder.add_ty_binding(graph_id, ty, ASTNode::Var(decl.var.clone()))
-      } else {
-        graph_id
-      };
-
       let builder = node_stack.front_mut().unwrap();
-      builder.create_var(root_name, graph_id, ASTNode::Var(decl.var.clone()), false);
+
+      builder.create_var(root_name, graph_id, ASTNode::Var(decl.var.clone()), false, ty);
     }
     assignment_var_Value::MemberCompositeAccess(mem) => {
       let root_name = mem.root.name.id.intern();
       let ast = ASTNode::MemberCompositeAccess(mem.clone());
 
-      match lookup_var(&mem, node_stack, true) {
+      match lookup_var(&mem, node_stack, false) {
         VarLookup::Mem(mem_id) => {
           let builder = node_stack.front_mut().unwrap();
           builder.add_simple(IROp::ASSIGN, [mem_id, graph_id], Default::default(), ASTNode::Expression(expr.clone()));
         }
         VarLookup::Var(output) => {
-          dbg!((mem, graph_id));
           write_var(root_name, node_stack);
           let builder = node_stack.front_mut().unwrap();
           builder.update_var(root_name, graph_id, ast);
         }
         VarLookup::None(..) => {
           let builder = node_stack.front_mut().unwrap();
-          builder.create_var(root_name, graph_id, ast, false);
+          println!("create!");
+          builder.create_var(root_name, graph_id, ast, false, Default::default());
         }
       }
     }
@@ -796,12 +837,12 @@ fn merge_multiple_nodes(node_stack: &mut VecDeque<Builder>, mut children: Vec<(B
 
       if let Some(mut child_var) = child.var_lookup.remove(name) {
         if child_var.origin_node_id < child.id && !child_var.input_only && par_var_nonce != child_var.nonce {
-          let var_id = child_var.op;
+          let child_var_ty = child_var.ty;
           // Merge the var id into the parent scope
 
           let var_id = commit_writes(child, &mut child_var);
 
-          par_var.writes.push((child_index, var_id));
+          par_var.writes.push((child_index, var_id, child_var_ty));
           par_var.nonce = par_var_nonce + 1;
         }
       }
@@ -809,20 +850,20 @@ fn merge_multiple_nodes(node_stack: &mut VecDeque<Builder>, mut children: Vec<(B
   }
 
   for (child, ast) in children.into_iter() {
-    par_builder.node.nodes.push(RVSDGInternalNode::Complex(child.node));
-    par_builder.node.source_nodes.push(ast.clone());
+    par_builder.add_node(RVSDGInternalNode::Complex(child.node), ast, Default::default());
     par_builder.node_id += 1
   }
 }
 
 fn commit_writes(builder: &mut Builder, var: &mut Var) -> IRGraphId {
   if var.writes.len() > 0 {
-    let input_op = builder.add_input_node(Default::default(), 0, Default::default());
+    let input_op = builder.add_input_node(var.ty, 0, Default::default());
 
-    for (node_index, in_id) in var.writes.drain(0..) {
+    for (node_index, in_id, ty) in var.writes.drain(0..) {
       match &mut builder.node.nodes[node_index] {
         RVSDGInternalNode::Complex(cmplx) => {
-          cmplx.outputs.push(RSDVGBinding { in_id, out_id: input_op, input_index: 0, name: var.name, ty: Default::default() });
+          let ty = cmplx.set_type_if_open(in_id, ty);
+          cmplx.outputs.push(RSDVGBinding { in_id, out_id: input_op, input_index: 0, name: var.name, ty });
         }
         _ => {}
       }
@@ -834,112 +875,80 @@ fn commit_writes(builder: &mut Builder, var: &mut Var) -> IRGraphId {
   }
 }
 
-fn write_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Option<IRGraphId> {
-  let mut found_in_index = -1;
-  let mut id = IRGraphId::default();
-
-  let stack = node_stack as *mut VecDeque<WIPNode>;
-
-  'outer: for (i, builder) in (unsafe { &mut *stack }).iter_mut().enumerate() {
-    if let Some(v) = builder.var_lookup.get(&var_name) {
-      found_in_index = i as i32;
-      if found_in_index == 0 {
-        return Some(v.op);
-      } else {
-        break 'outer;
-      }
-    }
-  }
-
-  if found_in_index < 0 {
-    return None;
-  } else {
-    let par_data = unsafe { &mut *stack }.get_mut(found_in_index as usize).unwrap();
-    let par_var = par_data.var_lookup.get_mut(&var_name).unwrap();
-    let mut var = par_var.clone();
-    var.writes.clear();
-
-    for curr_index in (0..found_in_index).rev() {
-      let par_data = unsafe { &mut *stack }.get_mut(curr_index as usize).unwrap();
-
-      par_data.var_lookup.insert(var_name, var.clone());
-
-      if curr_index == 0 {
-        return Some(var.op);
-      }
-    }
-
-    unreachable!("-- {found_in_index}");
-  }
-}
-
 fn read_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Option<IRGraphId> {
   let mut found_in_index = -1;
   let mut id = IRGraphId::default();
 
   let stack = node_stack as *mut VecDeque<WIPNode>;
 
-  'outer: for (i, builder) in (unsafe { &mut *stack }).iter_mut().enumerate() {
+  for (i, builder) in (unsafe { &mut *stack }).iter_mut().enumerate() {
     if let Some(v) = builder.var_lookup.get(&var_name) {
       found_in_index = i as i32;
-      if found_in_index == 0 {
-        return Some(v.op);
-      } else {
-        break 'outer;
-      }
-    }
-  }
-
-  if found_in_index < 0 {
-    return None;
-  } else {
-    let par_data = unsafe { &mut *stack }.get_mut(found_in_index as usize).unwrap();
-    let par_var = par_data.var_lookup.get_mut(&var_name).unwrap();
-
-    if !par_var.writes.is_empty() {
-      let input_op = par_data.add_input_node(Default::default(), 0, Default::default());
+      let par_data = unsafe { &mut *stack }.get_mut(found_in_index as usize).unwrap();
       let par_var = par_data.var_lookup.get_mut(&var_name).unwrap();
-      par_var.op = input_op;
-      for (node_index, in_id) in par_var.writes.drain(0..) {
-        match &mut par_data.node.nodes[node_index] {
-          RVSDGInternalNode::Complex(cmplx) => {
-            cmplx.outputs.push(RSDVGBinding { in_id, out_id: input_op, input_index: 0, name: par_var.name, ty: Default::default() });
-          }
-          _ => {}
+      let par_data_2 = unsafe { &mut *stack }.get_mut(found_in_index as usize).unwrap();
+
+      par_var.op = commit_writes(par_data_2, par_var);
+
+      let mut var = par_var.clone();
+
+      for curr_index in (0..found_in_index).rev() {
+        let par_data = unsafe { &mut *stack }.get_mut(curr_index as usize).unwrap();
+        var.ty = par_data.bump_type_vars();
+
+        if !var.op.is_invalid() {
+          var.op = par_data
+            .add_input(
+              RSDVGBinding {
+                name:        var.name,
+                in_id:       var.op,
+                out_id:      Default::default(),
+                ty:          var.ty,
+                input_index: 0,
+              },
+              var.ast.clone(),
+            )
+            .out_id;
         }
+
+        par_data.var_lookup.insert(var_name, var.clone());
       }
+
+      return Some(var.op);
     }
-
-    let par_var = par_data.var_lookup.get_mut(&var_name).unwrap();
-    let mut var = par_var.clone();
-
-    for curr_index in (0..found_in_index).rev() {
-      let par_data = unsafe { &mut *stack }.get_mut(curr_index as usize).unwrap();
-
-      if !var.op.is_invalid() {
-        var.op = par_data
-          .add_input(
-            RSDVGBinding {
-              name:        var.name,
-              in_id:       var.op,
-              out_id:      Default::default(),
-              ty:          Default::default(),
-              input_index: 0,
-            },
-            var.ast.clone(),
-          )
-          .out_id;
-      }
-
-      par_data.var_lookup.insert(var_name, var.clone());
-
-      if curr_index == 0 {
-        return Some(var.op);
-      }
-    }
-
-    unreachable!("-- {found_in_index}");
   }
+
+  None
+}
+
+fn write_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Option<IRGraphId> {
+  let mut found_in_index = -1;
+  let mut id = IRGraphId::default();
+
+  let stack = node_stack as *mut VecDeque<WIPNode>;
+
+  for (i, builder) in (unsafe { &mut *stack }).iter_mut().enumerate() {
+    if let Some(v) = builder.var_lookup.get(&var_name) {
+      found_in_index = i as i32;
+      let par_data = unsafe { &mut *stack }.get_mut(found_in_index as usize).unwrap();
+      let par_var = par_data.var_lookup.get_mut(&var_name).unwrap();
+      let mut var = par_var.clone();
+
+      var.writes.clear();
+
+      for curr_index in (0..found_in_index).rev() {
+        let par_data = unsafe { &mut *stack }.get_mut(curr_index as usize).unwrap();
+
+        var.ty = par_data.bump_type_vars();
+
+        par_data.var_lookup.insert(var_name, var.clone());
+      }
+
+      return Some(var.op);
+    }
+  }
+
+  None
 }
 
 fn seal_var(var_name: IString, node_stack: &mut VecDeque<Builder>, ty: Type) {
@@ -948,7 +957,9 @@ fn seal_var(var_name: IString, node_stack: &mut VecDeque<Builder>, ty: Type) {
     let var_id = commit_writes(builder, &mut var);
 
     if var_id.is_valid() {
-      let var_id = if !ty.is_undefined() { builder.add_ty_binding(var_id, ty, Default::default()) } else { var_id };
+      let var_id = if !ty.is_undefined() { builder.add_ty_binding(var_id, var.ty, Default::default()) } else { var_id };
+
+      builder.set_type_if_open(var_id, var.ty);
 
       builder.add_output(RSDVGBinding { in_id: var_id, input_index: 0, name: var_name, out_id: Default::default(), ty });
     }
@@ -959,6 +970,11 @@ fn take_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> IRG
   let builder = node_stack.front_mut().unwrap();
   if let Some(mut var) = builder.var_lookup.remove(&var_name) {
     let var_id = commit_writes(builder, &mut var);
+
+    if var_id.is_valid() {
+      builder.set_type_if_open(var_id, var.ty);
+    }
+
     var_id
   } else {
     Default::default()

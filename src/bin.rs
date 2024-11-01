@@ -31,15 +31,13 @@ fn main() -> Result<(), u8> {
         let type_target = args.pop_front().expect("Expected a type argument");
 
         if let Some(ty) = ty_db.get_ty(type_target.as_str()) {
-          let entry = ty_db.get_ty_entry(type_target.as_str());
-
           match solve_type(ty, &mut ty_db) {
             Ok(entry) => {
               let node = entry.get_node().expect("Type is not complex");
 
               println!("\n\n#############################################\n");
 
-              __debug_node_types__(node);
+              dbg!(node);
 
               println!("\n#############################################\n\n");
             }

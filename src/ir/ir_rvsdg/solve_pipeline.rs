@@ -12,6 +12,7 @@ use super::{
   RVSDGInternalNode,
   RVSDGNode,
   RVSDGNodeType,
+  SolveState,
 };
 use crate::{
   container::{get_aligned_value, ArrayVec},
@@ -64,11 +65,11 @@ pub fn solve_type(ty: Type, ty_db: &mut TypeDatabase) -> Result<TypeEntry, (Opti
   if let Some(mut entry) = ty_db.get_ty_entry_from_ty(ty) {
     let Some(node) = entry.get_node_mut() else { return Err((Some(entry), vec![format!("Could not find node")])) };
 
-    if node.ty_vars.as_ref().is_some_and(|d| d.len() == 0) {
+    /*    if node.ty_vars.as_ref().is_some_and(|d| d.len() == 0) {
       return Ok(entry);
-    }
+    } */
 
-    let constraints = collect_op_constraints(node, &ty_db);
+    let constraints = collect_op_constraints(node, &ty_db, false);
 
     let (types, vars, unsolved) = match solve_constraints(node, constraints, ty_db, true) {
       Ok((types, vars, unsolved)) => (types, vars, unsolved),
@@ -104,9 +105,9 @@ pub fn solve_type(ty: Type, ty_db: &mut TypeDatabase) -> Result<TypeEntry, (Opti
     }
 
     debug_assert_eq!(types.len(), node.nodes.len());
-    node.ty_vars = Some(vars);
-    node.types = Some(types);
-    node.solved = !unsolved;
+    node.ty_vars = vars;
+    node.types = types;
+    node.solved = unsolved;
 
     match ty {
       Type::Complex { ty_index, .. } => {
@@ -128,19 +129,48 @@ pub fn solve_type(ty: Type, ty_db: &mut TypeDatabase) -> Result<TypeEntry, (Opti
   return Err((None, Default::default()));
 }
 
-pub fn collect_op_constraints(node: &mut RVSDGNode, ty_db: &TypeDatabase) -> (Vec<OPConstraints>, Vec<TypeCheck>, Vec<TypeVar>, Vec<(u32, i32)>) {
+pub fn collect_op_constraints(
+  node: &mut RVSDGNode,
+  ty_db: &TypeDatabase,
+  is_internode: bool,
+) -> (Vec<OPConstraints>, Vec<TypeCheck>, Vec<TypeVar>, Vec<(u32, i32)>) {
   let RVSDGNode { outputs, nodes, ty_vars, types, .. } = node;
   let num_of_nodes = nodes.len();
   let nodes = &node.nodes;
   let inputs = &node.inputs;
   let outputs = &node.outputs;
   let tokens = &node.source_nodes;
+  let mut type_maps = Vec::with_capacity(num_of_nodes);
+  let mut ty_vars: Vec<TypeVar> = node.ty_vars.clone();
 
   let mut op_constraints = ArrayVec::<32, OPConstraints>::new();
   let mut checks = ArrayVec::<32, TypeCheck>::new();
 
+  for ty_var in &mut ty_vars {
+    ty_var.ty = Type::NoUse;
+  }
+
   for i in 0..num_of_nodes {
-    get_ssa_constraints(i, nodes, &mut op_constraints, &mut checks, ty_db);
+    if is_internode {
+      get_internode_constraints(i, nodes, &mut op_constraints, &node.types);
+    } else {
+      get_ssa_constraints(i, nodes, &mut op_constraints, &mut checks, ty_db, &node.types);
+    }
+
+    let ty = node.types[i];
+
+    if let Some(id) = ty.generic_id() {
+      type_maps.push((i as u32, id as i32));
+      ty_vars[id].ty = Type::Generic { ptr_count: 0, gen_index: id as u32 }
+    } else if !ty.is_undefined() {
+      let id: usize = ty_vars.len();
+      let mut type_var = TypeVar::new(id as u32);
+      type_var.ty = ty;
+      ty_vars.push(type_var);
+      type_maps.push((i as u32, id as i32));
+    } else {
+      type_maps.push((i as u32, -1));
+    }
   }
 
   for input in inputs.iter() {
@@ -156,14 +186,13 @@ pub fn collect_op_constraints(node: &mut RVSDGNode, ty_db: &TypeDatabase) -> (Ve
   }
   op_constraints.sort();
 
-  let mut type_maps = Vec::with_capacity(num_of_nodes);
-  let mut ty_vars: Vec<TypeVar> = Vec::with_capacity(num_of_nodes);
-
   for i in 0..num_of_nodes {
     type_maps.push((i as u32, -1 as i32));
   }
 
-  (op_constraints.to_vec(), checks.to_vec(), ty_vars, type_maps)
+  let constraints = (op_constraints.to_vec(), checks.to_vec(), ty_vars, type_maps);
+
+  constraints
 }
 
 // Create a sub-type solution for this type. If the solution contains type variables it is incomplete, and will
@@ -173,7 +202,7 @@ pub fn solve_constraints(
   (mut op_constraints, mut type_checks, mut ty_vars, mut type_maps): (Vec<OPConstraints>, Vec<TypeCheck>, Vec<TypeVar>, Vec<(u32, i32)>),
   ty_db: &mut TypeDatabase,
   root: bool,
-) -> Result<(Vec<Type>, Vec<TypeVar>, bool), Vec<String>> {
+) -> Result<(Vec<Type>, Vec<TypeVar>, SolveState), Vec<String>> {
   let RVSDGNode { outputs, nodes, .. } = node;
   let num_of_nodes = nodes.len();
 
@@ -286,37 +315,26 @@ pub fn solve_constraints(
               let entry = ty_db.get_ty_entry_from_ty(fn_ty).expect("Failed to create type");
 
               if let Some(fn_node) = entry.get_node() {
-                match fn_node.types.as_ref() {
-                  Some(fn_types) => {
-                    for (call_input, fn_input) in sub_node.inputs.iter().zip(fn_node.inputs.iter()) {
-                      let in_index = call_input.in_id.usize();
-                      let ty_index = fn_input.out_id.usize();
+                let fn_types = &fn_node.types;
 
-                      let ty = fn_types[ty_index];
+                for (call_input, fn_input) in sub_node.inputs.as_slice()[1..].iter().zip(fn_node.inputs.iter()) {
+                  let in_index = call_input.in_id.usize();
+                  let ty_index = fn_input.out_id.usize();
 
-                      queue.push_back(OPConstraints::OpToTy(in_index as u32, ty, in_index as u32));
-                    }
+                  let ty = fn_types[ty_index];
 
-                    for (call_output, fn_output) in sub_node.outputs.iter().zip(fn_node.outputs.iter()) {
-                      let out_index = call_output.out_id.usize();
-                      let ty_index = fn_output.in_id.usize();
+                  queue.push_back(OPConstraints::OpToTy(in_index as u32, ty, in_index as u32));
+                }
 
-                      let ty = fn_types[ty_index];
+                for (call_output, fn_output) in sub_node.outputs.iter().zip(fn_node.outputs.iter()) {
+                  let out_index = call_output.out_id.usize();
+                  let ty_index = fn_output.in_id.usize();
 
-                      queue.push_back(OPConstraints::OpToTy(out_index as u32, ty, out_index as u32));
-                    }
+                  let ty = fn_types[ty_index];
 
-                    // todo!("Apply types to rest of system\n {fn_types:#?} {fn_node:#?}, {queue:#?}");
-                  }
-                  None => {
-                    // Dependency required need. Need to compile types for this function and redo the type check for the current node
-                    // after.
-
-                    panic!("Unable to resolve type yet fn =: {call_name}");
-                  }
+                  queue.push_back(OPConstraints::OpToTy(out_index as u32, ty, out_index as u32));
                 }
               } else {
-                // Unfulfilled dependency. Attach requirement and
                 panic!("Unfulfilled dependency fn =: {call_name}");
               }
             }
@@ -324,57 +342,8 @@ pub fn solve_constraints(
             _ => {
               let node = unsafe { &mut *nodes.as_mut_ptr().offset(node_id as isize) };
               let RVSDGInternalNode::Complex(sub_node) = node else { unreachable!() };
-              let constraints = collect_op_constraints(sub_node, &ty_db);
-              match solve_constraints(sub_node, constraints, ty_db, false) {
-                Ok((types, vars, unsolved)) => {
-                  let new_types = Some(types);
-                  let a = create_u64_hash(&new_types);
-                  let b = create_u64_hash(&sub_node.types);
-
-                  inner_unsolved |= unsolved;
-                  sub_node.solved = !unsolved;
-                  sub_node.ty_vars = Some(vars.clone());
-                  sub_node.types = new_types;
-                  type_list[node_id as usize] = Type::ComplexHash(a);
-
-                  if (a != b) {
-                    let Some((inner_types, inner_type_vars)) = sub_node.types.as_ref().zip(sub_node.ty_vars.as_ref()) else { unreachable!() };
-                    for (is_output, bindings) in [(false, &sub_node.inputs), (true, &sub_node.outputs)] {
-                      for binding in bindings.iter() {
-                        let (par_id, own_id) = if is_output { (binding.out_id, binding.in_id) } else { (binding.in_id, binding.out_id) };
-
-                        //let tok = get_op_tok(sub_node, own_id);
-
-                        if (!par_id.is_invalid() && !own_id.is_invalid()) {
-                          let ty = inner_types[own_id];
-
-                          let par_var = get_or_create_var_id(&mut type_maps, &par_id.0, &mut ty_vars);
-                          let par_var = &mut ty_vars[par_var as usize];
-
-                          if !ty.is_open() {
-                            queue.push_back(OPConstraints::OpToTy(par_id.0, ty, par_id.0));
-                          } else if let Some(gen_id) = ty.generic_id() {
-                            if par_var.ty.is_open() {
-                              let var = &inner_type_vars[gen_id];
-                              for constraint in var.constraints.iter() {
-                                match constraint {
-                                  VarConstraint::Binding(..) => {}
-                                  constraint => par_var.add(*constraint),
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                Err(sub_errors) => {
-                  for error in sub_errors {
-                    errors.push(error);
-                  }
-                }
-              };
+              let constraints = collect_op_constraints(sub_node, &ty_db, false);
+              solve_inner_constraints(node_id, sub_node, constraints, ty_db, &mut type_list, &mut type_maps, &mut ty_vars, &mut queue, &mut errors);
             }
             other => todo!("{other:?}"),
           },
@@ -401,104 +370,21 @@ pub fn solve_constraints(
               let binding = binding_group[binding_id as usize];
               let (outer_binding_id, inner_binding_op) = if is_output { (binding.out_id, binding.in_id) } else { (binding.in_id, binding.out_id) };
 
-              let constraint_pack = if let Some((inner_types, inner_type_vars)) = sub_node.types.as_ref().zip(sub_node.ty_vars.as_ref()) {
-                let ty = inner_types[inner_binding_op];
+              if let Some(constraints) = {
+                let ty = sub_node.types[inner_binding_op];
 
-                if ty.is_open() {
-                  let mut inner_type_vars = inner_type_vars.clone();
-                  let num_of_nodes = sub_node.nodes.len();
-                  let nodes = &sub_node.nodes;
-                  let mut inner_type_maps = Vec::with_capacity(num_of_nodes);
-                  let mut inner_ty_vars: Vec<TypeVar> = Vec::with_capacity(num_of_nodes);
-                  let mut inner_constraints = ArrayVec::<32, OPConstraints>::new();
-                  let mut inner_checks = ArrayVec::<32, TypeCheck>::new();
-
-                  for i in 0..num_of_nodes {
-                    get_internode_constraints(i, nodes, &mut inner_constraints, inner_types);
-
-                    let ty = inner_types[i];
-
-                    if let Some(id) = ty.generic_id() {
-                      inner_type_maps.push((i as u32, id as i32));
-                    } else if !ty.is_undefined() {
-                      let id: usize = inner_type_vars.len();
-                      let mut type_var = TypeVar::new(id as u32);
-                      type_var.ty = ty;
-                      inner_type_vars.push(type_var);
-                      inner_type_maps.push((i as u32, id as i32));
-                    } else {
-                      inner_type_maps.push((i as u32, -1));
-                    }
-                  }
-
-                  inner_constraints.push(OPConstraints::OpToTy(inner_binding_op.0, var.ty, inner_binding_op.0));
-
-                  Some((inner_constraints.to_vec(), inner_checks.to_vec(), inner_type_vars, inner_type_maps))
-                } else {
+                if !ty.is_open() {
                   queue.push_back(OPConstraints::OpToTy(outer_binding_id.0, ty, outer_binding_id.0));
                   None
+                } else {
+                  let mut constraints = collect_op_constraints(sub_node, &ty_db, sub_node.solved == SolveState::PartiallySolved);
+
+                  constraints.0.push(OPConstraints::OpToTy(inner_binding_op.0, var.ty, inner_binding_op.0));
+
+                  Some(constraints)
                 }
-              } else {
-                let mut constraints = collect_op_constraints(sub_node, &ty_db);
-
-                constraints.0.push(OPConstraints::OpToTy(inner_binding_op.0, var.ty, inner_binding_op.0));
-
-                Some(constraints)
-              };
-
-              if let Some(constraints) = constraint_pack {
-                let original_constraints = constraints.0.clone();
-
-                match solve_constraints(sub_node, constraints, ty_db, false) {
-                  Ok((types, vars, unsolved)) => {
-                    let new_types = Some(types);
-                    let a = create_u64_hash(&new_types);
-                    let b = create_u64_hash(&sub_node.types);
-
-                    inner_unsolved |= unsolved;
-                    sub_node.solved = !unsolved;
-                    sub_node.ty_vars = Some(vars.clone());
-                    sub_node.types = new_types;
-                    type_list[node_id as usize] = Type::ComplexHash(a);
-
-                    if (a != b) {
-                      let Some((inner_types, inner_type_vars)) = sub_node.types.as_ref().zip(sub_node.ty_vars.as_ref()) else { unreachable!() };
-                      for (is_output, bindings) in [(false, &sub_node.inputs), (true, &sub_node.outputs)] {
-                        for binding in bindings.iter() {
-                          let (par_id, own_id) = if is_output { (binding.out_id, binding.in_id) } else { (binding.in_id, binding.out_id) };
-
-                          //let tok = get_op_tok(sub_node, own_id);
-
-                          if (!par_id.is_invalid() && !own_id.is_invalid()) {
-                            let ty = inner_types[own_id];
-
-                            let par_var = get_or_create_var_id(&mut type_maps, &par_id.0, &mut ty_vars);
-                            let par_var = &mut ty_vars[par_var as usize];
-
-                            if !ty.is_open() {
-                              queue.push_back(OPConstraints::OpToTy(par_id.0, ty, par_id.0));
-                            } else if let Some(gen_id) = ty.generic_id() {
-                              if par_var.ty.is_open() {
-                                let var = &inner_type_vars[gen_id];
-                                for constraint in var.constraints.iter() {
-                                  match constraint {
-                                    VarConstraint::Binding(..) => {}
-                                    constraint => par_var.add(*constraint),
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                  Err(sub_errors) => {
-                    for error in sub_errors {
-                      errors.push(error);
-                    }
-                  }
-                };
+              } {
+                solve_inner_constraints(node_id, sub_node, constraints, ty_db, &mut type_list, &mut type_maps, &mut ty_vars, &mut queue, &mut errors);
               }
             }
             other => todo!("{other:?}"),
@@ -784,10 +670,81 @@ pub fn solve_constraints(
       }
     }
 
-    Ok((type_list, unsolved_ty_vars, inner_unsolved))
+    let solve_state = if unsolved_ty_vars.len() > 0
+      || nodes.iter().any(|n| match n {
+        RVSDGInternalNode::Complex(cmplx) => cmplx.solved != SolveState::Solved,
+        _ => false,
+      }) {
+      SolveState::PartiallySolved
+    } else {
+      SolveState::Solved
+    };
+
+    Ok((type_list, unsolved_ty_vars, solve_state))
   } else {
     Err(errors.to_vec())
   }
+}
+
+#[inline(always)]
+fn solve_inner_constraints(
+  node_id: u32,
+  sub_node: &mut Box<RVSDGNode>,
+  constraints: (Vec<OPConstraints>, Vec<TypeCheck>, Vec<TypeVar>, Vec<(u32, i32)>),
+  ty_db: &mut TypeDatabase,
+  outer_type_list: &mut [Type],
+  outer_type_maps: &mut Vec<(u32, i32)>,
+  outer_ty_vars: &mut Vec<TypeVar>,
+  outer_constraint_queue: &mut VecDeque<OPConstraints>,
+  outer_errors: &mut ArrayVec<32, String>,
+) {
+  match solve_constraints(sub_node, constraints, ty_db, false) {
+    Ok((types, vars, solved_state)) => {
+      let new_types = types;
+      let a = create_u64_hash(&new_types);
+      let b = create_u64_hash(&sub_node.types);
+
+      sub_node.solved = solved_state;
+      sub_node.ty_vars = vars;
+      sub_node.types = new_types;
+      outer_type_list[node_id as usize] = Type::ComplexHash(a);
+
+      if (a != b) {
+        let (inner_types, inner_type_vars) = (&sub_node.types, &sub_node.ty_vars);
+        for (is_output, bindings) in [(false, &sub_node.inputs), (true, &sub_node.outputs)] {
+          for binding in bindings.iter() {
+            let (par_id, own_id) = if is_output { (binding.out_id, binding.in_id) } else { (binding.in_id, binding.out_id) };
+
+            if (!par_id.is_invalid() && !own_id.is_invalid()) {
+              let ty = inner_types[own_id];
+
+              let par_var = get_or_create_var_id(outer_type_maps, &par_id.0, outer_ty_vars);
+              let par_var = &mut outer_ty_vars[par_var as usize];
+
+              if !ty.is_open() {
+                outer_constraint_queue.push_back(OPConstraints::OpToTy(par_id.0, ty, par_id.0));
+              } else if let Some(gen_id) = ty.generic_id() {
+                if par_var.ty.is_open() {
+                  let var = &inner_type_vars[gen_id];
+                  for constraint in var.constraints.iter() {
+                    match constraint {
+                      VarConstraint::Binding(..) => {}
+                      constraint => par_var.add(*constraint),
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    Err(sub_errors) => {
+      for error in sub_errors {
+        outer_errors.push(error);
+      }
+    }
+  };
 }
 
 fn get_op_tok(sub_node: &RVSDGNode, own_id: super::IRGraphId) -> crate::parser::script_parser::ast::ASTNode<radlr_rust_runtime::types::Token> {
@@ -826,7 +783,7 @@ fn get_op_tok(sub_node: &RVSDGNode, own_id: super::IRGraphId) -> crate::parser::
           break Default::default();
         }
       }
-      RVSDGInternalNode::TypeBinding(input, _) => id = input.0,
+      RVSDGInternalNode::TypeBinding(input) => id = input.0,
       RVSDGInternalNode::Simple { .. } => {
         break node.source_nodes[id as usize].clone();
       }
@@ -1055,16 +1012,18 @@ pub fn get_ssa_constraints(
   constraints: &mut ArrayVec<32, OPConstraints>,
   checks: &mut ArrayVec<32, TypeCheck>,
   ty_db: &TypeDatabase,
+  types: &[Type],
 ) {
   let i = index as u32;
   match &nodes[index as usize] {
-    RVSDGInternalNode::Input { id, ty, input_index } => {
-      if !ty.is_undefined() {
-        constraints.push(OPConstraints::OpToTy(id.0, *ty, i));
+    RVSDGInternalNode::Input { id, input_index } => {
+      let ty = types[i as usize];
+      if ty.is_undefined() {
+        constraints.push(OPConstraints::OpToTy(id.0, ty, i));
       }
     }
-    RVSDGInternalNode::TypeBinding(in_id, ty) => {
-      constraints.push(OPConstraints::OpToTy(i, *ty, i));
+    RVSDGInternalNode::TypeBinding(in_id) => {
+      constraints.push(OPConstraints::OpToTy(i, types[i as usize], i));
       constraints.push(OPConstraints::OpToOp(i, in_id.0, i));
     }
     RVSDGInternalNode::Simple { id, op, operands } => match op {
@@ -1095,15 +1054,17 @@ pub fn get_ssa_constraints(
     RVSDGInternalNode::Complex(node) => {
       checks.push(TypeCheck::BaseNodeSolve(i));
 
-      for (index, output) in node.outputs.iter().enumerate() {
-        if output.out_id.is_valid() {
-          constraints.push(OPConstraints::BindingConstraint(i, index as u32, output.out_id, true));
-        }
-      }
+      for (is_output, bindings) in [(true, node.outputs.iter()), (false, node.inputs.iter())] {
+        for (index, binding) in bindings.enumerate() {
+          let (in_id, out_id) = if is_output { (binding.in_id, binding.out_id) } else { (binding.out_id, binding.in_id) };
 
-      for (index, input) in node.inputs.iter().enumerate() {
-        if input.in_id.is_valid() {
-          constraints.push(OPConstraints::BindingConstraint(i, index as u32, input.in_id, false));
+          if out_id.is_valid() {
+            constraints.push(OPConstraints::BindingConstraint(i, index as u32, out_id, is_output));
+          }
+
+          if in_id.is_valid() && !binding.ty.is_open() {
+            constraints.push(OPConstraints::OpToTy(in_id.0, types[i as usize], in_id.0));
+          }
         }
       }
     }
