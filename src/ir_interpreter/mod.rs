@@ -246,6 +246,8 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
     use crate::ir::ir_rvsdg::IROp::*;
     let ty = type_info[index];
 
+    dbg!((op_index, &actual_flow, &stack, scope_node));
+
     match &nodes[index] {
       RVSDGInternalNode::TypeBinding(in_op) => {
         let val = match ty {
@@ -458,9 +460,15 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
             for clause in match_clauses {
               let RVSDGInternalNode::Complex(node) = clause else { unreachable!() };
 
-              let (stack, ret) = inline_call(node, &match_stack, ty_db);
+              let (call_stack, ret) = inline_call(node, &match_stack, ty_db);
 
-              map_outputs(node, &stack, &mut match_stack);
+              for output in node.outputs.iter() {
+                if !output.in_id.is_invalid() && !output.out_id.is_invalid() {
+                  stack[output.out_id.usize()] = call_stack[output.in_id.usize()]
+                }
+              }
+
+              map_outputs(node, &call_stack, &mut match_stack);
 
               // check to see if the node was activated, if so, map its outputs to the node's inputs
 
@@ -495,10 +503,20 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
                 if let Some(fn_ty_entry) = ty_db.get_ty_entry(name.to_str().as_str()) {
                   if fn_ty_entry.get_node().is_some_and(|n| n.ty == RVSDGNodeType::Function) {
                     if let Ok(fn_ty_entry) = solve_type(fn_ty_entry.ty, ty_db) {
-                      if let Some((node)) = fn_ty_entry.get_node() {
+                      if let Some((fn_node)) = fn_ty_entry.get_node() {
                         let funct = fn_ty_entry.get_node().expect("");
 
-                        let fn_outputs = call(fn_ty_entry, &stack, ty_db);
+                        let mut call_input_stack = vec![Value::Null; cplx.inputs.len() - 1];
+
+                        for output in fn_node.outputs.iter() {
+                          for (index, c_in) in cplx.inputs.as_slice()[1..].iter().enumerate() {
+                            call_input_stack[index] = stack[c_in.in_id.usize()]
+                          }
+                        }
+
+                        dbg!(&call_input_stack);
+
+                        let fn_outputs = call(fn_ty_entry, &call_input_stack, ty_db);
 
                         for (f_out, c_out) in funct.outputs.iter().zip(cplx.outputs.iter()) {
                           stack[c_out.out_id.usize()] = fn_outputs[f_out.in_id.usize()]
@@ -518,8 +536,6 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
       }
       _ => {}
     }
-
-    dbg!((op_index, &actual_flow, &stack, scope_node));
   }
 
   (stack, active_ret)

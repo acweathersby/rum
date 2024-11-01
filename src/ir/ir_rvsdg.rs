@@ -96,22 +96,21 @@ impl Debug for RVSDGNode {
 #[derive(Clone, Copy, Default)]
 pub struct RSDVGBinding {
   // Temporary identifier of the binding
-  pub name:        IString,
+  pub name:   IString,
   /// The input node id of the binding
   ///
   /// if the binding is an input then this value corresponds to a node in the parent scope
   ///
   /// if the binding is an output then this value corresponds to a local node
-  pub in_id:       IRGraphId,
+  pub in_id:  IRGraphId,
   /// The output node id of the binding
   ///
   /// if the binding is an input then this value corresponds to a local node
   ///
   /// if the binding is an output then this value corresponds to a node in the parent scope
-  pub out_id:      IRGraphId,
+  pub out_id: IRGraphId,
   /// The type of the binding. This must match the types of the in_id and out_id nodes
-  pub ty:          Type,
-  pub input_index: u32,
+  pub ty:     Type,
 }
 
 impl Debug for RSDVGBinding {
@@ -134,7 +133,7 @@ pub enum RVSDGInternalNode {
   TypeBinding(IRGraphId),
   Complex(Box<RVSDGNode>),
   Simple { id: IRGraphId, op: IROp, operands: [IRGraphId; 2] },
-  Input { id: IRGraphId, input_index: usize },
+  Input { id: IRGraphId },
 }
 
 impl Debug for RVSDGInternalNode {
@@ -169,7 +168,7 @@ fn get_node_by_name(name: IString, node: &mut RVSDGNode) -> Option<&mut RVSDGNod
 
   let node_ptr = nodes.as_mut_ptr();
 
-  for RSDVGBinding { name: n_name, in_id, out_id, ty, input_index } in outputs.iter().cloned() {
+  for RSDVGBinding { name: n_name, in_id, out_id, ty } in outputs.iter().cloned() {
     if name == n_name {
       match unsafe { &mut *node_ptr.offset(in_id.usize() as isize) } {
         RVSDGInternalNode::Complex(node) => return Some(node),
