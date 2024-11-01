@@ -10,17 +10,22 @@ String => [len:u32, data: u32]
 
 // t () => rdr :[rstd = 2, test = 90]
 
-entry () => u32 {   
-  d: u32 = 11
+entry () => f32 {   
+  d:f32 = 2
   
-
   d = if d is > 2 {
-    2
-  } else { 
-    d
+     222.0
+  } else {
+    333.345
   }
 
-  22 + d
+  r = 22 / d
+  
+  if r is > 2 {
+    22 + d
+  } else {
+    44 + d
+  }
 } 
 
 

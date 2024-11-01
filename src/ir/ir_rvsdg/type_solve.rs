@@ -1,6 +1,6 @@
 #![allow(non_upper_case_globals)]
 
-use super::{RVSDGInternalNode, RVSDGNode, Type};
+use super::{IRGraphId, RVSDGInternalNode, RVSDGNode, Type};
 use crate::{
   container::ArrayVec,
   ir::{
@@ -133,6 +133,8 @@ pub enum VarConstraint {
   Callable,
   Mutable,
   Default(Type),
+  /// Node index, node port index, is_output
+  Binding(u32, u32, bool),
 }
 
 impl Debug for VarConstraint {
@@ -150,6 +152,13 @@ impl Debug for VarConstraint {
       Unsigned => f.write_fmt(format_args!("unsigned",)),
       Ptr(ptr) => f.write_fmt(format_args!("* = *ptr",)),
       &Default(ty) => f.write_fmt(format_args!("could be {ty}",)),
+      Binding(node_index, binding_index, output) => {
+        if *output {
+          f.write_fmt(format_args!("`{node_index} => output[{binding_index}]"))
+        } else {
+          f.write_fmt(format_args!("`{node_index} => input[{binding_index}]"))
+        }
+      }
     }
   }
 }
@@ -169,6 +178,7 @@ pub enum OPConstraints {
     node_id: u32,
   },
   Mutable(u32, u32),
+  BindingConstraint(u32, u32, IRGraphId, bool),
 }
 
 impl PartialOrd for OPConstraints {
@@ -181,6 +191,7 @@ impl PartialOrd for OPConstraints {
         OPConstraints::OpToOp(op1, op2, ..) => 7 * 1_0000_0000 + 1_0000_0000 - ((*op1) as usize * 10_000 + (*op2) as usize),
         OPConstraints::Member { .. } => 1 * 1_0000_0000,
         OPConstraints::Mutable(..) => 21 * 1_0000_0000,
+        OPConstraints::BindingConstraint(..) => 22 * 1_0000_0000,
       }
     }
     let a = get_ord_val(self);
@@ -204,6 +215,13 @@ impl Debug for OPConstraints {
       OPConstraints::Num(op1) => f.write_fmt(format_args!("`{op1} is numeric",)),
       OPConstraints::Member { base, output, lu, .. } => f.write_fmt(format_args!("`{base}.{lu} => {output}",)),
       OPConstraints::Mutable(op1, index) => f.write_fmt(format_args!("mut `{op1}[{index}]",)),
+      OPConstraints::BindingConstraint(node_index, binding_index, id, output) => {
+        if *output {
+          f.write_fmt(format_args!("{id} = `{node_index} => output[{binding_index}]"))
+        } else {
+          f.write_fmt(format_args!("{id} = `{node_index} => input[{binding_index}]"))
+        }
+      }
     }
   }
 }

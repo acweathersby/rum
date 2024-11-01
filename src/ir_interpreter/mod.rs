@@ -122,7 +122,7 @@ pub fn interpret(ty: Type, ty_db: &mut TypeDatabase) {
     if let Some(node) = entry.get_node() {
       let type_info = node.types.as_deref().unwrap();
       if node.ty == RVSDGNodeType::Function {
-        let result = executor(node, type_info, Default::default(), ty_db);
+        let (result, _) = executor(node, type_info, Default::default(), ty_db);
 
         for output in node.outputs.iter() {
           if output.name == "RET".intern() {
@@ -136,7 +136,19 @@ pub fn interpret(ty: Type, ty_db: &mut TypeDatabase) {
   }
 }
 
-fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {
+fn test() -> f32 {
+  let mut d = 0.0;
+
+  if d < 0.2 {
+    return d;
+  } else {
+    d = 333.0;
+  }
+
+  22.0 + d
+}
+
+fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &mut TypeDatabase) -> (Vec<Value>, bool) {
   let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes, .. } = scope_node;
 
   // order our ops based on inputs.
@@ -150,7 +162,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
       RVSDGInternalNode::Complex(node) => Some((i, node)),
       _ => None,
     })
-    .rev()
+    //.rev()
     .collect::<Vec<_>>();
 
   let mut call_first = vec![];
@@ -201,7 +213,6 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
         RVSDGInternalNode::Complex(cplx) => {
           rev_data_flow.push(op_index);
           for input in cplx.inputs.iter() {
-            println!("AAA");
             if input.in_id.is_valid() {
               queue.push_front(input.in_id);
             }
@@ -217,6 +228,8 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
 
   let mut actual_flow = Vec::new();
 
+  dbg!(&rev_data_flow);
+
   for op_index in rev_data_flow.iter().rev() {
     if stack[op_index.usize()] == Value::Unintialized {
       stack[op_index.usize()] = Value::Null;
@@ -224,13 +237,15 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
     }
   }
 
-  map_inputs(scope_node, &mut stack, args);
-  dbg!((&actual_flow, &stack, scope_node));
+  let mut active_ret = false;
 
-  for op_index in actual_flow {
+  map_inputs(scope_node, &mut stack, args);
+
+  for op_index in &actual_flow {
     let index = op_index.usize();
     use crate::ir::ir_rvsdg::IROp::*;
     let ty = type_info[index];
+
     match &nodes[index] {
       RVSDGInternalNode::TypeBinding(in_op, _) => {
         let val = match ty {
@@ -394,11 +409,13 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
         op => panic!("Unrecognized op at {index}: {op:?} -> \n{}: {}\n{}", type_info[index], nodes[index], blame(&source_nodes[index], "")),
       },
       RVSDGInternalNode::Complex(cplx) => {
+        if active_ret {
+          continue;
+        }
         use crate::ir::ir_rvsdg::RVSDGNodeType;
         match cplx.ty {
           RVSDGNodeType::MatchActivation => {
-            let output_stack = inline_call(cplx, &stack, ty_db);
-
+            let (output_stack, _) = inline_call(cplx, &stack, ty_db);
             map_outputs(cplx, &output_stack, &mut stack);
 
             if let Some(output) = scope_node.outputs.iter().find(|i| i.name == "__activation_val__".intern()) {
@@ -408,15 +425,19 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
               };
 
               if !is_good {
-                return stack;
+                return (stack, false);
               }
             } else {
               unreachable!("All node clauses should have a an activation output")
             }
           }
-          RVSDGNodeType::MatchBody => {
-            let args = inline_call(cplx, &stack, ty_db);
+          RVSDGNodeType::MatchBody | RVSDGNodeType::GenericBlock => {
+            let (args, _) = inline_call(cplx, &stack, ty_db);
             map_outputs(cplx, &args, &mut stack);
+
+            if cplx.outputs.iter().any(|c| c.name == "RET".to_token()) {
+              active_ret = true;
+            }
           }
           RVSDGNodeType::MatchHead => {
             // A match head contains a match value input, and a series potential match nodes,
@@ -437,7 +458,9 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
             for clause in match_clauses {
               let RVSDGInternalNode::Complex(node) = clause else { unreachable!() };
 
-              map_outputs(node, &inline_call(node, &match_stack, ty_db), &mut match_stack);
+              let (stack, ret) = inline_call(node, &match_stack, ty_db);
+
+              map_outputs(node, &stack, &mut match_stack);
 
               // check to see if the node was activated, if so, map its outputs to the node's inputs
 
@@ -448,6 +471,9 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
                 };
 
                 if is_good {
+                  if ret {
+                    active_ret = true;
+                  }
                   break;
                 }
               } else {
@@ -492,9 +518,11 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
       }
       _ => {}
     }
+
+    dbg!((op_index, &actual_flow, &stack, scope_node));
   }
 
-  stack
+  (stack, active_ret)
 }
 
 fn convert_primitive_types(prim: crate::ir::types::PrimitiveType, in_op: Value) -> Value {
@@ -628,13 +656,13 @@ fn map_outputs(node: &RVSDGNode, args: &[Value], stack: &mut [Value]) {
   }
 }
 
-fn inline_call(node: &RVSDGNode, args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {
+fn inline_call(node: &RVSDGNode, args: &[Value], ty_db: &mut TypeDatabase) -> (Vec<Value>, bool) {
   executor(node, node.types.as_deref().unwrap(), args, ty_db)
 }
 
 fn call(entry: TypeEntry, args: &[Value], ty_db: &mut TypeDatabase) -> Vec<Value> {
   if let Some((node)) = entry.get_node() {
-    inline_call(node, args, ty_db)
+    inline_call(node, args, ty_db).0
   } else {
     panic!("Could not resolve call B")
   }
