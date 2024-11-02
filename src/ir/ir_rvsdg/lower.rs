@@ -1,3 +1,5 @@
+use libc::shm_open;
+
 use crate::{
   ir::{
     ir_rvsdg::{IROp, *},
@@ -17,6 +19,9 @@ const crazy_ty: Type = Type::Primitive(PrimitiveType {
   byte_size:  20,
   ele_count:  20,
 });
+
+#[derive(Clone, Copy, Debug)]
+struct ThreadedGraphId(IRGraphId, u32);
 
 #[derive(Clone, Debug)]
 struct Var {
@@ -77,9 +82,9 @@ impl Builder {
     id
   }
 
-  pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 2], ty: Type, ast: ASTNode) -> IRGraphId {
+  pub fn add_simple(&mut self, op: IROp, operands: [IRGraphId; 3], ty: Type, ast: ASTNode) -> IRGraphId {
     let id = Self::create_id(&mut self.node_id);
-    self.add_node(RVSDGInternalNode::Simple { id, op, operands }, ast, ty);
+    self.add_node(RVSDGInternalNode::Simple { op, operands }, ast, ty);
     id
   }
 
@@ -103,7 +108,7 @@ impl Builder {
   }
 
   fn add_input_node_internal(&mut self, id: IRGraphId, ty: Type, ast: ASTNode) -> IRGraphId {
-    self.add_node(RVSDGInternalNode::Input { id }, ast, ty);
+    self.add_node(RVSDGInternalNode::Binding { ty: BindingType::InternalBinding }, ast, ty);
     id
   }
 
@@ -116,7 +121,7 @@ impl Builder {
     let const_id = self.get_const(const_val);
     let id = Self::create_id(&mut self.node_id);
 
-    self.add_node(RVSDGInternalNode::Simple { id, op: IROp::CONST_DECL, operands: [const_id, Default::default()] }, node, Default::default());
+    self.add_node(RVSDGInternalNode::Simple { op: IROp::CONST_DECL, operands: [const_id, Default::default(), Default::default()] }, node, Default::default());
 
     id
   }
@@ -144,7 +149,7 @@ impl Builder {
         let id = Self::create_id(node_id);
         *val.insert(id);
 
-        self.add_node(RVSDGInternalNode::Label(id, name), Default::default(), Type::NoUse);
+        self.add_node(RVSDGInternalNode::Label(name), Default::default(), Type::NoUse);
 
         id
       }
@@ -196,7 +201,7 @@ impl Builder {
         let id = Self::create_id(node_id);
         *val.insert(id);
 
-        self.add_node(RVSDGInternalNode::Const(id.0, const_val), Default::default(), Default::default());
+        self.add_node(RVSDGInternalNode::Const(const_val), Default::default(), Default::default());
 
         id
       }
@@ -264,7 +269,7 @@ fn lower_struct_to_rsvdg(binding_name: IString, struct_: &Type_Struct<Token>, ty
 
         node.outputs.push(output_binding);
 
-        node.nodes.push(RVSDGInternalNode::Input { id });
+        node.nodes.push(RVSDGInternalNode::Binding { ty: BindingType::InternalBinding });
         node.source_nodes.push(ASTNode::Property(prop.clone()));
         node.types.push(output_binding.ty);
       }
@@ -302,7 +307,7 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
   let (ret_val, _) = process_expression(expr, &mut node_stack, ty_db);
 
   let ret_ty = match &fn_decl.ty {
-    routine_type_Value::RawFunctionType(fn_ty) => insert_returns(ret_val, fn_ty, &mut node_stack, ty_db, &mut Vec::new()),
+    routine_type_Value::RawFunctionType(fn_ty) => insert_returns(resolve_binding(ret_val, &mut node_stack), fn_ty, &mut node_stack, ty_db, &mut Vec::new()),
     _ => Default::default(),
   };
 
@@ -337,7 +342,7 @@ fn insert_returns(
   let mut input = RSDVGBinding::default();
   let ty = get_type(&ret.ty, false, ty_db).unwrap_or_default();
 
-  dbg!((&node_stack, ret_val));
+  dbg!((ret_val));
   if !ret_val.is_invalid() {
     let builder = node_stack.front_mut().unwrap();
 
@@ -369,11 +374,11 @@ fn insert_params(params: &std::sync::Arc<Params<Token>>, builder: &mut Builder, 
   }
 }
 
-fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> (IRGraphId, bool) {
+fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> (ThreadedGraphId, bool) {
   match expr {
     expression_Value::MemberCompositeAccess(mem) => match lookup_var(mem, node_stack, true) {
-      VarLookup::Mem(output) => (output, false),
-      VarLookup::Var(var) => (var, false),
+      VarLookup::Mem(output) => (ThreadedGraphId(output, node_stack.front().unwrap().id), false),
+      VarLookup::Var(var) => (ThreadedGraphId(var, node_stack.front().unwrap().id), false),
       VarLookup::None(name) => {
         todo!("report error on lookup of {name} \n{} \n {node_stack:#?}", mem.tok.blame(0, 0, "", None))
       }
@@ -390,7 +395,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         ASTNode::RawNum(num.clone()),
       );
 
-      (val, false)
+      (ThreadedGraphId(val, node_stack.front().unwrap().id), false)
     }
 
     expression_Value::Add(op) => binary_expr(
@@ -457,33 +462,19 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
     ),
 
     expression_Value::RawBlock(block) => {
-      let mut last_id = IRGraphId::default();
+      let mut last_id = ThreadedGraphId(Default::default(), node_stack.front().unwrap().id);
       for expr in &block.statements {
         match expr {
           statement_Value::Expression(expr) => {
             let (li, sc) = process_expression(&expr.expr, node_stack, ty_db);
-
             last_id = li;
-
-            if sc {
-              if last_id.is_valid() {
-                let builder = node_stack.front_mut().unwrap();
-                builder.create_var("__expr__".intern(), last_id, Default::default(), false, Default::default());
-              }
-
-              push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
-
-              if last_id.is_valid() {
-                last_id = read_var("__expr__".intern(), node_stack).unwrap()
-              }
-            }
           }
           statement_Value::RawAssignment(assign) => {
             if process_assign(&assign, node_stack, ty_db) {
-              push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
+              //push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
             }
 
-            last_id = IRGraphId::default()
+            last_id = ThreadedGraphId(Default::default(), node_stack.front().unwrap().id)
           }
           statement_Value::RawLoop(loop_expr) => {
             let loop_val_id = "__loop_val__".intern();
@@ -518,14 +509,20 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       match &block.exit {
         Some(block_expression_group_3_Value::BlockExitExpressions(e)) => {
           let (out_id, short_circuit) = process_expression(&e.expression.expr, node_stack, ty_db);
+          let out_id = resolve_binding(out_id, node_stack);
+
           let ret_id = "RET".intern();
 
-          let _ = write_var(ret_id, node_stack).unwrap();
+          let _ = read_var(ret_id, node_stack).unwrap();
           let builder = node_stack.front_mut().unwrap();
 
           builder.update_var(ret_id, out_id, Default::default());
 
-          (Default::default(), true)
+          //pop_and_merge_single_node(node_stack, Default::default());
+          //
+          //push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
+
+          (ThreadedGraphId(Default::default(), node_stack.front().unwrap().id), true)
         }
         _ => (last_id, false),
       }
@@ -555,13 +552,13 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         input.name = "__NAME__".intern();
         call_builder.add_input(input, ASTNode::MemberCompositeAccess(call.member.clone()));
       }
+      dbg!(&call_builder);
 
       for ((arg, short_circuit), node) in args {
-        let mut input = RSDVGBinding::default();
-        input.ty = Default::default();
-        input.in_id = arg;
-        call_builder.add_input(input, node);
+        resolve_binding(arg, node_stack);
       }
+
+      let call_builder = node_stack.front_mut().unwrap();
 
       let mut output = RSDVGBinding::default();
       output.name = "RET".intern();
@@ -584,12 +581,12 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         let id = par_builder.add_input_node(output.ty, ASTNode::None);
         outputs[output_index].out_id = id;
         par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
-        return (id, false);
+        return (ThreadedGraphId(id, node_stack.front().unwrap().id), false);
       }
 
       par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
 
-      Default::default()
+      (ThreadedGraphId(Default::default(), node_stack.front().unwrap().id), false)
     }
 
     expression_Value::RawMatch(mtch) => {
@@ -602,6 +599,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       let (eval_id, bool) = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
+      let eval_id = resolve_binding(eval_id, node_stack);
       let builder = node_stack.front_mut().unwrap();
       builder.create_var(match_expression_id, eval_id, Default::default(), true, Default::default());
 
@@ -627,6 +625,8 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
             let builder = node_stack.front_mut().unwrap();
             let (v, short_circuit) = process_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
 
+            let v = resolve_binding(v, node_stack);
+
             let op_ty = match expr.op.as_str() {
               ">" => IROp::GR,
               "<" => IROp::LS,
@@ -639,7 +639,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
             let eval_id = read_var(match_expression_id, node_stack).unwrap();
             let builder = node_stack.front_mut().unwrap();
-            builder.add_simple(op_ty, [eval_id, v], Default::default(), ASTNode::RawExprMatch(expr.clone()))
+            builder.add_simple(op_ty, [eval_id, v, Default::default()], Default::default(), ASTNode::RawExprMatch(expr.clone()))
           } else {
             unreachable!()
           };
@@ -650,9 +650,13 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
           pop_and_merge_single_node(node_stack, Default::default());
 
+          let base_len = node_stack.len();
+
           push_new_builder(node_stack, RVSDGNodeType::MatchBody, Default::default());
 
           let (def_id, short_circuit) = process_expression(&clause.scope.clone().into(), node_stack, ty_db);
+
+          let def_id = resolve_binding(def_id, node_stack);
 
           if def_id.is_valid() {
             write_var(match_value_id, node_stack); // Ensure var is present in current scope.
@@ -661,7 +665,9 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
             builder.update_var(match_value_id, def_id, Default::default());
           }
 
-          pop_and_merge_single_node(node_stack, Default::default());
+          while node_stack.len() > base_len {
+            pop_and_merge_single_node(node_stack, Default::default());
+          }
 
           merges.push((pop_builder(node_stack), Default::default()));
         }
@@ -677,18 +683,31 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       remove_var(match_expression_id, node_stack);
 
-      (take_var(match_value_id, node_stack), short_circuit)
+      let id = take_var(match_value_id, node_stack);
+
+      let id = ThreadedGraphId(id, node_stack.front().unwrap().id);
+
+      //if short_circuit {
+      //  push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
+      //}
+
+      (id, false)
     }
 
     expression_Value::RawAggregateInstantiation(agg) => {
       let builder = node_stack.front_mut().unwrap();
-      let agg_id =
-        builder.add_simple(IROp::AGG_DECL, [Default::default(), Default::default()], Default::default(), ASTNode::RawAggregateInstantiation(agg.clone()));
+      let agg_id = builder.add_simple(
+        IROp::AGG_DECL,
+        [Default::default(), Default::default(), Default::default()],
+        Default::default(),
+        ASTNode::RawAggregateInstantiation(agg.clone()),
+      );
 
       let mut short_circuit = false;
 
       for init in &agg.inits {
         let (expr_id, sc) = process_expression(&init.expression.expr, node_stack, ty_db);
+        let expr_id = resolve_binding(expr_id, node_stack);
 
         short_circuit |= sc;
 
@@ -696,14 +715,15 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
         if let Some(name) = &init.name {
           let label_id = builder.get_label(name.id.intern());
-          let ref_id = builder.add_simple(IROp::REF, [agg_id, label_id], Default::default(), ASTNode::Var(name.clone()));
-          builder.add_simple(IROp::ASSIGN, [ref_id, expr_id], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
+
+          let ref_id = builder.add_simple(IROp::REF, [agg_id, label_id, Default::default()], Default::default(), ASTNode::Var(name.clone()));
+          builder.add_simple(IROp::ASSIGN, [ref_id, expr_id, Default::default()], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
         } else {
           todo!("Index based initializers are not supported yet {}", blame(&ASTNode::from(init.clone()), "prefix this with <name> ="))
         }
       }
 
-      (agg_id, short_circuit)
+      (ThreadedGraphId(agg_id, node_stack.front().unwrap().id), short_circuit)
     }
     node => todo!("{node:#?}"),
   }
@@ -716,19 +736,26 @@ fn binary_expr(
   node_stack: &mut VecDeque<Builder>,
   node: ASTNode,
   ty_db: &mut TypeDatabase,
-) -> (IRGraphId, bool) {
+) -> (ThreadedGraphId, bool) {
   let (left_id, short_circuit) = process_expression(&left, node_stack, ty_db);
   let (right_id, short_circuit) = process_expression(&right, node_stack, ty_db);
 
+  let left_id = resolve_binding(left_id, node_stack);
+  let right_id = resolve_binding(right_id, node_stack);
+
   let builder = node_stack.front_mut().unwrap();
 
-  (builder.add_simple(op, [left_id, right_id], Default::default(), node), short_circuit)
+  let id = (builder.add_simple(op, [left_id, right_id, Default::default()], Default::default(), node));
+
+  (ThreadedGraphId(id, builder.id), false)
 }
 
 fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> bool {
   let var = &expr.var;
   let expr = &expr.expression;
   let (graph_id, short_circuit) = process_expression(&expr.expr, node_stack, ty_db);
+
+  let graph_id = resolve_binding(graph_id, node_stack);
 
   match var {
     assignment_var_Value::RawAssignmentDeclaration(decl) => {
@@ -746,7 +773,7 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
       match lookup_var(&mem, node_stack, false) {
         VarLookup::Mem(mem_id) => {
           let builder = node_stack.front_mut().unwrap();
-          builder.add_simple(IROp::ASSIGN, [mem_id, graph_id], Default::default(), ASTNode::Expression(expr.clone()));
+          builder.add_simple(IROp::ASSIGN, [mem_id, graph_id, Default::default()], Default::default(), ASTNode::Expression(expr.clone()));
         }
         VarLookup::Var(output) => {
           write_var(root_name, node_stack);
@@ -785,7 +812,7 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
 
             let label_id = builder.get_label(name_id);
 
-            prev_ref = builder.add_simple(IROp::REF, [prev_ref, label_id], Default::default(), ASTNode::NamedMember(name.clone()));
+            prev_ref = builder.add_simple(IROp::REF, [prev_ref, label_id, Default::default()], Default::default(), ASTNode::NamedMember(name.clone()));
           }
           _ => unreachable!(),
         }
@@ -951,6 +978,32 @@ fn write_var<'a>(var_name: IString, node_stack: &'a mut VecDeque<WIPNode>) -> Op
   }
 
   None
+}
+
+fn import_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) -> IRGraphId {
+  let ThreadedGraphId(op, node_id) = binding;
+
+  let builder = node_stack.front_mut().unwrap();
+  return builder.add_input(RSDVGBinding { in_id: op, ..Default::default() }, Default::default()).out_id;
+}
+
+fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) -> IRGraphId {
+  let ThreadedGraphId(op, node_id) = binding;
+
+  if op.is_valid() {
+    let builder = node_stack.front_mut().unwrap();
+
+    if builder.id != node_id {
+      return builder.add_input(RSDVGBinding { in_id: op, ..Default::default() }, Default::default()).out_id;
+
+      // The binding id should be found as a child of the penultimate node.
+      todo!(" Resolve binding from {node_id} {builder:#?}")
+    } else {
+      op
+    }
+  } else {
+    op
+  }
 }
 
 fn seal_var(var_name: IString, node_stack: &mut VecDeque<Builder>, ty: Type) {

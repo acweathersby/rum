@@ -125,15 +125,22 @@ impl Display for RSDVGBinding {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindingType {
+  InternalBinding,
+  Return,
+  Break,
+}
+
 #[derive(Clone)]
 pub enum RVSDGInternalNode {
   PlaceHolder,
-  Label(IRGraphId, IString),
-  Const(u32, ConstVal),
+  Label(IString),
+  Const(ConstVal),
   TypeBinding(IRGraphId),
   Complex(Box<RVSDGNode>),
-  Simple { id: IRGraphId, op: IROp, operands: [IRGraphId; 2] },
-  Input { id: IRGraphId },
+  Simple { op: IROp, operands: [IRGraphId; 3] },
+  Binding { ty: BindingType },
 }
 
 impl Debug for RVSDGInternalNode {
@@ -146,16 +153,16 @@ impl Display for RVSDGInternalNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       RVSDGInternalNode::PlaceHolder => f.write_str("--- place holder --- "),
-      RVSDGInternalNode::Label(id, name) => f.write_fmt(format_args!("\"{:#}\"", name)),
+      RVSDGInternalNode::Label(name) => f.write_fmt(format_args!("\"{:#}\"", name)),
       RVSDGInternalNode::Complex(complex) => f.write_fmt(format_args!("{:#}", complex)),
-      RVSDGInternalNode::Const(id, r#const) => f.write_fmt(format_args!("{}", r#const)),
-      RVSDGInternalNode::Simple { id, op, operands } => f.write_fmt(format_args!(
+      RVSDGInternalNode::Const(r#const) => f.write_fmt(format_args!("{}", r#const)),
+      RVSDGInternalNode::Simple { op, operands } => f.write_fmt(format_args!(
         "{:10} {:10}",
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
       RVSDGInternalNode::TypeBinding(in_id) => f.write_fmt(format_args!("BIND_TYPE  {in_id:3}",)),
-      RVSDGInternalNode::Input { id, .. } => f.write_fmt(format_args!("INPUT ")),
+      RVSDGInternalNode::Binding { ty } => f.write_fmt(format_args!("{ty:?} ")),
     }
   }
 }

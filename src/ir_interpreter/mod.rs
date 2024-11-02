@@ -184,7 +184,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
   while let Some(op_index) = queue.pop_front() {
     if stack[op_index.usize()] == Value::Unintialized {
       match &nodes[op_index] {
-        RVSDGInternalNode::Input { .. } => {
+        RVSDGInternalNode::Binding { .. } => {
           for (i, cmplx) in &cmplx {
             if stack[*i] == Value::Unintialized {
               for output in cmplx.outputs.iter() {
@@ -200,7 +200,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
           queue.push_front(*in_op);
           rev_data_flow.push(op_index);
         }
-        RVSDGInternalNode::Simple { id, op, operands, .. } => {
+        RVSDGInternalNode::Simple { op, operands, .. } => {
           if operands[0].is_valid() {
             queue.push_front(operands[0]);
           }
@@ -257,9 +257,9 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
 
         stack[index] = val;
       }
-      RVSDGInternalNode::Simple { id, op, operands, .. } => match op {
+      RVSDGInternalNode::Simple { op, operands, .. } => match op {
         CONST_DECL => {
-          let RVSDGInternalNode::Const(_, cst) = nodes[operands[0].usize()] else { panic!("Expected constant operand in CONST_DECL") };
+          let RVSDGInternalNode::Const(cst) = nodes[operands[0].usize()] else { panic!("Expected constant operand in CONST_DECL") };
 
           assert!(!ty.is_undefined(), "Expected a primitive type for constant @ `{index} in \n{op:#?} \n {type_info:#?}");
 
@@ -293,6 +293,8 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
         ADD => {
           let left = &stack[operands[0].usize()];
           let right = &stack[operands[1].usize()];
+
+          dbg!((left, right));
           stack[index] = op_match!(+, left, right);
         }
         SUB => {
@@ -370,7 +372,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
           };
 
           match &nodes[operands[1].usize()] {
-            RVSDGInternalNode::Label(_, name) => {
+            RVSDGInternalNode::Label(name) => {
               if let Some(output) = node.get_node().unwrap().outputs.iter().find(|n| n.name == *name) {
                 let index = output.in_id.usize();
                 let offset = node.get_offset_data().expect("Could not read offset data from type")[index];
@@ -497,7 +499,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
             let in_id = name_input.in_id;
 
             match &nodes[in_id] {
-              RVSDGInternalNode::Label(_, name) => {
+              RVSDGInternalNode::Label(name) => {
                 // Find the name in the current module.
 
                 if let Some(fn_ty_entry) = ty_db.get_ty_entry(name.to_str().as_str()) {

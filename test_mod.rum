@@ -10,9 +10,15 @@ String => [len:u32, data: u32]
 
 // t () => rdr :[rstd = 2, test = 90]
 
-entry (i:u32) => f32 {   
-  if i is == 2 { ret 2 } else { 3 + i } + 3
+
+red (t:f32, r:f32) => f32 t + 1 + r
+
+entry (i:f32) => f32 {
+  d = 2
+
+  if i is > 2 {
+    ret 2
+  }
+
+  red(i, d)
 } 
-
-
- 

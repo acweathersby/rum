@@ -233,7 +233,7 @@ pub fn solve_constraints(
           }
 
           match nodes[at_op as usize] {
-            RVSDGInternalNode::Simple { id, op, operands } => match op {
+            RVSDGInternalNode::Simple { op, operands } => match op {
               IROp::ASSIGN => {
                 let mem_op = operands[0].0;
                 let other_op = operands[1].0;
@@ -302,7 +302,7 @@ pub fn solve_constraints(
             match sub_node.ty {
               RVSDGNodeType::Call => {
                 let call_name = match &nodes[sub_node.inputs[0].in_id.usize()] {
-                  RVSDGInternalNode::Label(_, call_name) => *call_name,
+                  RVSDGInternalNode::Label(call_name) => *call_name,
                   ty => unreachable!("{ty:?}"),
                 };
 
@@ -401,12 +401,12 @@ pub fn solve_constraints(
           let mem_var_id = get_or_create_var_id(&mut type_maps, &mem_op, &mut ty_vars);
 
           let (par_var, ref_name) = match nodes[mem_op as usize] {
-            RVSDGInternalNode::Simple { id, op, operands, .. } => {
+            RVSDGInternalNode::Simple { op, operands, .. } => {
               let par_op = operands[0].usize() as u32;
               let ref_op = operands[1].usize();
 
               match nodes[ref_op] {
-                RVSDGInternalNode::Label(_, name) => (get_or_create_var_id(&mut type_maps, &par_op, &mut ty_vars), name),
+                RVSDGInternalNode::Label(name) => (get_or_create_var_id(&mut type_maps, &par_op, &mut ty_vars), name),
                 _ => unreachable!(),
               }
             }
@@ -763,7 +763,7 @@ fn get_op_tok(sub_node: &RVSDGNode, own_id: super::IRGraphId) -> crate::parser::
 
   loop {
     match &node.nodes[id as usize] {
-      RVSDGInternalNode::Input { .. } => {
+      RVSDGInternalNode::Binding { .. } => {
         let mut scan_id = id as isize;
         let mut have_inner = false;
         'outer: while scan_id >= 0 {
@@ -1020,37 +1020,37 @@ pub fn get_ssa_constraints(
   ty_db: &TypeDatabase,
   types: &[Type],
 ) {
-  let i = index as u32;
+  let own_id: u32 = index as u32;
   match &nodes[index as usize] {
-    RVSDGInternalNode::Input { id } => {
-      let ty = types[i as usize];
+    RVSDGInternalNode::Binding { .. } => {
+      let ty = types[own_id as usize];
       if ty.is_undefined() {
-        constraints.push(OPConstraints::OpToTy(id.0, ty, i));
+        constraints.push(OPConstraints::OpToTy(own_id, ty, own_id));
       }
     }
     RVSDGInternalNode::TypeBinding(in_id) => {
-      constraints.push(OPConstraints::OpToTy(i, types[i as usize], i));
-      constraints.push(OPConstraints::OpToOp(i, in_id.0, i));
+      constraints.push(OPConstraints::OpToTy(own_id, types[own_id as usize], own_id));
+      constraints.push(OPConstraints::OpToOp(own_id, in_id.0, own_id));
     }
-    RVSDGInternalNode::Simple { id, op, operands } => match op {
+    RVSDGInternalNode::Simple { op, operands } => match op {
       IROp::ADD | IROp::SUB | IROp::MUL | IROp::DIV | IROp::POW => {
-        constraints.push(OPConstraints::Num(id.0));
-        constraints.push(OPConstraints::OpToOp(id.0, operands[1].0, i));
-        constraints.push(OPConstraints::OpToOp(id.0, operands[0].0, i));
+        constraints.push(OPConstraints::Num(own_id));
+        constraints.push(OPConstraints::OpToOp(own_id, operands[1].0, own_id));
+        constraints.push(OPConstraints::OpToOp(own_id, operands[0].0, own_id));
       }
       IROp::GR | IROp::GE | IROp::LS | IROp::LE | IROp::EQ | IROp::NE => {
         constraints.push(OPConstraints::Num(operands[0].0));
-        constraints.push(OPConstraints::OpToOp(operands[0].0, operands[1].0, i));
-        constraints.push(OPConstraints::OpToTy(i, ty_db.get_ty("u16").unwrap(), i));
+        constraints.push(OPConstraints::OpToOp(operands[0].0, operands[1].0, own_id));
+        constraints.push(OPConstraints::OpToTy(own_id, ty_db.get_ty("u16").unwrap(), own_id));
       }
-      IROp::CONST_DECL => constraints.push(OPConstraints::Num(i)),
+      IROp::CONST_DECL => constraints.push(OPConstraints::Num(own_id)),
       IROp::ASSIGN => {
-        constraints.push(OPConstraints::OpAssignedTo(operands[0].0, operands[1].0, i));
-        constraints.push(OPConstraints::Mutable(operands[0].0, i));
+        constraints.push(OPConstraints::OpAssignedTo(operands[0].0, operands[1].0, own_id));
+        constraints.push(OPConstraints::Mutable(operands[0].0, own_id));
       }
 
       IROp::REF => match &nodes[operands[1].0 as usize] {
-        RVSDGInternalNode::Label(_, name) => {
+        RVSDGInternalNode::Label(name) => {
           constraints.push(OPConstraints::Member { base: operands[0].0, output: index as u32, lu: *name, node_id: index as u32 });
         }
         _ => unreachable!(),
@@ -1058,18 +1058,18 @@ pub fn get_ssa_constraints(
       _ => {}
     },
     RVSDGInternalNode::Complex(node) => {
-      checks.push(TypeCheck::InitialNodeSolve(i));
+      checks.push(TypeCheck::InitialNodeSolve(own_id));
 
       for (is_output, bindings) in [(true, node.outputs.iter()), (false, node.inputs.iter())] {
         for (index, binding) in bindings.enumerate() {
           let (in_id, out_id) = if is_output { (binding.in_id, binding.out_id) } else { (binding.out_id, binding.in_id) };
 
           if out_id.is_valid() {
-            constraints.push(OPConstraints::BindingConstraint(i, index as u32, out_id, is_output));
+            constraints.push(OPConstraints::BindingConstraint(own_id, index as u32, out_id, is_output));
           }
 
           if in_id.is_valid() && !binding.ty.is_open() {
-            constraints.push(OPConstraints::OpToTy(in_id.0, types[i as usize], in_id.0));
+            constraints.push(OPConstraints::OpToTy(in_id.0, types[own_id as usize], in_id.0));
           }
         }
       }
