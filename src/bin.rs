@@ -1,15 +1,12 @@
 use rum_lang::{
   ir::{
-    ir_rvsdg::{__debug_node_types__, lower::lower_ast_to_rvsdg, solve_pipeline::solve_type},
+    ir_rvsdg::{lower::lower_ast_to_rvsdg, solve_pipeline::solve_type},
     types::TypeDatabase,
   },
   ir_interpreter::interpret,
-  parser::{self, script_parser::parse_raw_module},
+  parser::script_parser::parse_raw_module,
 };
-use std::{
-  collections::VecDeque,
-  path::{Path, PathBuf},
-};
+use std::{collections::VecDeque, path::PathBuf};
 
 fn main() -> Result<(), u8> {
   let mut args: VecDeque<String> = std::env::args().collect();
@@ -73,7 +70,7 @@ fn run_interpreter(mut args: VecDeque<String>) {
         let Some(entry) = ty_db.get_ty_entry("main") else { panic!("Could not load main function") };
         let ty = entry.ty;
 
-        if (solve_type(ty, &mut ty_db).is_ok()) {
+        if solve_type(ty, &mut ty_db).is_ok() {
           interpret(ty, &mut ty_db);
         }
       }

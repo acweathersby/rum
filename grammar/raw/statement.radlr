@@ -84,7 +84,7 @@ IMPORT ../common/comment as cmt
 
 <> match_expression 
 
-  > "if" expr::l_val^expression "is" match_clause(+)^clauses default_clause
+  > "if" expr::l_val^expression "is" match_clause(+)^clauses default_clause?
 
     :ast { t_RawMatch, expression, clauses, default_clause, tok  }
 

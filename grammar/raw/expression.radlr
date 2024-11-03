@@ -148,7 +148,7 @@ IMPORT ../common/comment as cmt
 
   | "(" expression_types ")"
 
-    :ast $1
+    :ast $2
 
 <> r_val 
 

@@ -1049,6 +1049,14 @@ pub fn get_ssa_constraints(
         constraints.push(OPConstraints::Mutable(operands[0].0, own_id));
       }
 
+      IROp::RET_VAL => {
+        for op in operands {
+          if op.is_valid() {
+            constraints.push(OPConstraints::OpToOp(own_id, op.0, own_id));
+          }
+        }
+      }
+
       IROp::REF => match &nodes[operands[1].0 as usize] {
         RVSDGInternalNode::Label(name) => {
           constraints.push(OPConstraints::Member { base: operands[0].0, output: index as u32, lu: *name, node_id: index as u32 });

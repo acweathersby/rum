@@ -141,6 +141,7 @@ pub enum RVSDGInternalNode {
   Complex(Box<RVSDGNode>),
   Simple { op: IROp, operands: [IRGraphId; 3] },
   Binding { ty: BindingType },
+  Sink { src: IRGraphId, ty: BindingType },
 }
 
 impl Debug for RVSDGInternalNode {
@@ -162,7 +163,9 @@ impl Display for RVSDGInternalNode {
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
       RVSDGInternalNode::TypeBinding(in_id) => f.write_fmt(format_args!("BIND_TYPE  {in_id:3}",)),
-      RVSDGInternalNode::Binding { ty } => f.write_fmt(format_args!("{ty:?} ")),
+
+      RVSDGInternalNode::Binding { ty } => f.write_fmt(format_args!("{ty:?}")),
+      RVSDGInternalNode::Sink { ty, src: op } => f.write_fmt(format_args!("{ty:?}({op:?}) ")),
     }
   }
 }
@@ -323,9 +326,9 @@ impl IRGraphId {
 impl Display for IRGraphId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.is_invalid() {
-      f.write_fmt(format_args!("xxx "))
+      f.write_fmt(format_args!("xxx"))
     } else {
-      f.write_fmt(format_args!("{:>3} ", format!("`{}", self.0)))
+      f.write_fmt(format_args!("{:>3}", format!("`{}", self.0)))
     }
   }
 }

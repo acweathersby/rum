@@ -135,6 +135,12 @@ impl Builder {
     ty
   }
 
+  fn add_other(&mut self, node: RVSDGInternalNode, ast: ASTNode, ty: Type) -> IRGraphId {
+    let id = Self::create_id(&mut self.node_id);
+    self.add_node(node, ast, ty);
+    id
+  }
+
   fn add_node(&mut self, node: RVSDGInternalNode, ast: ASTNode, ty: Type) {
     self.node.nodes.push(node);
     self.node.source_nodes.push(ast);
@@ -315,7 +321,9 @@ fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> B
     pop_and_merge_single_node_with_return(&mut node_stack, Default::default());
   }
 
-  seal_var("RET".intern(), &mut node_stack, ret_ty);
+  let var_name = "RET".intern();
+
+  seal_var(var_name, &mut node_stack, ret_ty);
 
   pop_and_merge_single_node(&mut node_stack, Default::default());
 
@@ -342,21 +350,22 @@ fn insert_returns(
   let mut input = RSDVGBinding::default();
   let ty = get_type(&ret.ty, false, ty_db).unwrap_or_default();
 
-  dbg!((ret_val));
-  if !ret_val.is_invalid() {
-    let builder = node_stack.front_mut().unwrap();
+  create_return_sink(node_stack, ret_val);
 
+  ty
+}
+
+fn create_return_sink(node_stack: &mut VecDeque<Builder>, ret_val: IRGraphId) {
+  if ret_val.is_valid() {
     let ret_id = "RET".intern();
-    let out_id = write_var(ret_id, node_stack).unwrap();
+    let prev_ret = read_var(ret_id, node_stack).unwrap_or_default();
     let builder = node_stack.front_mut().unwrap();
+    let ty = builder.var_lookup.get(&ret_id).unwrap().ty;
 
-    builder.update_var(ret_id, ret_val, Default::default());
+    let sink_id = builder.add_simple(IROp::RET_VAL, [ret_val, prev_ret, Default::default()], ty, Default::default());
+    //let sink_id = builder.add_other(RVSDGInternalNode:: { src: ret_val, ty: BindingType::Return }, Default::default(), ty);
 
-    println!("----------------------");
-
-    ty
-  } else {
-    ty
+    builder.update_var(ret_id, sink_id, Default::default());
   }
 }
 
@@ -390,7 +399,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         if string_val.contains(".") {
           ConstVal::new(ty_db.get_ty("f64").expect("f64 should exist").to_primitive().unwrap(), num.val)
         } else {
-          ConstVal::new(ty_db.get_ty("u64").expect("u64 should exist").to_primitive().unwrap(), string_val.parse::<u64>().unwrap())
+          ConstVal::new(ty_db.get_ty("i64").expect("i64 should exist").to_primitive().unwrap(), string_val.parse::<i64>().unwrap())
         },
         ASTNode::RawNum(num.clone()),
       );
@@ -511,16 +520,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
           let (out_id, short_circuit) = process_expression(&e.expression.expr, node_stack, ty_db);
           let out_id = resolve_binding(out_id, node_stack);
 
-          let ret_id = "RET".intern();
-
-          let _ = read_var(ret_id, node_stack).unwrap();
-          let builder = node_stack.front_mut().unwrap();
-
-          builder.update_var(ret_id, out_id, Default::default());
-
-          //pop_and_merge_single_node(node_stack, Default::default());
-          //
-          //push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
+          create_return_sink(node_stack, out_id);
 
           (ThreadedGraphId(Default::default(), node_stack.front().unwrap().id), true)
         }
