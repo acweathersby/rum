@@ -196,10 +196,6 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
             }
           }
         }
-        RVSDGInternalNode::TypeBinding(in_op) => {
-          queue.push_front(*in_op);
-          rev_data_flow.push(op_index);
-        }
         RVSDGInternalNode::Simple { op, operands, .. } => {
           if operands[0].is_valid() {
             queue.push_front(operands[0]);
@@ -249,14 +245,6 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
     dbg!((op_index, &actual_flow, &stack, scope_node));
 
     match &nodes[index] {
-      RVSDGInternalNode::TypeBinding(in_op) => {
-        let val = match ty {
-          Type::Primitive(prim) => convert_primitive_types(prim, stack[in_op.usize()]),
-          ty => unreachable!("{ty:?}"),
-        };
-
-        stack[index] = val;
-      }
       RVSDGInternalNode::Simple { op, operands, .. } => match op {
         CONST_DECL => {
           let RVSDGInternalNode::Const(cst) = nodes[operands[0].usize()] else { panic!("Expected constant operand in CONST_DECL") };

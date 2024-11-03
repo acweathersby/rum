@@ -13,7 +13,7 @@ use crate::{
 use std::{
   cmp::Ordering,
   collections::VecDeque,
-  fmt::{Debug, Display},
+  fmt::{Debug, Display, Write},
   u32,
 };
 
@@ -24,9 +24,9 @@ pub struct AnnotatedTypeVar {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MemberEntry {
-  pub name:        IString,
-  pub origin_node: u32,
-  pub ty:          Type,
+  pub name:      IString,
+  pub origin_op: u32,
+  pub ty:        Type,
 }
 
 #[derive(Clone)]
@@ -68,7 +68,7 @@ impl TypeVar {
   pub fn add_mem(&mut self, name: IString, ty: Type, origin_node: u32) {
     self.constraints.push_unique(VarConstraint::Agg).unwrap();
 
-    for (index, MemberEntry { name: n, origin_node, ty }) in self.members.iter().enumerate() {
+    for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
       if *n == name {
         dbg!((index, self.members.len()));
         self.members.remove(index);
@@ -76,11 +76,11 @@ impl TypeVar {
       }
     }
 
-    let _ = self.members.insert_ordered(MemberEntry { name, origin_node, ty });
+    let _ = self.members.insert_ordered(MemberEntry { name, origin_op: origin_node, ty });
   }
 
   pub fn get_mem(&self, name: IString) -> Option<(u32, Type)> {
-    for MemberEntry { name: n, origin_node, ty } in self.members.iter() {
+    for MemberEntry { name: n, origin_op: origin_node, ty } in self.members.iter() {
       if *n == name {
         return Some((*origin_node, *ty));
       }
@@ -99,7 +99,11 @@ impl Display for TypeVar {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let Self { id, ty, constraints, members, ref_id } = self;
 
-    f.write_fmt(format_args!("{}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
+    if ty.is_generic() {
+      f.write_fmt(format_args!("{}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
+    } else {
+      f.write_fmt(format_args!("{}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
+    }
     if !constraints.is_empty() {
       f.write_str(" <")?;
       for constraint in constraints.iter() {
@@ -110,7 +114,7 @@ impl Display for TypeVar {
 
     if !members.is_empty() {
       f.write_str(" [\n")?;
-      for MemberEntry { name, origin_node, ty } in members.iter() {
+      for MemberEntry { name, origin_op: origin_node, ty } in members.iter() {
         f.write_fmt(format_args!("  {name}: {ty} @ `{origin_node},\n"))?;
       }
       f.write_str("]")?;
@@ -130,6 +134,8 @@ pub enum VarConstraint {
   Float,
   Unsigned,
   Ptr(u32),
+  Load(u32, u32),
+  Store(u32, u32),
   Callable,
   Mutable,
   Default(Type),
@@ -143,6 +149,8 @@ impl Debug for VarConstraint {
     match self {
       Callable => f.write_fmt(format_args!("* => x -> x",)),
       Method => f.write_fmt(format_args!("*.X => x -> x",)),
+      Store(a, b) => f.write_fmt(format_args!("store (@ `{a}, src: `{b})",)),
+      Load(a, b) => f.write_fmt(format_args!("load (@ `{a}, src: `{b})",)),
       Member => f.write_fmt(format_args!("*.X",)),
       Agg => f.write_fmt(format_args!("agg",)),
       Mutable => f.write_fmt(format_args!("mut",)),
@@ -165,33 +173,31 @@ impl Debug for VarConstraint {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum OPConstraints {
+pub enum OPConstraint {
+  MemToTy(u32, Type, u32),
   OpToTy(u32, Type, u32),
   OpToOp(u32, u32, u32),
-  /// type of arg1 is a pointer to type of arg2
-  OpAssignedTo(u32, u32, u32),
+  Store(u32),
+  Load(u32),
   Num(u32),
-  Member {
-    base:    u32,
-    output:  u32,
-    lu:      IString,
-    node_id: u32,
-  },
+  Member { base: u32, output: u32, lu: IString, node_id: u32 },
   Mutable(u32, u32),
   BindingConstraint(u32, u32, IRGraphId, bool),
 }
 
-impl PartialOrd for OPConstraints {
+impl PartialOrd for OPConstraint {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    fn get_ord_val(val: &OPConstraints) -> usize {
+    fn get_ord_val(val: &OPConstraint) -> usize {
       match val {
-        OPConstraints::OpToTy(..) => 2 * 1_0000_0000,
-        OPConstraints::Num(..) => 5 * 1_0000_0000,
-        OPConstraints::OpAssignedTo(..) => 6 * 1_0000_0000,
-        OPConstraints::OpToOp(op1, op2, ..) => 7 * 1_0000_0000 + 1_0000_0000 - ((*op1) as usize * 10_000 + (*op2) as usize),
-        OPConstraints::Member { .. } => 1 * 1_0000_0000,
-        OPConstraints::Mutable(..) => 21 * 1_0000_0000,
-        OPConstraints::BindingConstraint(..) => 22 * 1_0000_0000,
+        OPConstraint::OpToTy(..) => 2 * 1_0000_0000,
+        OPConstraint::Num(..) => 5 * 1_0000_0000,
+        OPConstraint::OpToOp(op1, op2, ..) => 7 * 1_0000_0000 + 1_0000_0000 - ((*op1) as usize * 10_000 + (*op2) as usize),
+        OPConstraint::Member { .. } => 1 * 1_0000_0000,
+        OPConstraint::Mutable(..) => 21 * 1_0000_0000,
+        OPConstraint::Store(..) => 21 * 1_0000_0000,
+        OPConstraint::Load(..) => 21 * 1_0000_0000,
+        OPConstraint::MemToTy(..) => 21 * 1_0000_0000,
+        OPConstraint::BindingConstraint(..) => 22 * 1_0000_0000,
       }
     }
     let a = get_ord_val(self);
@@ -200,22 +206,24 @@ impl PartialOrd for OPConstraints {
   }
 }
 
-impl Ord for OPConstraints {
+impl Ord for OPConstraint {
   fn cmp(&self, other: &Self) -> Ordering {
     self.partial_cmp(other).unwrap_or(Ordering::Equal)
   }
 }
 
-impl Debug for OPConstraints {
+impl Debug for OPConstraint {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      OPConstraints::OpToOp(op1, op2, origin) => f.write_fmt(format_args!("`{op1} = `{op2} @{origin}",)),
-      OPConstraints::OpToTy(op1, ty, source) => f.write_fmt(format_args!("`{op1} =: {ty} @ `{source}",)),
-      OPConstraints::OpAssignedTo(op1, op2, ..) => f.write_fmt(format_args!("`{op1} => {op2}",)),
-      OPConstraints::Num(op1) => f.write_fmt(format_args!("`{op1} is numeric",)),
-      OPConstraints::Member { base, output, lu, .. } => f.write_fmt(format_args!("`{base}.{lu} => {output}",)),
-      OPConstraints::Mutable(op1, index) => f.write_fmt(format_args!("mut `{op1}[{index}]",)),
-      OPConstraints::BindingConstraint(node_index, binding_index, id, output) => {
+      OPConstraint::OpToOp(op1, op2, origin) => f.write_fmt(format_args!("`{op1} = `{op2} @{origin}",)),
+      OPConstraint::OpToTy(op1, ty, source) => f.write_fmt(format_args!("`{op1} =: {ty} @ `{source}",)),
+      OPConstraint::MemToTy(op1, ty, source) => f.write_fmt(format_args!("*`{op1} =: {ty} @ `{source}",)),
+      OPConstraint::Store(op1) => f.write_fmt(format_args!("x => *x @{op1}",)),
+      OPConstraint::Load(op1) => f.write_fmt(format_args!("x <= *x @{op1}",)),
+      OPConstraint::Num(op1) => f.write_fmt(format_args!("`{op1} is numeric",)),
+      OPConstraint::Member { base, output, lu, .. } => f.write_fmt(format_args!("`{base}.{lu} => {output}",)),
+      OPConstraint::Mutable(op1, index) => f.write_fmt(format_args!("mut `{op1}[{index}]",)),
+      OPConstraint::BindingConstraint(node_index, binding_index, id, output) => {
         if *output {
           f.write_fmt(format_args!("{id} = `{node_index} => output[{binding_index}]"))
         } else {

@@ -1,6 +1,4 @@
-use radlr_rust_runtime::types::Token;
-use type_solve::TypeVar;
-
+use super::types::Type;
 use crate::{
   container::ArrayVec,
   ir_interpreter::blame,
@@ -8,13 +6,13 @@ use crate::{
   parser::script_parser::ASTNode,
   types::ConstVal,
 };
+use radlr_rust_runtime::types::Token;
 use std::{
   collections::BTreeMap,
   fmt::{Debug, Display, Pointer, Write},
   sync::Arc,
 };
-
-use super::types::Type;
+use type_solve::TypeVar;
 
 pub mod lower;
 pub mod solve_pipeline;
@@ -40,7 +38,7 @@ pub enum RVSDGNodeType {
 
 #[derive(Default, Clone)]
 pub struct RVSDGNode {
-  pub id:           IString,
+  pub id:           u32,
   pub ty:           RVSDGNodeType,
   pub inputs:       ArrayVec<4, RSDVGBinding>,
   pub outputs:      ArrayVec<4, RSDVGBinding>,
@@ -52,7 +50,7 @@ pub struct RVSDGNode {
 }
 
 impl RVSDGNode {
-  pub fn set_type_if_open(&mut self, op: IRGraphId, ty: Type) -> Type {
+  pub fn set_type_if_undefined(&mut self, op: IRGraphId, ty: Type) -> Type {
     let existing_type = &mut self.types[op.usize()];
 
     if existing_type.is_undefined() {
@@ -109,8 +107,6 @@ pub struct RSDVGBinding {
   ///
   /// if the binding is an output then this value corresponds to a node in the parent scope
   pub out_id: IRGraphId,
-  /// The type of the binding. This must match the types of the in_id and out_id nodes
-  pub ty:     Type,
 }
 
 impl Debug for RSDVGBinding {
@@ -121,7 +117,7 @@ impl Debug for RSDVGBinding {
 
 impl Display for RSDVGBinding {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("{:<4}  => {:<3} {:>3} [{}]", self.in_id, self.out_id, self.ty, self.name.to_string(),))
+    f.write_fmt(format_args!("{:<4}  => {:<3} [{}]", self.in_id, self.out_id, self.name.to_string(),))
   }
 }
 
@@ -137,7 +133,6 @@ pub enum RVSDGInternalNode {
   PlaceHolder,
   Label(IString),
   Const(ConstVal),
-  TypeBinding(IRGraphId),
   Complex(Box<RVSDGNode>),
   Simple { op: IROp, operands: [IRGraphId; 3] },
   Binding { ty: BindingType },
@@ -162,8 +157,6 @@ impl Display for RVSDGInternalNode {
         format!("{:?}", op),
         operands.iter().filter_map(|i| { (!i.is_invalid()).then(|| format!("{i:8}")) }).collect::<Vec<_>>().join("  "),
       )),
-      RVSDGInternalNode::TypeBinding(in_id) => f.write_fmt(format_args!("BIND_TYPE  {in_id:3}",)),
-
       RVSDGInternalNode::Binding { ty } => f.write_fmt(format_args!("{ty:?}")),
       RVSDGInternalNode::Sink { ty, src: op } => f.write_fmt(format_args!("{ty:?}({op:?}) ")),
     }
@@ -178,7 +171,7 @@ fn get_node_by_name(name: IString, node: &mut RVSDGNode) -> Option<&mut RVSDGNod
 
   let node_ptr = nodes.as_mut_ptr();
 
-  for RSDVGBinding { name: n_name, in_id, out_id, ty } in outputs.iter().cloned() {
+  for RSDVGBinding { name: n_name, in_id, out_id } in outputs.iter().cloned() {
     if name == n_name {
       match unsafe { &mut *node_ptr.offset(in_id.usize() as isize) } {
         RVSDGInternalNode::Complex(node) => return Some(node),
@@ -259,7 +252,6 @@ pub enum IROp {
   // Clone one memory structure to another memory structure. Operands MUST be pointer values.
   // Depending on type, may require deep cloning, which will probably be handled through a dynamically generated function.
   CLONE,
-  ASSIGN,
   /// Returns the address of op1 as a pointer
   LOAD_ADDR,
 }

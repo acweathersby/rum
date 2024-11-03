@@ -126,7 +126,7 @@ impl TypeDatabase {
     self.name_to_entry.get(&name.to_token()).map(|i| self.types[*i].ty)
   }
 
-  pub fn get_ptr(&self, ty: Type) -> Option<Type> {
+  pub fn to_ptr(&self, ty: Type) -> Option<Type> {
     match ty {
       Type::NoUse | Type::ComplexHash(_) => Some(Type::Undefined),
       Type::Undefined => Some(Type::Undefined),
@@ -134,6 +134,20 @@ impl TypeDatabase {
       Type::Complex { ty_index, .. } => Some(Type::Pointer { count: 1, ty_index }),
       Type::Pointer { count, ty_index } => Some(Type::Pointer { count: count + 1, ty_index }),
       Type::Primitive(PrimitiveType { base_index, .. }) => Some(Type::Pointer { count: 1, ty_index: base_index as u32 }),
+    }
+  }
+
+  pub fn from_ptr(&self, ty: Type) -> Option<Type> {
+    match ty {
+      Type::Pointer { count, ty_index } => {
+        if count == 1 {
+          Some(self.types[ty_index as usize].ty)
+        } else {
+          Some(Type::Pointer { count: count - 1, ty_index })
+        }
+      }
+      Type::Generic { ptr_count, gen_index } => todo!(),
+      _ => None,
     }
   }
 
