@@ -303,7 +303,7 @@ impl Display for Type {
       Generic { ptr_count, gen_index } => f.write_fmt(format_args!("∀{}", gen_index)),
       Primitive(prim) => f.write_fmt(format_args!("{prim}")),
       Complex { ty_index, .. } => f.write_fmt(format_args!("cplx@[{}]", ty_index)),
-      Pointer { ty_index, .. } => f.write_fmt(format_args!("* -> [{}]", ty_index)),
+      Pointer { ty_index, count } => f.write_fmt(format_args!("{} [{}]", "*".repeat(*count as usize), ty_index)),
     }
   }
 }

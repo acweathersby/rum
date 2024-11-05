@@ -337,12 +337,10 @@ impl From<IRGraphId> for usize {
   }
 }
 
-impl Display for RVSDGNode {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let types = &self.types;
-    let ty_vars = &self.ty_vars;
-
+impl RVSDGNode {
+  fn fmt_internal(&self, f: &mut std::fmt::Formatter<'_>, ty_vars: &[TypeVar]) -> std::fmt::Result {
     let index = 0;
+    let types = &self.types;
 
     f.write_fmt(format_args!("--- {:?} ---\n", self.ty))?;
     f.write_fmt(format_args!("!# {:20} #!\n", format!("{:?}", self.solved)))?;
@@ -364,6 +362,8 @@ impl Display for RVSDGNode {
             get_type_string(index, types, ty_vars),
             format!("{}", node).split("\n").collect::<Vec<_>>().join("\n  "),
           ));
+
+          node.fmt_internal(f, &self.ty_vars)?;
         }
         _ => {
           f.write_fmt(format_args!("`{index:<4} <= {:<40} | {:}\n", format!("{node}"), format!("{}", get_type_string(index, types, ty_vars))));
@@ -390,11 +390,21 @@ impl Display for RVSDGNode {
   }
 }
 
+impl Display for RVSDGNode {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let ty_vars = &self.ty_vars;
+
+    self.fmt_internal(f, ty_vars);
+
+    Ok(())
+  }
+}
+
 pub fn __debug_node_types__(node: &RVSDGNode) {
   println!("{node}");
 }
 
-fn get_type_string(index: usize, types: &Vec<Type>, ty_vars: &Vec<TypeVar>) -> String {
+fn get_type_string(index: usize, types: &Vec<Type>, ty_vars: &[TypeVar]) -> String {
   if index > types.len() {
     Default::default()
   } else {

@@ -22,7 +22,7 @@ pub struct AnnotatedTypeVar {
   pub var: TypeVar,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct MemberEntry {
   pub name:      IString,
   pub origin_op: u32,
@@ -189,15 +189,15 @@ impl PartialOrd for OPConstraint {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
     fn get_ord_val(val: &OPConstraint) -> usize {
       match val {
-        OPConstraint::OpToTy(..) => 2 * 1_0000_0000,
+        OPConstraint::OpToTy(..) => 300 * 1_0000_0000,
         OPConstraint::Num(..) => 5 * 1_0000_0000,
-        OPConstraint::OpToOp(op1, op2, ..) => 7 * 1_0000_0000 + 1_0000_0000 - ((*op1) as usize * 10_000 + (*op2) as usize),
+        OPConstraint::OpToOp(op1, op2, ..) => 200 * 1_0000_0000 + 1_0000_0000 - ((*op1) as usize * 10_000 + (*op2) as usize),
         OPConstraint::Member { .. } => 1 * 1_0000_0000,
         OPConstraint::Mutable(..) => 21 * 1_0000_0000,
         OPConstraint::Store(..) => 21 * 1_0000_0000,
         OPConstraint::Load(..) => 21 * 1_0000_0000,
         OPConstraint::MemToTy(..) => 21 * 1_0000_0000,
-        OPConstraint::BindingConstraint(..) => 22 * 1_0000_0000,
+        OPConstraint::BindingConstraint(..) => 302 * 1_0000_0000,
       }
     }
     let a = get_ord_val(self);

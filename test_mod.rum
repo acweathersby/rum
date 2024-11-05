@@ -4,7 +4,11 @@ dd => [
   test: u32
 ] 
 
-rdr => [rstd:u8, make:u16, test: u32]
+
+
+rdrs => [rstd:u8, make:u16, test: u32]
+
+rdr => [rstd:u8, make:rdrs, test: u32]
 
 String => [len:u32, data: u32]
 
@@ -13,10 +17,8 @@ String => [len:u32, data: u32]
 
 //red (t:f32) => f32 t + 1
 
+test => [t: u32]
 
-
-entry (a:?, b:?, c:?) => u32 {
-  d: rdr = :[test = a, make = b, rstd = c]
-  d.make
-  // if d.test is > 2  { d.make } else { if d.make is > 200 { d.rstd } else { d.test } }
+entry (t: test, s: test) =| {
+  t.u = s.t
 } 

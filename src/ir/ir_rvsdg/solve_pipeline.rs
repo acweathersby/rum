@@ -5,9 +5,13 @@
 
 // Create and solvable constraints. Produce constraint set.
 
+use libc::SYS_getcwd;
+use num_traits::ToPrimitive;
+
 use super::{
   type_check,
   type_solve::{MemberEntry, OPConstraint, TypeVar},
+  IRGraphId,
   IROp,
   RVSDGInternalNode,
   RVSDGNode,
@@ -184,6 +188,239 @@ pub fn collect_op_constraints(
   let constraints = (op_constraints.to_vec(), checks.to_vec(), ty_vars, type_maps);
 
   constraints
+}
+
+pub fn solve_node_new_test(node: &mut RVSDGNode, constraints: &mut Vec<(u32, OPConstraint)>, ty_db: &mut TypeDatabase) {
+  dbg!((&node, &constraints));
+
+  // Start with root nodes and recursively update types until the input nodes are reached.
+
+  let mut types = node.types.clone();
+  let mut type_vars = node.ty_vars.clone();
+  let mut type_maps = vec![-1i32; node.nodes.len()];
+
+  for index in 0..node.outputs.len() {
+    let output = node.outputs[index];
+
+    let start = output.in_id;
+
+    let ty = resolve_op(start, node, &mut types, &mut type_vars, &mut type_maps, constraints, ty_db, u32::MAX);
+  }
+
+  node.types = types;
+  node.ty_vars = type_vars;
+
+  panic!("{node:#?}");
+}
+
+pub fn resolve_op(
+  node_op: IRGraphId,
+  node: &mut RVSDGNode,
+  types: &mut Vec<Type>,
+  ty_vars: &mut Vec<TypeVar>,
+  ty_maps: &mut Vec<i32>,
+  constraints: &mut Vec<(u32, OPConstraint)>,
+  ty_db: &mut TypeDatabase,
+  mut var_id: u32,
+) -> u32 {
+  let mut node_type = types[node_op.usize()];
+  let mut existing_type = types[node_op.usize()];
+
+  match &node.nodes[node_op] {
+    RVSDGInternalNode::Binding { ty } => {
+      types[node_op.usize()] = ty_vars[var_id as usize].ty;
+    }
+    simple @ RVSDGInternalNode::Simple { .. } => {
+      let mut simple = simple.clone();
+      let RVSDGInternalNode::Simple { op, operands } = &mut simple else { unreachable!() };
+
+      let existing_type = match op {
+        IROp::ADD | IROp::SUB | IROp::MUL | IROp::DIV | IROp::POW => {
+          let var_id = get_op_type_var(types, node_op, ty_vars);
+          /*           let l_ty = resolve_op(operands[0], node, types, ty_vars, ty_maps, constraints);
+          let r_ty = resolve_op(operands[1], node, types, ty_vars, ty_maps, constraints);
+
+          if existing_type.is_open() {
+            // Type must be either left or right
+            // merge types in some way
+            let new_ty = match (l_ty.is_open(), r_ty.is_open()) {
+              (true, true) => {
+                todo!("merge all types");
+              }
+              (false, false) => {
+                if l_ty < r_ty {
+                  let id = IRGraphId::new(node.nodes.len());
+                  node.nodes.push(RVSDGInternalNode::Simple { op: IROp::MOVE, operands: [operands[0], Default::default(), Default::default()] });
+                  operands[0] = id;
+                  types.push(r_ty);
+                  r_ty
+                } else {
+                  let id = IRGraphId::new(node.nodes.len());
+                  node.nodes.push(RVSDGInternalNode::Simple { op: IROp::MOVE, operands: [operands[1], Default::default(), Default::default()] });
+                  operands[1] = id;
+                  types.push(l_ty);
+                  l_ty
+                }
+              }
+              (true, false) => {
+                todo!("set one type to the other {l_ty}, {r_ty}");
+              }
+              (false, true) => {
+                todo!("set one type to the other {l_ty}, {r_ty}");
+              }
+            };
+
+            if let Some(index) = node_type.generic_id() {
+              let var = &mut ty_vars[index];
+              var.ty = new_ty;
+            }
+          } else {
+            if existing_type != r_ty {}
+            if existing_type != l_ty {}
+          } */
+
+          // Merge types. If there is a discrepancy then add a type conversion here.
+        }
+        IROp::GR | IROp::GE | IROp::LS | IROp::LE | IROp::EQ | IROp::NE => {
+          let var_id = get_op_type_var(types, node_op, ty_vars);
+        }
+        IROp::CONST_DECL => {
+          let var_id = get_op_type_var(types, node_op, ty_vars);
+
+          if existing_type != types[node_op.usize()] {
+            if let Some(gen) = types[node_op.usize()].generic_id() {
+              ty_vars[gen].ty = existing_type;
+            }
+            types[node_op.usize()] = existing_type;
+          }
+        }
+        IROp::REF => {
+          let var = &mut ty_vars[var_id as usize];
+          var.add(VarConstraint::Member);
+          types[node_op.usize()] = var.ty;
+
+          let par_op = operands[0];
+          let par_var_id = get_op_type_var(types, par_op, ty_vars);
+          let par_var = &mut ty_vars[par_var_id as usize];
+          par_var.add(VarConstraint::Agg);
+          let par_var_id = par_var.id;
+
+          resolve_op(par_op, node, types, ty_vars, ty_maps, constraints, ty_db, par_var_id);
+
+          let par_var = &mut ty_vars[par_var_id as usize];
+
+          if !par_var.ty.is_open() {
+            if let RVSDGInternalNode::Label(member_name) = &node.nodes[operands[1].usize()] {
+              if let Type::Complex { ty_index, .. } = par_var.ty {
+                let agg_ty = ty_db.types[ty_index as usize];
+
+                if let Some(RVSDGNode { id, inputs, outputs, nodes, source_nodes: source_tokens, ty, types, .. }) = agg_ty.get_node() {
+                  let mut have_name = false;
+
+                  if let Some(output) = outputs.iter().find(|o| o.name == *member_name) {
+                    let ty = types[output.in_id.usize()];
+                    let var = &mut ty_vars[var_id as usize];
+                    var.ty = ty_db.to_ptr(ty).unwrap();
+                  } else {
+                    //let node = &src_node[mem_op as usize];
+                    //errors.push(blame(node, &format!("Member [{ref_name}] not found in type {:}", agg_ty.get_node().unwrap().id)));
+                  }
+                }
+              };
+            }
+          }
+        }
+        IROp::STORE => {
+          let ptr_ty = resolve_op(operands[0], node, types, ty_vars, ty_maps, constraints, ty_db, var_id);
+          let val_ty = resolve_op(operands[1], node, types, ty_vars, ty_maps, constraints, ty_db, var_id);
+        }
+        IROp::LOAD => {
+          // Separate the store data from the ptr data. A load val is always that dereferenced value of the
+          // of the load pointer. Conversion occur AFTER this node is processed.
+
+          var_id = create_type_var(ty_vars, types, node_op);
+          let ptr_var_id = create_var(ty_vars, Default::default()).id;
+
+          let l_ty = resolve_op(operands[0], node, types, ty_vars, ty_maps, constraints, ty_db, ptr_var_id);
+          let ptr_var = &ty_vars[ptr_var_id as usize];
+
+          if !ptr_var.ty.is_open() {
+            ty_vars[var_id as usize].ty = ty_db.from_ptr(ptr_var.ty).unwrap()
+          } else {
+            todo!("Handle load of unresolved member")
+          }
+        }
+        IROp::RET_VAL => {
+          var_id = get_op_type_var(types, node_op, ty_vars);
+
+          for op in operands {
+            if op.is_valid() {
+              resolve_op(*op, node, types, ty_vars, ty_maps, constraints, ty_db, var_id);
+            }
+          }
+        }
+        _ => {}
+      };
+
+      node.nodes[node_op] = simple;
+    }
+    RVSDGInternalNode::Complex(cplx) => {}
+    _ => {}
+  };
+
+  for (node_id, constraint) in constraints.iter() {
+    if *node_id == node.id {
+      match constraint {
+        OPConstraint::OpToTy(in_op, ty, ..) => {
+          if *in_op == node_op.0 {
+            if ty_vars.len() > var_id as usize {
+              ty_vars[var_id as usize].ty = *ty;
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+
+  var_id
+}
+
+fn get_op_type_var(types: &mut Vec<Type>, node_op: IRGraphId, ty_vars: &mut Vec<TypeVar>) -> u32 {
+  let var_id = if let Some(gen_id) = types[node_op.usize()].generic_id() {
+    let mut id = gen_id as u32;
+    while ty_vars[id as usize].id != id {
+      id = ty_vars[id as usize].id
+    }
+    id
+  } else {
+    create_type_var(ty_vars, types, node_op)
+  };
+  var_id
+}
+
+fn create_type_var(ty_vars: &mut Vec<TypeVar>, types: &mut Vec<Type>, node_op: IRGraphId) -> u32 {
+  let var = create_var(ty_vars, types[node_op.usize()]);
+  types[node_op.usize()] = var.ty;
+  var.id
+}
+
+fn create_var(ty_vars: &mut Vec<TypeVar>, mut ty: Type) -> &mut TypeVar {
+  if ty.is_undefined() {
+    ty = Type::Generic { ptr_count: 0, gen_index: ty_vars.len() as u32 };
+  }
+
+  let var = TypeVar {
+    id: ty_vars.len() as u32,
+    ref_id: -1,
+    ty,
+    constraints: Default::default(),
+    members: Default::default(),
+  };
+
+  ty_vars.push(var);
+
+  ty_vars.last_mut().unwrap()
 }
 
 // Create a sub-type solution for this type. If the solution contains type variables it is incomplete, and will
@@ -438,7 +675,6 @@ pub fn solve_constraints(
           process_constraints(val_id, &mut ty_vars, &mut type_checks, nodes, &mut queue, ty_db);
         }
         OPConstraint::OpToTy(from_op, op_ty, target_op) => {
-          dbg!(from_op, op_ty, target_op);
           let var_a_id = get_or_create_var_id(&mut type_maps, &from_op, &mut ty_vars);
           let var_a = &mut ty_vars[var_a_id as usize];
 
@@ -479,6 +715,7 @@ pub fn solve_constraints(
           debug_assert!(matches!(op_ty, Type::Pointer { .. }));
           if var_a.ty.is_open() {
             var_a.ty = op_ty;
+            dbg!(var_a);
             process_constraints(var_a_id, &mut ty_vars, &mut type_checks, nodes, &mut queue, ty_db);
           } else if var_a.ty != op_ty {
             dbg!(&nodes);
@@ -784,9 +1021,14 @@ fn process_constraints(
   }
 }
 
-fn process_members(ty: Type, ty_db: &mut TypeDatabase, members: &[MemberEntry], queue: &mut VecDeque<OPConstraint>) {
+fn process_members(mut ty: Type, ty_db: &mut TypeDatabase, members: &[MemberEntry], queue: &mut VecDeque<OPConstraint>) {
+  while let Some(new_ty) = ty_db.from_ptr(ty) {
+    ty = new_ty;
+  }
+
   if let Type::Complex { ty_index, .. } = ty {
     let agg_ty = ty_db.types[ty_index as usize];
+    dbg!((ty, members, agg_ty));
 
     if let Some(RVSDGNode { id, inputs, outputs, nodes, source_nodes: source_tokens, ty, types, .. }) = agg_ty.get_node() {
       let mut have_name = false;
@@ -796,6 +1038,7 @@ fn process_members(ty: Type, ty_db: &mut TypeDatabase, members: &[MemberEntry], 
           let ty = types[output.in_id.usize()];
           if !ty.is_open() {
             queue.push_back(OPConstraint::MemToTy(*origin_node, ty_db.to_ptr(ty).unwrap(), *origin_node));
+            dbg!(OPConstraint::MemToTy(*origin_node, ty_db.to_ptr(ty).unwrap(), *origin_node));
           }
         } else {
           //let node = &src_node[mem_op as usize];
@@ -1075,8 +1318,8 @@ pub fn get_ssa_constraints(
 
       IROp::CONST_DECL => constraints.push(OPConstraint::Num(own_id)),
 
-      //IROp::STORE => constraints.push(OPConstraint::Store(own_id)),
-      //IROp::LOAD => constraints.push(OPConstraint::Load(own_id)),
+      IROp::STORE => constraints.push(OPConstraint::Store(own_id)),
+      IROp::LOAD => constraints.push(OPConstraint::Load(own_id)),
       IROp::RET_VAL => {
         for op in operands {
           if op.is_valid() {
