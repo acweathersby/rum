@@ -6,6 +6,7 @@ dd => [
 
 
 
+
 rdrs => [rstd:u8, make:u16, test: u32]
 
 rdr => [rstd:u8, make:rdrs, test: u32]
@@ -17,19 +18,12 @@ String => [len:u32, data: u32]
 
 //red (t:f32) => f32 t + 1
 
-test => [e: u32, u: u8]
+test => [e: u32, u: *u8]
 
-entry (t: test, s: ?) => ? {
-  t.u = 2
-
-  d:u32 = 2 + 2
-
-  a = t.u
+E => [e: f64]
 
 
-  //e: u8 = d
-
-  t.e = a + s.e
-
-  t
+entry (i: E, u: ?) => ? {
+  j = 0
+ if j is > 0 { i.e + u } else { 2 + j }
 } 

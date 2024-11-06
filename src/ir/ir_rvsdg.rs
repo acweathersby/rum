@@ -342,7 +342,7 @@ impl RVSDGNode {
     let index = 0;
     let types = &self.types;
 
-    f.write_fmt(format_args!("--- {:?} ---\n", self.ty))?;
+    f.write_fmt(format_args!("--- [{}]  {:?}  ---\n", self.id, self.ty))?;
     f.write_fmt(format_args!("!# {:20} #!\n", format!("{:?}", self.solved)))?;
 
     if self.inputs.len() > 0 {
@@ -362,8 +362,6 @@ impl RVSDGNode {
             get_type_string(index, types, ty_vars),
             format!("{}", node).split("\n").collect::<Vec<_>>().join("\n  "),
           ));
-
-          node.fmt_internal(f, &self.ty_vars)?;
         }
         _ => {
           f.write_fmt(format_args!("`{index:<4} <= {:<40} | {:}\n", format!("{node}"), format!("{}", get_type_string(index, types, ty_vars))));

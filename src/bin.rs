@@ -1,8 +1,5 @@
 use rum_lang::{
-  ir::{
-    ir_rvsdg::{lower::lower_ast_to_rvsdg, solve_pipeline::solve_type},
-    types::TypeDatabase,
-  },
+  ir::{ir_rvsdg::lower::lower_ast_to_rvsdg, types::TypeDatabase},
   ir_interpreter::interpret,
   parser::script_parser::parse_raw_module,
 };
@@ -28,7 +25,8 @@ fn main() -> Result<(), u8> {
         let type_target = args.pop_front().expect("Expected a type argument");
 
         if let Some(ty) = ty_db.get_ty(type_target.as_str()) {
-          match solve_type(ty, &mut ty_db) {
+          todo!("solve type");
+          /*    match solve_type(ty, &mut ty_db) {
             Ok(entry) => {
               let node = entry.get_node().expect("Type is not complex");
 
@@ -47,7 +45,7 @@ fn main() -> Result<(), u8> {
               println!("#############################################\n\n");
               return Err(1);
             }
-          }
+          } */
         }
       }
       cmd => panic!("Unrecognized command \"{cmd}\""),
@@ -69,10 +67,10 @@ fn run_interpreter(mut args: VecDeque<String>) {
 
         let Some(entry) = ty_db.get_ty_entry("main") else { panic!("Could not load main function") };
         let ty = entry.ty;
-
-        if solve_type(ty, &mut ty_db).is_ok() {
+        todo!("solve type")
+        /*    if solve_type(ty, &mut ty_db).is_ok() {
           interpret(ty, &mut ty_db);
-        }
+        } */
       }
       "-m" => {
         parse_module_data(args.pop_front().unwrap(), &mut ty_db);

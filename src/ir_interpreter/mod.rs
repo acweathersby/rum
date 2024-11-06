@@ -3,7 +3,7 @@ use radlr_rust_runtime::types::{BlameColor, NodeType, Token};
 use crate::{
   container::get_aligned_value,
   ir::{
-    ir_rvsdg::{solve_pipeline::solve_type, IRGraphId, RVSDGInternalNode, RVSDGNode, RVSDGNodeType},
+    ir_rvsdg::{IRGraphId, RVSDGInternalNode, RVSDGNode, RVSDGNodeType},
     types::{PrimitiveBaseType, Type, TypeDatabase, TypeEntry},
   },
   istring::{CachedString, IString},
@@ -380,8 +380,8 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
         }
         AGG_DECL => {
           // get the size of the data that needs to be allocated for this declaration.
-
-          let agg_ty = ty;
+          todo!("AAA");
+          /*         let agg_ty = ty;
           if (solve_type(agg_ty, ty_db).is_ok()) {
             let Some(node) = ty_db.get_ty_entry_from_ty(agg_ty) else {
               panic!("{}", blame(&source_nodes[index], &format!("Could not find struct for op at {index}: {op:?} -> \n{}: {}", type_info[index], nodes[index])))
@@ -396,7 +396,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
 
           let Some(node) = ty_db.get_ty_entry_from_ty(agg_ty) else {
             panic!("Could not find struct for op at {index}: {op:?} -> \n{}: {}\n{}", type_info[index], nodes[index], blame(&source_nodes[index], ""))
-          };
+          }; */
         }
         op => panic!("Unrecognized op at {index}: {op:?} -> \n{}: {}\n{}", type_info[index], nodes[index], blame(&source_nodes[index], "")),
       },
@@ -492,7 +492,9 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
 
                 if let Some(fn_ty_entry) = ty_db.get_ty_entry(name.to_str().as_str()) {
                   if fn_ty_entry.get_node().is_some_and(|n| n.ty == RVSDGNodeType::Function) {
-                    if let Ok(fn_ty_entry) = solve_type(fn_ty_entry.ty, ty_db) {
+                    todo!("AA");
+
+                    /*    if let Ok(fn_ty_entry) = solve_type(fn_ty_entry.ty, ty_db) {
                       if let Some((fn_node)) = fn_ty_entry.get_node() {
                         let funct = fn_ty_entry.get_node().expect("");
 
@@ -514,7 +516,7 @@ fn executor(scope_node: &RVSDGNode, type_info: &[Type], args: &[Value], ty_db: &
                       } else {
                         unreachable!("fn name {name} is not callable")
                       }
-                    }
+                    } */
                   }
                 }
               }

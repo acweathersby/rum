@@ -100,9 +100,9 @@ impl Display for TypeVar {
     let Self { id, ty, constraints, members, ref_id } = self;
 
     if ty.is_generic() {
-      f.write_fmt(format_args!("{}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
+      f.write_fmt(format_args!("[{id}] {}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
     } else {
-      f.write_fmt(format_args!("{}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
+      f.write_fmt(format_args!("[{id}] {}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
     }
     if !constraints.is_empty() {
       f.write_str(" <")?;

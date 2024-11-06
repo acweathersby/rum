@@ -1,5 +1,5 @@
 use libc::shm_open;
-use solve_pipeline::{collect_op_constraints, solve_constraints, solve_node_new_test};
+use solve_pipeline::solve_node_new_test;
 use type_solve::OPConstraint;
 
 use crate::{
@@ -281,7 +281,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
         module_member_Value::RawBoundType(bound_type) => match &bound_type.ty {
           type_Value::Type_Struct(strct) => {
             let name = bound_type.name.id.intern();
-            let struct_: Box<RVSDGNode> = lower_struct_to_rsvdg(strct, ty_db);
+            let struct_: Box<RVSDGNode> = lower_struct_to_rvsdg(strct, ty_db);
 
             ty_db.add_ty(bound_type.name.id.intern(), struct_.clone());
           }
@@ -290,12 +290,12 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
         module_member_Value::RawRoutine(rt) => {
           let name = rt.name.id.intern();
 
-          let (mut funct, mut global_constraints) = lower_fn_to_rsvdg(rt, ty_db);
+          let (mut funct, mut global_constraints) = lower_fn_to_rvsdg(rt, ty_db);
 
+          dbg!(&funct, &global_constraints);
           solve_node_new_test(&mut funct, &mut global_constraints, ty_db);
           panic!("totd");
-          dbg!(&funct, &global_constraints);
-          {
+          /*           {
             let node = &mut funct;
             let constraints = collect_op_constraints(node, ty_db, false);
             match solve_constraints(node, constraints, ty_db, true, &mut global_constraints) {
@@ -310,7 +310,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
                 }
               }
             }
-          }
+          } */
 
           ty_db.add_ty(name, funct.clone());
         }
@@ -326,7 +326,7 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
   output_names
 }
 
-fn lower_struct_to_rsvdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
+fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
   let mut node = RVSDGNode::default();
 
   node.ty = RVSDGNodeType::Struct;
@@ -360,7 +360,7 @@ fn lower_struct_to_rsvdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
   Box::new(node)
 }
 
-fn lower_fn_to_rsvdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(u32, OPConstraint)>) {
+fn lower_fn_to_rvsdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(u32, OPConstraint)>) {
   let params = match &fn_decl.ty {
     routine_type_Value::RawFunctionType(ty) => &ty.params,
     routine_type_Value::RawProcedureType(ty) => &ty.params,
@@ -745,6 +745,8 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
           merges.push((pop_builder(node_stack), Default::default()));
         }
 
+        dbg!(&merges);
+
         merge_multiple_nodes(node_stack, merges);
 
         seal_var(VarId::MatchActivation, node_stack, Default::default());
@@ -759,10 +761,6 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       let id = take_var(VarId::MatchVal, node_stack);
 
       let id = ThreadedGraphId(id, node_stack.front().unwrap().id);
-
-      //if short_circuit {
-      //  push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
-      //}
 
       (id, false)
     }
