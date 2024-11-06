@@ -285,6 +285,10 @@ impl Type {
   pub fn is_undefined(&self) -> bool {
     matches!(self, Type::Undefined)
   }
+
+  pub fn is_not_valid(&self) -> bool {
+    matches!(self, Type::Undefined | Type::NoUse)
+  }
 }
 
 impl Debug for Type {

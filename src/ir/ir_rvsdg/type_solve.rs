@@ -133,9 +133,16 @@ pub enum VarConstraint {
   Numeric,
   Float,
   Unsigned,
-  Ptr(u32),
+  Ptr,
   Load(u32, u32),
-  Store(u32, u32),
+  MemOp {
+    ptr_op: IRGraphId,
+    val_op: IRGraphId,
+  },
+  Convert {
+    dst: IRGraphId,
+    src: IRGraphId,
+  },
   Callable,
   Mutable,
   Default(Type),
@@ -149,8 +156,9 @@ impl Debug for VarConstraint {
     match self {
       Callable => f.write_fmt(format_args!("* => x -> x",)),
       Method => f.write_fmt(format_args!("*.X => x -> x",)),
-      Store(a, b) => f.write_fmt(format_args!("store (@ `{a}, src: `{b})",)),
+      MemOp { ptr_op: ptr, val_op: val } => f.write_fmt(format_args!("memop  *{ptr} = {val}",)),
       Load(a, b) => f.write_fmt(format_args!("load (@ `{a}, src: `{b})",)),
+      Convert { dst, src } => f.write_fmt(format_args!("{src} => {dst}",)),
       Member => f.write_fmt(format_args!("*.X",)),
       Agg => f.write_fmt(format_args!("agg",)),
       Mutable => f.write_fmt(format_args!("mut",)),
@@ -158,7 +166,7 @@ impl Debug for VarConstraint {
       Numeric => f.write_fmt(format_args!("numeric",)),
       Float => f.write_fmt(format_args!("floating-point",)),
       Unsigned => f.write_fmt(format_args!("unsigned",)),
-      Ptr(ptr) => f.write_fmt(format_args!("* = *ptr",)),
+      Ptr => f.write_fmt(format_args!("* = *ptr",)),
       &Default(ty) => f.write_fmt(format_args!("could be {ty}",)),
       Binding(node_index, binding_index, output) => {
         if *output {

@@ -804,7 +804,6 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       VarLookup::Mem { ref_id: output, id, se } => {
         let builder = node_stack.front_mut().unwrap();
         let se_op = builder.var_lookup.get(&se).unwrap().op;
-        dbg!(se, se_op);
 
         let load_id = builder.add_simple(IROp::LOAD, [output, se_op, Default::default()], Default::default(), Default::default());
         (ThreadedGraphId(load_id, node_stack.front().unwrap().id), false)
@@ -948,8 +947,6 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
           _ => unreachable!(),
         }
       }
-
-      dbg!(ty_vars);
 
       VarLookup::Mem { ref_id: prev_ref, id: var_id, se: side_effect_id }
     } else {

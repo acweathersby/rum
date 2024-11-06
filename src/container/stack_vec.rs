@@ -24,8 +24,6 @@ impl<const STACK_SIZE: usize, T: Clone> Clone for ArrayVec<STACK_SIZE, T> {
   fn clone(&self) -> Self {
     let mut other = ArrayVec::new();
 
-    other.flags = self.flags;
-
     unsafe {
       if (self.flags & VECTORIZED_MASK) > 0 {
         let vec = self.inner.vec.clone();
@@ -36,6 +34,8 @@ impl<const STACK_SIZE: usize, T: Clone> Clone for ArrayVec<STACK_SIZE, T> {
         }
       }
     }
+
+    other.flags = self.flags;
 
     other
   }
@@ -145,6 +145,7 @@ impl<const STACK_SIZE: usize, T: Ord + PartialOrd> ArrayVec<STACK_SIZE, T> {
         return Some(result);
       }
     }
+
     return None;
   }
 

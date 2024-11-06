@@ -17,8 +17,19 @@ String => [len:u32, data: u32]
 
 //red (t:f32) => f32 t + 1
 
-test => [t: u32]
+test => [e: u32, u: u8]
 
-entry (t: test, s: test) =| {
-  t.u = s.t
+entry (t: test, s: ?) => ? {
+  t.u = 2
+
+  d:u32 = 2 + 2
+
+  a = t.u
+
+
+  //e: u8 = d
+
+  t.e = a + s.e
+
+  t
 } 
