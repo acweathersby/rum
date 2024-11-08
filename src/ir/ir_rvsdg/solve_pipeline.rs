@@ -23,10 +23,10 @@ use crate::{
   create_u64_hash,
   ir::{
     self,
-    ir_rvsdg::{type_solve::VarConstraint, Type, __debug_node_types__},
+    ir_rvsdg::{type_solve::VarConstraint, BindingType, Type, __debug_node_types__},
     types::{TypeDatabase, TypeEntry},
   },
-  ir_interpreter::blame,
+  ir_interpreter::blame::blame,
   istring::IString,
   parser::script_parser::{ASTNode, Type_Generic},
 };
@@ -281,7 +281,7 @@ pub fn internal_solve(node: &mut RVSDGNode, ty_db: &mut TypeDatabase, ty_vars: &
   }
 }
 
-pub fn solve_node_new_test(node: &mut RVSDGNode, constraints: &mut Vec<(u32, OPConstraint)>, ty_db: &mut TypeDatabase) {
+pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints: &mut Vec<(u32, OPConstraint)>, ty_db: &mut TypeDatabase) {
   // Flatten node ops to ease type complexity.
 
   let mut nodes = Vec::new();
@@ -357,6 +357,37 @@ pub fn solve_node_new_test(node: &mut RVSDGNode, constraints: &mut Vec<(u32, OPC
 
   // Restore original hierarchy
 
+  let mut output_type_vars = vec![];
+
+  for mut i in 0..type_vars.len() {
+    let start = i;
+    let mut var = &mut type_vars[i];
+
+    if var.id as usize != start {
+      while var.id as usize != i {
+        i = var.id as usize;
+        var = &mut type_vars[i];
+      }
+
+      type_vars[start].id = i as u32;
+    } else if var.ty.is_open() {
+      var.ty = Type::Generic { ptr_count: 0, gen_index: output_type_vars.len() as u32 };
+      let mut var = var.clone();
+      var.id = output_type_vars.len() as u32;
+      output_type_vars.push(var);
+    }
+  }
+
+  for out_ty in &mut output_type_vars {
+    for mem in out_ty.members.iter_mut() {
+      if let Some(index) = mem.ty.generic_id() {
+        let id = type_vars[index].id;
+        let ty = type_vars[id as usize].ty;
+        mem.ty = ty;
+      }
+    }
+  }
+
   for i in 0..glob_types.len() {
     if !glob_types[i].0.is_not_valid() {
       let ref_var_id = get_or_create_node_var_id(&mut glob_types, IRGraphId(i as u32), &mut type_vars);
@@ -392,13 +423,10 @@ pub fn solve_node_new_test(node: &mut RVSDGNode, constraints: &mut Vec<(u32, OPC
     node.types = types;
   }
 
-  node.solved = if type_vars.len() == 0 { SolveState::Solved } else { SolveState::PartiallySolved };
-  node.ty_vars = type_vars;
+  node.solved = if output_type_vars.len() == 0 { SolveState::Solved } else { SolveState::PartiallySolved };
+  node.ty_vars = output_type_vars;
 
-  //node.types = types;
-  //node.ty_vars = type_vars;
-
-  panic!("{node:#?}");
+  dbg!(node);
 }
 
 fn gather_constraints(
@@ -422,48 +450,105 @@ fn gather_constraints(
     }
 
     match &node.nodes[dst_op.usize()] {
-      RVSDGInternalNode::Binding { .. } => {
-        for i in 0..dst_op.usize() {
-          match &node.nodes[i] {
-            RVSDGInternalNode::Complex(cmplx) => {
-              let inner_node_id = cmplx.id as usize;
+      RVSDGInternalNode::Binding { ty } => {
+        match ty {
+          BindingType::IntraBinding => {
+            for i in 0..dst_op.usize() {
+              match &node.nodes[i] {
+                RVSDGInternalNode::Complex(cmplx) => {
+                  let mut m: bool = false;
+                  for output in cmplx.outputs.iter() {
+                    if output.out_id == dst_op {
+                      m = true;
+                    }
+                  }
 
-              for binding in cmplx.outputs.iter() {
-                if binding.out_id == dst_op {
-                  for (bindings, is_output) in [(cmplx.outputs.iter().enumerate(), true), (cmplx.inputs.iter().enumerate(), false)] {
-                    for (binding_index, binding) in bindings {
-                      let (inside_op, outside_op, src, dst) = if is_output {
-                        (
-                          binding.in_id,
-                          binding.out_id,
-                          loc_to_glob_op(local_to_global_map, inner_node_id, binding.in_id),
-                          loc_to_glob_op(local_to_global_map, node_id, binding.out_id),
-                        )
-                      } else {
-                        (
-                          binding.out_id,
-                          binding.in_id,
-                          loc_to_glob_op(local_to_global_map, node_id, binding.in_id),
-                          loc_to_glob_op(local_to_global_map, inner_node_id, binding.out_id),
-                        )
+                  if !m {
+                    continue;
+                  }
+
+                  let inner_node_id = cmplx.id as usize;
+
+                  match cmplx.ty {
+                    RVSDGNodeType::Call => {
+                      let name_op = cmplx.inputs[0].in_id;
+
+                      let RVSDGInternalNode::Label(name) = node.nodes[name_op] else {
+                        todo!("Need to handle call instances where the call target is not a named routine")
                       };
 
-                      if inside_op.is_valid() && outside_op.is_valid() {
-                        constraint_queue.push_back(OPConstraint2::OpToOp { dst, src });
-                      }
+                      if let Some(ty) = ty_db.get_ty_entry(&name.to_str().as_str()) {
+                        let Some(call_node) = ty.get_node() else { panic!("{name} is not a node complex type") };
 
-                      if is_output {
-                        node_queue.push_back((inside_op, inner_node_id));
+                        assert_eq!(call_node.ty, RVSDGNodeType::Routine, "Node {name} is not a routine type");
+
+                        match call_node.solved {
+                          SolveState::Solved => {
+                            for (outer, inner) in call_node.inputs.iter().zip(cmplx.inputs.as_slice()[1..].iter()) {
+                              let in_id = inner.in_id;
+                              let out_id = outer.out_id;
+                              constraint_queue.push_back(OPConstraint2::OpToTy(in_id, call_node.types[out_id]));
+                            }
+
+                            for (outer, inner) in call_node.outputs.iter().zip(cmplx.outputs.as_slice()) {
+                              let in_id = inner.out_id;
+                              let out_id = outer.in_id;
+                              constraint_queue.push_back(OPConstraint2::OpToTy(in_id, call_node.types[out_id]));
+                            }
+                          }
+                          SolveState::PartiallySolved => {
+                            todo!("Queue a new solution of this node: \n {call_node}")
+                          }
+                          _ => unreachable!("Node {name} has not been processed"),
+                        }
                       } else {
-                        // node_queue.push_back((out_op, node_id));
+                        panic!("Could not find call target. This doesn't necessarily need to be an error, but should at least result in a partial solve instead of a full solve to the caller's type")
+                      }
+                    }
+                    _ => {
+                      for binding in cmplx.outputs.iter() {
+                        if binding.out_id == dst_op {
+                          for (bindings, is_output) in [(cmplx.outputs.iter().enumerate(), true), (cmplx.inputs.iter().enumerate(), false)] {
+                            for (binding_index, binding) in bindings {
+                              let (inside_op, outside_op, src, dst) = if is_output {
+                                (
+                                  binding.in_id,
+                                  binding.out_id,
+                                  loc_to_glob_op(local_to_global_map, inner_node_id, binding.in_id),
+                                  loc_to_glob_op(local_to_global_map, node_id, binding.out_id),
+                                )
+                              } else {
+                                (
+                                  binding.out_id,
+                                  binding.in_id,
+                                  loc_to_glob_op(local_to_global_map, node_id, binding.in_id),
+                                  loc_to_glob_op(local_to_global_map, inner_node_id, binding.out_id),
+                                )
+                              };
+
+                              if inside_op.is_valid() && outside_op.is_valid() {
+                                constraint_queue.push_back(OPConstraint2::OpToOp { dst, src });
+                              }
+
+                              if is_output {
+                                node_queue.push_back((inside_op, inner_node_id));
+                              } else {
+                                // node_queue.push_back((out_op, node_id));
+                              }
+                            }
+                          }
+                          break;
+                        }
                       }
                     }
                   }
-                  break;
                 }
+                _ => {}
               }
             }
-            _ => {}
+          }
+          BindingType::ParamBinding => {
+            // Pulls data from the root inputs
           }
         }
       }

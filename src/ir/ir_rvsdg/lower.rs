@@ -1,5 +1,5 @@
 use libc::shm_open;
-use solve_pipeline::solve_node_new_test;
+use solve_pipeline::solve_node_new_test_temp_configuration;
 use type_solve::OPConstraint;
 
 use crate::{
@@ -43,8 +43,8 @@ enum VarId {
   VarName(IString),
   SideEffect(usize),
   MemRef(usize),
-  MatchExpr,
-  MatchVal,
+  MatchInputExpr,
+  MatchOutputVal,
   MatchActivation,
   Return,
 }
@@ -55,8 +55,8 @@ impl VarId {
       Self::VarName(id) => *id,
       Self::SideEffect(id) => format!("--{id}--").intern(),
       Self::MemRef(id) => format!("--*{id}--").intern(),
-      Self::MatchExpr => "__match_exp__".intern(),
-      Self::MatchVal => "__match_val__".intern(),
+      Self::MatchInputExpr => "__match_exp__".intern(),
+      Self::MatchOutputVal => "__match_val__".intern(),
       Self::MatchActivation => "__match_activation__".intern(),
       Self::Return => "__return__".intern(),
       _ => Default::default(),
@@ -126,21 +126,26 @@ impl Builder {
     id
   }
 
-  pub fn add_input(&mut self, mut binding: RSDVGBinding, node: ASTNode) -> RSDVGBinding {
+  pub fn add_binding(&mut self, mut binding: RSDVGBinding, node: ASTNode, ty: Type, b_ty: BindingType) -> RSDVGBinding {
     let id = Self::create_id(&mut self.node_id);
     binding.out_id = id;
     self.node.inputs.push(binding);
-    self.add_input_node_internal(id, Default::default(), node);
+    self.add_binding_node_internal(id, ty, node, b_ty);
     binding
   }
 
   pub fn add_input_node(&mut self, ty: Type, node: ASTNode) -> IRGraphId {
     let id = Self::create_id(&mut self.node_id);
-    self.add_input_node_internal(id, ty, node)
+    self.add_binding_node_internal(id, ty, node, BindingType::IntraBinding)
   }
 
-  fn add_input_node_internal(&mut self, id: IRGraphId, ty: Type, ast: ASTNode) -> IRGraphId {
-    self.add_node(RVSDGInternalNode::Binding { ty: BindingType::InternalBinding }, ast, ty);
+  pub fn add_output_node(&mut self, ty: Type, node: ASTNode) -> IRGraphId {
+    let id = Self::create_id(&mut self.node_id);
+    self.add_binding_node_internal(id, ty, node, BindingType::IntraBinding)
+  }
+
+  fn add_binding_node_internal(&mut self, id: IRGraphId, ty: Type, ast: ASTNode, b_ty: BindingType) -> IRGraphId {
+    self.add_node(RVSDGInternalNode::Binding { ty: b_ty }, ast, ty);
     id
   }
 
@@ -290,27 +295,10 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
         module_member_Value::RawRoutine(rt) => {
           let name = rt.name.id.intern();
 
-          let (mut funct, mut global_constraints) = lower_fn_to_rvsdg(rt, ty_db);
+          let (mut funct, mut global_constraints) = lower_routine_to_rvsdg(&rt.def, ty_db);
 
-          dbg!(&funct, &global_constraints);
-          solve_node_new_test(&mut funct, &mut global_constraints, ty_db);
-          panic!("totd");
-          /*           {
-            let node = &mut funct;
-            let constraints = collect_op_constraints(node, ty_db, false);
-            match solve_constraints(node, constraints, ty_db, true, &mut global_constraints) {
-              Ok((types, ty_vars, solved)) => {
-                node.solved = solved;
-                node.ty_vars = ty_vars;
-                node.types = types;
-              }
-              Err(errors) => {
-                for error in errors {
-                  println!("{error}");
-                }
-              }
-            }
-          } */
+          dbg!(&funct);
+          solve_node_new_test_temp_configuration(&mut funct, &mut global_constraints, ty_db);
 
           ty_db.add_ty(name, funct.clone());
         }
@@ -349,7 +337,7 @@ fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
 
         node.outputs.push(output_binding);
 
-        node.nodes.push(RVSDGInternalNode::Binding { ty: BindingType::InternalBinding });
+        node.nodes.push(RVSDGInternalNode::Binding { ty: BindingType::IntraBinding });
         node.source_nodes.push(ASTNode::Property(prop.clone()));
         node.types.push(ty);
       }
@@ -360,14 +348,14 @@ fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
   Box::new(node)
 }
 
-fn lower_fn_to_rvsdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(u32, OPConstraint)>) {
-  let params = match &fn_decl.ty {
+pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(u32, OPConstraint)>) {
+  let params = match &routine_def.ty {
     routine_type_Value::RawFunctionType(ty) => &ty.params,
     routine_type_Value::RawProcedureType(ty) => &ty.params,
     _ => unreachable!(),
   };
 
-  let expr = &fn_decl.expression.expr;
+  let expr = &routine_def.expression.expr;
 
   let mut node_stack = VecDeque::new();
   let mut counter = 0;
@@ -381,7 +369,7 @@ fn lower_fn_to_rvsdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> (
 
   node_stack.push_front(builder);
 
-  push_new_builder(&mut node_stack, RVSDGNodeType::Function);
+  push_new_builder(&mut node_stack, RVSDGNodeType::Routine);
 
   let fn_builder = node_stack.front_mut().unwrap();
 
@@ -389,7 +377,7 @@ fn lower_fn_to_rvsdg(fn_decl: &RawRoutine<Token>, ty_db: &mut TypeDatabase) -> (
 
   let (ret_val, _) = process_expression(expr, &mut node_stack, ty_db);
 
-  let ret_ty = match &fn_decl.ty {
+  let ret_ty = match &routine_def.ty {
     routine_type_Value::RawFunctionType(fn_ty) => insert_returns(resolve_binding(ret_val, &mut node_stack), fn_ty, &mut node_stack, ty_db, &mut Vec::new()),
     _ => Default::default(),
   };
@@ -459,7 +447,12 @@ fn insert_params(params: &std::sync::Arc<Params<Token>>, builder: &mut Builder, 
 
     let ast = ASTNode::RawParamBinding(param.clone());
 
-    let input = builder.add_input(RSDVGBinding { name: param_id.to_string(), in_id: IRGraphId::new(param_index), ..Default::default() }, ast);
+    let input = builder.add_binding(
+      RSDVGBinding { name: param_id.to_string(), in_id: IRGraphId::new(param_index), ..Default::default() },
+      ast,
+      Default::default(),
+      BindingType::ParamBinding,
+    );
 
     if !ty.is_open() {
       builder.add_op_constraint(OPConstraint::OpToTy(input.out_id.0, ty, input.out_id.0));
@@ -627,9 +620,8 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         let mut input = RSDVGBinding::default();
         input.in_id = call_id;
         input.name = "__NAME__".intern();
-        call_builder.add_input(input, ASTNode::MemberCompositeAccess(call.member.clone()));
+        call_builder.add_binding(input, ASTNode::MemberCompositeAccess(call.member.clone()), Default::default(), BindingType::IntraBinding);
       }
-      dbg!(&call_builder);
 
       for ((arg, short_circuit), node) in args {
         resolve_binding(arg, node_stack);
@@ -655,7 +647,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       par_builder.add_node(RVSDGInternalNode::PlaceHolder, call.clone().into(), Default::default());
 
       for output_index in 0..outputs.len() {
-        let id = par_builder.add_input_node(Default::default(), ASTNode::None);
+        let id = par_builder.add_output_node(Default::default(), ASTNode::None);
         outputs[output_index].out_id = id;
         par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
         return (ThreadedGraphId(id, node_stack.front().unwrap().id), false);
@@ -669,13 +661,14 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
     expression_Value::RawMatch(mtch) => {
       // create the match entry
       let builder = node_stack.front_mut().unwrap();
-      builder.create_var(VarId::MatchVal, Default::default(), Default::default(), false, Default::default());
+      builder.create_var(VarId::MatchOutputVal, Default::default(), Default::default(), false, Default::default());
 
       let (eval_id, bool) = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
       let eval_id = resolve_binding(eval_id, node_stack);
       let builder = node_stack.front_mut().unwrap();
-      builder.create_var(VarId::MatchExpr, eval_id, Default::default(), true, Default::default());
+
+      builder.create_var(VarId::MatchInputExpr, eval_id, Default::default(), true, Default::default());
 
       let builder = node_stack.front_mut().unwrap();
       builder.create_var(VarId::MatchActivation, Default::default(), Default::default(), false, Default::default());
@@ -710,7 +703,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
               _ => todo!(),
             };
 
-            let eval_id = read_var(VarId::MatchExpr, node_stack).unwrap();
+            let eval_id = read_var(VarId::MatchInputExpr, node_stack).unwrap();
             let builder = node_stack.front_mut().unwrap();
             builder.add_simple(op_ty, [eval_id, v, Default::default()], Default::default(), ASTNode::RawExprMatch(expr.clone()))
           } else {
@@ -732,10 +725,10 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
           let def_id = resolve_binding(def_id, node_stack);
 
           if def_id.is_valid() {
-            write_var(VarId::MatchVal, node_stack); // Ensure var is present in current scope.
+            write_var(VarId::MatchOutputVal, node_stack); // Ensure var is present in current scope.
 
             let builder = node_stack.front_mut().unwrap();
-            builder.update_var(VarId::MatchVal, def_id, Default::default());
+            builder.update_var(VarId::MatchOutputVal, def_id, Default::default());
           }
 
           while node_stack.len() > base_len {
@@ -756,9 +749,9 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       pop_and_merge_single_node(node_stack, Default::default());
 
-      remove_var(VarId::MatchExpr, node_stack);
+      remove_var(VarId::MatchInputExpr, node_stack);
 
-      let id = take_var(VarId::MatchVal, node_stack);
+      let id = take_var(VarId::MatchOutputVal, node_stack);
 
       let id = ThreadedGraphId(id, node_stack.front().unwrap().id);
 
@@ -1080,7 +1073,14 @@ fn read_var<'a>(var_id: VarId, node_stack: &'a mut VecDeque<WIPNode>) -> Option<
       for curr_index in (0..found_in_index).rev() {
         let par_data = unsafe { &mut *stack }.get_mut(curr_index as usize).unwrap();
         if !var.op.is_invalid() {
-          var.op = par_data.add_input(RSDVGBinding { name: var.id.to_string(), in_id: var.op, out_id: Default::default() }, var.ast.clone()).out_id;
+          var.op = par_data
+            .add_binding(
+              RSDVGBinding { name: var.id.to_string(), in_id: var.op, out_id: Default::default() },
+              var.ast.clone(),
+              var.ty,
+              BindingType::ParamBinding,
+            )
+            .out_id;
         }
 
         par_data.var_lookup.insert(var_id, var.clone());
@@ -1125,7 +1125,7 @@ fn import_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) 
   let ThreadedGraphId(op, node_id) = binding;
 
   let builder = node_stack.front_mut().unwrap();
-  return builder.add_input(RSDVGBinding { in_id: op, ..Default::default() }, Default::default()).out_id;
+  return builder.add_binding(RSDVGBinding { in_id: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_id;
 }
 
 fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) -> IRGraphId {
@@ -1135,7 +1135,7 @@ fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>)
     let builder = node_stack.front_mut().unwrap();
 
     if builder.id != node_id {
-      return builder.add_input(RSDVGBinding { in_id: op, ..Default::default() }, Default::default()).out_id;
+      return builder.add_binding(RSDVGBinding { in_id: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_id;
 
       // The binding id should be found as a child of the penultimate node.
       todo!(" Resolve binding from {node_id} {builder:#?}")

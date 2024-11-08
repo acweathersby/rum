@@ -25,5 +25,8 @@ E => [e: f64]
 
 entry (i: E, u: ?) => ? {
   j = 0
- if j is > 0 { i.e + u } else { 2 + j }
+  
+  d = if j is > 0 { i.e + u } else { 2 + j } + 4 
+
+  d + 2
 } 

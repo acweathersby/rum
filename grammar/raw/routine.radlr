@@ -7,9 +7,16 @@ IMPORT ../common/comment as cmt
 
 <> routine 
 
-  >  prim::var^name routine_type^routine_type expr::expression^expression
+  >  prim::var^name routine_definition^def
 
-    :ast { t_RawRoutine, name, ty: $routine_type, expression  }
+    :ast { t_RawRoutine, name, def }
+
+
+<> routine_definition > 
+
+  routine_type^routine_type expr::expression^expression
+
+  :ast { t_RawRoutineDefinition, ty: $routine_type, expression  }
 
 <> routine_type 
 

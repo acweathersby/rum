@@ -1,6 +1,5 @@
 use rum_lang::{
   ir::{ir_rvsdg::lower::lower_ast_to_rvsdg, types::TypeDatabase},
-  ir_interpreter::interpret,
   parser::script_parser::parse_raw_module,
 };
 use std::{collections::VecDeque, path::PathBuf};

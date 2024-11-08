@@ -1,7 +1,7 @@
 use super::types::Type;
 use crate::{
   container::ArrayVec,
-  ir_interpreter::blame,
+  ir_interpreter::blame::blame,
   istring::{CachedString, IString},
   parser::script_parser::ASTNode,
   types::ConstVal,
@@ -23,7 +23,7 @@ pub mod type_solve;
 pub enum RVSDGNodeType {
   #[default]
   Undefined,
-  Function,
+  Routine,
   MatchHead,
   MatchClause,
   MatchActivation,
@@ -62,7 +62,7 @@ impl RVSDGNode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-enum SolveState {
+pub enum SolveState {
   #[default]
   Unsolved,
   Solved,
@@ -122,10 +122,9 @@ impl Display for RSDVGBinding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BindingType {
-  InternalBinding,
-  Return,
-  Break,
+pub enum BindingType {
+  ParamBinding,
+  IntraBinding,
 }
 
 #[derive(Clone)]

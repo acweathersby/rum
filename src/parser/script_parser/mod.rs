@@ -77,3 +77,18 @@ pub fn parse_raw_module(input: &str) -> Result<Arc<RawModule<Token>>, String> {
     Ok(node) => Ok(node.into_RawModule().unwrap()),
   }
 }
+
+pub fn parse_raw_routine_def(input: &str) -> Result<Arc<RawRoutineDefinition<Token>>, String> {
+  let parser_db = parser::ParserDB::new();
+  match parser_db.build_ast(
+    &mut StringInput::from(input),
+    parser_db.get_entry_data_from_name("raw_routine_def").unwrap(),
+    ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
+  ) {
+    Err(err) => {
+      println!("{err:?}");
+      Err("Failed to parse input".to_string())
+    }
+    Ok(node) => Ok(node.into_RawRoutineDefinition().unwrap()),
+  }
+}
