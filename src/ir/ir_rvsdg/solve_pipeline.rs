@@ -17,6 +17,7 @@ use super::{
   RVSDGNode,
   RVSDGNodeType,
   SolveState,
+  VarId,
 };
 use crate::{
   container::{get_aligned_value, ArrayVec},
@@ -37,6 +38,10 @@ use std::{
   u32,
   usize,
 };
+
+struct Solver {
+  ty_db: *mut TypeDatabase,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -86,7 +91,8 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<OPConstraint2>, 
           let mut have_name = false;
 
           for MemberEntry { name: member_name, origin_op, ty } in members.iter() {
-            if let Some(output) = outputs.iter().find(|o| o.name == *member_name) {
+            let var_id = VarId::VarName(*member_name);
+            if let Some(output) = outputs.iter().find(|o| o.id == var_id) {
               let ty = types[output.in_id.usize()];
               if !ty.is_open() && *origin_op > 0 {
                 queue.push_back(OPConstraint2::OpToTy(IRGraphId(*origin_op), ty_db.to_ptr(ty).unwrap()));
@@ -289,6 +295,7 @@ pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints:
   let mut glob_types = Vec::new();
   let mut queue = VecDeque::from_iter([node as *mut _]);
   let mut global_index = 0;
+  let mut type_vars = vec![];
 
   while let Some(node_ptr) = queue.pop_front() {
     let node: &mut RVSDGNode = unsafe { &mut *node_ptr };
@@ -316,8 +323,18 @@ pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints:
         _ => IROp::ZERO,
       };
 
+      if let Some(gen_id) = ty.generic_id() {
+        while type_vars.len() <= gen_id {
+          let mut var = TypeVar::new(u32::MAX);
+          var.ty = Type::Generic { ptr_count: 0, gen_index: type_vars.len() as u32 };
+          type_vars.push(var);
+        }
+        type_vars[gen_id].id = gen_id as u32
+      }
+
       glob_types.push((ty, node_id, IRGraphId::new(node_index), op));
       global_index += 1;
+
       match node {
         RVSDGInternalNode::Complex(cmplx) => {
           queue.push_back(cmplx.as_mut());
@@ -349,8 +366,6 @@ pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints:
 
   gather_constraints(node_queue, nodes.as_slice(), &local_to_global_map, &mut glob_types, &mut constraint_queue, ty_db);
 
-  let mut type_vars = node.ty_vars.clone();
-
   while let Some(constraint) = constraint_queue.pop_front() {
     solve_constraint(constraint, &nodes, &mut constraint_queue, &mut type_vars, &local_to_global_map, &mut glob_types, ty_db);
   }
@@ -362,6 +377,10 @@ pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints:
   for mut i in 0..type_vars.len() {
     let start = i;
     let mut var = &mut type_vars[i];
+
+    if var.id == u32::MAX {
+      continue;
+    }
 
     if var.id as usize != start {
       while var.id as usize != i {
@@ -422,7 +441,6 @@ pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints:
     let types = local_to_global_map[id].iter().map(|i| glob_types[*i].0).collect();
     node.types = types;
   }
-
   node.solved = if output_type_vars.len() == 0 { SolveState::Solved } else { SolveState::PartiallySolved };
   node.ty_vars = output_type_vars;
 
@@ -550,6 +568,7 @@ fn gather_constraints(
           BindingType::ParamBinding => {
             // Pulls data from the root inputs
           }
+          ty => todo!("{ty:?}"),
         }
       }
       RVSDGInternalNode::Simple { op, operands } => {

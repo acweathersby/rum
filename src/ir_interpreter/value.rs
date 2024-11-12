@@ -2,7 +2,7 @@ use crate::ir::types::{PrimitiveBaseType, Type, TypeDatabase};
 
   #[derive(Debug, Clone, Copy, PartialEq)]
   pub enum Value {
-Unintialized,
+Uninitialized,
 Null,
 u64(u64),
 u32(u32),
@@ -36,22 +36,22 @@ pub fn dbg(&self, type_data: &TypeDatabase) {
             Type::Primitive(prim) => {
               match prim.base_ty {
                 PrimitiveBaseType::Float => match prim.byte_size {
-                  4 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const f32) }),
-                  8 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const f64) }),
+                  4 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const f32) }),
+                  8 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const f64) }),
                   _ => {}
                 },
                 PrimitiveBaseType::Signed => match prim.byte_size {
-                  1 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const i8) }),
-                  2 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const i16) }),
-                  4 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const i32) }),
-                  8 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const i64) }),
+                  1 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i8) }),
+                  2 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i16) }),
+                  4 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i32) }),
+                  8 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i64) }),
                   _ => {}
                 },
                 PrimitiveBaseType::Unsigned => match prim.byte_size {
-                  1 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const u8) }),
-                  2 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const u16) }),
-                  4 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const u32) }),
-                  8 => println!("    {}: {}={}", output.name, ty, unsafe { *(data.offset(offset as isize) as *const u64) }),
+                  1 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u8) }),
+                  2 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u16) }),
+                  4 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u32) }),
+                  8 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u64) }),
                   _ => {}
                 },
               };

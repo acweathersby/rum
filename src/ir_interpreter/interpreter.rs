@@ -8,10 +8,12 @@ use crate::{
       BindingType,
       IRGraphId,
       IROp,
+      RSDVGBinding,
       RVSDGInternalNode,
       RVSDGNode,
       RVSDGNodeType,
       SolveState,
+      VarId,
     },
     types::{PrimitiveBaseType, Type, TypeDatabase},
   },
@@ -102,14 +104,14 @@ pub fn create_function(function_definition: &str) -> Result<RumFunction, String>
 }
 
 pub fn process_node(node: &RVSDGNode, args: &[Value], ty_db: &mut TypeDatabase) -> Value {
-  let mut types = vec![Value::Unintialized; node.nodes.len()];
+  let mut types = vec![Value::Uninitialized; node.nodes.len()];
 
   let mut ret_op = IRGraphId::default();
 
   for output in node.outputs.iter() {
     let node_id = output.in_id;
 
-    if output.name == "__return__".intern() {
+    if output.id == VarId::Return {
       ret_op = output.in_id;
       process_ret(node_id, node, args, &mut types, ty_db);
     } else {
@@ -161,7 +163,7 @@ macro_rules! cmp_match {
 }
 
 pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mut [Value], ty_db: &mut TypeDatabase) {
-  if dst_op.is_invalid() || vals[dst_op.usize()] != Value::Unintialized {
+  if dst_op.is_invalid() || vals[dst_op.usize()] != Value::Uninitialized {
     return;
   }
 
@@ -201,7 +203,7 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
 
                     match call_node.solved {
                       SolveState::Solved | SolveState::PartiallySolved => {
-                        let mut call_vals = vec![Value::Unintialized; call_node.nodes.len()];
+                        let mut call_vals = vec![Value::Uninitialized; call_node.nodes.len()];
 
                         for (outer, inner) in call_node.inputs.iter().zip(cmplx.inputs.as_slice()[1..].iter()) {
                           process_op(inner.in_id, node, args, vals, ty_db);
@@ -223,9 +225,43 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
                   }
                 }
                 RVSDGNodeType::Loop => {
-                  todo!("Process loop");
+                  let mut expression_node = RSDVGBinding::default();
 
                   // Process all loop variant inputs first to establish initial values
+
+                  for out in cmplx.outputs.iter() {
+                    if let Some(in_id) = out.in_out_link {
+                      let input = cmplx.inputs[in_id as usize];
+                      process_op(input.in_id, node, args, vals, ty_db);
+                    } else {
+                      match out.id {
+                        VarId::LoopActivation => expression_node = *out,
+                        _ => {}
+                      }
+                    }
+                  }
+
+                  // process the loop activation at least once.
+
+                  if expression_node.in_id.is_valid() {
+                    let mut call_vals = vec![Value::Uninitialized; cmplx.nodes.len()];
+
+                    for (outer, inner) in cmplx.inputs.iter().zip(cmplx.inputs.as_slice()[..].iter()) {
+                      process_op(inner.in_id, node, args, vals, ty_db);
+                      call_vals[outer.out_id.usize()] = vals[inner.in_id.usize()];
+                    }
+
+                    process_op(expression_node.in_id, &cmplx, &[], &mut call_vals, ty_db);
+
+                    for (outer, inner) in cmplx.outputs.iter().zip(cmplx.outputs.as_slice()) {
+                      process_op(outer.in_id, cmplx, &[], &mut call_vals, ty_db);
+                      vals[inner.out_id.usize()] = call_vals[outer.in_id.usize()];
+                    }
+
+                    panic!("{call_vals:?}")
+                  } else {
+                    unreachable!()
+                  }
 
                   // Locate the loop expression node and process its value. if valid:
 
@@ -234,6 +270,20 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
                   // rerun the expression node and continue the loop if still valid.
 
                   loop {}
+                }
+                RVSDGNodeType::MatchHead => {
+                  let mut expression_node = RSDVGBinding::default();
+
+                  // Process all loop variant inputs first to establish initial values
+
+                  for out in cmplx.outputs.iter() {
+                    match out.id {
+                      VarId::MatchActivation => expression_node = *out,
+                      _ => {}
+                    }
+                  }
+
+                  todo!("Handle match head {vals:#?}")
                 }
                 ty => {
                   todo!("Handle intra node type: {ty:?} ")
@@ -321,7 +371,7 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
           process_op(*val_op, node, args, vals, ty_db);
 
           match &vals[val_op.usize()] {
-            Value::Unintialized => {}
+            Value::Uninitialized => {}
             val => {
               vals[dst_op.usize()] = *val;
               break;
@@ -345,7 +395,7 @@ pub fn process_ret(op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mut [
         process_op(*val_op, node, args, vals, ty_db);
 
         match &vals[val_op.usize()] {
-          Value::Unintialized => {}
+          Value::Uninitialized => {}
           val => {
             vals[op.usize()] = *val;
             break;

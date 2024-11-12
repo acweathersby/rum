@@ -9,6 +9,7 @@ use crate::{
 use radlr_rust_runtime::types::Token;
 use std::{
   collections::BTreeMap,
+  default,
   fmt::{Debug, Display, Pointer, Write},
   sync::Arc,
 };
@@ -19,6 +20,42 @@ pub mod solve_pipeline;
 pub mod type_check;
 pub mod type_solve;
 
+#[derive(Default, Clone, Copy, Hash, Debug, PartialEq, Eq)]
+pub enum VarId {
+  #[default]
+  Undefined,
+  VarName(IString),
+  SideEffect(usize),
+  MemRef(usize),
+  MatchInputExpr,
+  MatchOutputVal,
+  MatchActivation,
+  LoopActivation,
+  Return,
+}
+
+impl Display for VarId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::VarName(id) => f.write_str(id.to_str().as_str()),
+      Self::SideEffect(id) => f.write_fmt(format_args!("--{id}--")),
+      Self::MemRef(id) => f.write_fmt(format_args!("--*{id}--")),
+      Self::MatchInputExpr => f.write_str("__match_exp__"),
+      Self::MatchOutputVal => f.write_str("__match_val__"),
+      Self::MatchActivation => f.write_str("__match_activation__"),
+      Self::Return => f.write_str("__return__"),
+      Self::LoopActivation => f.write_str("__loop_activation__"),
+      _ => f.write_fmt(format_args!("{self:?}")),
+    }
+  }
+}
+
+impl VarId {
+  pub fn to_string(&self) -> IString {
+    format!("{self}").intern()
+  }
+}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RVSDGNodeType {
   #[default]
@@ -28,6 +65,7 @@ pub enum RVSDGNodeType {
   MatchClause,
   MatchActivation,
   MatchBody,
+  LoopActivation,
   Call,
   Struct,
   Array,
@@ -94,7 +132,7 @@ impl Debug for RVSDGNode {
 #[derive(Clone, Copy, Default)]
 pub struct RSDVGBinding {
   // Temporary identifier of the binding
-  pub name:   IString,
+  pub id:     VarId,
   /// The input node id of the binding
   ///
   /// if the binding is an input then this value corresponds to a node in the parent scope
@@ -107,6 +145,8 @@ pub struct RSDVGBinding {
   ///
   /// if the binding is an output then this value corresponds to a node in the parent scope
   pub out_id: IRGraphId,
+
+  pub in_out_link: Option<u16>,
 }
 
 impl Debug for RSDVGBinding {
@@ -117,7 +157,11 @@ impl Debug for RSDVGBinding {
 
 impl Display for RSDVGBinding {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("{:<4}  => {:<3} [{}]", self.in_id, self.out_id, self.name.to_string(),))
+    if let Some(index) = self.in_out_link {
+      f.write_fmt(format_args!("{:<4}  => {:<3} [{}] in [{index}]", self.in_id, self.out_id, self.id.to_string(),))
+    } else {
+      f.write_fmt(format_args!("{:<4}  => {:<3} [{}]", self.in_id, self.out_id, self.id.to_string(),))
+    }
   }
 }
 
@@ -125,6 +169,7 @@ impl Display for RSDVGBinding {
 pub enum BindingType {
   ParamBinding,
   IntraBinding,
+  IntraBinding2,
 }
 
 #[derive(Clone)]
@@ -164,22 +209,6 @@ impl Display for RVSDGInternalNode {
 
 #[cfg(test)]
 mod test;
-
-fn get_node_by_name(name: IString, node: &mut RVSDGNode) -> Option<&mut RVSDGNode> {
-  let RVSDGNode { id, ty, inputs, outputs, nodes, source_nodes: source_tokens, .. } = node;
-
-  let node_ptr = nodes.as_mut_ptr();
-
-  for RSDVGBinding { name: n_name, in_id, out_id } in outputs.iter().cloned() {
-    if name == n_name {
-      match unsafe { &mut *node_ptr.offset(in_id.usize() as isize) } {
-        RVSDGInternalNode::Complex(node) => return Some(node),
-        _ => {}
-      }
-    }
-  }
-  None
-}
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -359,7 +388,7 @@ impl RVSDGNode {
           f.write_fmt(format_args!(
             "`{index:<4} ---------------- {}\n  {} \n---------------------- | \n",
             get_type_string(index, types, ty_vars),
-            format!("{}", node).split("\n").collect::<Vec<_>>().join("\n  "),
+            format!("{}", node).split("\n").collect::<Vec<_>>().join("\n.."),
           ));
         }
         _ => {
