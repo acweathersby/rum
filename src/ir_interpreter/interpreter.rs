@@ -1,3 +1,5 @@
+use std::usize;
+
 use num_traits::ops;
 
 use crate::{
@@ -44,10 +46,17 @@ fn basic_expression_function() {
 fn basic_looped_function() {
   let rum_function = create_function(
     "
-  (t: u32, b: u32) => ? { 
-    loop if t is > 0 {
-      b = b + 1
-    }
+  (t: i32, b: u32) => ? { 
+    loop if t is
+      > 0 {
+        b = b + 1
+        t = t - 1
+      } 
+      == 0  {
+        b = 30
+      
+      }
+
     b
   }
   
@@ -55,7 +64,7 @@ fn basic_looped_function() {
 ",
   )
   .expect("Should compile");
-  assert_eq!(Ok(Value::u32(4)), rum_function.run("2, 2"));
+  assert_eq!(Ok(Value::u32(4)), rum_function.run("4, 2"));
 }
 
 pub struct RumFunction {
@@ -109,10 +118,10 @@ pub fn process_node(node: &RVSDGNode, args: &[Value], ty_db: &mut TypeDatabase) 
   let mut ret_op = IRGraphId::default();
 
   for output in node.outputs.iter() {
-    let node_id = output.in_id;
+    let node_id = output.in_op;
 
     if output.id == VarId::Return {
-      ret_op = output.in_id;
+      ret_op = output.in_op;
       process_ret(node_id, node, args, &mut types, ty_db);
     } else {
       process_op(node_id, node, args, &mut types, ty_db);
@@ -177,7 +186,7 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
               let mut m: bool = false;
 
               for output in cmplx.outputs.iter() {
-                if output.out_id == dst_op {
+                if output.out_op == dst_op {
                   m = true;
                 }
               }
@@ -190,7 +199,7 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
 
               match cmplx.ty {
                 RVSDGNodeType::Call => {
-                  let name_op = cmplx.inputs[0].in_id;
+                  let name_op = cmplx.inputs[0].in_op;
 
                   let RVSDGInternalNode::Label(name) = node.nodes[name_op] else {
                     todo!("Need to handle call instances where the call target is not a named routine")
@@ -206,13 +215,13 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
                         let mut call_vals = vec![Value::Uninitialized; call_node.nodes.len()];
 
                         for (outer, inner) in call_node.inputs.iter().zip(cmplx.inputs.as_slice()[1..].iter()) {
-                          process_op(inner.in_id, node, args, vals, ty_db);
-                          call_vals[outer.out_id.usize()] = vals[inner.in_id.usize()];
+                          process_op(inner.in_op, node, args, vals, ty_db);
+                          call_vals[outer.out_op.usize()] = vals[inner.in_op.usize()];
                         }
 
                         for (outer, inner) in call_node.outputs.iter().zip(cmplx.outputs.as_slice()) {
-                          process_op(outer.in_id, call_node, &[], &mut call_vals, ty_db);
-                          vals[inner.out_id.usize()] = call_vals[outer.in_id.usize()];
+                          process_op(outer.in_op, call_node, &[], &mut call_vals, ty_db);
+                          vals[inner.out_op.usize()] = call_vals[outer.in_op.usize()];
                         }
                       }
                       SolveState::PartiallySolved => {
@@ -232,7 +241,7 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
                   for out in cmplx.outputs.iter() {
                     if let Some(in_id) = out.in_out_link {
                       let input = cmplx.inputs[in_id as usize];
-                      process_op(input.in_id, node, args, vals, ty_db);
+                      process_op(input.in_op, node, args, vals, ty_db);
                     } else {
                       match out.id {
                         VarId::LoopActivation => expression_node = *out,
@@ -243,22 +252,29 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
 
                   // process the loop activation at least once.
 
-                  if expression_node.in_id.is_valid() {
-                    let mut call_vals = vec![Value::Uninitialized; cmplx.nodes.len()];
+                  if expression_node.in_op.is_valid() {
+                    loop {
+                      let call_vals = process_inter_node(cmplx, node, args, vals, ty_db, |node, args, vals, ty_db| {
+                        process_op(expression_node.in_op, node, args, vals, ty_db);
+                        process_all_outputs(node, vals, ty_db);
+                      });
 
-                    for (outer, inner) in cmplx.inputs.iter().zip(cmplx.inputs.as_slice()[..].iter()) {
-                      process_op(inner.in_id, node, args, vals, ty_db);
-                      call_vals[outer.out_id.usize()] = vals[inner.in_id.usize()];
+                      match call_vals[expression_node.in_op] {
+                        Value::u16(1) => {
+                          for out in cmplx.outputs.iter() {
+                            if let Some(in_id) = out.in_out_link {
+                              let input = cmplx.inputs[in_id as usize];
+                              vals[input.in_op.usize()] = call_vals[out.in_op.usize()];
+                              //panic!("A");
+                            }
+                          }
+                        }
+                        _ => {
+                          node.print_with_values_str(vals);
+                          break;
+                        }
+                      }
                     }
-
-                    process_op(expression_node.in_id, &cmplx, &[], &mut call_vals, ty_db);
-
-                    for (outer, inner) in cmplx.outputs.iter().zip(cmplx.outputs.as_slice()) {
-                      process_op(outer.in_id, cmplx, &[], &mut call_vals, ty_db);
-                      vals[inner.out_id.usize()] = call_vals[outer.in_id.usize()];
-                    }
-
-                    panic!("{call_vals:?}")
                   } else {
                     unreachable!()
                   }
@@ -268,25 +284,85 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
                   // run the loop body.
 
                   // rerun the expression node and continue the loop if still valid.
-
-                  loop {}
                 }
-                RVSDGNodeType::MatchHead => {
+                RVSDGNodeType::Match => {
                   let mut expression_node = RSDVGBinding::default();
 
-                  // Process all loop variant inputs first to establish initial values
+                  process_inter_node(cmplx, node, args, vals, ty_db, |node, args, vals, ty_db| {
+                    // find match head
 
-                  for out in cmplx.outputs.iter() {
-                    match out.id {
-                      VarId::MatchActivation => expression_node = *out,
-                      _ => {}
+                    let mut body_index = usize::MAX;
+                    let mut activated_index = usize::MAX;
+                    for (index, inner_node) in node.nodes.iter().enumerate() {
+                      match inner_node {
+                        RVSDGInternalNode::Complex(cmplx) => {
+                          if cmplx.ty == RVSDGNodeType::MatchBody {
+                            body_index = index;
+                          } else if cmplx.ty == RVSDGNodeType::MatchHead {
+                            process_inter_node(cmplx, node, args, vals, ty_db, |node, args, vals, ty_db| {
+                              let mut id = 0;
+                              for inner_node in &node.nodes {
+                                if activated_index != usize::MAX {
+                                  break;
+                                }
+
+                                match inner_node {
+                                  RVSDGInternalNode::Complex(cmplx) => {
+                                    if cmplx.ty == RVSDGNodeType::MatchActivation {
+                                      process_inter_node(cmplx, node, args, vals, ty_db, |node, args, vals, ty_db| {
+                                        for output in node.outputs.iter() {
+                                          if output.id == VarId::MatchActivation {
+                                            process_op(output.in_op, node, args, vals, ty_db);
+
+                                            match vals[output.in_op.usize()] {
+                                              Value::u16(1) => {
+                                                activated_index = id;
+                                              }
+                                              _ => {
+                                                id += 1;
+                                              }
+                                            }
+                                            return;
+                                          }
+                                        }
+                                      });
+                                    }
+                                  }
+                                  _ => {}
+                                }
+                              }
+                            });
+                          }
+                        }
+                        _ => {}
+                      }
                     }
-                  }
 
-                  todo!("Handle match head {vals:#?}")
+                    if body_index != usize::MAX && activated_index != usize::MAX {
+                      let RVSDGInternalNode::Complex(body_node) = &cmplx.nodes[body_index] else { unreachable!() };
+                      process_inter_node(body_node, node, args, vals, ty_db, |node, args, vals, ty_db| {
+                        if let Some((complex_nodes, cmplx)) = body_node
+                          .nodes
+                          .iter()
+                          .filter_map(|i| match i {
+                            RVSDGInternalNode::Complex(cmplx) if cmplx.ty == RVSDGNodeType::MatchClause => Some(cmplx),
+                            _ => None,
+                          })
+                          .enumerate()
+                          .find(|(i, n)| *i == activated_index)
+                        {
+                          process_inter_node(cmplx, node, args, vals, ty_db, |node, args, vals, ty_db| {
+                            for output in node.outputs.iter() {
+                              process_all_outputs(node, vals, ty_db);
+                            }
+                          });
+                        }
+                      });
+                    }
+                  });
                 }
                 ty => {
-                  todo!("Handle intra node type: {ty:?} ")
+                  //println!("Handle intra node type: {ty:?} {cmplx}")
                 }
               }
             }
@@ -370,6 +446,8 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
 
           process_op(*val_op, node, args, vals, ty_db);
 
+          println!("AAA {vals:?}");
+
           match &vals[val_op.usize()] {
             Value::Uninitialized => {}
             val => {
@@ -381,7 +459,49 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
       }
       node => unreachable!("{node:?}"),
     },
+    RVSDGInternalNode::Complex(..) => {}
     op => todo!("{op}"),
+  }
+}
+
+fn process_inter_node<T: FnMut(&RVSDGNode, &[Value], &mut [Value], &mut TypeDatabase)>(
+  cmplx: &Box<RVSDGNode>,
+  node: &RVSDGNode,
+  args: &[Value],
+  vals: &mut [Value],
+  ty_db: &mut TypeDatabase,
+  mut inner: T,
+) -> Vec<Value> {
+  let mut call_vals = vec![Value::Uninitialized; cmplx.nodes.len()];
+
+  for (outer, inner) in cmplx.inputs.iter().zip(cmplx.inputs.as_slice()[..].iter()) {
+    process_op(inner.in_op, node, args, vals, ty_db);
+    call_vals[outer.out_op.usize()] = vals[inner.in_op.usize()];
+  }
+
+  inner(&cmplx, &[], &mut call_vals, ty_db);
+
+  for (outer, inner) in cmplx.outputs.iter().zip(cmplx.outputs.as_slice()) {
+    if outer.in_op.is_valid() && outer.out_op.is_valid() {
+      debug_assert!(outer.out_op.usize() < vals.len(), "\n{node} \n ------------- {cmplx}");
+      vals[outer.out_op.usize()] = call_vals[outer.in_op.usize()];
+
+      if vals[outer.out_op.usize()] == Value::Uninitialized {
+        if let Some(input_index) = outer.in_out_link {
+          let input = cmplx.inputs[input_index as usize].in_op;
+
+          vals[outer.out_op.usize()] = vals[input.usize()];
+        }
+      }
+    }
+  }
+
+  call_vals
+}
+
+fn process_all_outputs(cmplx: &RVSDGNode, call_vals: &mut [Value], ty_db: &mut TypeDatabase) {
+  for (outer, inner) in cmplx.outputs.iter().zip(cmplx.outputs.as_slice()) {
+    process_op(outer.in_op, cmplx, &[], call_vals, ty_db);
   }
 }
 

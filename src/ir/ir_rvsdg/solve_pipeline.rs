@@ -93,7 +93,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<OPConstraint2>, 
           for MemberEntry { name: member_name, origin_op, ty } in members.iter() {
             let var_id = VarId::VarName(*member_name);
             if let Some(output) = outputs.iter().find(|o| o.id == var_id) {
-              let ty = types[output.in_id.usize()];
+              let ty = types[output.in_op.usize()];
               if !ty.is_open() && *origin_op > 0 {
                 queue.push_back(OPConstraint2::OpToTy(IRGraphId(*origin_op), ty_db.to_ptr(ty).unwrap()));
               }
@@ -361,7 +361,7 @@ pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints:
 
   for index in 0..node.outputs.len() {
     let output = node.outputs[index];
-    node_queue.push_back((output.in_id, node.id as usize));
+    node_queue.push_back((output.in_op, node.id as usize));
   }
 
   gather_constraints(node_queue, nodes.as_slice(), &local_to_global_map, &mut glob_types, &mut constraint_queue, ty_db);
@@ -443,8 +443,6 @@ pub fn solve_node_new_test_temp_configuration(node: &mut RVSDGNode, constraints:
   }
   node.solved = if output_type_vars.len() == 0 { SolveState::Solved } else { SolveState::PartiallySolved };
   node.ty_vars = output_type_vars;
-
-  dbg!(node);
 }
 
 fn gather_constraints(
@@ -476,7 +474,7 @@ fn gather_constraints(
                 RVSDGInternalNode::Complex(cmplx) => {
                   let mut m: bool = false;
                   for output in cmplx.outputs.iter() {
-                    if output.out_id == dst_op {
+                    if output.out_op == dst_op {
                       m = true;
                     }
                   }
@@ -489,7 +487,7 @@ fn gather_constraints(
 
                   match cmplx.ty {
                     RVSDGNodeType::Call => {
-                      let name_op = cmplx.inputs[0].in_id;
+                      let name_op = cmplx.inputs[0].in_op;
 
                       let RVSDGInternalNode::Label(name) = node.nodes[name_op] else {
                         todo!("Need to handle call instances where the call target is not a named routine")
@@ -503,14 +501,14 @@ fn gather_constraints(
                         match call_node.solved {
                           SolveState::Solved => {
                             for (outer, inner) in call_node.inputs.iter().zip(cmplx.inputs.as_slice()[1..].iter()) {
-                              let in_id = inner.in_id;
-                              let out_id = outer.out_id;
+                              let in_id = inner.in_op;
+                              let out_id = outer.out_op;
                               constraint_queue.push_back(OPConstraint2::OpToTy(in_id, call_node.types[out_id]));
                             }
 
                             for (outer, inner) in call_node.outputs.iter().zip(cmplx.outputs.as_slice()) {
-                              let in_id = inner.out_id;
-                              let out_id = outer.in_id;
+                              let in_id = inner.out_op;
+                              let out_id = outer.in_op;
                               constraint_queue.push_back(OPConstraint2::OpToTy(in_id, call_node.types[out_id]));
                             }
                           }
@@ -525,22 +523,22 @@ fn gather_constraints(
                     }
                     _ => {
                       for binding in cmplx.outputs.iter() {
-                        if binding.out_id == dst_op {
+                        if binding.out_op == dst_op {
                           for (bindings, is_output) in [(cmplx.outputs.iter().enumerate(), true), (cmplx.inputs.iter().enumerate(), false)] {
                             for (binding_index, binding) in bindings {
                               let (inside_op, outside_op, src, dst) = if is_output {
                                 (
-                                  binding.in_id,
-                                  binding.out_id,
-                                  loc_to_glob_op(local_to_global_map, inner_node_id, binding.in_id),
-                                  loc_to_glob_op(local_to_global_map, node_id, binding.out_id),
+                                  binding.in_op,
+                                  binding.out_op,
+                                  loc_to_glob_op(local_to_global_map, inner_node_id, binding.in_op),
+                                  loc_to_glob_op(local_to_global_map, node_id, binding.out_op),
                                 )
                               } else {
                                 (
-                                  binding.out_id,
-                                  binding.in_id,
-                                  loc_to_glob_op(local_to_global_map, node_id, binding.in_id),
-                                  loc_to_glob_op(local_to_global_map, inner_node_id, binding.out_id),
+                                  binding.out_op,
+                                  binding.in_op,
+                                  loc_to_glob_op(local_to_global_map, node_id, binding.in_op),
+                                  loc_to_glob_op(local_to_global_map, inner_node_id, binding.out_op),
                                 )
                               };
 

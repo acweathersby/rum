@@ -25,8 +25,7 @@ const crazy_ty: Type = Type::Primitive(PrimitiveType {
 
 #[derive(Clone, Copy, Debug)]
 enum Write {
-  IntraNodeWrite { node: usize, in_op_id: IRGraphId, ty: Type },
-  LocalWrite { op_id: IRGraphId },
+  IntraNodeBind { node_index: usize, output_index: usize },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -107,7 +106,7 @@ impl Builder {
 
   pub fn add_binding(&mut self, mut binding: RSDVGBinding, node: ASTNode, ty: Type, b_ty: BindingType) -> RSDVGBinding {
     let id = Self::create_id(&mut self.node_id);
-    binding.out_id = id;
+    binding.out_op = id;
     self.node.inputs.push(binding);
     self.add_binding_node_internal(id, ty, node, b_ty);
     binding
@@ -220,8 +219,6 @@ impl Builder {
       var.nonce += 1;
       let var_ty = var.ty;
 
-      var.writes.push(Write::LocalWrite { op_id: op });
-
       if op.is_valid() {
         self.set_type_if_undefined(op, var_ty);
       }
@@ -304,8 +301,8 @@ fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
         let id = Builder::create_id(&mut node_id);
 
         output_binding.id = VarId::VarName(name);
-        output_binding.in_id = id;
-        output_binding.out_id = Default::default();
+        output_binding.in_op = id;
+        output_binding.out_op = Default::default();
 
         node.outputs.push(output_binding);
 
@@ -376,6 +373,7 @@ pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: 
   if let RVSDGInternalNode::Complex(mut node) = fn_node.nodes.remove(0) {
     node.ty_vars = type_vars;
     debug_assert_eq!(node.nodes.len(), node.types.len());
+
     (node, op_constraints)
   } else {
     panic!()
@@ -420,17 +418,17 @@ fn insert_params(params: &std::sync::Arc<Params<Token>>, builder: &mut Builder, 
     let ast = ASTNode::RawParamBinding(param.clone());
 
     let input = builder.add_binding(
-      RSDVGBinding { id: param_id, in_id: IRGraphId::new(param_index), ..Default::default() },
+      RSDVGBinding { id: param_id, in_op: IRGraphId::new(param_index), ..Default::default() },
       ast,
       Default::default(),
       BindingType::ParamBinding,
     );
 
     if !ty.is_open() {
-      builder.add_op_constraint(OPConstraint::OpToTy(input.out_id.0, ty, input.out_id.0));
+      builder.add_op_constraint(OPConstraint::OpToTy(input.out_op.0, ty, input.out_op.0));
     }
 
-    builder.create_var(param_id, input.out_id, ASTNode::RawParamBinding(param.clone()), ty);
+    builder.create_var(param_id, input.out_op, ASTNode::RawParamBinding(param.clone()), ty);
   }
 }
 
@@ -538,8 +536,8 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
               match &loop_expr.scope {
                 loop_statement_group_1_Value::RawMatch(mtch) => {
                   process_match(node_stack, mtch, ty_db, false);
-
                   if let Some(match_activation_op) = read_var(VarId::MatchActivation, node_stack) {
+                    debug_assert!(match_activation_op.is_valid());
                     let builder = node_stack.front_mut().unwrap();
                     builder.update_var(VarId::LoopActivation, match_activation_op, Default::default());
                   }
@@ -553,6 +551,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
             seal_var(VarId::LoopActivation, node_stack, Default::default());
 
+            //panic!("{:#?}", node_stack.front().unwrap());
             pop_and_merge_single_node(node_stack, loop_expr.clone().into());
           }
           ty => todo!("{ty:#?}"),
@@ -591,7 +590,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       {
         let mut input = RSDVGBinding::default();
-        input.in_id = call_id;
+        input.in_op = call_id;
         input.id = VarId::VarName("__NAME__".intern());
         call_builder.add_binding(input, ASTNode::MemberCompositeAccess(call.member.clone()), Default::default(), BindingType::IntraBinding);
       }
@@ -621,7 +620,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       for output_index in 0..outputs.len() {
         let id = par_builder.add_output_node(Default::default(), ASTNode::None);
-        outputs[output_index].out_id = id;
+        outputs[output_index].out_op = id;
         par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
         return (ThreadedGraphId(id, node_stack.front().unwrap().id), false);
       }
@@ -698,14 +697,13 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
   let builder = node_stack.front_mut().unwrap();
   builder.create_var(VarId::MatchActivation, Default::default(), Default::default(), Default::default());
 
+  push_new_builder(node_stack, RVSDGNodeType::Match);
   push_new_builder(node_stack, RVSDGNodeType::MatchHead);
+
   {
-    let mut merges = vec![];
-
     let match_builder = node_stack.front_mut().unwrap();
-
+    let mut merges = vec![];
     for clause in mtch.clauses.iter().chain(mtch.default_clause.iter()) {
-      push_new_builder(node_stack, RVSDGNodeType::MatchClause);
       push_new_builder(node_stack, RVSDGNodeType::MatchActivation);
 
       let activation_op = if clause.default {
@@ -735,14 +733,27 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
       };
 
       write_var(VarId::MatchActivation, node_stack);
+
       let builder = node_stack.front_mut().unwrap();
       builder.update_var(VarId::MatchActivation, activation_op, Default::default());
 
-      pop_and_merge_single_node(node_stack, Default::default());
+      merges.push((pop_builder(node_stack), Default::default()));
+    }
 
+    merge_multiple_nodes(node_stack, merges);
+
+    if seal_activation {
+      seal_var(VarId::MatchActivation, node_stack, Default::default());
+    }
+  }
+  pop_and_merge_single_node(node_stack, Default::default()); // MatchHead
+
+  push_new_builder(node_stack, RVSDGNodeType::MatchBody);
+  {
+    let mut merges = vec![];
+    for clause in mtch.clauses.iter().chain(mtch.default_clause.iter()) {
+      push_new_builder(node_stack, RVSDGNodeType::MatchClause);
       let base_len = node_stack.len();
-
-      push_new_builder(node_stack, RVSDGNodeType::MatchBody);
 
       let (def_id, short_circuit) = process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
@@ -763,15 +774,11 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
     }
 
     merge_multiple_nodes(node_stack, merges);
-
-    if seal_activation {
-      seal_var(VarId::MatchActivation, node_stack, Default::default());
-    }
   }
 
-  let short_circuit = node_stack.front().unwrap().var_lookup.contains_key(&VarId::VarName("RET".to_token()));
+  pop_and_merge_single_node(node_stack, Default::default()); // MatchBody
 
-  pop_and_merge_single_node(node_stack, Default::default());
+  pop_and_merge_single_node(node_stack, Default::default()); // Match
 
   remove_var(VarId::MatchInputExpr, node_stack);
 
@@ -814,12 +821,10 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
         }
         VarLookup::Var(output) => {
           let builder = node_stack.front_mut().unwrap();
-          println!("\n\nA  {}  \n\n", builder.id);
           builder.update_var(root_name, graph_id, ast);
         }
         VarLookup::None(..) => {
           let builder = node_stack.front_mut().unwrap();
-          println!("create!");
           builder.create_var(root_name, graph_id, ast, Default::default());
         }
       }
@@ -981,21 +986,42 @@ fn push_new_builder(node_stack: &mut VecDeque<Builder>, ty: RVSDGNodeType) {
 
 fn merge_multiple_nodes(node_stack: &mut VecDeque<Builder>, mut children: Vec<(Builder, ASTNode)>) {
   let par_builder = node_stack.front_mut().unwrap();
+  let par_ty = par_builder.node.ty;
 
   for (name, par_var) in par_builder.var_lookup.iter_mut() {
     let par_var_nonce = par_var.nonce;
-    for (index, (child, _)) in children.iter_mut().enumerate() {
-      let child_index = index + par_builder.node_id;
 
-      if let Some(mut child_var) = child.var_lookup.remove(name) {
+    for (i, (c_b, _)) in children.iter_mut().enumerate() {
+      let c_i = i + par_builder.node_id;
+
+      if let Some(mut child_var) = c_b.var_lookup.remove(name) {
         let var_is_input_only = matches!(name, VarId::MatchInputExpr);
-        if child_var.origin_node_id < child.id && !var_is_input_only && par_var_nonce != child_var.nonce {
+
+        if child_var.origin_node_id < c_b.id && !var_is_input_only && par_var_nonce != child_var.nonce
+        /*  && child_var.op.is_valid()  */
+        {
           let child_var_ty = child_var.ty;
           // Merge the var id into the parent scope
 
-          let var_id = commit_writes(child, &mut child_var);
+          let var_id = child_var.id;
+          let mut in_out_link = None;
 
-          par_var.writes.push(Write::IntraNodeWrite { node: child_index, in_op_id: var_id, ty: child_var_ty });
+          if c_b.node.ty == RVSDGNodeType::Loop {
+            for i in 0..c_b.node.inputs.len() {
+              if c_b.node.inputs[i].id == var_id {
+                in_out_link = Some(i as u16);
+                break;
+              }
+            }
+          }
+
+          let output_index = c_b.node.outputs.len();
+
+          let op = commit_writes(c_b, &mut child_var);
+
+          c_b.node.outputs.push(RSDVGBinding { in_op: child_var.op, out_op: Default::default(), id: var_id, in_out_link });
+
+          par_var.writes.push(Write::IntraNodeBind { node_index: c_i, output_index });
 
           par_var.nonce = par_var_nonce + 1;
         }
@@ -1012,39 +1038,25 @@ fn merge_multiple_nodes(node_stack: &mut VecDeque<Builder>, mut children: Vec<(B
 fn commit_writes(builder: &mut Builder, var: &mut Var) -> IRGraphId {
   let num_of_writes = var.writes.len();
 
+  let v = var.clone();
+
   let mut input_op = IRGraphId::default();
 
   if num_of_writes > 0 {
     for write in var.writes.drain(0..) {
       match write {
-        Write::IntraNodeWrite { node: node_index, in_op_id, ty } => {
+        Write::IntraNodeBind { node_index, output_index } => {
           if input_op.is_invalid() {
             input_op = builder.add_input_node(var.ty, Default::default());
+            var.op = input_op;
           }
 
           match &mut builder.node.nodes[node_index] {
             RVSDGInternalNode::Complex(cmplx) => {
-              let ty = cmplx.set_type_if_undefined(in_op_id, ty);
-              let var_id = var.id;
-              let mut in_out_link = None;
-
-              if cmplx.ty == RVSDGNodeType::Loop {
-                for i in 0..cmplx.inputs.len() {
-                  if cmplx.inputs[i].id == var_id {
-                    in_out_link = Some(i as u16);
-                    break;
-                  }
-                }
-              }
-
-              cmplx.outputs.push(RSDVGBinding { in_id: in_op_id, out_id: input_op, id: var_id, in_out_link });
+              cmplx.outputs[output_index].out_op = input_op;
             }
-            _ => {}
+            _ => panic!("Invalid"),
           }
-        }
-        Write::LocalWrite { op_id } => {
-          debug_assert_eq!(num_of_writes, 1);
-          return op_id;
         }
       }
     }
@@ -1077,12 +1089,12 @@ fn read_var<'a>(var_id: VarId, node_stack: &'a mut VecDeque<WIPNode>) -> Option<
         if !var.op.is_invalid() {
           var.op = par_data
             .add_binding(
-              RSDVGBinding { id: var.id, in_id: var.op, out_id: Default::default(), in_out_link: None },
+              RSDVGBinding { id: var.id, in_op: var.op, out_op: Default::default(), in_out_link: None },
               var.ast.clone(),
               var.ty,
               BindingType::ParamBinding,
             )
-            .out_id;
+            .out_op;
         }
 
         par_data.var_lookup.insert(var_id, var.clone());
@@ -1127,7 +1139,7 @@ fn import_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) 
   let ThreadedGraphId(op, node_id) = binding;
 
   let builder = node_stack.front_mut().unwrap();
-  return builder.add_binding(RSDVGBinding { in_id: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_id;
+  return builder.add_binding(RSDVGBinding { in_op: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_op;
 }
 
 fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) -> IRGraphId {
@@ -1137,7 +1149,7 @@ fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>)
     let builder = node_stack.front_mut().unwrap();
 
     if builder.id != node_id {
-      return builder.add_binding(RSDVGBinding { in_id: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_id;
+      return builder.add_binding(RSDVGBinding { in_op: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_op;
 
       // The binding id should be found as a child of the penultimate node.
       todo!(" Resolve binding from {node_id} {builder:#?}")
@@ -1149,22 +1161,22 @@ fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>)
   }
 }
 
-fn seal_var(var_name_id: VarId, node_stack: &mut VecDeque<Builder>, ty: Type) {
+fn seal_var(var_id: VarId, node_stack: &mut VecDeque<Builder>, ty: Type) {
   let builder = node_stack.front_mut().unwrap();
-  if let Some(mut var) = builder.var_lookup.remove(&var_name_id) {
-    let var_id = commit_writes(builder, &mut var);
+  if let Some(mut var) = builder.var_lookup.remove(&var_id) {
+    let var_op = commit_writes(builder, &mut var);
 
-    if var_id.is_valid() {
-      let var_id = if !ty.is_open() {
-        builder.add_op_constraint(OPConstraint::OpToTy(var_id.0, ty, var_id.0));
-        var_id
+    if var_op.is_valid() {
+      let var_op = if !ty.is_open() {
+        builder.add_op_constraint(OPConstraint::OpToTy(var_op.0, ty, var_op.0));
+        var_op
       } else {
-        var_id
+        var_op
       };
 
-      builder.set_type_if_undefined(var_id, var.ty);
+      builder.set_type_if_undefined(var_op, var.ty);
 
-      builder.add_output(RSDVGBinding { in_id: var_id, id: var_name_id, out_id: Default::default(), in_out_link: None });
+      builder.add_output(RSDVGBinding { in_op: var_op, id: var_id, out_op: Default::default(), in_out_link: None });
     }
   }
 }

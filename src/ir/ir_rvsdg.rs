@@ -1,7 +1,7 @@
 use super::types::Type;
 use crate::{
   container::ArrayVec,
-  ir_interpreter::blame::blame,
+  ir_interpreter::{blame::blame, value::Value},
   istring::{CachedString, IString},
   parser::script_parser::ASTNode,
   types::ConstVal,
@@ -61,6 +61,7 @@ pub enum RVSDGNodeType {
   #[default]
   Undefined,
   Routine,
+  Match,
   MatchHead,
   MatchClause,
   MatchActivation,
@@ -138,13 +139,13 @@ pub struct RSDVGBinding {
   /// if the binding is an input then this value corresponds to a node in the parent scope
   ///
   /// if the binding is an output then this value corresponds to a local node
-  pub in_id:  IRGraphId,
+  pub in_op:  IRGraphId,
   /// The output node id of the binding
   ///
   /// if the binding is an input then this value corresponds to a local node
   ///
   /// if the binding is an output then this value corresponds to a node in the parent scope
-  pub out_id: IRGraphId,
+  pub out_op: IRGraphId,
 
   pub in_out_link: Option<u16>,
 }
@@ -158,9 +159,9 @@ impl Debug for RSDVGBinding {
 impl Display for RSDVGBinding {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if let Some(index) = self.in_out_link {
-      f.write_fmt(format_args!("{:<4}  => {:<3} [{}] in [{index}]", self.in_id, self.out_id, self.id.to_string(),))
+      f.write_fmt(format_args!("{:<4}  => {:<3} [{}] in [{index}]", self.in_op, self.out_op, self.id.to_string(),))
     } else {
-      f.write_fmt(format_args!("{:<4}  => {:<3} [{}]", self.in_id, self.out_id, self.id.to_string(),))
+      f.write_fmt(format_args!("{:<4}  => {:<3} [{}]", self.in_op, self.out_op, self.id.to_string(),))
     }
   }
 }
@@ -366,6 +367,46 @@ impl From<IRGraphId> for usize {
 }
 
 impl RVSDGNode {
+  pub fn print_with_values_str(&self, values: &[Value]) {
+    println!("--- [{}]  {:?}  ---\n", self.id, self.ty);
+    println!("!# {:20} #!\n", format!("{:?}", self.solved));
+
+    if self.inputs.len() > 0 {
+      println!("\ninputs:\n");
+
+      for input in self.inputs.iter() {
+        println!("{:<49} | {:}\n", format!("{input}"), get_val_string(input.out_op.usize(), values));
+      }
+    }
+
+    println!("nodes:\n");
+    for (index, node) in self.nodes.iter().enumerate() {
+      match node {
+        RVSDGInternalNode::Complex(node) => {
+          println!("`{index:<4} ---------------- {}\n  \n---------------------- | \n", format!("{}", node).split("\n").collect::<Vec<_>>().join("\n.."),);
+        }
+        _ => {
+          println!("`{index:<4} <= {:<40} | {:}\n", format!("{node}"), format!("{}", get_val_string(index, values)));
+        }
+      }
+    }
+
+    if self.outputs.len() > 0 {
+      println!("outputs:\n");
+
+      for output in self.outputs.iter() {
+        println!("{:<49} | {:}\n", format!("{output}"), get_val_string(output.in_op.usize(), values));
+      }
+    }
+
+    if !self.ty_vars.is_empty() {
+      println!("type vars:\n");
+      for var in &self.ty_vars {
+        println!("  {var}\n");
+      }
+    }
+  }
+
   fn fmt_internal(&self, f: &mut std::fmt::Formatter<'_>, ty_vars: &[TypeVar]) -> std::fmt::Result {
     let index = 0;
     let types = &self.types;
@@ -377,7 +418,7 @@ impl RVSDGNode {
       f.write_str("\ninputs:\n")?;
 
       for input in self.inputs.iter() {
-        f.write_fmt(format_args!("{:<49} | {:}\n", format!("{input}"), get_type_string(input.out_id.usize(), types, ty_vars)))?;
+        f.write_fmt(format_args!("{:<49} | {:}\n", format!("{input}"), get_type_string(input.out_op.usize(), types, ty_vars)))?;
       }
     }
 
@@ -401,7 +442,7 @@ impl RVSDGNode {
       f.write_str("outputs:\n")?;
 
       for output in self.outputs.iter() {
-        f.write_fmt(format_args!("{:<49} | {:}\n", format!("{output}"), get_type_string(output.in_id.usize(), types, ty_vars)))?;
+        f.write_fmt(format_args!("{:<49} | {:}\n", format!("{output}"), get_type_string(output.in_op.usize(), types, ty_vars)))?;
       }
     }
 
@@ -428,6 +469,14 @@ impl Display for RVSDGNode {
 
 pub fn __debug_node_types__(node: &RVSDGNode) {
   println!("{node}");
+}
+
+fn get_val_string(index: usize, ty_vars: &[Value]) -> String {
+  if index < ty_vars.len() {
+    format!("{:?}", ty_vars[index])
+  } else {
+    format!("===")
+  }
 }
 
 fn get_type_string(index: usize, types: &Vec<Type>, ty_vars: &[TypeVar]) -> String {
