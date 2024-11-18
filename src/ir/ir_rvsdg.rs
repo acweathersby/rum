@@ -32,6 +32,11 @@ pub enum VarId {
   MatchActivation,
   LoopActivation,
   Return,
+  GlobalContext,
+  Generic,
+  HeapContext,
+  Param(usize),
+  CallRef,
 }
 
 impl Display for VarId {
@@ -40,11 +45,12 @@ impl Display for VarId {
       Self::VarName(id) => f.write_str(id.to_str().as_str()),
       Self::SideEffect(id) => f.write_fmt(format_args!("--{id}--")),
       Self::MemRef(id) => f.write_fmt(format_args!("--*{id}--")),
-      Self::MatchInputExpr => f.write_str("__match_exp__"),
-      Self::MatchOutputVal => f.write_str("__match_val__"),
-      Self::MatchActivation => f.write_str("__match_activation__"),
-      Self::Return => f.write_str("__return__"),
-      Self::LoopActivation => f.write_str("__loop_activation__"),
+      Self::MatchInputExpr => f.write_str("MATCH_INPUT_VALUE"),
+      Self::MatchOutputVal => f.write_str("MATCH_OUTPUT_VALUE"),
+      Self::MatchActivation => f.write_str("MATCH_ACTIVATION"),
+      Self::Return => f.write_str("RETURN"),
+      Self::LoopActivation => f.write_str("LOOP_ACTIVATION"),
+      Self::HeapContext => f.write_str("HEAP_CONTEXT"),
       _ => f.write_fmt(format_args!("{self:?}")),
     }
   }
@@ -159,9 +165,9 @@ impl Debug for RSDVGBinding {
 impl Display for RSDVGBinding {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if let Some(index) = self.in_out_link {
-      f.write_fmt(format_args!("{:<4}  => {:<3} [{}] in [{index}]", self.in_op, self.out_op, self.id.to_string(),))
+      f.write_fmt(format_args!("{:<4}  => {:<3} [{}] in [{index}]", self.in_op, self.out_op, self.id))
     } else {
-      f.write_fmt(format_args!("{:<4}  => {:<3} [{}]", self.in_op, self.out_op, self.id.to_string(),))
+      f.write_fmt(format_args!("{:<4}  => {:<3} [{}]", self.in_op, self.out_op, self.id))
     }
   }
 }
@@ -226,6 +232,7 @@ pub enum IROp {
   VAR_DECL,
   /// Declares a location to store a local value
   AGG_DECL,
+  AGG_ALLOCATE,
   ///
   PARAM_VAL,
   /// Declares a location to store a parameter value
@@ -380,6 +387,7 @@ impl RVSDGNode {
     }
 
     println!("nodes:\n");
+
     for (index, node) in self.nodes.iter().enumerate() {
       match node {
         RVSDGInternalNode::Complex(node) => {

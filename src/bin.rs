@@ -1,5 +1,5 @@
 use rum_lang::{
-  ir::{ir_rvsdg::lower::lower_ast_to_rvsdg, types::TypeDatabase},
+  ir::{db::Database, ir_rvsdg::lower::lower_ast_to_rvsdg, types::TypeDatabase},
   parser::script_parser::parse_raw_module,
 };
 use std::{collections::VecDeque, path::PathBuf};
@@ -55,24 +55,23 @@ fn main() -> Result<(), u8> {
 }
 
 fn run_interpreter(mut args: VecDeque<String>) {
-  let mut ty_db = TypeDatabase::new();
+  let mut db = Database::new();
 
   while let Some(arg) = args.pop_front() {
     match arg.as_str() {
       "-c" => {
         let call_expr_str = args.pop_front().expect("Expected a call expression following -c");
-        let module_ast = parse_raw_module(&format!("main () => ? {{ {call_expr_str} }}")).expect("Could not parse call expression");
-        lower_ast_to_rvsdg(&module_ast, &mut ty_db);
-
-        let Some(entry) = ty_db.get_ty_entry("main") else { panic!("Could not load main function") };
-        let ty = entry.ty;
-        todo!("solve type")
-        /*    if solve_type(ty, &mut ty_db).is_ok() {
-          interpret(ty, &mut ty_db);
-        } */
+        dbg!(db.interpret(&call_expr_str).expect("Failed to interpret function"));
       }
       "-m" => {
-        parse_module_data(args.pop_front().unwrap(), &mut ty_db);
+        let path = args.pop_front().unwrap();
+
+        let module_source = match PathBuf::from(&path).canonicalize() {
+          Err(_) => path,
+          Ok(path) => std::fs::read_to_string(path).unwrap_or_default(),
+        };
+
+        db.install_module(&module_source).expect("Failed to load module");
       }
       arg => panic!("Unrecognized arg \"{arg}\""),
     }
@@ -80,11 +79,6 @@ fn run_interpreter(mut args: VecDeque<String>) {
 }
 
 fn parse_module_data(script: String, ty_db: &mut TypeDatabase) {
-  let script = match PathBuf::from(script.as_str()).canonicalize() {
-    Err(_) => script,
-    Ok(path) => std::fs::read_to_string(path).unwrap_or_default(),
-  };
-
   let module_ast = parse_raw_module(&format!("{script}")).expect("Could not parse call expression");
 
   lower_ast_to_rvsdg(&module_ast, ty_db);

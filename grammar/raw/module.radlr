@@ -18,7 +18,7 @@ IMPORT ../common/comment as cmt
 
 <> module_members 
 
-  > ( annotated_module_member | anno::lifetime_variable | anno::annotation_declaration )(+)^members
+  > ( annotated_module_member | anno::lifetime_variable | anno::annotation_declaration | test )(+)^members
 
     :ast { t_RawModMembers, members }
 
@@ -45,4 +45,9 @@ IMPORT ../common/comment as cmt
   > prim::var "{" module_members "}"
 
     :ast { t_RawScope, name: $1, members: $3   }
+
+
+<> test > "#test" expr::call^call "==" expr::r_val^expected_val
+
+    :ast { t_Test, call, expected_val }
 

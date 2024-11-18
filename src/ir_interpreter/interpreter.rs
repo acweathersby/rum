@@ -1,12 +1,14 @@
-use std::usize;
+use std::{alloc::Layout, collections::HashMap, hash::Hash, usize};
 
 use num_traits::ops;
 
 use crate::{
+  container::get_aligned_value,
   ir::{
+    db,
     ir_rvsdg::{
       lower::{lower_ast_to_rvsdg, lower_routine_to_rvsdg},
-      solve_pipeline::solve_node_new_test_temp_configuration,
+      solve_pipeline::solve_node,
       BindingType,
       IRGraphId,
       IROp,
@@ -47,24 +49,22 @@ fn basic_looped_function() {
   let rum_function = create_function(
     "
   (t: i32, b: u32) => ? { 
-    loop if t is
+    loop if t
       > 0 {
         b = b + 1
         t = t - 1
       } 
       == 0  {
         b = 30
-      
+        t = t - 1
       }
 
     b
   }
-  
-  
 ",
   )
   .expect("Should compile");
-  assert_eq!(Ok(Value::u32(4)), rum_function.run("4, 2"));
+  assert_eq!(Ok(Value::u32(30)), rum_function.run("1000000, 2"));
 }
 
 pub struct RumFunction {
@@ -104,7 +104,7 @@ pub fn create_function(function_definition: &str) -> Result<RumFunction, String>
 
     let (mut node, mut constraints) = lower_routine_to_rvsdg(&routine_def, ty_db);
 
-    solve_node_new_test_temp_configuration(node.as_mut(), &mut constraints, ty_db);
+    solve_node(node.as_mut(), &mut constraints, ty_db);
 
     ty_db.add_ty(name, node);
   };
@@ -113,18 +113,33 @@ pub fn create_function(function_definition: &str) -> Result<RumFunction, String>
 }
 
 pub fn process_node(node: &RVSDGNode, args: &[Value], ty_db: &mut TypeDatabase) -> Value {
+  dbg!(node);
   let mut types = vec![Value::Uninitialized; node.nodes.len()];
 
   let mut ret_op = IRGraphId::default();
 
+  // Handle side effects first
+  for output in node.outputs.iter() {
+    match output.id {
+      VarId::HeapContext => {
+        process_op(output.in_op, node, args, &mut types, ty_db);
+      }
+      _ => {}
+    }
+  }
+
   for output in node.outputs.iter() {
     let node_id = output.in_op;
 
-    if output.id == VarId::Return {
-      ret_op = output.in_op;
-      process_ret(node_id, node, args, &mut types, ty_db);
-    } else {
-      process_op(node_id, node, args, &mut types, ty_db);
+    match output.id {
+      /*       VarId::VarName(..) => {
+        process_op(node_id, node, args, &mut types, ty_db);
+      } */
+      VarId::Return => {
+        ret_op = output.in_op;
+        process_ret(node_id, node, args, &mut types, ty_db);
+      }
+      _ => {}
     }
   }
 
@@ -176,6 +191,8 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
     return;
   }
 
+  println!("{dst_op}");
+
   match &node.nodes[dst_op.usize()] {
     RVSDGInternalNode::Binding { ty } => match ty {
       BindingType::ParamBinding => {}
@@ -214,14 +231,32 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
                       SolveState::Solved | SolveState::PartiallySolved => {
                         let mut call_vals = vec![Value::Uninitialized; call_node.nodes.len()];
 
-                        for (outer, inner) in call_node.inputs.iter().zip(cmplx.inputs.as_slice()[1..].iter()) {
-                          process_op(inner.in_op, node, args, vals, ty_db);
-                          call_vals[outer.out_op.usize()] = vals[inner.in_op.usize()];
+                        for (outer) in call_node.inputs.iter() {
+                          for (inner) in cmplx.inputs.as_slice() {
+                            if outer.id == inner.id {
+                              process_op(inner.in_op, node, args, vals, ty_db);
+                              call_vals[outer.out_op.usize()] = vals[inner.in_op.usize()];
+                            }
+                          }
                         }
 
-                        for (outer, inner) in call_node.outputs.iter().zip(cmplx.outputs.as_slice()) {
-                          process_op(outer.in_op, call_node, &[], &mut call_vals, ty_db);
-                          vals[inner.out_op.usize()] = call_vals[outer.in_op.usize()];
+                        for (outer) in call_node.outputs.iter() {
+                          for (inner) in cmplx.outputs.as_slice() {
+                            if inner.id == outer.id {
+                              let node_id = outer.in_op;
+                              println!("AA ----------------------------------------------------------------------");
+
+                              match outer.id {
+                                /* VarId::VarName(..) |  */
+                                VarId::Return => {
+                                  println!("AA ----------------------------------------------------------------------");
+                                  process_op(outer.in_op, call_node, &[], &mut call_vals, ty_db);
+                                  vals[inner.out_op.usize()] = call_vals[outer.in_op.usize()];
+                                }
+                                _ => {}
+                              }
+                            }
+                          }
                         }
                       }
                       SolveState::PartiallySolved => {
@@ -457,11 +492,170 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, args: &[Value], vals: &mu
           }
         }
       }
+
+      IROp::LOAD => {
+        println!("LOAD ------------------------------------------ ");
+        // Process the memory context first
+        process_op(operands[1], node, args, vals, ty_db);
+
+        process_op(operands[0], node, args, vals, ty_db);
+
+        let val = match vals[operands[0].usize()] {
+          Value::Ptr(raw_ptr, ty) => match ty {
+            Type::Primitive(prim) => match prim.base_ty {
+              PrimitiveBaseType::Float => match prim.byte_size {
+                4 => Value::f32(unsafe { *(raw_ptr as *mut f32) }),
+                8 => Value::f64(unsafe { *(raw_ptr as *mut f64) }),
+                _ => unreachable!(),
+              },
+              PrimitiveBaseType::Signed => match prim.byte_size {
+                1 => Value::i8(unsafe { *(raw_ptr as *mut i8) }),
+                2 => Value::i16(unsafe { *(raw_ptr as *mut i16) }),
+                4 => Value::i32(unsafe { *(raw_ptr as *mut i32) }),
+                8 => Value::i64(unsafe { *(raw_ptr as *mut i64) }),
+                _ => unreachable!(),
+              },
+              PrimitiveBaseType::Unsigned => match prim.byte_size {
+                1 => Value::u8(unsafe { *(raw_ptr as *mut u8) }),
+                2 => Value::u16(unsafe { *(raw_ptr as *mut u16) }),
+                4 => Value::u32(unsafe { *(raw_ptr as *mut u32) }),
+                8 => Value::u64(unsafe { *(raw_ptr as *mut u64) }),
+                _ => unreachable!(),
+              },
+            },
+            ty => unreachable!("unrecognized pointer type {ty}"),
+          },
+          val => unreachable!("Unexpected val {val:?}"),
+        };
+
+        vals[dst_op.usize()] = val;
+      }
+
+      IROp::STORE => {
+        println!("STORED ------------------------------------------ ");
+
+        // Process val
+        process_op(operands[1], node, args, vals, ty_db);
+
+        // Process the memory context first
+        process_op(operands[2], node, args, vals, ty_db);
+
+        // Process pointer
+        process_op(operands[0], node, args, vals, ty_db);
+
+        let ptr = vals[operands[0].usize()];
+        let val = vals[operands[1].usize()];
+
+        match (ptr, val) {
+          (Value::Ptr(ptr, _), Value::u32(val)) => {
+            unsafe { *(ptr as *mut u32) = val };
+          }
+          _ => {
+            unreachable!()
+          }
+        }
+
+        vals[dst_op.usize()] = Value::Null;
+      }
+
+      IROp::REF => {
+        process_op(operands[0], node, args, vals, ty_db);
+
+        let base_ptr_val = vals[operands[0].usize()];
+
+        match node.nodes[operands[1]] {
+          RVSDGInternalNode::Label(label) => match base_ptr_val {
+            Value::Ptr(ptr, ty) => {
+              if let Some((ty, offset)) = get_agg_data(ty, ty_db).1.get(&label) {
+                let new_ptr = unsafe { (ptr as *mut u8).offset(*offset as isize) };
+                vals[dst_op.usize()] = Value::Ptr(new_ptr as _, *ty);
+              } else {
+                unreachable!("Reference should exist")
+              }
+            }
+            _ => unreachable!("Other reference types not supported {}", operands[0]),
+          },
+          _ => unreachable!(),
+        }
+      }
+
+      IROp::AGG_ALLOCATE => {
+        let ty = node.types[operands[1].usize()];
+        let size = get_agg_data(ty, ty_db).0;
+
+        // TODO: Access context and setup allocator for this pointer
+
+        let mut layout = std::alloc::Layout::array::<u8>(size as usize).expect("Could not create bit field").align_to(16).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+
+        vals[operands[1].usize()] = Value::Ptr(ptr as _, ty);
+
+        println!("{dst_op} = {:?}", vals[dst_op.usize()]);
+      }
+
+      IROp::AGG_DECL => {
+        process_op(operands[0], node, args, vals, ty_db);
+
+        let ty = node.types[dst_op.usize()];
+        let size = get_agg_data(ty, ty_db).0;
+
+        // TODO: Access context and setup allocator for this pointer
+
+        let mut layout = std::alloc::Layout::array::<u8>(size as usize).expect("Could not create bit field").align_to(16).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+
+        vals[dst_op.usize()] = Value::Ptr(ptr as _, ty);
+
+        println!("{dst_op} = {:?}", vals[dst_op.usize()]);
+
+        /*         let ty = node.types[dst_op.usize()];
+        let size = get_agg_data(ty, ty_db);
+
+        // TODO: Access context and setup allocator for this pointer
+
+        let mut layout = std::alloc::Layout::array::<u8>(size as usize).expect("Could not create bit field").align_to(16).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+
+        vals[dst_op.usize()] = Value::Ptr(ptr, ty);
+
+        todo!("Handle agg {node:#?}"); */
+      }
       node => unreachable!("{node:?}"),
     },
     RVSDGInternalNode::Complex(..) => {}
     op => todo!("{op}"),
   }
+}
+
+fn get_agg_data(agg_ty: Type, ty_db: &mut TypeDatabase) -> (u64, HashMap<IString, (Type, u64)>) {
+  let mut size = 0;
+  let mut map = HashMap::new();
+
+  if let Some(entry) = ty_db.get_ty_entry_from_ty(agg_ty) {
+    if let Some(node) = entry.get_node() {
+      let types = &node.types;
+      for output in node.outputs.iter() {
+        let ty = types[output.in_op.usize()];
+
+        let VarId::VarName(name) = output.id else { panic!() };
+
+        match ty {
+          Type::Primitive(prim) => {
+            let offset = get_aligned_value(size, prim.byte_size as u64);
+            map.insert(name, (ty, offset));
+            size = offset + prim.byte_size as u64
+          }
+          ty => todo!("handle: {ty}"),
+        }
+
+        println!("{ty} ------- ");
+      }
+    }
+  } else {
+    panic!("Could not find type {agg_ty}")
+  }
+
+  (size, map)
 }
 
 fn process_inter_node<T: FnMut(&RVSDGNode, &[Value], &mut [Value], &mut TypeDatabase)>(

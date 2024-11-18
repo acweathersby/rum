@@ -1,11 +1,11 @@
 use libc::shm_open;
-use solve_pipeline::solve_node_new_test_temp_configuration;
-use type_solve::OPConstraint;
+use solve_pipeline::{solve_node, OPConstraint};
 
 use crate::{
   ir::{
+    db::{self, Solver},
     ir_rvsdg::{IROp, *},
-    types::{PrimitiveType, TypeDatabase},
+    types::{ty_u16, PrimitiveType, TypeDatabase},
   },
   istring::CachedString,
   parser::script_parser::*,
@@ -55,14 +55,14 @@ struct Builder {
   /// Stores variable names that have been declared in the current scope, or
   /// a previous scope.
   var_lookup:     HashMap<VarId, Var>,
-  op_constraints: *mut Vec<(u32, OPConstraint)>,
+  op_constraints: *mut Vec<OPConstraint>,
   type_vars:      *mut Vec<TypeVar>,
 }
 
 type WIPNode = Builder;
 
 impl Builder {
-  pub fn new(id: u32, counter: *mut u32, op_constraints: *mut Vec<(u32, OPConstraint)>, type_vars: *mut Vec<TypeVar>) -> Self {
+  pub fn new(id: u32, counter: *mut u32, op_constraints: *mut Vec<OPConstraint>, type_vars: *mut Vec<TypeVar>) -> Self {
     Builder {
       id,
       id_counter: counter,
@@ -77,7 +77,7 @@ impl Builder {
   }
 
   fn add_op_constraint(&mut self, op_constraint: OPConstraint) {
-    (unsafe { &mut *self.op_constraints }).push((self.id, op_constraint));
+    (unsafe { &mut *self.op_constraints }).push(op_constraint);
   }
 
   fn inc_counter(&self) -> u32 {
@@ -141,7 +141,7 @@ impl Builder {
     id
   }
 
-  fn bump_type_vars(&mut self) -> Type {
+  fn bump_gen_type_vars(&mut self) -> Type {
     let ty_vars = self.type_vars();
 
     let id = ty_vars.len();
@@ -188,13 +188,13 @@ impl Builder {
     self.node.set_type_if_undefined(op, ty)
   }
 
-  pub fn create_var(&mut self, var_id: VarId, op: IRGraphId, ast: ASTNode, outer_ty: Type) -> Type {
-    let var_ty = self.bump_type_vars();
+  pub fn create_gen_var(&mut self, var_id: VarId, op: IRGraphId, ast: ASTNode, outer_ty: Type) -> Type {
+    let var_ty = self.bump_gen_type_vars();
 
     let op = if op.is_valid() {
       self.set_type_if_undefined(op, var_ty);
       if !outer_ty.is_open() {
-        self.add_op_constraint(OPConstraint::OpToTy(op.0, outer_ty, op.0));
+        self.add_op_constraint(OPConstraint::GenVarToTy(var_ty.generic_id().unwrap(), outer_ty));
         op
       } else {
         op
@@ -245,10 +245,10 @@ impl Builder {
   }
 }
 
-pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut TypeDatabase) -> Vec<IString> {
-  let members = &module.members;
+pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut TypeDatabase) -> Solver {
+  let mut solver = Solver::new();
 
-  let mut output_names = Vec::new();
+  let members = &module.members;
 
   for mem in &members.members {
     match mem {
@@ -267,20 +267,22 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
 
           let (mut funct, mut global_constraints) = lower_routine_to_rvsdg(&rt.def, ty_db);
 
-          solve_node_new_test_temp_configuration(&mut funct, &mut global_constraints, ty_db);
-
-          ty_db.add_ty(name, funct.clone());
+          if let Some(ty) = ty_db.add_ty(name, funct) {
+            solver.add_type(ty, global_constraints);
+          } else {
+            todo!("Construct an error about invalid overload {name} ");
+          }
         }
         module_member_Value::RawScope(scope) => {}
         _ => unreachable!(),
       },
       module_members_group_Value::AnnotationVariable(var) => {}
       module_members_group_Value::LifetimeVariable(var) => {}
-      _ => unreachable!(),
+      node => unreachable!("Unrecognized node type {node:#?}"),
     }
   }
 
-  output_names
+  solver
 }
 
 fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
@@ -317,7 +319,7 @@ fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
   Box::new(node)
 }
 
-pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(u32, OPConstraint)>) {
+pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(OPConstraint)>) {
   let params = match &routine_def.ty {
     routine_type_Value::RawFunctionType(ty) => &ty.params,
     routine_type_Value::RawProcedureType(ty) => &ty.params,
@@ -334,7 +336,7 @@ pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: 
 
   let mut builder = Builder::new(0, &mut counter, &mut op_constraints as *mut _, &mut type_vars as *mut _);
   builder.node.ty = RVSDGNodeType::Undefined;
-  builder.create_var(VarId::Return, Default::default(), Default::default(), Default::default());
+  builder.create_gen_var(VarId::Return, Default::default(), Default::default(), Default::default());
 
   node_stack.push_front(builder);
 
@@ -347,7 +349,9 @@ pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: 
   let (ret_val, _) = process_expression(expr, &mut node_stack, ty_db);
 
   let ret_ty = match &routine_def.ty {
-    routine_type_Value::RawFunctionType(fn_ty) => insert_returns(resolve_binding(ret_val, &mut node_stack), fn_ty, &mut node_stack, ty_db, &mut Vec::new()),
+    routine_type_Value::RawFunctionType(fn_ty) => {
+      insert_returns(resolve_binding(ret_val, &mut node_stack, Default::default()), fn_ty, &mut node_stack, ty_db, &mut Vec::new())
+    }
     _ => Default::default(),
   };
 
@@ -365,6 +369,8 @@ pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: 
       _ => {}
     }
   }
+
+  seal_var(VarId::HeapContext, &mut node_stack, Default::default());
 
   pop_and_merge_single_node(&mut node_stack, Default::default());
 
@@ -398,7 +404,7 @@ fn insert_returns(
 
 fn create_return_sink(node_stack: &mut VecDeque<Builder>, ret_val: IRGraphId) {
   if ret_val.is_valid() {
-    let prev_ret = read_var(VarId::Return, node_stack).unwrap_or_default();
+    let prev_ret = commit_writes_to_var(VarId::Return, node_stack).unwrap_or_default();
     let builder = node_stack.front_mut().unwrap();
     let ty = builder.var_lookup.get(&VarId::Return).unwrap().ty;
 
@@ -413,22 +419,38 @@ fn insert_params(params: &std::sync::Arc<Params<Token>>, builder: &mut Builder, 
   for (param_index, param) in params.params.iter().enumerate() {
     let ty = get_type(&param.ty.ty, false, ty_db).unwrap_or_default();
 
-    let param_id = VarId::VarName(param.var.id.intern());
+    let inner_id = VarId::VarName(param.var.id.intern());
+    let outer_id = VarId::Param(param_index);
 
     let ast = ASTNode::RawParamBinding(param.clone());
 
     let input = builder.add_binding(
-      RSDVGBinding { id: param_id, in_op: IRGraphId::new(param_index), ..Default::default() },
+      RSDVGBinding { id: outer_id, in_op: IRGraphId::new(param_index), ..Default::default() },
       ast,
       Default::default(),
       BindingType::ParamBinding,
     );
 
+    let var = builder.create_gen_var(inner_id, input.out_op, ASTNode::RawParamBinding(param.clone()), ty);
     if !ty.is_open() {
-      builder.add_op_constraint(OPConstraint::OpToTy(input.out_op.0, ty, input.out_op.0));
+      builder.add_op_constraint(OPConstraint::GenVarToTy(var.generic_id().unwrap(), ty));
     }
+  }
 
-    builder.create_var(param_id, input.out_op, ASTNode::RawParamBinding(param.clone()), ty);
+  // Add allocator context.
+
+  {
+    let allocator_index = params.params.len();
+    let ctx_id = VarId::HeapContext;
+    let ctx_input = builder.add_binding(
+      RSDVGBinding { id: ctx_id, in_op: IRGraphId::new(allocator_index), ..Default::default() },
+      Default::default(),
+      Default::default(),
+      BindingType::ParamBinding,
+    );
+
+    let var = builder.create_gen_var(ctx_id, ctx_input.out_op, Default::default(), Default::default());
+    builder.add_op_constraint(OPConstraint::GenVarToTy(var.generic_id().unwrap(), Type::MemContext));
   }
 }
 
@@ -530,13 +552,13 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
             push_new_builder(node_stack, RVSDGNodeType::Loop);
 
             let builder = node_stack.front_mut().unwrap();
-            builder.create_var(VarId::LoopActivation, Default::default(), Default::default(), Default::default());
+            builder.create_gen_var(VarId::LoopActivation, Default::default(), Default::default(), Default::default());
 
             {
               match &loop_expr.scope {
                 loop_statement_group_1_Value::RawMatch(mtch) => {
                   process_match(node_stack, mtch, ty_db, false);
-                  if let Some(match_activation_op) = read_var(VarId::MatchActivation, node_stack) {
+                  if let Some(match_activation_op) = commit_writes_to_var(VarId::MatchActivation, node_stack) {
                     debug_assert!(match_activation_op.is_valid());
                     let builder = node_stack.front_mut().unwrap();
                     builder.update_var(VarId::LoopActivation, match_activation_op, Default::default());
@@ -561,7 +583,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       match &block.exit {
         Some(block_expression_group_3_Value::BlockExitExpressions(e)) => {
           let (out_id, short_circuit) = process_expression(&e.expression.expr, node_stack, ty_db);
-          let out_id = resolve_binding(out_id, node_stack);
+          let out_id = resolve_binding(out_id, node_stack, Default::default());
 
           create_return_sink(node_stack, out_id);
 
@@ -575,7 +597,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       let mut args = Vec::new();
 
       let call_id = match lookup_var(&call.member, node_stack, true) {
-        VarLookup::Mem { ref_id: mem_id, id, se } => mem_id,
+        VarLookup::Mem { ref_id: mem_id, id } => mem_id,
         VarLookup::Var(var) => var,
         VarLookup::None(name) => node_stack.front_mut().unwrap().get_label(name),
       };
@@ -586,23 +608,32 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       push_new_builder(node_stack, RVSDGNodeType::Call);
 
-      let call_builder = node_stack.front_mut().unwrap();
-
       {
         let mut input = RSDVGBinding::default();
         input.in_op = call_id;
-        input.id = VarId::VarName("__NAME__".intern());
+        input.id = VarId::CallRef;
+        let call_builder = node_stack.front_mut().unwrap();
         call_builder.add_binding(input, ASTNode::MemberCompositeAccess(call.member.clone()), Default::default(), BindingType::IntraBinding);
       }
 
-      for ((arg, short_circuit), node) in args {
-        resolve_binding(arg, node_stack);
+      let heap_id = {
+        let mut input = RSDVGBinding::default();
+        input.in_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
+        input.id = VarId::HeapContext;
+        let call_builder = node_stack.front_mut().unwrap();
+        //call_builder.update_var(VarId::HeapContext, input.in_op, Default::default());
+        //call_builder.add_binding(input, Default::default(), Default::default(), BindingType::IntraBinding);
+        input.in_op
+      };
+
+      for (index, ((arg, short_circuit), node)) in args.iter().enumerate() {
+        resolve_binding(*arg, node_stack, VarId::Param(index));
       }
 
       let call_builder = node_stack.front_mut().unwrap();
 
       let mut output = RSDVGBinding::default();
-      output.id = VarId::VarName("RET".intern());
+      output.id = VarId::Return;
       //input.out_id = ret_id;
       call_builder.add_output(output);
 
@@ -610,14 +641,23 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       let mut call_builder = pop_builder(node_stack);
 
-      let par_builder = node_stack.front_mut().unwrap();
-
-      let outputs = &mut call_builder.node.outputs;
+      let par_builder: &mut Builder = node_stack.front_mut().unwrap();
 
       let call_index = Builder::create_id(&mut par_builder.node_id).usize();
 
       par_builder.add_node(RVSDGInternalNode::PlaceHolder, call.clone().into(), Default::default());
 
+      {
+        let out_op = par_builder.add_output_node(Default::default(), ASTNode::None);
+        par_builder.update_var(VarId::HeapContext, out_op, Default::default());
+        let mut input = RSDVGBinding::default();
+        input.in_op = heap_id;
+        input.out_op = out_op;
+        input.id = VarId::HeapContext;
+        call_builder.add_output(input);
+      }
+
+      let outputs = &mut call_builder.node.outputs;
       for output_index in 0..outputs.len() {
         let id = par_builder.add_output_node(Default::default(), ASTNode::None);
         outputs[output_index].out_op = id;
@@ -633,44 +673,69 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
     expression_Value::RawMatch(mtch) => process_match(node_stack, mtch, ty_db, true),
 
     expression_Value::RawAggregateInstantiation(agg) => {
+      let allocator_ctx_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
+
       let builder = node_stack.front_mut().unwrap();
-      let agg_id = builder.add_simple(
-        IROp::AGG_DECL,
-        [Default::default(), Default::default(), Default::default()],
+
+      let agg_ty = builder.create_gen_var(VarId::Generic, Default::default(), agg.clone().into(), Default::default());
+
+      let mut agg_op =
+        builder.add_simple(IROp::AGG_DECL, [allocator_ctx_op, Default::default(), Default::default()], agg_ty, ASTNode::RawAggregateInstantiation(agg.clone()));
+      builder.update_var(VarId::HeapContext, agg_op, Default::default());
+      /*
+      let mut agg_allocate_op = builder.add_simple(
+        IROp::AGG_ALLOCATE,
+        [allocator_ctx_op, agg_op, Default::default()],
         Default::default(),
         ASTNode::RawAggregateInstantiation(agg.clone()),
       );
 
-      let mut short_circuit = false;
+      builder.update_var(VarId::HeapContext, agg_allocate_op, Default::default()); */
+
+      let ty_vars = builder.type_vars();
+      let agg_index = agg_ty.generic_id().unwrap();
 
       for init in &agg.inits {
         let (expr_id, sc) = process_expression(&init.expression.expr, node_stack, ty_db);
-        let expr_id = resolve_binding(expr_id, node_stack);
-
-        short_circuit |= sc;
-
-        let builder = node_stack.front_mut().unwrap();
+        let expr_id = resolve_binding(expr_id, node_stack, Default::default());
 
         if let Some(name) = &init.name {
-          let label_id = builder.get_label(name.id.intern());
+          let builder = node_stack.front_mut().unwrap();
+          let name_id = name.id.intern();
+          let ty_index = ty_vars.len();
+          let mem_ty = builder.create_gen_var(VarId::MemRef(ty_index), Default::default(), init.clone().into(), Default::default());
 
-          let ref_id = builder.add_simple(IROp::REF, [agg_id, label_id, Default::default()], Default::default(), ASTNode::Var(name.clone()));
+          let label_id = builder.get_label(name_id);
 
-          builder.add_simple(IROp::STORE, [ref_id, expr_id, Default::default()], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
+          let ref_id = builder.add_simple(IROp::REF, [agg_op, label_id, Default::default()], mem_ty, name.clone().into());
+
+          let allocator_ctx_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
+
+          let builder = node_stack.front_mut().unwrap();
+          let store_op =
+            builder.add_simple(IROp::STORE, [ref_id, expr_id, allocator_ctx_op], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
+
+          builder.update_var(VarId::HeapContext, store_op, Default::default());
+
+          // Create a new type var for this member.
+          builder.create_var_lookup(VarId::SideEffect(ty_index), store_op, Default::default(), Default::default());
+
+          ty_vars[agg_index].add_mem(name_id, mem_ty, Default::default());
         } else {
           todo!("Index based initializers are not supported yet {}", blame(&ASTNode::from(init.clone()), "prefix this with <name> ="))
         }
       }
 
-      (ThreadedGraphId(agg_id, node_stack.front().unwrap().id), short_circuit)
+      (ThreadedGraphId(agg_op, node_stack.front().unwrap().id), false)
     }
 
     expression_Value::MemberCompositeAccess(mem) => match lookup_var(mem, node_stack, true) {
-      VarLookup::Mem { ref_id: output, id, se } => {
-        let builder = node_stack.front_mut().unwrap();
-        let se_op = builder.var_lookup.get(&se).unwrap().op;
+      VarLookup::Mem { ref_id: output, id } => {
+        //let se_op = builder.var_lookup.get(&se).unwrap().op;
 
-        let load_id = builder.add_simple(IROp::LOAD, [output, se_op, Default::default()], Default::default(), Default::default());
+        let allocator_ctx_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
+        let builder = node_stack.front_mut().unwrap();
+        let load_id = builder.add_simple(IROp::LOAD, [output, allocator_ctx_op, Default::default()], Default::default(), Default::default());
         (ThreadedGraphId(load_id, node_stack.front().unwrap().id), false)
       }
       VarLookup::Var(var) => (ThreadedGraphId(var, node_stack.front().unwrap().id), false),
@@ -685,17 +750,15 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>, ty_db: &mut TypeDatabase, seal_activation: bool) -> (ThreadedGraphId, bool) {
   // create the match entry
   let builder = node_stack.front_mut().unwrap();
-  builder.create_var(VarId::MatchOutputVal, Default::default(), Default::default(), Default::default());
+  builder.create_gen_var(VarId::MatchOutputVal, Default::default(), Default::default(), Default::default());
 
   let (eval_id, bool) = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
-  let eval_id = resolve_binding(eval_id, node_stack);
+  let eval_id = resolve_binding(eval_id, node_stack, Default::default());
   let builder = node_stack.front_mut().unwrap();
 
-  builder.create_var(VarId::MatchInputExpr, eval_id, Default::default(), Default::default());
-
-  let builder = node_stack.front_mut().unwrap();
-  builder.create_var(VarId::MatchActivation, Default::default(), Default::default(), Default::default());
+  builder.create_gen_var(VarId::MatchInputExpr, eval_id, Default::default(), Default::default());
+  let id = builder.create_gen_var(VarId::MatchActivation, Default::default(), Default::default(), Default::default());
 
   push_new_builder(node_stack, RVSDGNodeType::Match);
   push_new_builder(node_stack, RVSDGNodeType::MatchHead);
@@ -713,7 +776,7 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
         let builder = node_stack.front_mut().unwrap();
         let (v, short_circuit) = process_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
 
-        let v = resolve_binding(v, node_stack);
+        let v = resolve_binding(v, node_stack, Default::default());
 
         let op_ty = match expr.op.as_str() {
           ">" => IROp::GR,
@@ -725,14 +788,14 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
           _ => todo!(),
         };
 
-        let eval_id = read_var(VarId::MatchInputExpr, node_stack).unwrap();
+        let eval_id = commit_writes_to_var(VarId::MatchInputExpr, node_stack).unwrap();
         let builder = node_stack.front_mut().unwrap();
         builder.add_simple(op_ty, [eval_id, v, Default::default()], Default::default(), ASTNode::RawExprMatch(expr.clone()))
       } else {
         unreachable!()
       };
 
-      write_var(VarId::MatchActivation, node_stack);
+      ignore_writes_to_var(VarId::MatchActivation, node_stack);
 
       let builder = node_stack.front_mut().unwrap();
       builder.update_var(VarId::MatchActivation, activation_op, Default::default());
@@ -741,10 +804,6 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
     }
 
     merge_multiple_nodes(node_stack, merges);
-
-    if seal_activation {
-      seal_var(VarId::MatchActivation, node_stack, Default::default());
-    }
   }
   pop_and_merge_single_node(node_stack, Default::default()); // MatchHead
 
@@ -757,10 +816,10 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
 
       let (def_id, short_circuit) = process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
-      let def_id = resolve_binding(def_id, node_stack);
+      let def_id = resolve_binding(def_id, node_stack, Default::default());
 
       if def_id.is_valid() {
-        write_var(VarId::MatchOutputVal, node_stack); // Ensure var is present in current scope.
+        ignore_writes_to_var(VarId::MatchOutputVal, node_stack); // Ensure var is present in current scope.
 
         let builder = node_stack.front_mut().unwrap();
         builder.update_var(VarId::MatchOutputVal, def_id, Default::default());
@@ -780,6 +839,10 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
 
   pop_and_merge_single_node(node_stack, Default::default()); // Match
 
+  if seal_activation {
+    seal_var(VarId::MatchActivation, node_stack, Default::default());
+  }
+
   remove_var(VarId::MatchInputExpr, node_stack);
 
   let id = take_var(VarId::MatchOutputVal, node_stack);
@@ -794,30 +857,39 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
   let expr = &expr.expression;
   let (graph_id, short_circuit) = process_expression(&expr.expr, node_stack, ty_db);
 
-  let graph_id = resolve_binding(graph_id, node_stack);
+  let graph_id = resolve_binding(graph_id, node_stack, Default::default());
 
   match var {
     assignment_var_Value::RawAssignmentDeclaration(decl) => {
       let root_name = VarId::VarName(decl.var.id.intern());
+
       let ty = get_type(&decl.ty, false, ty_db).unwrap();
 
       let builder = node_stack.front_mut().unwrap();
 
-      builder.create_var(root_name, graph_id, ASTNode::Var(decl.var.clone()), ty);
+      match &expr.expr {
+        expression_Value::RawAggregateInstantiation(..) => {
+          let var = builder.node.types[graph_id.usize()];
+          builder.create_var_lookup(root_name, graph_id, var, decl.clone().into());
+          builder.add_op_constraint(OPConstraint::GenVarToTy(var.generic_id().unwrap(), ty));
+        }
+        _ => {
+          builder.create_gen_var(root_name, graph_id, ASTNode::Var(decl.var.clone()), ty);
+        }
+      }
     }
     assignment_var_Value::MemberCompositeAccess(mem) => {
       let root_name = VarId::VarName(mem.root.name.id.intern());
       let ast = ASTNode::MemberCompositeAccess(mem.clone());
 
       match lookup_var(&mem, node_stack, true) {
-        VarLookup::Mem { ref_id: mem_id, id, se } => {
-          read_var(se, node_stack);
+        VarLookup::Mem { ref_id: mem_id, id } => {
+          let allocator_ctx_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
           let builder = node_stack.front_mut().unwrap();
-          let se_op = builder.var_lookup.get(&se).unwrap().op;
+          let store_op = builder.add_simple(IROp::STORE, [mem_id, graph_id, allocator_ctx_op], Default::default(), ASTNode::Expression(expr.clone()));
+          builder.update_var(VarId::HeapContext, store_op, Default::default());
 
-          let store_op = builder.add_simple(IROp::STORE, [mem_id, graph_id, se_op], Default::default(), ASTNode::Expression(expr.clone()));
-
-          builder.update_var(se, store_op, ast);
+          //builder.update_var(se, store_op, ast);
         }
         VarLookup::Var(output) => {
           let builder = node_stack.front_mut().unwrap();
@@ -825,7 +897,7 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
         }
         VarLookup::None(..) => {
           let builder = node_stack.front_mut().unwrap();
-          builder.create_var(root_name, graph_id, ast, Default::default());
+          builder.create_gen_var(root_name, graph_id, ast, Default::default());
         }
       }
     }
@@ -845,8 +917,8 @@ fn binary_expr(
   let (left_id, short_circuit) = process_expression(&left, node_stack, ty_db);
   let (right_id, short_circuit) = process_expression(&right, node_stack, ty_db);
 
-  let left_id = resolve_binding(left_id, node_stack);
-  let right_id = resolve_binding(right_id, node_stack);
+  let left_id = resolve_binding(left_id, node_stack, Default::default());
+  let right_id = resolve_binding(right_id, node_stack, Default::default());
 
   let builder = node_stack.front_mut().unwrap();
 
@@ -857,7 +929,7 @@ fn binary_expr(
 
 enum VarLookup {
   Var(IRGraphId),
-  Mem { ref_id: IRGraphId, id: VarId, se: VarId },
+  Mem { ref_id: IRGraphId, id: VarId },
   None(IString),
 }
 
@@ -867,29 +939,28 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
   let mut var_id = VarId::VarName(name.intern());
 
   if mem.sub_members.len() > 0 {
-    if let Some(mut prev_ref) = if read { read_var(var_id, node_stack) } else { write_var(var_id, node_stack) } {
+    if let Some(mut prev_ref) = if read { commit_writes_to_var(var_id, node_stack) } else { ignore_writes_to_var(var_id, node_stack) } {
       let ty = node_stack.front().unwrap().var_lookup.get(&var_id).unwrap().ty;
 
       let ty_vars = node_stack.front().unwrap().type_vars();
       let mut index = ty.generic_id().unwrap();
-      let mut side_effect_id = VarId::SideEffect(usize::MAX);
 
       for sub_member in &mem.sub_members {
         match sub_member {
           member_group_Value::NamedMember(name) => {
             let name_id: IString = name.name.id.intern();
 
-            let builder = node_stack.front_mut().unwrap();
-
             let ty: Type = if let Some((_, ty)) = ty_vars[index].get_mem(name_id) {
               index = ty.generic_id().unwrap();
               var_id = VarId::MemRef(index);
-              side_effect_id = VarId::SideEffect(index);
+
+              commit_writes_to_var(var_id, node_stack);
+              println!("----------------asdasd");
               ty
             } else {
+              let builder = node_stack.front_mut().unwrap();
               let ty_index = ty_vars.len();
-
-              let ty: Type = builder.create_var(VarId::MemRef(ty_index), Default::default(), sub_member.clone().into(), Default::default());
+              let ty: Type = builder.create_gen_var(VarId::MemRef(ty_index), Default::default(), sub_member.clone().into(), Default::default());
               let mut var = &mut ty_vars[index];
               var.add_mem(name_id, ty, Default::default());
 
@@ -899,10 +970,9 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
 
               builder.create_var_lookup(VarId::SideEffect(ty_index), Default::default(), Default::default(), Default::default());
 
-              side_effect_id = VarId::SideEffect(ty_index);
-
               ty
             };
+            let builder = node_stack.front_mut().unwrap();
 
             let var = builder.var_lookup.get((&var_id)).unwrap();
 
@@ -918,12 +988,12 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
         }
       }
 
-      VarLookup::Mem { ref_id: prev_ref, id: var_id, se: side_effect_id }
+      VarLookup::Mem { ref_id: prev_ref, id: var_id }
     } else {
       panic!("AAA");
       VarLookup::None(Default::default())
     }
-  } else if let Some(var) = if read { read_var(var_id, node_stack) } else { write_var(var_id, node_stack) } {
+  } else if let Some(var) = if read { commit_writes_to_var(var_id, node_stack) } else { ignore_writes_to_var(var_id, node_stack) } {
     VarLookup::Var(var)
   } else {
     VarLookup::None(var_id.to_string())
@@ -946,7 +1016,7 @@ fn pop_and_merge_single_node_with_return(node_stack: &mut VecDeque<Builder>, ast
   for (var_id, var) in lu {
     match var_id {
       VarId::Return => {
-        read_var(VarId::Return, node_stack);
+        commit_writes_to_var(VarId::Return, node_stack);
         let child_builder = node_stack.front_mut().unwrap();
 
         if child_builder.node.nodes.len() > 0 {
@@ -955,7 +1025,7 @@ fn pop_and_merge_single_node_with_return(node_stack: &mut VecDeque<Builder>, ast
         }
       }
       VarId::SideEffect(_) => {
-        read_var(VarId::Return, node_stack);
+        commit_writes_to_var(VarId::Return, node_stack);
         let child_builder = node_stack.front_mut().unwrap();
 
         if child_builder.node.nodes.len() > 0 {
@@ -1067,7 +1137,7 @@ fn commit_writes(builder: &mut Builder, var: &mut Var) -> IRGraphId {
   }
 }
 
-fn read_var<'a>(var_id: VarId, node_stack: &'a mut VecDeque<WIPNode>) -> Option<IRGraphId> {
+fn commit_writes_to_var<'a>(var_id: VarId, node_stack: &'a mut VecDeque<WIPNode>) -> Option<IRGraphId> {
   let mut found_in_index = -1;
   let mut id = IRGraphId::default();
 
@@ -1107,7 +1177,7 @@ fn read_var<'a>(var_id: VarId, node_stack: &'a mut VecDeque<WIPNode>) -> Option<
   None
 }
 
-fn write_var<'a>(var_id: VarId, node_stack: &'a mut VecDeque<WIPNode>) -> Option<IRGraphId> {
+fn ignore_writes_to_var<'a>(var_id: VarId, node_stack: &'a mut VecDeque<WIPNode>) -> Option<IRGraphId> {
   let mut found_in_index = -1;
   let mut id = IRGraphId::default();
 
@@ -1142,14 +1212,16 @@ fn import_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) 
   return builder.add_binding(RSDVGBinding { in_op: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_op;
 }
 
-fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>) -> IRGraphId {
+fn resolve_binding(binding: ThreadedGraphId, node_stack: &mut VecDeque<Builder>, var_id: VarId) -> IRGraphId {
   let ThreadedGraphId(op, node_id) = binding;
 
   if op.is_valid() {
     let builder = node_stack.front_mut().unwrap();
 
     if builder.id != node_id {
-      return builder.add_binding(RSDVGBinding { in_op: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding).out_op;
+      return builder
+        .add_binding(RSDVGBinding { id: var_id, in_op: op, ..Default::default() }, Default::default(), Default::default(), BindingType::IntraBinding)
+        .out_op;
 
       // The binding id should be found as a child of the penultimate node.
       todo!(" Resolve binding from {node_id} {builder:#?}")
@@ -1168,7 +1240,7 @@ fn seal_var(var_id: VarId, node_stack: &mut VecDeque<Builder>, ty: Type) {
 
     if var_op.is_valid() {
       let var_op = if !ty.is_open() {
-        builder.add_op_constraint(OPConstraint::OpToTy(var_op.0, ty, var_op.0));
+        builder.add_op_constraint(OPConstraint::GenVarToTy(var.ty.generic_id().unwrap(), ty));
         var_op
       } else {
         var_op

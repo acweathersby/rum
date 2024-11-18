@@ -61,29 +61,55 @@ macro_rules! create_primitive {
   };
 }
 
+pub const ty_u8: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 0, byte_size: 1, ele_count: 1 });
+pub const ty_u16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 1, byte_size: 2, ele_count: 1 });
+pub const ty_u32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 2, byte_size: 4, ele_count: 1 });
+pub const ty_u64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 3, byte_size: 8, ele_count: 1 });
+pub const ty_u128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 3, byte_size: 16, ele_count: 1 });
+
+pub const ty_s8: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 1, ele_count: 1 });
+pub const ty_s16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 1, byte_size: 2, ele_count: 1 });
+pub const ty_s32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 2, byte_size: 4, ele_count: 1 });
+pub const ty_s64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 3, byte_size: 8, ele_count: 1 });
+pub const ty_s128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 3, byte_size: 16, ele_count: 1 });
+
+pub const ty_f16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 2, byte_size: 2, ele_count: 1 });
+pub const ty_f32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 2, byte_size: 4, ele_count: 1 });
+pub const ty_f64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 3, byte_size: 8, ele_count: 1 });
+pub const ty_f128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 3, byte_size: 8, ele_count: 1 });
+
 impl TypeDatabase {
   pub fn new() -> Self {
     let mut db = Self { types: Default::default(), name_to_entry: Default::default() };
     "".intern();
 
-    create_primitive!(db Unsigned, 1 1 "u8");
-    create_primitive!(db Unsigned, 2 1 "u16");
-    create_primitive!(db Unsigned, 4 1 "u32");
-    create_primitive!(db Unsigned, 8 1 "u64");
-    create_primitive!(db Unsigned, 8 1 "u128");
-
-    create_primitive!(db Signed, 1 1 "i8"   "s8" );
-    create_primitive!(db Signed, 2 1 "i16"  "s16");
-    create_primitive!(db Signed, 4 1 "i32"  "s32");
-    create_primitive!(db Signed, 8 1 "i64"  "s64");
-    create_primitive!(db Signed, 8 1 "i128" "s128");
-
-    create_primitive!(db Float, 2 1 "f16");
-    create_primitive!(db Float, 4 1 "f32");
-    create_primitive!(db Float, 8 1 "f64");
+    db.insert_primitive(ty_u8, &["u8"]);
+    db.insert_primitive(ty_u16, &["u16"]);
+    db.insert_primitive(ty_u32, &["u32"]);
+    db.insert_primitive(ty_u64, &["u64"]);
+    db.insert_primitive(ty_u128, &["u128"]);
+    db.insert_primitive(ty_s8, &["s8", "i8"]);
+    db.insert_primitive(ty_s16, &["s16", "i16"]);
+    db.insert_primitive(ty_s32, &["s32", "i32"]);
+    db.insert_primitive(ty_s64, &["s64", "i64"]);
+    db.insert_primitive(ty_s128, &["s128", "i128"]);
+    db.insert_primitive(ty_f16, &["f16"]);
+    db.insert_primitive(ty_f32, &["f32"]);
+    db.insert_primitive(ty_f64, &["f64"]);
+    db.insert_primitive(ty_f128, &["f128"]);
 
     db
   }
+
+  pub fn insert_primitive(&mut self, ty: Type, names: &[&str]) {
+    let index = self.types.len();
+    self.types.push(TypeEntry { ty, node: None, offset_data: None, size: 0 });
+
+    for name in names {
+      self.name_to_entry.insert(name.intern(), index);
+    }
+  }
+
   pub fn get_or_insert_complex_type(&mut self, name: &str) -> Type {
     match self.name_to_entry.entry(name.intern()) {
       std::collections::btree_map::Entry::Occupied(ty) => self.types[*ty.get()].ty,
@@ -129,11 +155,11 @@ impl TypeDatabase {
   pub fn to_ptr(&self, ty: Type) -> Option<Type> {
     match ty {
       Type::NoUse | Type::ComplexHash(_) => Some(Type::Undefined),
-      Type::Undefined => Some(Type::Undefined),
       Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count + 1, gen_index }),
       Type::Complex { ty_index, .. } => Some(Type::Pointer { count: 1, ty_index }),
       Type::Pointer { count, ty_index } => Some(Type::Pointer { count: count + 1, ty_index }),
       Type::Primitive(PrimitiveType { base_index, .. }) => Some(Type::Pointer { count: 1, ty_index: base_index as u32 }),
+      _ => Some(Type::Undefined),
     }
   }
 
@@ -197,6 +223,7 @@ pub enum Type {
     count:    u8,
     ty_index: u32,
   },
+  MemContext,
 }
 
 #[repr(u8)]
@@ -307,6 +334,7 @@ impl Display for Type {
       Generic { ptr_count, gen_index } => f.write_fmt(format_args!("∀{}", gen_index)),
       Primitive(prim) => f.write_fmt(format_args!("{prim}")),
       Complex { ty_index, .. } => f.write_fmt(format_args!("cplx@[{}]", ty_index)),
+      MemContext => f.write_fmt(format_args!("mem_ctx")),
       Pointer { ty_index, count } => f.write_fmt(format_args!("{} [{}]", "*".repeat(*count as usize), ty_index)),
     }
   }

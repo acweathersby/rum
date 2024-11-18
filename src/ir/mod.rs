@@ -9,3 +9,5 @@ pub mod ir_block;
 pub mod ir_rvsdg;
 
 pub mod types;
+
+pub mod db;
