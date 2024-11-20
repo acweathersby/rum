@@ -2,18 +2,34 @@ use std::fmt::Display;
 
 use crate::istring::{CachedString, IString};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use std::fmt::Debug;
 
 use super::ir_rvsdg::RVSDGNode;
 
 #[derive(Clone, Copy)]
+pub struct EntryOffsetData {
+  pub ty:     Type,
+  pub name:   IString,
+  pub offset: usize,
+  pub size:   usize,
+}
+
+#[derive(Clone)]
+pub struct AggOffsetData {
+  pub byte_size:      usize,
+  pub alignment:      usize,
+  pub ele_count:      usize,
+  pub member_offsets: Vec<EntryOffsetData>,
+}
+
+#[derive(Clone)]
 pub struct TypeEntry {
-  pub ty:                 Type,
-  pub(crate) node:        Option<*mut RVSDGNode>,
-  pub(crate) offset_data: Option<(usize, usize, *mut usize)>,
-  pub(crate) size:        usize,
+  pub ty:          Type,
+  pub node:        Option<*mut RVSDGNode>,
+  pub offset_data: Option<AggOffsetData>,
+  pub size:        usize,
 }
 
 impl Debug for TypeEntry {
@@ -33,10 +49,6 @@ impl TypeEntry {
 
   pub fn get_node_mut(&mut self) -> Option<&mut RVSDGNode> {
     self.node.map(|n| unsafe { &mut *n })
-  }
-
-  pub fn get_offset_data(&self) -> Option<&[usize]> {
-    self.offset_data.map(|(len, capacity, data)| unsafe { std::slice::from_raw_parts(data, len as usize) })
   }
 }
 
@@ -117,19 +129,18 @@ impl TypeDatabase {
         let index = self.types.len();
         entry.insert(index);
 
-        let entry = TypeEntry {
-          node:        None,
-          ty:          Type::Complex { ty_index: index as u32, hash: 0 },
-          offset_data: None,
-          size:        0,
-        };
+        let ty = Type::Complex { ty_index: index as u32, hash: 0 };
+
+        let entry = TypeEntry { node: None, ty, offset_data: None, size: 0 };
+
         self.types.push(entry);
-        entry.ty
+
+        ty
       }
     }
   }
 
-  pub fn get_ty_entry_from_ty(&self, ty: Type) -> Option<TypeEntry> {
+  pub fn get_ty_entry_from_ty<'a>(&self, ty: Type) -> Option<&'a mut TypeEntry> {
     let index = match ty {
       Type::Complex { ty_index, .. } => ty_index as usize,
       Type::Pointer { count, ty_index } => ty_index as usize,
@@ -138,14 +149,14 @@ impl TypeDatabase {
     };
 
     if index < self.types.len() {
-      Some(self.types[index])
+      Some(unsafe { &mut *(self.types.as_ptr().offset(index as isize) as *mut _) })
     } else {
       None
     }
   }
 
   pub fn get_ty_entry(&self, name: &str) -> Option<TypeEntry> {
-    self.name_to_entry.get(&name.to_token()).map(|i| self.types[*i])
+    self.name_to_entry.get(&name.to_token()).map(|i| self.types[*i].clone())
   }
 
   pub fn get_ty(&self, name: &str) -> Option<Type> {
@@ -186,7 +197,7 @@ impl TypeDatabase {
         if let Type::Complex { ty_index, .. } = entry.ty {
           let index = ty_index as usize;
           entry.node = Some(Box::into_raw(node));
-          self.types[index] = entry;
+          self.types[index] = entry.clone();
           Some(entry.ty)
         } else {
           None
@@ -380,7 +391,7 @@ pub fn dbg_ty(ty: Type, ty_db: &TypeDatabase) {
     Type::Complex { ty_index, .. } => {
       debug_assert!((ty_index as usize) < ty_db.types.len(), "type index is out side the range of TypeDatabase");
 
-      let ty = ty_db.types[ty_index as usize];
+      let ty = &ty_db.types[ty_index as usize];
 
       eprintln!("{ty:?}")
     }

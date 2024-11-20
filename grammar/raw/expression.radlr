@@ -12,20 +12,6 @@ IMPORT ../common/comment as cmt
 
   > bitwise
 
-<> pointer_offset 
-
-  > pointer_offset^left "+"{1} pointer_offset{0}^right
-
-    :ast { t_RawMemAdd, left, right, tok }
-
-  | pointer_offset^left "*"{3} pointer_offset{2}^right
-
-    :ast { t_RawMemMul, left, right, tok }
-
-  | member
-
-  | primitive_integer
-
 <> boolean 
 
   > boolean^left "||"{1}  boolean{0}^right
@@ -174,7 +160,7 @@ IMPORT ../common/comment as cmt
 
 <> indexed_member 
 
-  >  "[" pointer_offset^expression "]"
+  >  "[" bitwise^expression "]"
 
     :ast  { t_IndexedMember, expression, tok }
 

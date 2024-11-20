@@ -1,0 +1,17 @@
+double => [ 
+  C: u16
+]
+
+test_array => [ u32; 2 ]
+
+
+entry (d:?) => ?  {
+
+  a:test_array = :[ 22 + d, 2 ]
+
+  a[1] = 32 + a[0] + 128
+
+  a
+}
+
+

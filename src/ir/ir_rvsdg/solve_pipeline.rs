@@ -23,8 +23,9 @@ use crate::{
   create_u64_hash,
   ir::{
     self,
+    db,
     ir_rvsdg::{type_solve::VarConstraint, BindingType, Type, __debug_node_types__},
-    types::{TypeDatabase, TypeEntry},
+    types::{ty_s64, TypeDatabase, TypeEntry},
   },
   ir_interpreter::blame::blame,
   istring::IString,
@@ -125,6 +126,9 @@ pub fn solve_node(node: &mut RVSDGNode, constraints: &[OPConstraint], ty_db: &mu
       cstr @ OPConstraint::GenVarToTy(..) => {
         constraint_queue.push_back(*cstr);
       }
+      cstr @ OPConstraint::OpToTy(..) => {
+        constraint_queue.push_back(*cstr);
+      }
       cstr => unreachable!("{cstr:?}"),
     }
   }
@@ -184,9 +188,7 @@ pub fn solve_node(node: &mut RVSDGNode, constraints: &[OPConstraint], ty_db: &mu
       let ref_var_id = get_or_create_node_var_id(&mut glob_types, IRGraphId(i as u32), &mut type_vars);
       let var = &mut type_vars[ref_var_id];
 
-      if !var.ty.is_open() {
-        glob_types[i].0 = var.ty;
-      }
+      glob_types[i].0 = var.ty;
     }
   }
 
@@ -213,8 +215,28 @@ pub fn solve_node(node: &mut RVSDGNode, constraints: &[OPConstraint], ty_db: &mu
     let types = local_to_global_map[id].iter().map(|i| glob_types[*i].0).collect();
     node.types = types;
   }
-  node.solved = if output_type_vars.len() == 0 { SolveState::Solved } else { SolveState::PartiallySolved };
+
+  node.solved = if output_type_vars.len() == 0 { SolveState::Solved } else { SolveState::Template };
   node.ty_vars = output_type_vars;
+
+  for input in node.inputs.iter() {
+    if matches!(input.id, VarId::Param(..)) {
+      let in_id = input.out_op;
+      if let Some(generic_id) = node.types[in_id.usize()].generic_id() {
+        println!("{}", blame(&node.source_nodes[in_id], &format!("Undefined input <{}>", node.ty_vars[generic_id])));
+      }
+    }
+  }
+
+  for output in node.outputs.iter() {
+    if matches!(output.id, VarId::Return) {
+      let in_id = output.in_op;
+      dbg!(output);
+      if let Some(generic_id) = node.types[in_id.usize()].generic_id() {
+        println!("{}", blame(&node.source_nodes[in_id], &format!("Undefined output <{}>", node.ty_vars[generic_id])));
+      }
+    }
+  }
 
   dbg!(node);
 }
@@ -245,21 +267,37 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<OPConstraint>, t
       }
 
       if let Type::Complex { ty_index, .. } = ty {
-        let agg_ty = ty_db.types[ty_index as usize];
+        let agg_ty = &ty_db.types[ty_index as usize];
 
-        if let Some(RVSDGNode { id, inputs, outputs, nodes, source_nodes: source_tokens, ty, types, .. }) = agg_ty.get_node() {
+        if let Some(RVSDGNode { id, inputs, outputs, nodes, source_nodes: source_tokens, ty: node_ty, types, .. }) = agg_ty.get_node() {
           let mut have_name = false;
 
           for MemberEntry { name: member_name, origin_op, ty } in members.iter() {
-            let var_id = VarId::VarName(*member_name);
-            if let Some(output) = outputs.iter().find(|o| o.id == var_id) {
-              let ty = types[output.in_op.usize()];
-              if !ty.is_open() && *origin_op > 0 {
-                queue.push_back(OPConstraint::OpToTy(IRGraphId(*origin_op), ty_db.to_ptr(ty).unwrap()));
+            if member_name.is_empty() {
+              if *node_ty == RVSDGNodeType::Array {
+                for output in outputs.iter() {
+                  if output.id == VarId::ArrayType {
+                    let ty = types[output.in_op.usize()];
+                    if !ty.is_open() && *origin_op > 0 {
+                      queue.push_back(OPConstraint::OpToTy(IRGraphId(*origin_op), ty_db.to_ptr(ty).unwrap()));
+                    }
+                  }
+                }
+              } else {
+                todo!("Handle index lookup of node type");
               }
             } else {
-              //let node = &src_node[mem_op as usize];
-              //errors.push(blame(node, &format!("Member [{ref_name}] not found in type {:}", agg_ty.get_node().unwrap().id)));
+              let var_id = VarId::VarName(*member_name);
+
+              if let Some(output) = outputs.iter().find(|o| o.id == var_id) {
+                let ty = types[output.in_op.usize()];
+                if !ty.is_open() && *origin_op > 0 {
+                  queue.push_back(OPConstraint::OpToTy(IRGraphId(*origin_op), ty_db.to_ptr(ty).unwrap()));
+                }
+              } else {
+                //let node = &src_node[mem_op as usize];
+                //errors.push(blame(node, &format!("Member [{ref_name}] not found in type {:}", agg_ty.get_node().unwrap().id)));
+              }
             }
           }
         }
@@ -298,6 +336,7 @@ pub fn solve_constraint(
       let dst_var_id = get_or_create_node_var_id(types, op, type_vars);
 
       let var = &mut type_vars[dst_var_id];
+      var.ref_count += 1;
 
       if var.ty != ty {
         if var.ty.is_generic() {
@@ -383,10 +422,14 @@ pub fn solve_constraint(
         let src_var_id = get_or_create_node_var_id(types, src, type_vars);
 
         let var = &mut type_vars[src_var_id];
+        var.ref_count += 1;
+
         var.add(VarConstraint::Convert { dst, src });
         process_variable(var, queue, ty_db);
 
         let var = &mut type_vars[dst_var_id];
+        var.ref_count += 1;
+
         var.add(VarConstraint::Convert { dst, src });
         process_variable(var, queue, ty_db);
       } else {
@@ -401,6 +444,9 @@ pub fn solve_constraint(
 
         let prime = unsafe { &mut *type_vars.as_mut_ptr().offset(prim as isize) };
         let other = unsafe { &mut *type_vars.as_mut_ptr().offset(other as isize) };
+
+        prime.ref_count += 1;
+        other.ref_count += 1;
 
         match (other.ty.is_open(), prime.ty.is_open()) {
           (false, true) => prime.ty = other.ty,
@@ -536,7 +582,7 @@ fn gather_constraints(
                               }
                             }
                           }
-                          SolveState::PartiallySolved => {
+                          SolveState::Template => {
                             todo!("Queue a new solution of this node: \n {call_node}")
                           }
                           _ => unreachable!("Node {name} has not been processed"),
@@ -628,7 +674,7 @@ fn gather_constraints(
             constraint_queue.push_back(OPConstraint::MemOp { ptr_op, val_op });
 
             if !host_op.is_invalid() {
-              constraint_queue.push_back(OPConstraint::OpToOp { dst: dst_op, src: host_op });
+              // constraint_queue.push_back(OPConstraint::OpToOp { dst: dst_op, src: host_op });
             }
           }
           IROp::LOAD => {
@@ -655,6 +701,16 @@ fn gather_constraints(
               let ref_dst = loc_to_glob_op(local_to_global_map, node_id, dst_op);
               let par = loc_to_glob_op(local_to_global_map, node_id, operands[0]);
               constraint_queue.push_back(OPConstraint::Member { name: *name, ref_dst, par });
+            }
+            RVSDGInternalNode::Simple { .. } => {
+              //Expecting a arithmetic expression
+
+              let ref_dst = loc_to_glob_op(local_to_global_map, node_id, dst_op);
+              let par = loc_to_glob_op(local_to_global_map, node_id, operands[0]);
+              let ref_lookup = loc_to_glob_op(local_to_global_map, node_id, operands[1]);
+
+              constraint_queue.push_back(OPConstraint::Member { name: Default::default(), ref_dst, par });
+              constraint_queue.push_back(OPConstraint::OpToTy(ref_lookup, ty_s64));
             }
             _ => unreachable!(),
           },

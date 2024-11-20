@@ -1,11 +1,12 @@
 use libc::shm_open;
 use solve_pipeline::{solve_node, OPConstraint};
+use type_solve::VarConstraint;
 
 use crate::{
   ir::{
     db::{self, Solver},
     ir_rvsdg::{IROp, *},
-    types::{ty_u16, PrimitiveType, TypeDatabase},
+    types::{ty_u16, ty_u32, PrimitiveType, TypeDatabase},
   },
   istring::CachedString,
   parser::script_parser::*,
@@ -150,6 +151,8 @@ impl Builder {
 
     let mut var = TypeVar::new(id as u32);
 
+    debug_assert!(ty.is_generic());
+
     var.ty = ty;
 
     ty_vars.push(var);
@@ -209,6 +212,8 @@ impl Builder {
   }
 
   fn create_var_lookup(&mut self, var_id: VarId, op: IRGraphId, var_ty: Type, ast: ASTNode) {
+    debug_assert!(var_ty.is_generic());
+
     self.var_lookup.insert(var_id, Var { id: var_id, origin_node_id: self.id, op, ast, writes: Default::default(), nonce: 0, ty: var_ty });
   }
 
@@ -256,9 +261,19 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
         module_member_Value::RawBoundType(bound_type) => match &bound_type.ty {
           type_Value::Type_Struct(strct) => {
             let name = bound_type.name.id.intern();
-            let struct_: Box<RVSDGNode> = lower_struct_to_rvsdg(strct, ty_db);
+            let (struct_, constraints) = lower_struct_to_rvsdg(strct, ty_db);
 
-            ty_db.add_ty(bound_type.name.id.intern(), struct_.clone());
+            if let Some(ty) = ty_db.add_ty(bound_type.name.id.intern(), struct_.clone()) {
+              solver.add_type(ty, constraints);
+            }
+          }
+          type_Value::Type_Array(array) => {
+            let name = bound_type.name.id.intern();
+            let (array_, constraints) = lower_array_to_rvsdg(array, ty_db);
+
+            if let Some(ty) = ty_db.add_ty(bound_type.name.id.intern(), array_.clone()) {
+              solver.add_type(ty, constraints);
+            }
           }
           _ => unreachable!(),
         },
@@ -285,8 +300,55 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
   solver
 }
 
-fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase) -> Box<RVSDGNode> {
+fn lower_array_to_rvsdg(array_: &Type_Array<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<OPConstraint>) {
   let mut node = RVSDGNode::default();
+  let mut constraints = Vec::new();
+
+  node.ty = RVSDGNodeType::Array;
+  node.id = 0;
+
+  let ty = get_type(&array_.base_type, false, ty_db).unwrap_or_default();
+
+  let mut output_binding = RSDVGBinding::default();
+  let id = Builder::create_id(&mut 0);
+
+  output_binding.id = VarId::ArrayType;
+  output_binding.in_op = id;
+
+  node.outputs.push(output_binding);
+
+  node.nodes.push(RVSDGInternalNode::Binding { ty: BindingType::IntraBinding });
+  node.types.push(Type::default());
+  node.source_nodes.push(array_.base_type.clone().into());
+
+  constraints.push(OPConstraint::OpToTy(IRGraphId::new(0), ty));
+
+  if array_.size > 0 {
+    let mut output_binding = RSDVGBinding::default();
+    let id = Builder::create_id(&mut 2);
+
+    output_binding.id = VarId::ArraySize;
+    output_binding.in_op = id;
+
+    node.outputs.push(output_binding);
+
+    node.nodes.push(RVSDGInternalNode::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), array_.size)));
+    node.types.push(Type::NoUse);
+    node.source_nodes.push(Default::default());
+
+    node.nodes.push(RVSDGInternalNode::Simple { op: IROp::CONST_DECL, operands: [IRGraphId::new(1), Default::default(), Default::default()] });
+    node.types.push(Type::default());
+    node.source_nodes.push(Default::default());
+
+    constraints.push(OPConstraint::OpToTy(IRGraphId::new(2), ty_u32));
+  }
+
+  (Box::new(node), constraints)
+}
+
+fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<OPConstraint>) {
+  let mut node = RVSDGNode::default();
+  let mut constraints = Vec::new();
 
   node.ty = RVSDGNodeType::Struct;
   node.id = 0;
@@ -304,19 +366,22 @@ fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
 
         output_binding.id = VarId::VarName(name);
         output_binding.in_op = id;
-        output_binding.out_op = Default::default();
 
         node.outputs.push(output_binding);
 
         node.nodes.push(RVSDGInternalNode::Binding { ty: BindingType::IntraBinding });
+        node.types.push(Type::default());
         node.source_nodes.push(ASTNode::Property(prop.clone()));
-        node.types.push(ty);
+
+        if !ty.is_open() {
+          constraints.push(OPConstraint::OpToTy(IRGraphId::new(node.nodes.len() - 1), ty));
+        }
       }
       n => todo!("Handle construction of {n:?}"),
     }
   }
 
-  Box::new(node)
+  (Box::new(node), constraints)
 }
 
 pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(OPConstraint)>) {
@@ -346,7 +411,7 @@ pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: 
 
   insert_params(params, fn_builder, ty_db);
 
-  let (ret_val, _) = process_expression(expr, &mut node_stack, ty_db);
+  let ret_val = process_expression(expr, &mut node_stack, ty_db);
 
   let ret_ty = match &routine_def.ty {
     routine_type_Value::RawFunctionType(fn_ty) => {
@@ -408,7 +473,9 @@ fn create_return_sink(node_stack: &mut VecDeque<Builder>, ret_val: IRGraphId) {
     let builder = node_stack.front_mut().unwrap();
     let ty = builder.var_lookup.get(&VarId::Return).unwrap().ty;
 
-    let sink_id = builder.add_simple(IROp::RET_VAL, [ret_val, prev_ret, Default::default()], ty, Default::default());
+    let heap = builder.var_lookup.get(&VarId::HeapContext).unwrap().op;
+
+    let sink_id = builder.add_simple(IROp::RET_VAL, [ret_val, prev_ret, heap], ty, Default::default());
     //let sink_id = builder.add_other(RVSDGInternalNode:: { src: ret_val, ty: BindingType::Return }, Default::default(), ty);
 
     builder.update_var(VarId::Return, sink_id, Default::default());
@@ -454,7 +521,7 @@ fn insert_params(params: &std::sync::Arc<Params<Token>>, builder: &mut Builder, 
   }
 }
 
-fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> (ThreadedGraphId, bool) {
+fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> ThreadedGraphId {
   match expr {
     expression_Value::RawNum(num) => {
       let string_val = num.tok.to_string();
@@ -464,10 +531,10 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         } else {
           ConstVal::new(ty_db.get_ty("i64").expect("i64 should exist").to_primitive().unwrap(), string_val.parse::<i64>().unwrap())
         },
-        ASTNode::RawNum(num.clone()),
+        num.clone().into(),
       );
 
-      (ThreadedGraphId(val, node_stack.front().unwrap().id), false)
+      ThreadedGraphId(val, node_stack.front().unwrap().id)
     }
 
     expression_Value::Add(op) => binary_expr(
@@ -538,13 +605,11 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       for expr in &block.statements {
         match expr {
           statement_Value::Expression(expr) => {
-            let (li, sc) = process_expression(&expr.expr, node_stack, ty_db);
+            let li = process_expression(&expr.expr, node_stack, ty_db);
             last_id = li;
           }
           statement_Value::RawAssignment(assign) => {
-            if process_assign(&assign, node_stack, ty_db) {
-              //push_new_builder(node_stack, RVSDGNodeType::GenericBlock, Default::default());
-            }
+            process_assign(&assign, node_stack, ty_db);
 
             last_id = ThreadedGraphId(Default::default(), node_stack.front().unwrap().id)
           }
@@ -582,21 +647,21 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
       match &block.exit {
         Some(block_expression_group_3_Value::BlockExitExpressions(e)) => {
-          let (out_id, short_circuit) = process_expression(&e.expression.expr, node_stack, ty_db);
+          let out_id = process_expression(&e.expression.expr, node_stack, ty_db);
           let out_id = resolve_binding(out_id, node_stack, Default::default());
 
           create_return_sink(node_stack, out_id);
 
-          (ThreadedGraphId(Default::default(), node_stack.front().unwrap().id), true)
+          ThreadedGraphId(Default::default(), node_stack.front().unwrap().id)
         }
-        _ => (last_id, false),
+        _ => last_id,
       }
     }
 
     expression_Value::RawCall(call) => {
       let mut args = Vec::new();
 
-      let call_id = match lookup_var(&call.member, node_stack, true) {
+      let call_id = match lookup_var(&call.member, node_stack, true, ty_db) {
         VarLookup::Mem { ref_id: mem_id, id } => mem_id,
         VarLookup::Var(var) => var,
         VarLookup::None(name) => node_stack.front_mut().unwrap().get_label(name),
@@ -626,7 +691,7 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         input.in_op
       };
 
-      for (index, ((arg, short_circuit), node)) in args.iter().enumerate() {
+      for (index, (arg, node)) in args.iter().enumerate() {
         resolve_binding(*arg, node_stack, VarId::Param(index));
       }
 
@@ -662,12 +727,12 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
         let id = par_builder.add_output_node(Default::default(), ASTNode::None);
         outputs[output_index].out_op = id;
         par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
-        return (ThreadedGraphId(id, node_stack.front().unwrap().id), false);
+        return ThreadedGraphId(id, node_stack.front().unwrap().id);
       }
 
       par_builder.node.nodes[call_index] = RVSDGInternalNode::Complex(call_builder.node);
 
-      (ThreadedGraphId(Default::default(), node_stack.front().unwrap().id), false)
+      ThreadedGraphId(Default::default(), node_stack.front().unwrap().id)
     }
 
     expression_Value::RawMatch(mtch) => process_match(node_stack, mtch, ty_db, true),
@@ -682,21 +747,12 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
       let mut agg_op =
         builder.add_simple(IROp::AGG_DECL, [allocator_ctx_op, Default::default(), Default::default()], agg_ty, ASTNode::RawAggregateInstantiation(agg.clone()));
       builder.update_var(VarId::HeapContext, agg_op, Default::default());
-      /*
-      let mut agg_allocate_op = builder.add_simple(
-        IROp::AGG_ALLOCATE,
-        [allocator_ctx_op, agg_op, Default::default()],
-        Default::default(),
-        ASTNode::RawAggregateInstantiation(agg.clone()),
-      );
-
-      builder.update_var(VarId::HeapContext, agg_allocate_op, Default::default()); */
 
       let ty_vars = builder.type_vars();
       let agg_index = agg_ty.generic_id().unwrap();
 
-      for init in &agg.inits {
-        let (expr_id, sc) = process_expression(&init.expression.expr, node_stack, ty_db);
+      for (index, init) in agg.inits.iter().enumerate() {
+        let expr_id = process_expression(&init.expression.expr, node_stack, ty_db);
         let expr_id = resolve_binding(expr_id, node_stack, Default::default());
 
         if let Some(name) = &init.name {
@@ -717,28 +773,37 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
 
           builder.update_var(VarId::HeapContext, store_op, Default::default());
 
-          // Create a new type var for this member.
-          builder.create_var_lookup(VarId::SideEffect(ty_index), store_op, Default::default(), Default::default());
-
           ty_vars[agg_index].add_mem(name_id, mem_ty, Default::default());
         } else {
-          todo!("Index based initializers are not supported yet {}", blame(&ASTNode::from(init.clone()), "prefix this with <name> ="))
+          let allocator_ctx_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
+          let builder = node_stack.front_mut().unwrap();
+
+          let const_id = builder.add_const(ConstVal::new(ty_u32.to_primitive().unwrap(), index as u32), init.clone().into());
+
+          let ref_id = builder.add_simple(IROp::REF, [agg_op, const_id, Default::default()], Default::default(), Default::default());
+
+          let store_op =
+            builder.add_simple(IROp::STORE, [ref_id, expr_id, allocator_ctx_op], Default::default(), ASTNode::RawAggregateMemberInit(init.clone()));
+
+          builder.update_var(VarId::HeapContext, store_op, Default::default());
+
+          ty_vars[agg_index].add(type_solve::VarConstraint::Indexable);
         }
       }
 
-      (ThreadedGraphId(agg_op, node_stack.front().unwrap().id), false)
+      ThreadedGraphId(agg_op, node_stack.front().unwrap().id)
     }
 
-    expression_Value::MemberCompositeAccess(mem) => match lookup_var(mem, node_stack, true) {
+    expression_Value::MemberCompositeAccess(mem) => match lookup_var(mem, node_stack, true, ty_db) {
       VarLookup::Mem { ref_id: output, id } => {
         //let se_op = builder.var_lookup.get(&se).unwrap().op;
 
         let allocator_ctx_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
         let builder = node_stack.front_mut().unwrap();
         let load_id = builder.add_simple(IROp::LOAD, [output, allocator_ctx_op, Default::default()], Default::default(), Default::default());
-        (ThreadedGraphId(load_id, node_stack.front().unwrap().id), false)
+        ThreadedGraphId(load_id, node_stack.front().unwrap().id)
       }
-      VarLookup::Var(var) => (ThreadedGraphId(var, node_stack.front().unwrap().id), false),
+      VarLookup::Var(var) => ThreadedGraphId(var, node_stack.front().unwrap().id),
       VarLookup::None(name) => {
         todo!("report error on lookup of {name} \n{} \n {node_stack:#?}", mem.tok.blame(0, 0, "", None))
       }
@@ -747,12 +812,12 @@ fn process_expression(expr: &expression_Value<Token>, node_stack: &mut VecDeque<
   }
 }
 
-fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>, ty_db: &mut TypeDatabase, seal_activation: bool) -> (ThreadedGraphId, bool) {
+fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>, ty_db: &mut TypeDatabase, seal_activation: bool) -> ThreadedGraphId {
   // create the match entry
   let builder = node_stack.front_mut().unwrap();
   builder.create_gen_var(VarId::MatchOutputVal, Default::default(), Default::default(), Default::default());
 
-  let (eval_id, bool) = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
+  let eval_id = process_expression(&mtch.expression.clone().into(), node_stack, ty_db);
 
   let eval_id = resolve_binding(eval_id, node_stack, Default::default());
   let builder = node_stack.front_mut().unwrap();
@@ -774,7 +839,7 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
         builder.add_const(ConstVal::new(ty_db.get_ty("u64").expect("u64 should exist").to_primitive().unwrap(), 1 as u64), Default::default())
       } else if let Some(expr) = clause.expr.as_ref() {
         let builder = node_stack.front_mut().unwrap();
-        let (v, short_circuit) = process_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
+        let v = process_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db);
 
         let v = resolve_binding(v, node_stack, Default::default());
 
@@ -814,7 +879,7 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
       push_new_builder(node_stack, RVSDGNodeType::MatchClause);
       let base_len = node_stack.len();
 
-      let (def_id, short_circuit) = process_expression(&clause.scope.clone().into(), node_stack, ty_db);
+      let def_id = process_expression(&clause.scope.clone().into(), node_stack, ty_db);
 
       let def_id = resolve_binding(def_id, node_stack, Default::default());
 
@@ -847,16 +912,14 @@ fn process_match(node_stack: &mut VecDeque<Builder>, mtch: &Arc<RawMatch<Token>>
 
   let id = take_var(VarId::MatchOutputVal, node_stack);
 
-  let id = ThreadedGraphId(id, node_stack.front().unwrap().id);
-
-  (id, false)
+  ThreadedGraphId(id, node_stack.front().unwrap().id)
 }
 
-fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) -> bool {
+fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode>, ty_db: &mut TypeDatabase) {
   let var = &expr.var;
   let expr = &expr.expression;
-  let (graph_id, short_circuit) = process_expression(&expr.expr, node_stack, ty_db);
 
+  let graph_id = process_expression(&expr.expr, node_stack, ty_db);
   let graph_id = resolve_binding(graph_id, node_stack, Default::default());
 
   match var {
@@ -882,7 +945,7 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
       let root_name = VarId::VarName(mem.root.name.id.intern());
       let ast = ASTNode::MemberCompositeAccess(mem.clone());
 
-      match lookup_var(&mem, node_stack, true) {
+      match lookup_var(&mem, node_stack, true, ty_db) {
         VarLookup::Mem { ref_id: mem_id, id } => {
           let allocator_ctx_op = commit_writes_to_var(VarId::HeapContext, node_stack).unwrap();
           let builder = node_stack.front_mut().unwrap();
@@ -903,7 +966,6 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
     }
     _ => todo!(),
   }
-  short_circuit
 }
 
 fn binary_expr(
@@ -913,9 +975,9 @@ fn binary_expr(
   node_stack: &mut VecDeque<Builder>,
   node: ASTNode,
   ty_db: &mut TypeDatabase,
-) -> (ThreadedGraphId, bool) {
-  let (left_id, short_circuit) = process_expression(&left, node_stack, ty_db);
-  let (right_id, short_circuit) = process_expression(&right, node_stack, ty_db);
+) -> ThreadedGraphId {
+  let left_id = process_expression(&left, node_stack, ty_db);
+  let right_id = process_expression(&right, node_stack, ty_db);
 
   let left_id = resolve_binding(left_id, node_stack, Default::default());
   let right_id = resolve_binding(right_id, node_stack, Default::default());
@@ -924,7 +986,7 @@ fn binary_expr(
 
   let id = (builder.add_simple(op, [left_id, right_id, Default::default()], Default::default(), node));
 
-  (ThreadedGraphId(id, builder.id), false)
+  ThreadedGraphId(id, builder.id)
 }
 
 enum VarLookup {
@@ -933,7 +995,7 @@ enum VarLookup {
   None(IString),
 }
 
-fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeque<Builder>, read: bool) -> VarLookup {
+fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeque<Builder>, read: bool, ty_db: &mut TypeDatabase) -> VarLookup {
   let mut name = mem.root.name.id.clone();
 
   let mut var_id = VarId::VarName(name.intern());
@@ -953,9 +1015,7 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
             let ty: Type = if let Some((_, ty)) = ty_vars[index].get_mem(name_id) {
               index = ty.generic_id().unwrap();
               var_id = VarId::MemRef(index);
-
               commit_writes_to_var(var_id, node_stack);
-              println!("----------------asdasd");
               ty
             } else {
               let builder = node_stack.front_mut().unwrap();
@@ -967,8 +1027,6 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
               index = ty_index;
 
               var_id = VarId::MemRef(ty_index);
-
-              builder.create_var_lookup(VarId::SideEffect(ty_index), Default::default(), Default::default(), Default::default());
 
               ty
             };
@@ -983,6 +1041,11 @@ fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeq
               prev_ref = builder.add_simple(IROp::REF, [prev_ref, label_id, Default::default()], ty, ASTNode::NamedMember(name.clone()));
               builder.var_lookup.get_mut((&var_id)).unwrap().op = prev_ref;
             }
+          }
+          member_group_Value::IndexedMember(index_lookup) => {
+            let index_op = process_expression(&index_lookup.expression.clone().to_ast().into_expression_Value().unwrap(), node_stack, ty_db).0;
+            let builder = node_stack.front_mut().unwrap();
+            prev_ref = builder.add_simple(IROp::REF, [prev_ref, index_op, Default::default()], Default::default(), index_lookup.clone().into());
           }
           _ => unreachable!(),
         }
@@ -1050,6 +1113,7 @@ fn push_new_builder(node_stack: &mut VecDeque<Builder>, ty: RVSDGNodeType) {
   let id = top_builder.inc_counter();
   let mut entry = Builder::new(id, top_builder.id_counter, top_builder.op_constraints, top_builder.type_vars);
   entry.node.id = id;
+
   entry.node.ty = ty;
   node_stack.push_front(entry);
 }
@@ -1240,12 +1304,15 @@ fn seal_var(var_id: VarId, node_stack: &mut VecDeque<Builder>, ty: Type) {
 
     if var_op.is_valid() {
       let var_op = if !ty.is_open() {
+        commit_writes_to_var(var_id, node_stack);
+        let builder = node_stack.front_mut().unwrap();
         builder.add_op_constraint(OPConstraint::GenVarToTy(var.ty.generic_id().unwrap(), ty));
         var_op
       } else {
         var_op
       };
 
+      let builder = node_stack.front_mut().unwrap();
       builder.set_type_if_undefined(var_op, var.ty);
 
       builder.add_output(RSDVGBinding { in_op: var_op, id: var_id, out_op: Default::default(), in_out_link: None });

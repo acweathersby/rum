@@ -1,0 +1,21 @@
+double => [ 
+  C: u16
+]
+
+test_struct => [
+  A: u32, 
+  B: u32,
+  C: u32
+]
+
+
+entry (r:?) => ?  {
+
+  a:test_struct = :[ 
+    A = 200, 
+    B = 3 + 2, 
+    C = 2
+  ]
+
+  a.A + r * r
+}

@@ -1,5 +1,10 @@
 use rum_lang::{
-  ir::{db::Database, ir_rvsdg::lower::lower_ast_to_rvsdg, types::TypeDatabase},
+  ir::{
+    db::Database,
+    ir_rvsdg::{lower::lower_ast_to_rvsdg, RVSDGNodeType},
+    types::{EntryOffsetData, PrimitiveBaseType, Type, TypeDatabase},
+  },
+  ir_interpreter::value::Value,
   parser::script_parser::parse_raw_module,
 };
 use std::{collections::VecDeque, path::PathBuf};
@@ -61,7 +66,81 @@ fn run_interpreter(mut args: VecDeque<String>) {
     match arg.as_str() {
       "-c" => {
         let call_expr_str = args.pop_front().expect("Expected a call expression following -c");
-        dbg!(db.interpret(&call_expr_str).expect("Failed to interpret function"));
+        let val = db.interpret(&call_expr_str).expect("Failed to interpret function");
+        dbg!(val);
+        match val {
+          Value::Ptr(ptr, ty) => {
+            if let Some(ty_entry) = db.get_type_entry(ty) {
+              let node = ty_entry.get_node().unwrap();
+              let mut str = String::new();
+              if let Some(data) = &ty_entry.offset_data {
+                if node.ty == RVSDGNodeType::Array {
+                  if data.ele_count > 0 {
+                    str += &format!("ARRAY<{ty:?} @ {:016X}> = [", ptr as usize);
+                    let EntryOffsetData { ty, name, offset, size } = data.member_offsets[0];
+                    for i in 0..data.ele_count {
+                      dbg!((i, i * 4, unsafe { ptr.offset((i * 4) as isize) }));
+                      match ty {
+                        Type::Primitive(prim) => match prim.base_ty {
+                          PrimitiveBaseType::Unsigned => match prim.byte_size * 8 {
+                            64 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 8) as isize) as *const u64) });
+                            }
+                            32 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 4) as isize) as *const u32) });
+                            }
+                            16 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 2) as isize) as *const u16) });
+                            }
+                            8 => {
+                              str += &format!("{},", unsafe { *(ptr.offset(i as isize) as *const u8) });
+                            }
+                            _ => panic!(),
+                          },
+                          PrimitiveBaseType::Signed => match prim.byte_size * 8 {
+                            64 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 8) as isize) as *const i64) });
+                            }
+                            32 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 4) as isize) as *const i32) });
+                            }
+                            16 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 2) as isize) as *const i16) });
+                            }
+                            8 => {
+                              str += &format!("{},", unsafe { *(ptr.offset(i as isize) as *const i8) });
+                            }
+                            _ => panic!(),
+                          },
+                          PrimitiveBaseType::Float => match prim.byte_size * 8 {
+                            64 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 8) as isize) as *const f64) });
+                            }
+                            32 => {
+                              str += &format!("{},", unsafe { *(ptr.offset((i * 4) as isize) as *const f32) });
+                            }
+                            _ => panic!(),
+                          },
+                        }, /* ty_u32 =>  */
+                        _ => unreachable!(),
+                      }
+                    }
+
+                    str += "]";
+
+                    println!("{str}")
+                  } else {
+                    panic!("Not equipped to handle dynamically sized arrays");
+                  }
+                } else {
+                }
+              } else {
+                panic!("AA");
+              }
+            }
+          }
+          _ => todo!("Value undefined"),
+        }
       }
       "-m" => {
         let path = args.pop_front().unwrap();

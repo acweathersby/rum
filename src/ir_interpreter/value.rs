@@ -15,53 +15,5 @@ pub enum Value {
   f64(f64),
   f32(f32),
   Agg(*mut u8, Type),
-  Ptr(*mut (), Type),
-}
-
-impl Value {
-  pub fn dbg(&self, type_data: &TypeDatabase) {
-    match self {
-      Value::Agg(data, ty) => {
-        if let Some(entry) = type_data.get_ty_entry_from_ty(*ty) {
-          let data = *data;
-          let node = entry.get_node().unwrap();
-          let offsets = entry.get_offset_data().unwrap();
-          let types = &node.types;
-
-          println!("  struct {}", node.id);
-          for (index, output) in node.outputs.iter().enumerate() {
-            let offset = offsets[index];
-            let ty = types[output.in_op.usize()];
-            match ty {
-              Type::Primitive(prim) => {
-                match prim.base_ty {
-                  PrimitiveBaseType::Float => match prim.byte_size {
-                    4 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const f32) }),
-                    8 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const f64) }),
-                    _ => {}
-                  },
-                  PrimitiveBaseType::Signed => match prim.byte_size {
-                    1 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i8) }),
-                    2 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i16) }),
-                    4 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i32) }),
-                    8 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const i64) }),
-                    _ => {}
-                  },
-                  PrimitiveBaseType::Unsigned => match prim.byte_size {
-                    1 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u8) }),
-                    2 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u16) }),
-                    4 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u32) }),
-                    8 => println!("    {}: {}={}", output.id, ty, unsafe { *(data.offset(offset as isize) as *const u64) }),
-                    _ => {}
-                  },
-                };
-              }
-              _ => {}
-            }
-          }
-        }
-      }
-      _ => {}
-    }
-  }
+  Ptr(*mut u8, Type),
 }

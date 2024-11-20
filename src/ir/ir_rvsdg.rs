@@ -37,6 +37,8 @@ pub enum VarId {
   HeapContext,
   Param(usize),
   CallRef,
+  ArrayType,
+  ArraySize,
 }
 
 impl Display for VarId {
@@ -111,7 +113,7 @@ pub enum SolveState {
   #[default]
   Unsolved,
   Solved,
-  PartiallySolved,
+  Template,
 }
 
 impl RVSDGNode {

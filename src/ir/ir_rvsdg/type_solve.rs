@@ -34,6 +34,7 @@ pub struct TypeVar {
   pub id:          u32,
   pub ref_id:      i32,
   pub ty:          Type,
+  pub ref_count:   u32,
   pub constraints: ArrayVec<2, VarConstraint>,
   pub members:     ArrayVec<2, MemberEntry>,
 }
@@ -43,6 +44,7 @@ impl Default for TypeVar {
     Self {
       id:          Default::default(),
       ref_id:      -1,
+      ref_count:   0,
       ty:          Default::default(),
       constraints: Default::default(),
       members:     Default::default(),
@@ -97,12 +99,12 @@ impl Debug for TypeVar {
 
 impl Display for TypeVar {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let Self { id, ty, constraints, members, ref_id } = self;
+    let Self { id, ty, constraints, members, ref_id, ref_count } = self;
 
     if ty.is_generic() {
-      f.write_fmt(format_args!("[{id}] {}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
+      f.write_fmt(format_args!("[{id}] refs:{ref_count:03} {}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
     } else {
-      f.write_fmt(format_args!("[{id}] {}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
+      f.write_fmt(format_args!("[{id}] refs:{ref_count:03} {}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
     }
     if !constraints.is_empty() {
       f.write_str(" <")?;
@@ -127,6 +129,7 @@ impl Display for TypeVar {
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub enum VarConstraint {
   Agg,
+  Indexable,
   Method,
   Member,
   Index(u32),
@@ -154,6 +157,7 @@ impl Debug for VarConstraint {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     use VarConstraint::*;
     match self {
+      Indexable => f.write_fmt(format_args!("[*]",)),
       Callable => f.write_fmt(format_args!("* => x -> x",)),
       Method => f.write_fmt(format_args!("*.X => x -> x",)),
       MemOp { ptr_op: ptr, val_op: val } => f.write_fmt(format_args!("memop  *{ptr} = {val}",)),
