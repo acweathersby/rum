@@ -4,14 +4,70 @@ double => [
 
 test_array => [ u32; 2 ]
 
+Enum => u32 >: AK47 : M16 : AR15 : AK74 : P90 : BARRET
 
 entry (d:?) => ?  {
 
   a:test_array = :[ 22 + d, 2 ]
+  b:test_array = :[ 200, 1 ]
 
-  a[1] = 32 + a[0] + 128
+  a[1] = 32 + a[0] + 128 + b[0] + AK47
 
-  a
+  a 
 }
 
+/*
 
+pure-function = expression + storage
+function
+routine
+
+expression
+
+storage 
+  - context
+
+We have the storage context, which allows state to be preserved across independent expressions or pure functions. 
+A routine or regular function implies change of context state, or change of external state. 
+
+Universal computational node (UCN):
+
+
+inputs 
+operations 
+outputs
+
+
+
+ty: Op
+name: add
+inputs:   
+  left: Op:Ty1[numeric - claim]
+  right: Op:Ty1[numeric ]
+operands:
+  x86 [  add l r ]
+outputs: 
+  val: Op:Ty1
+types:
+
+
+operations on RVSDG nodes
+replace
+collapse
+create
+connect
+disconnect
+
+
+op: ADD 
+  x [A: Numeric] 
+  y [A: Numeric] 
+  => out [A: Numeric]
+
+  impl { 
+    x86: 
+      - A = u32: "add x y"
+      - A = u8:  "add x y"
+  }
+  
+*/

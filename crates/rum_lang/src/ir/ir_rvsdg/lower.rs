@@ -275,6 +275,16 @@ pub fn lower_ast_to_rvsdg(module: &std::sync::Arc<RawModule<Token>>, ty_db: &mut
               solver.add_type(ty, constraints);
             }
           }
+          type_Value::Type_Enum(enum_type) => {
+            let name = bound_type.name.id.intern();
+            let (enum_, constraints) = lower_enum_to_rvsdg(enum_type, ty_db);
+
+            dbg!(&enum_);
+
+            if let Some(ty) = ty_db.add_ty(bound_type.name.id.intern(), enum_.clone()) {
+              solver.add_type(ty, constraints);
+            }
+          }
           _ => unreachable!(),
         },
         module_member_Value::RawRoutine(rt) => {
@@ -312,7 +322,7 @@ fn lower_array_to_rvsdg(array_: &Type_Array<Token>, ty_db: &mut TypeDatabase) ->
   let mut output_binding = RSDVGBinding::default();
   let id = Builder::create_id(&mut 0);
 
-  output_binding.id = VarId::ArrayType;
+  output_binding.id = VarId::BaseType;
   output_binding.in_op = id;
 
   node.outputs.push(output_binding);
@@ -327,7 +337,7 @@ fn lower_array_to_rvsdg(array_: &Type_Array<Token>, ty_db: &mut TypeDatabase) ->
     let mut output_binding = RSDVGBinding::default();
     let id = Builder::create_id(&mut 2);
 
-    output_binding.id = VarId::ArraySize;
+    output_binding.id = VarId::ElementCount;
     output_binding.in_op = id;
 
     node.outputs.push(output_binding);
@@ -364,7 +374,7 @@ fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
         let mut output_binding = RSDVGBinding::default();
         let id = Builder::create_id(&mut node_id);
 
-        output_binding.id = VarId::VarName(name);
+        output_binding.id = VarId::Name(name);
         output_binding.in_op = id;
 
         node.outputs.push(output_binding);
@@ -382,6 +392,50 @@ fn lower_struct_to_rvsdg(struct_: &Type_Struct<Token>, ty_db: &mut TypeDatabase)
   }
 
   (Box::new(node), constraints)
+}
+
+fn lower_enum_to_rvsdg(enum_: &Type_Enum<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<OPConstraint>) {
+  let mut node = RVSDGNode::default();
+  let mut constraints = Vec::new();
+  let mut counter = 0;
+  let mut ty_vars = vec![];
+
+  let mut builder = Builder::new(0, &mut counter, &mut constraints, &mut ty_vars);
+
+  let ty_op = if let Some(actual_ty) = get_type(&enum_.base_type.clone().to_ast().into_type_Value().unwrap(), false, ty_db) {
+    let ty = builder.create_gen_var(VarId::BaseType, Default::default(), enum_.base_type.clone().to_ast(), Default::default());
+    let out_op = builder.add_input_node(ty, enum_.base_type.clone().to_ast());
+    builder.add_output(RSDVGBinding { id: VarId::BaseType, in_op: out_op, ..Default::default() });
+
+    builder.add_op_constraint(OPConstraint::GenVarToTy(ty.generic_id().unwrap(), actual_ty));
+
+    out_op
+  } else {
+    let ty = builder.create_gen_var(VarId::BaseType, Default::default(), enum_.base_type.clone().to_ast(), Default::default());
+    let out_op = builder.add_input_node(ty, enum_.base_type.clone().to_ast());
+    builder.add_output(RSDVGBinding { id: VarId::BaseType, in_op: out_op, ..Default::default() });
+    out_op
+  };
+
+  let mut node_id = 0;
+
+  for (index, value) in enum_.values.iter().enumerate() {
+    let name = value.name.id.intern();
+    let var_id = VarId::Name(name);
+
+    let op = builder.add_const(ConstVal::new(ty_u32.to_primitive().unwrap(), index as u32), value.clone().into());
+
+    builder.add_output(RSDVGBinding { id: var_id, in_op: op, ..Default::default() });
+    builder.add_op_constraint(OPConstraint::OpToOp { src: ty_op, dst: op });
+  }
+
+  let mut node = builder.node;
+
+  node.ty = RVSDGNodeType::Struct;
+
+  dbg!(&constraints);
+
+  (node, constraints)
 }
 
 pub fn lower_routine_to_rvsdg(routine_def: &RawRoutineDefinition<Token>, ty_db: &mut TypeDatabase) -> (Box<RVSDGNode>, Vec<(OPConstraint)>) {
@@ -486,7 +540,7 @@ fn insert_params(params: &std::sync::Arc<Params<Token>>, builder: &mut Builder, 
   for (param_index, param) in params.params.iter().enumerate() {
     let ty = get_type(&param.ty.ty, false, ty_db).unwrap_or_default();
 
-    let inner_id = VarId::VarName(param.var.id.intern());
+    let inner_id = VarId::Name(param.var.id.intern());
     let outer_id = VarId::Param(param_index);
 
     let ast = ASTNode::RawParamBinding(param.clone());
@@ -924,7 +978,7 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
 
   match var {
     assignment_var_Value::RawAssignmentDeclaration(decl) => {
-      let root_name = VarId::VarName(decl.var.id.intern());
+      let root_name = VarId::Name(decl.var.id.intern());
 
       let ty = get_type(&decl.ty, false, ty_db).unwrap();
 
@@ -942,7 +996,7 @@ fn process_assign(expr: &RawAssignment<Token>, node_stack: &mut VecDeque<WIPNode
       }
     }
     assignment_var_Value::MemberCompositeAccess(mem) => {
-      let root_name = VarId::VarName(mem.root.name.id.intern());
+      let root_name = VarId::Name(mem.root.name.id.intern());
       let ast = ASTNode::MemberCompositeAccess(mem.clone());
 
       match lookup_var(&mem, node_stack, true, ty_db) {
@@ -998,7 +1052,7 @@ enum VarLookup {
 fn lookup_var<'a>(mem: &MemberCompositeAccess<Token>, node_stack: &'a mut VecDeque<Builder>, read: bool, ty_db: &mut TypeDatabase) -> VarLookup {
   let mut name = mem.root.name.id.clone();
 
-  let mut var_id = VarId::VarName(name.intern());
+  let mut var_id = VarId::Name(name.intern());
 
   if mem.sub_members.len() > 0 {
     if let Some(mut prev_ref) = if read { commit_writes_to_var(var_id, node_stack) } else { ignore_writes_to_var(var_id, node_stack) } {

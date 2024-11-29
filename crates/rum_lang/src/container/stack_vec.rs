@@ -108,7 +108,7 @@ impl<const STACK_SIZE: usize, T> IndexMut<usize> for ArrayVec<STACK_SIZE, T> {
   }
 }
 
-impl<const STACK_SIZE: usize, T: Ord + PartialOrd> ArrayVec<STACK_SIZE, T> {
+impl<const STACK_SIZE: usize, T: Ord + PartialOrd + Debug> ArrayVec<STACK_SIZE, T> {
   fn binary_search(min: usize, max: usize, insert: &T, entries: &[T]) -> (usize, std::cmp::Ordering) {
     let diff = max - min;
     if diff <= 1 {
@@ -157,6 +157,12 @@ impl<const STACK_SIZE: usize, T: Ord + PartialOrd> ArrayVec<STACK_SIZE, T> {
     self.push_ordered_internal(entry, true)
   }
 
+  pub fn extend_unique<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+    for i in iter {
+      self.push_unique(i);
+    }
+  }
+
   #[inline(always)]
   fn push_ordered_internal(&mut self, mut entry: T, dedup: bool) -> Result<usize, &str> {
     if !self.data_is_ordered() {
@@ -203,7 +209,7 @@ impl<const STACK_SIZE: usize, T: Ord + PartialOrd> ArrayVec<STACK_SIZE, T> {
           }
         } else {
           self.convert_to_vector();
-          self.insert_ordered(entry)
+          self.push_ordered_internal(entry, dedup)
         }
       }
     }

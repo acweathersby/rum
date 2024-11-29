@@ -1,31 +1,20 @@
-[package]
-name = "rum_lang"
-version = "0.0.0"
-edition = "2021"
+[workspace]
 
-build = "./grammar/build.rs"
+members = [
+  "./crates/compiler",
+  "./crates/core",
+  "./crates/rum_lang"
+]
 
+resolver = "2"
 
-[[bin]]
-name = "rum"
-path = "./src/bin.rs"
+[profile.dev]
+debug = 2
 
-[lib]
-path = "./src/lib.rs"
+[profile.release]
+opt-level=3
+debug = 0
 
-[dependencies.radlr_rust_runtime]
-path = "../lib_radlr/crates/radlr-rust-runtime"
-
-[build-dependencies.radlr_build]
-path = "../lib_radlr/crates/radlr-build"
-
-[dependencies]
-libc = "0.2.154"
-num-traits        = "0.2.17"
-once_cell = "1.19.0"
-
-[dependencies.iced-x86]
-version = "1.21.0"
-default-features = false
-# See below for all features
-features = ["std", "decoder", "masm", "code_asm"]
+[profile.release-with-debug]
+inherits = "release"
+debug = true

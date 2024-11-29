@@ -1,0 +1,16 @@
+[package]
+name = "core_lang"
+version = "0.0.0"
+edition = "2021"
+
+build = "./build.rs"
+
+[lib]
+path = "./lib.rs"
+
+[dependencies.radlr_rust_runtime]
+path = "../../../lib_radlr/crates/radlr-rust-runtime"
+
+[build-dependencies.radlr_build]
+path = "../../../lib_radlr/crates/radlr-build"
+

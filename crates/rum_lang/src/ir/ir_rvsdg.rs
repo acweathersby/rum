@@ -24,7 +24,7 @@ pub mod type_solve;
 pub enum VarId {
   #[default]
   Undefined,
-  VarName(IString),
+  Name(IString),
   SideEffect(usize),
   MemRef(usize),
   MatchInputExpr,
@@ -37,14 +37,14 @@ pub enum VarId {
   HeapContext,
   Param(usize),
   CallRef,
-  ArrayType,
-  ArraySize,
+  BaseType,
+  ElementCount,
 }
 
 impl Display for VarId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Self::VarName(id) => f.write_str(id.to_str().as_str()),
+      Self::Name(id) => f.write_str(id.to_str().as_str()),
       Self::SideEffect(id) => f.write_fmt(format_args!("--{id}--")),
       Self::MemRef(id) => f.write_fmt(format_args!("--*{id}--")),
       Self::MatchInputExpr => f.write_str("MATCH_INPUT_VALUE"),
@@ -52,7 +52,7 @@ impl Display for VarId {
       Self::MatchActivation => f.write_str("MATCH_ACTIVATION"),
       Self::Return => f.write_str("RETURN"),
       Self::LoopActivation => f.write_str("LOOP_ACTIVATION"),
-      Self::HeapContext => f.write_str("HEAP_CONTEXT"),
+      Self::HeapContext => f.write_str("HeapCTX"),
       _ => f.write_fmt(format_args!("{self:?}")),
     }
   }

@@ -129,6 +129,9 @@ pub fn solve_node(node: &mut RVSDGNode, constraints: &[OPConstraint], ty_db: &mu
       cstr @ OPConstraint::OpToTy(..) => {
         constraint_queue.push_back(*cstr);
       }
+      cstr @ OPConstraint::OpToOp { .. } => {
+        constraint_queue.push_back(*cstr);
+      }
       cstr => unreachable!("{cstr:?}"),
     }
   }
@@ -276,7 +279,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<OPConstraint>, t
             if member_name.is_empty() {
               if *node_ty == RVSDGNodeType::Array {
                 for output in outputs.iter() {
-                  if output.id == VarId::ArrayType {
+                  if output.id == VarId::BaseType {
                     let ty = types[output.in_op.usize()];
                     if !ty.is_open() && *origin_op > 0 {
                       queue.push_back(OPConstraint::OpToTy(IRGraphId(*origin_op), ty_db.to_ptr(ty).unwrap()));
@@ -287,7 +290,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<OPConstraint>, t
                 todo!("Handle index lookup of node type");
               }
             } else {
-              let var_id = VarId::VarName(*member_name);
+              let var_id = VarId::Name(*member_name);
 
               if let Some(output) = outputs.iter().find(|o| o.id == var_id) {
                 let ty = types[output.in_op.usize()];

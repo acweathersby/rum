@@ -73,28 +73,36 @@ macro_rules! create_primitive {
   };
 }
 
-pub const ty_u8: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 0, byte_size: 1, ele_count: 1 });
-pub const ty_u16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 1, byte_size: 2, ele_count: 1 });
-pub const ty_u32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 2, byte_size: 4, ele_count: 1 });
-pub const ty_u64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 3, byte_size: 8, ele_count: 1 });
-pub const ty_u128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 3, byte_size: 16, ele_count: 1 });
+pub const ty_undefined: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 0, byte_size: 1, ele_count: 1 });
+pub const ty_poison: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Poison, base_index: 1, byte_size: 1, ele_count: 1 });
+pub const ty_bool: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Bool, base_index: 2, byte_size: 1, ele_count: 1 });
 
-pub const ty_s8: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 1, ele_count: 1 });
-pub const ty_s16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 1, byte_size: 2, ele_count: 1 });
-pub const ty_s32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 2, byte_size: 4, ele_count: 1 });
-pub const ty_s64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 3, byte_size: 8, ele_count: 1 });
-pub const ty_s128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 3, byte_size: 16, ele_count: 1 });
+pub const ty_u8: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 3, byte_size: 1, ele_count: 1 });
+pub const ty_u16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 4, byte_size: 2, ele_count: 1 });
+pub const ty_u64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 6, byte_size: 8, ele_count: 1 });
+pub const ty_u32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 5, byte_size: 4, ele_count: 1 });
+pub const ty_u128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 7, byte_size: 16, ele_count: 1 });
 
-pub const ty_f16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 2, byte_size: 2, ele_count: 1 });
-pub const ty_f32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 2, byte_size: 4, ele_count: 1 });
-pub const ty_f64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 3, byte_size: 8, ele_count: 1 });
-pub const ty_f128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 3, byte_size: 8, ele_count: 1 });
+pub const ty_s8: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 8, byte_size: 1, ele_count: 1 });
+pub const ty_s16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 9, byte_size: 2, ele_count: 1 });
+pub const ty_s32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 10, byte_size: 4, ele_count: 1 });
+pub const ty_s64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 11, byte_size: 8, ele_count: 1 });
+pub const ty_s128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 12, byte_size: 16, ele_count: 1 });
+
+pub const ty_f16: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 13, byte_size: 2, ele_count: 1 });
+pub const ty_f32: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 14, byte_size: 4, ele_count: 1 });
+pub const ty_f64: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 15, byte_size: 8, ele_count: 1 });
+pub const ty_f128: Type = Type::Primitive(PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 16, byte_size: 8, ele_count: 1 });
+
 
 impl TypeDatabase {
   pub fn new() -> Self {
     let mut db = Self { types: Default::default(), name_to_entry: Default::default() };
     "".intern();
 
+    db.insert_primitive(ty_undefined, &["und", "undefined"]);
+    db.insert_primitive(ty_poison, &["poison"]);
+    db.insert_primitive(ty_u8, &["bool"]);
     db.insert_primitive(ty_u8, &["u8"]);
     db.insert_primitive(ty_u16, &["u16"]);
     db.insert_primitive(ty_u32, &["u32"]);
@@ -240,9 +248,12 @@ pub enum Type {
 #[repr(u8)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub enum PrimitiveBaseType {
+  Undefined,
   Unsigned,
   Signed,
   Float,
+  Bool,
+  Poison,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
@@ -264,6 +275,9 @@ impl Display for PrimitiveType {
     let PrimitiveType { base_ty, base_index, byte_size, ele_count } = self;
     use PrimitiveBaseType::*;
     match base_ty {
+      Undefined => f.write_str("und"),
+      Bool => f.write_str("bool"),
+      Poison => f.write_str("XXPOISONXX"),
       Signed => {
         if *ele_count > 1 {
           f.write_fmt(format_args!("s{}x{}", byte_size * 8, ele_count))
@@ -309,7 +323,11 @@ impl Type {
   }
 
   pub fn is_primitive(&self) -> bool {
-    matches!(self, Type::Primitive(..))
+    matches!(self, Type::Primitive(..)) && !self.is_poison()
+  }
+
+  pub fn is_poison(&self) -> bool {
+    matches!(self, Type::Primitive(PrimitiveType { base_ty, .. }) if *base_ty == PrimitiveBaseType::Poison)
   }
 
   pub fn is_open(&self) -> bool {
@@ -354,6 +372,9 @@ impl Display for Type {
 #[test]
 pub(crate) fn test_primitive_type() {
   let ty = TypeDatabase::new();
+
+  let bool = ty.get_ty_entry("f64").expect("Should have f64").ty;
+  assert_eq!(format!("{bool}"), "bool");
 
   let f64 = ty.get_ty_entry("f64").expect("Should have f64").ty;
   assert_eq!(format!("{f64}"), "f64");

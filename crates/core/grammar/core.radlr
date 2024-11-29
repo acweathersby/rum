@@ -1,0 +1,65 @@
+IGNORE{ c:sp c:nl }
+
+EXPORT operators as rules
+
+<> operators 
+ > op_decl+^ops
+
+ :ast { t_Ops, ops }
+
+<> op_decl 
+  > "op:" name^name args^inputs? ("=>" args^outputs)? implementation?^implementation
+  
+  :ast { t_Op, name, inputs, outputs, implementation }
+
+<> args 
+  > arg+
+
+<> arg  
+  > name "[" var_decl^var "]"
+
+  :ast { t_Port, name, var }
+
+<> var_decl 
+  > name (":" annotation(+)^annotations)?
+
+  :ast { t_Var, name, annotations }
+
+<> annotation 
+  > name                  :ast { t_Annotation, name }
+  | "deref" "(" name^name ")"  :ast { t_Deref, target: $name }
+  | "mut_deref" "(" name^name ")"  :ast { t_MutDeref, target: $name }
+
+<> implementation 
+  > "impl" "{" implementation_scope+^scopes "}"
+
+  :ast { t_Impl, scopes }
+
+<> implementation_scope 
+  > name ":" implementation_clause+^clauses
+
+  :ast { t_ImplScope, name, clauses }
+
+<> implementation_clause 
+  > "-" var_condition*^conditions ":" implementation_action^action
+  
+  :ast { t_ImplClause, conditions, action }
+
+
+<> implementation_action 
+  > tk:( "\"" (c:id | c:num | c:sp | c:nl | c:sym )* "\"" ) 
+    
+  :ast str($1)
+
+<> var_condition 
+  > name^var "=" name^ty
+
+  :ast { t_VarCondition, var, ty }
+
+
+<> name 
+  > tk:( c:id (c:num | c:id | "_" )* ) 
+  
+  :ast str($1)
+
+

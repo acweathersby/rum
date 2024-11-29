@@ -15,6 +15,7 @@ pub mod linker;
 mod log;
 pub mod parser;
 pub mod types;
+pub mod vm;
 pub mod x86;
 
 pub use radlr_rust_runtime::types::Token;

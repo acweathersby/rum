@@ -1,0 +1,15 @@
+[package]
+name = "rum_compiler"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "./lib.rs"
+
+
+
+
+
+[dependencies]
+rum_lang    = { path="../rum_lang" }
+core_lang       = { path="../core" }

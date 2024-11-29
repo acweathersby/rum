@@ -461,6 +461,7 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, vals: &mut [Value], ty_db
               4 => Value::f32(cst.convert(prim).load()),
               _ => unreachable!(),
             },
+            _ => unreachable!(),
           },
           ty => panic!("unexpected node type {ty}"),
         };
@@ -517,6 +518,7 @@ pub fn process_op(dst_op: IRGraphId, node: &RVSDGNode, vals: &mut [Value], ty_db
                 8 => Value::u64(unsafe { *(raw_ptr as *mut u64) }),
                 _ => unreachable!(),
               },
+              _ => unreachable!(),
             },
             ty => unreachable!("unrecognized pointer type {ty}"),
           },

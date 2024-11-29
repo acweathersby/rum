@@ -9,6 +9,7 @@ use rum_lang::{
 };
 use std::{collections::VecDeque, path::PathBuf};
 
+
 fn main() -> Result<(), u8> {
   let mut args: VecDeque<String> = std::env::args().collect();
   let _ = args.pop_front();

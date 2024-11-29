@@ -128,7 +128,7 @@ impl Solver {
                 for output in node.outputs.iter() {
                   let ty = types[output.in_op.usize()];
 
-                  let VarId::VarName(name) = output.id else {
+                  let VarId::Name(name) = output.id else {
                     continue;
                   };
 
@@ -151,7 +151,7 @@ impl Solver {
 
                 for output in node.outputs.iter() {
                   match output.id {
-                    VarId::ArraySize => {
+                    VarId::ElementCount => {
                       let mut vec = vec![Value::Uninitialized; node.nodes.len()];
                       process_op(output.in_op, node, &mut vec, ty_db);
 
@@ -160,7 +160,7 @@ impl Solver {
                         _ => unreachable!(),
                       }
                     }
-                    VarId::ArrayType => {
+                    VarId::BaseType => {
                       let ty = node.types[output.in_op.usize()];
                       match ty {
                         Type::Primitive(prim) => {
