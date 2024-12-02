@@ -26,9 +26,9 @@ EXPORT operators as rules
   :ast { t_Var, name, annotations }
 
 <> annotation 
-  > name                  :ast { t_Annotation, name }
-  | "deref" "(" name^name ")"  :ast { t_Deref, target: $name }
-  | "mut_deref" "(" name^name ")"  :ast { t_MutDeref, target: $name }
+  > name                          :ast { t_Annotation, name }
+  | "deref" "(" name^name ")"     :ast { t_Deref, target: $name }
+  | "mut_deref" "(" name^name ")" :ast { t_MutDeref, target: $name }
 
 <> implementation 
   > "impl" "{" implementation_scope+^scopes "}"
