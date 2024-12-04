@@ -1,3 +1,166 @@
+
+
+
+
+
+# Array
+
+Rum arrays are homogenous aggregate data types with a staticly or dynamicly assigned length. For statically assigned 
+
+Form: 
+
+```
+ty: Array
+
+  `1 : binding       : var1
+  `2 : const         : u32   
+
+outputs: 
+  `1 = [Type  ] > xxx 
+  `2 = [Length] > xxx 
+
+```
+
+
+# Enum
+
+```
+ty: Enum
+  `1 : binding       : var1
+  `2 : const         : var1
+   .
+   .
+   .
+  `n : const         : var1   
+
+outputs: 
+  `1 = [BaseType  ] > xxx 
+  `2 = [Name0     ] > xxx  // Element Value
+   .
+   .
+   .
+  `N = [NameN     ] > xxx // Element Value
+```
+
+# Struct
+
+
+
+- Arg Matching 
+- Default Arg
+
+- Side-effects 
+  - reference lifetimes
+  - routine effects
+  - global context
+  - errors
+
+- Debugging
+ - Printing
+ - Stepping
+ - fuzzing
+ - Timing
+ - error database
+ 
+
+- Pointer
+ - Designated pointer allocator stacks
+ - Pointer naming and restrictions
+ - Pointer dereference/reference inference
+
+- Data flow
+
+- Type flow
+
+- Optimizations
+ - Constant propagation
+
+- Strings / vectors / hash tables.
+
+- Compile Targets
+ - WASM
+ - x86
+ - ARM
+
+- UI System
+ - Vulkan
+ - SDL input
+ - FFI
+
+
+  (t: i32, b: u32, (implied-argument) ctx: {
+    allocator_table_ctx = [
+      Default,
+      garbage-
+    ],
+    stack_space,
+    heap_space,
+  }) => ? { '
+
+    routine( ctx ) -> ctx;
+
+
+    loop if t is
+      > 0 {
+        b = b + 1
+        t = t - 1
+      } 
+      == 0  {
+        b = 30
+        t = t - 1
+      }
+
+    b
+  }
+
+
+- Editor
+  Node based editor with strong integration with language.
+
+----------------------------
+
+The problem: 
+
+Aliasing, Object Lifetime, and Safety
+
+Memory safety is best summed as thus: Mutation of an object to a certain value should persist that value until the next mutation. Any intermediate non-mutating access of such an object between mutations should always yield the same value. In a trivial, sequential code sequence this mutation semantic is maintained. This becomes more complicated when two elements are added to the mix, pointer/reference aliasing and concurrent access. 
+
+The former can occur if a mutable reference to an object can be assigned to two or more variables simultaneously. Within a code sequence, it can be quite simple to detect these types of assignments and forbid them from occurring. This is how Rust operates, allowing only a single mutable reference to persists in a code sequence, and invalidate all other references until the mutable reference goes out of scope. This works well for the most part, and most aliasing issues are prevented by this invariant. This starts breaking down when the programmer desires to obtain mutable references to independent members of an object. In which case the the first mutable access of an object X member, we'll call it X.a, creates a total mutable reference over X, preventing further mutable access of X until the reference bound to X.a goes out of scope. This prevents the programmer from simultaneously obtaining a reference to an independent member of X, let's call it X.b, the mutation of which would have no bearing on the reference to X.a. ( This may be complicated if both X.a X.b and are themselves pointers of the same type, which then can be assigned to the same object address, thus creating an alias that could cause safety violations. )
+
+The later case can occur if a reference to an object is trivially is passed between threads, allowing any number of threads to mutate an object, with each thread unaware of the mutations created by its peers, resulting in issues, such as live and dead locks and invalid memory access, when the underlying cache synchronization systems kick in.
+
+Restricting the occurrence of simultaneous mutable references can go a long way to prevent whole classes of bugs, and doing so intelligently can elevate the programmer's ability to confidently create memory safe code. -
+
+
+---------------
+
+---------------
+Structural Data
+
+Like C, Rum has strong data layout grantees. Two types whose member layouts are subsets of each other can be considered the same type.
+
+- All members are aligned according to their type alignments
+- Types are aligned based on their byte size
+- An aggregate type's alignment is based on it's largest member.
+
+
+
+# Structures 
+
+> Described here is a form of structural typing, where types with compatible data layouts are considered the same.
+
+A structure is a memory location composed of a ordered set of elements with heterogenous types. It has a defined size and strict layout of its members, which must be consistent with alignment constraint of each element's type. The first element in a structure is assigned a subname 0, the second 1, and so forth. This allows a numeric access elements to accessed through either its name (as in `struct.element_name`) or through its subname ( as in `struct[0]`). The caveat to numeric indexing is the value must be a const. This may change into a requirement of match statement to deal with type disambiguation at some point in the future.
+
+An array is a memory location composed of an ordered set of elements of a homogenous type. It may or may not have a defined size, and in the later case, may be adjusted to contain fewer or greater number of elements. The layout of an array's elements must be consistent with the alignment constraints of the array's element type.
+
+A structure whose composition is indistinguishable from an array, save for the naming scheme of its elements, may be accessed as an array.
+
+An array of length 1 is indistinguishable from a pointer to an object of the arrays type, and thus may be used as such.
+
+
+--------------------
+
+
 # Relationship with Rum Script
 
 # First Class parsing
@@ -590,3 +753,46 @@ If all registers are used and there need's to be allocation for a new variable, 
 
  Allen C. Kay (1969) - The Reactive Engine
   http://www.chilton-computing.org.uk/inf/pdfs/kay. htm#annotations:11TuOt4oEeie8AsNFbhCaw
+
+
+  ----------
+
+
+  # Commands
+
+- test
+- run
+- build
+- debug - Run RumC in debugger mode
+- format
+- ls - Run RumC in language server mode.
+
+arithmetic_add (ir: 'IRBuilder) =| {
+  l = pop_stack(ir)
+  r = pop_stack(ir)
+  ir.push_ssa(IROp.ADD, IRType.Inherit, [l, r])
+}
+
+arithmetic_sub (ir: 'IRBuilder) =| {
+  l = pop_stack(ir)
+  r = pop_stack(ir)
+  ir.push_ssa(IROp.SUB, IRType.Inherit, [l, r])
+}
+
+Goal 1 
+  Write to terminal 
+Goal 2 
+  Read from terminal
+
+
+  Fundamental computational units:
+
+  OPS PORTS TYPES
+
+
+ R op + A B
+
+
+DATA FLOW <-> OPERATIONAL FLOW
+
+R r rt => (op) A a ta  B b bt ... N n tn
