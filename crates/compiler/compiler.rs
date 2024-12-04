@@ -15,54 +15,18 @@ use std::{
   collections::{HashMap, VecDeque},
   fmt::{Debug, Display},
   sync::Arc,
+  u32,
 };
 
+use crate::types::*;
 use types::ConstVal;
 
-const LOOP_ID: &'static str = "---LOOP---";
-const MATCH_ID: &'static str = "---MATCH---";
-const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
-const CLAUSE_ID: &'static str = "---CLAUSE---";
-
-pub(crate) struct Database {
-  pub ops:      Vec<Arc<core_lang::parser::ast::Op>>,
-  pub routines: Vec<Box<SuperNode>>,
-  pub ty_db:    TypeDatabase,
-}
-
-impl Default for Database {
-  fn default() -> Self {
-    Self { ops: Default::default(), routines: Default::default(), ty_db: TypeDatabase::new() }
-  }
-}
-
-impl Database {
-  pub fn get_fn(&self, fn_name: IString) -> Option<&SuperNode> {
-    for node in self.routines.iter() {
-      if node.binding_name == fn_name {
-        return Some(node);
-      }
-    }
-    None
-  }
-}
-
-pub fn add_ops_to_db(db: &mut Database, ops: &str) {
-  for op in core_lang::parser::parse_ops(ops).expect("Failed to parse ops").ops.iter() {
-    db.ops.push(op.clone());
-  }
-}
-
-pub fn get_op_from_db(db: &Database, name: &str) -> Option<Arc<core_lang::parser::ast::Op>> {
-  for op in &db.ops {
-    if op.name == name {
-      return Some(op.clone());
-    }
-  }
-
-  None
-}
-
+pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
+pub(crate) const LOOP_ID: &'static str = "---LOOP---";
+pub(crate) const MATCH_ID: &'static str = "---MATCH---";
+pub(crate) const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
+pub(crate) const CLAUSE_ID: &'static str = "---CLAUSE---";
+pub(crate) const CALL_ID: &'static str = "---CALL---";
 pub fn compile_module(db: &mut Database, module: &str) {
   use rum_lang::parser::script_parser::*;
   let module_ast = rum_lang::parser::script_parser::parse_raw_module(module).expect("Failed to parse module");
@@ -102,11 +66,12 @@ pub enum OPConstraint {
 
 pub(crate) struct OpAddress(*mut Operation, usize);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Var {
-  pub(crate) id: VarId,
-  pub(crate) op: OpId,
-  pub(crate) ty: Type,
+  pub(crate) id:                VarId,
+  pub(crate) op:                OpId,
+  pub(crate) ty:                Type,
+  pub(crate) origin_node_index: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -482,6 +447,7 @@ impl Display for Node {
 
 #[derive(Debug)]
 pub(crate) struct NodeScope {
+  pub(crate) id:         &'static str,
   pub(crate) node_index: usize,
   pub(crate) vars:       Vec<Var>,
   pub(crate) var_lu:     HashMap<VarId, usize>,
@@ -495,7 +461,7 @@ pub(crate) struct BuildPack {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct OpId(u32);
+pub(crate) struct OpId(pub(crate) u32);
 
 impl Debug for OpId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -534,19 +500,82 @@ impl OpId {
 pub fn push_node(bp: &mut BuildPack, id: &'static str) {
   let node_index = bp.super_node.nodes.len();
   bp.super_node.nodes.push(Node { index: node_index, type_str: id, inputs: Default::default(), outputs: Default::default() });
-  bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default() });
+  bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), id });
 }
 
-pub fn pop_node(bp: &mut BuildPack) -> NodeScope {
-  bp.node_stack.pop().unwrap()
-}
-
-pub fn add_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) {
+pub fn add_existing_var(bp: &mut BuildPack, op: OpId, mut var: Var) {
   let node_data = bp.node_stack.last_mut().unwrap();
 
+  var.op = op;
+
   let var_index = node_data.vars.len();
-  node_data.vars.push(Var { id: var_id, op, ty });
+  node_data.vars.push(var);
+  node_data.var_lu.insert(var.id.clone(), var_index);
+}
+
+/// Declare a variable within in the current node scope
+pub fn declare_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &mut Var {
+  let node_data = bp.node_stack.last_mut().unwrap();
+
+  let origin_node_index = node_data.node_index;
+
+  let var_index = node_data.vars.len();
+  node_data.vars.push(Var { id: var_id, op, ty, origin_node_index });
   node_data.var_lu.insert(var_id.clone(), var_index);
+  &mut node_data.vars[var_index]
+}
+
+pub fn remove_var(bp: &mut BuildPack, var_id: VarId) {
+  let node_data = bp.node_stack.last_mut().unwrap();
+  node_data.var_lu.remove(&var_id);
+}
+
+pub fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option<(Var, usize)> {
+  for node_stack_index in (0..=current).rev() {
+    let node = &mut bp.node_stack[node_stack_index];
+    if let Some(var) = node.var_lu.get(&var_id) {
+      return Some((node.vars[*var], node_stack_index));
+    } else if bp.super_node.nodes[bp.node_stack[node_stack_index].node_index].type_str == LOOP_ID {
+      let index = bp.node_stack[node_stack_index].node_index;
+
+      if let Some((var, _)) = get_var_internal(bp, var_id, node_stack_index - 1) {
+        let Var { id, op, ty, origin_node_index } = var;
+        let op = add_op(bp, Operation::OutputPort(index as u32, vec![(0, op)]), ty, Default::default());
+        bp.super_node.nodes[index].inputs.push((op, var_id));
+
+        let node_data = &mut bp.node_stack[node_stack_index];
+        let var_index = node_data.vars.len();
+
+        let new_var = Var { id: var_id, op, ty, origin_node_index: var.origin_node_index };
+        node_data.vars.push(new_var);
+        node_data.var_lu.insert(var_id.clone(), var_index);
+
+        return Some((new_var, node_stack_index));
+      } else {
+        return None;
+      }
+    }
+  }
+
+  return None;
+}
+
+/// Retrieves a named variable declared along the current scope stack, or none.
+pub fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, Type)> {
+  let current = bp.node_stack.len() - 1;
+
+  if let Some((var, index)) = get_var_internal(bp, var_id, current) {
+    if index != current {
+      let current_node = &mut bp.node_stack[current];
+      let var_index = current_node.vars.len();
+      current_node.vars.push(var);
+      current_node.var_lu.insert(var.id, var_index);
+    }
+
+    Some((var.op, var.ty))
+  } else {
+    None
+  }
 }
 
 /// Update the op id of a variable. The new op should have the same type as the existing op.
@@ -565,46 +594,8 @@ pub fn update_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) {
 
     bp.node_stack.last_mut().unwrap().vars[var_index].op = op;
   } else {
-    add_var(bp, var_id, op, ty);
+    declare_var(bp, var_id, op, ty);
   }
-}
-
-pub fn remove_var(bp: &mut BuildPack, var_id: VarId) {
-  let node_data = bp.node_stack.last_mut().unwrap();
-  node_data.var_lu.remove(&var_id);
-}
-
-pub fn get_var_internal(bp: &mut BuildPack, var_id: VarId, offset: usize) -> Option<(OpId, Type)> {
-  for node_stack_index in (0..offset).rev() {
-    if let Some(var) = bp.node_stack[node_stack_index].var_lu.get(&var_id) {
-      let var: &Var = &bp.node_stack[node_stack_index].vars[*var];
-      if node_stack_index == bp.node_stack.len() - 1 {
-        return Some((var.op, var.ty));
-      } else {
-        return Some((var.op, var.ty));
-        todo!("Import variable {var_id}");
-      }
-    } else if bp.super_node.nodes[bp.node_stack[node_stack_index].node_index].type_str == LOOP_ID {
-      let index = bp.node_stack[node_stack_index].node_index;
-      if let Some((op, ty)) = get_var_internal(bp, var_id, node_stack_index) {
-        let op = add_op(bp, Operation::OutputPort(index as u32, vec![(0, op)]), ty, Default::default());
-        bp.super_node.nodes[index].outputs.push((op, var_id));
-
-        let node_data = &mut bp.node_stack[node_stack_index];
-        let var_index = node_data.vars.len();
-        node_data.vars.push(Var { id: var_id, op, ty });
-        node_data.var_lu.insert(var_id.clone(), var_index);
-
-        return Some((op, ty));
-      }
-    }
-  }
-
-  return None;
-}
-
-pub fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, Type)> {
-  get_var_internal(bp, var_id, bp.node_stack.len())
 }
 
 pub fn get_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
@@ -625,14 +616,13 @@ pub fn get_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
 
     root.inputs.push((op, var_id));
 
-    add_var(bp, var_id, op, ty);
+    declare_var(bp, var_id, op, ty).origin_node_index = root.index;
 
     return get_context(bp, var_id);
   }
 }
 
 pub fn update_context(bp: &mut BuildPack, var_id: VarId, op: OpId) {
-  println!("_____________________________________________________ {}", op);
   debug_assert_eq!(var_id, VarId::HeapContext);
   update_var(bp, var_id, op, Default::default())
 }
@@ -684,7 +674,7 @@ pub(crate) fn compile_routine(db: &mut Database, routine: &RawRoutine<Token>) ->
     node_stack: Default::default(),
   };
 
-  push_node(&mut bp, "fn");
+  push_node(&mut bp, ROUTINE_ID);
 
   let mut out_ty = Default::default();
 
@@ -696,7 +686,9 @@ pub(crate) fn compile_routine(db: &mut Database, routine: &RawRoutine<Token>) ->
         let ty = add_ty_var(&mut bp).ty;
         let var_id = VarId::Name(name.intern());
         let op_id = add_op(&mut bp, Operation::Param(var_id, index as u32), ty, Default::default());
-        add_var(&mut bp, var_id, op_id, ty);
+
+        declare_var(&mut bp, var_id, op_id, ty);
+
         add_input(&mut bp, op_id, var_id);
 
         if let Some(defined_ty) = get_type(&param.ty.ty, false, &mut unsafe { &mut *bp.db }.ty_db) {
@@ -1034,7 +1026,9 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<parser::script_parser::Me
     }
   } else {
     let ty = add_ty_var(bp).ty;
-    add_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
+
+    declare_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
+
     return get_mem_op(bp, mem);
   }
 }
@@ -1053,13 +1047,13 @@ pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpI
         }
         loop_statement_group_1_Value::RawMatch(match_) => {
           push_node(bp, LOOP_ID);
-          let (match_op, match_ty) = process_match(match_, bp, false);
 
-          //let (op, _) = get_var(bp, VarId::MatchOutputVal).expect("");
+          let ((match_op, _), (active_op, _)) = process_match(match_, bp, None);
+
           add_output(bp, match_op, VarId::MatchOutputVal);
-          dbg!(&bp);
+          add_output(bp, active_op, VarId::MatchActivation);
 
-          join_nodes(vec![pop_node(bp)], bp);
+          join_nodes(vec![pop_node(bp, false)], bp);
           output = Default::default()
         }
         loop_statement_group_1_Value::RawIterStatement(iter) => {
@@ -1075,7 +1069,7 @@ pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpI
             VarLookup::Ptr(ptr_op, ..) => {
               process_op("STORE", &[ptr_op, expr_op], bp);
             }
-            VarLookup::Var(.., var_name) => {
+            VarLookup::Var(.., ty, var_name) => {
               update_var(bp, VarId::Name(var_name), expr_op, expr_ty);
             }
           },
@@ -1119,6 +1113,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
     expression_Value::Add(add) => {
       let left = compile_expression(&add.left.clone().to_ast().into_expression_Value().expect("Should be convertible"), bp).0;
       let right = compile_expression(&add.right.clone().to_ast().into_expression_Value().expect("super_node.operands  be convertible"), bp).0;
+
       process_op("ADD", &[left, right], bp)
     }
     expression_Value::Sub(sub) => {
@@ -1141,7 +1136,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
       let right = compile_expression(&pow.right.clone().to_ast().into_expression_Value().expect("  be convertible"), bp).0;
       process_op("POW", &[left, right], bp)
     }
-    expression_Value::RawMatch(match_) => process_match(match_, bp, false),
+    expression_Value::RawMatch(match_) => process_match(match_, bp, None).0,
     expression_Value::RawCall(call) => process_call(call, bp),
     ty => todo!("{ty:#?}"),
   }
@@ -1163,7 +1158,7 @@ pub(crate) fn process_call(call: &Arc<parser::script_parser::RawCall<Token>>, bp
     add_op(bp, Operation::Name(call.member.root.name.id.intern()), ty, Default::default())
   };
 
-  push_node(bp, "call");
+  push_node(bp, CALL_ID);
   add_input(bp, call_op, VarId::CallRef);
 
   for (index, (op_id, op_ty)) in args.iter().enumerate() {
@@ -1173,9 +1168,9 @@ pub(crate) fn process_call(call: &Arc<parser::script_parser::RawCall<Token>>, bp
   let ty = add_ty_var(bp).ty;
 
   let op = add_op(bp, Operation::Param(VarId::Return, 0), ty, Default::default());
-  add_var(bp, VarId::Return, op, ty);
+  declare_var(bp, VarId::Return, op, ty);
 
-  join_nodes(vec![pop_node(bp)], bp);
+  join_nodes(vec![pop_node(bp, false)], bp);
 
   let (op, ty) = get_var(bp, VarId::Return).expect("");
   remove_var(bp, VarId::Return);
@@ -1183,13 +1178,28 @@ pub(crate) fn process_call(call: &Arc<parser::script_parser::RawCall<Token>>, bp
   (op, ty)
 }
 
-pub(crate) fn process_match(match_: &Arc<parser::script_parser::RawMatch<Token>>, bp: &mut BuildPack, preserve_match_activation: bool) -> (OpId, Type) {
+fn current_node_index(bp: &BuildPack) -> usize {
+  bp.node_stack.last().unwrap().node_index
+}
+
+pub(crate) fn process_match(
+  match_: &Arc<parser::script_parser::RawMatch<Token>>,
+  bp: &mut BuildPack,
+  activation_ty: Option<Type>,
+) -> ((OpId, Type), (OpId, Type)) {
   // Build input test
   let input_op = compile_expression(&expression_Value::MemberCompositeAccess(match_.expression.clone()), bp);
 
   push_node(bp, MATCH_ID);
-  let output_ty = add_ty_var(bp).ty;
-  bp.super_node.constraints.push(OPConstraint::GenTyToTy(output_ty, ty_u32));
+
+  let activation_ty = if let Some(activation_ty) = activation_ty {
+    activation_ty
+  } else {
+    let activation_ty = add_ty_var(bp).ty;
+    bp.super_node.constraints.push(OPConstraint::GenTyToTy(activation_ty, ty_u32));
+    declare_var(bp, VarId::MatchActivation, Default::default(), activation_ty);
+    activation_ty
+  };
 
   let mut clauses = Vec::new();
 
@@ -1197,8 +1207,9 @@ pub(crate) fn process_match(match_: &Arc<parser::script_parser::RawMatch<Token>>
 
   for (index, clause) in clause_ast.clone() {
     push_node(bp, CLAUSE_SELECTOR_ID);
+    get_var(bp, VarId::MatchActivation);
 
-    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), index as u32)), output_ty, Default::default());
+    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), index as u32)), activation_ty, Default::default());
 
     if let Some(expr) = &clause.expr {
       let (expr_op, _) = compile_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), bp);
@@ -1217,112 +1228,152 @@ pub(crate) fn process_match(match_: &Arc<parser::script_parser::RawMatch<Token>>
 
       let (bool_op, _) = process_op(cmp_op_name, &[input_op.0, expr_op], bp);
 
-      let (out_op, output_ty_new) = process_op("SEL", &[bool_op, sel_op], bp);
+      let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp);
 
-      if output_ty_new != output_ty && !output_ty.is_undefined() {
-        add_constraint(bp, OPConstraint::GenTyToGenTy(output_ty_new, output_ty));
-      }
+      /*       if output_ty_new != activation_ty && !activation_ty.is_undefined() {
+        add_constraint(bp, OPConstraint::GenTyToGenTy(output_ty_new, activation_ty));
+      } */
 
-      add_var(bp, VarId::MatchActivation, out_op, output_ty_new);
+      update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
     } else {
-      add_var(bp, VarId::MatchActivation, sel_op, output_ty);
+      update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
     }
 
-    clauses.push(pop_node(bp));
+    clauses.push(pop_node(bp, false));
   }
 
   if match_.default_clause.is_none() {
     push_node(bp, CLAUSE_SELECTOR_ID);
-    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), match_.clauses.len() as u32)), output_ty, Default::default());
-    add_var(bp, VarId::MatchActivation, sel_op, output_ty);
-    clauses.push(pop_node(bp));
+    get_var(bp, VarId::MatchActivation);
+
+    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), u32::MAX)), activation_ty, Default::default());
+    update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
+    clauses.push(pop_node(bp, false));
   }
 
   join_nodes(clauses, bp);
 
   let selector_op = get_var(bp, VarId::MatchActivation).unwrap().0;
-
-  if !preserve_match_activation {
-    remove_var(bp, VarId::MatchActivation);
-    add_output(bp, selector_op, VarId::MatchActivation);
-  }
+  let output_ty = add_ty_var(bp).ty;
+  declare_var(bp, VarId::MatchOutputVal, Default::default(), output_ty);
 
   let mut clauses = Vec::new();
 
   for (_, clause) in clause_ast {
     push_node(bp, CLAUSE_ID);
+    get_var(bp, VarId::MatchOutputVal);
 
     let (op, output_ty) = compile_scope(&clause.scope, bp);
 
     if op.is_valid() {
-      add_var(bp, VarId::MatchOutputVal, op, output_ty);
+      update_var(bp, VarId::MatchOutputVal, op, output_ty);
     } else {
       let (poison_op, output_ty) = process_op("POISON", &[], bp);
-      add_var(bp, VarId::MatchOutputVal, poison_op, output_ty);
+      update_var(bp, VarId::MatchOutputVal, poison_op, output_ty);
     }
 
-    clauses.push(pop_node(bp));
+    clauses.push(pop_node(bp, true));
   }
 
   if match_.default_clause.is_none() {
     push_node(bp, CLAUSE_ID);
+    get_var(bp, VarId::MatchOutputVal);
     let (poison_op, output_ty) = process_op("POISON", &[], bp);
-    add_var(bp, VarId::MatchOutputVal, poison_op, output_ty);
-    clauses.push(pop_node(bp));
+    update_var(bp, VarId::MatchOutputVal, poison_op, output_ty);
+    clauses.push(pop_node(bp, true));
   }
 
   join_nodes(clauses, bp);
 
-  remove_var(bp, VarId::MatchInputExpr);
-
-  join_nodes(vec![pop_node(bp)], bp);
+  let act = get_var(bp, VarId::MatchActivation).unwrap();
+  add_output(bp, act.0, VarId::MatchActivation);
 
   let out = get_var(bp, VarId::MatchOutputVal).unwrap();
+  add_output(bp, out.0, VarId::MatchOutputVal);
 
-  remove_var(bp, VarId::MatchOutputVal);
+  join_nodes(vec![pop_node(bp, false)], bp);
+  //remove_var(bp, VarId::MatchOutputVal);
 
-  out
+  (out, act)
 }
 
-pub(crate) fn join_nodes(clauses: Vec<NodeScope>, bp: &mut BuildPack) {
-  let current_node = bp.node_stack.last().unwrap();
-  let current_node_index = current_node.node_index;
-  for clause in clauses {
-    for var in clause.var_lu {
-      let var = &clause.vars[var.1];
-      bp.super_node.nodes[clause.node_index].outputs.push((var.op, var.id));
+pub fn pop_node(bp: &mut BuildPack, port_outputs: bool) -> NodeScope {
+  let mut node = bp.node_stack.pop().unwrap();
 
-      if let Some((op, ty)) = get_var(bp, var.id.clone()) {
-        if op.is_invalid() {
+  if port_outputs {
+    let node_index = node.node_index as u32;
+
+    for (var_id, var_index) in node.var_lu.iter() {
+      if let Some(var) = node.vars.get_mut(*var_index) {
+        if var.origin_node_index >= node_index as usize {
           continue;
         }
-        match &mut bp.super_node.operands[op.0 as usize] {
-          Operation::OutputPort(root, vars) => {
-            vars.push((clause.node_index as u32, var.op));
 
-            let ty_a = bp.super_node.types[op.0 as usize];
-            let ty_b = bp.super_node.types[var.op.0 as usize];
+        if var.op.is_valid() {
+          bp.super_node.nodes[node_index as usize].outputs.push((var.op, *var_id));
+          //let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, vec![(node_index, var.op)]), var.ty, Default::default());
+          //bp.super_node.nodes[node_index as usize].outputs.push((port_op, *var_id));
+          //var.op = port_op;
+        }
+      }
+    }
+  }
 
-            //if ty_a.is_generic() && ty_b.is_generic() {
+  node
+}
+
+pub(crate) fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
+  let current_node = bp.node_stack.last().unwrap();
+
+  let current_node_index = current_node.node_index;
+
+  let mut outgoing_vars: HashMap<VarId, Vec<(usize, Var)>> = HashMap::new();
+
+  for outgoing_node in outgoing_nodes {
+    for var in outgoing_node.var_lu {
+      let out_var = &outgoing_node.vars[var.1];
+
+      // No need to do anything with vars that we declared in the outgoing nodes scope.
+      if out_var.origin_node_index >= outgoing_node.node_index {
+        continue;
+      }
+
+      match outgoing_vars.entry(var.0) {
+        std::collections::hash_map::Entry::Occupied(mut e) => {
+          e.get_mut().push((outgoing_node.node_index, *out_var));
+        }
+        std::collections::hash_map::Entry::Vacant(e) => {
+          e.insert(vec![(outgoing_node.node_index, *out_var)]);
+        }
+      }
+    }
+  }
+
+  for (var_id, vars) in outgoing_vars {
+    if let Some((op, ty)) = get_var(bp, var_id) {
+      let vars = vars.iter().filter(|(_, v)| v.op != op).collect::<Vec<_>>();
+
+      if vars.len() > 0 {
+        let ty_a = if op.is_valid() { bp.super_node.types[op.0 as usize] } else { vars[0].1.ty };
+
+        for out_var in &vars {
+          let ty_b = bp.super_node.types[out_var.1.op.0 as usize];
+
+          if ty_a != ty_b {
             add_constraint(bp, OPConstraint::GenTyToGenTy(ty_a, ty_b));
-            //}
-          }
-          _ => {
-            let op = add_op(
-              bp,
-              Operation::OutputPort(current_node_index as u32, vec![(Default::default(), op), (clause.node_index as u32, var.op)]),
-              ty,
-              Default::default(),
-            );
-
-            add_constraint(bp, OPConstraint::GenTyToGenTy(ty, var.ty));
-
-            add_var(bp, var.id, op, ty);
           }
         }
-      } else {
-        let op = add_op(bp, Operation::OutputPort(current_node_index as u32, vec![(clause.node_index as u32, var.op)]), var.ty, Default::default());
-        add_var(bp, var.id, op, var.ty);
+
+        let iter = vars.iter().map(|(i, v)| (*i as u32, v.op));
+        match &mut bp.super_node.operands.get_mut(op.0 as usize) {
+          Some(Operation::OutputPort(_, port_vars)) => {
+            port_vars.extend(iter);
+          }
+          _ => {
+            let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty, Default::default());
+            update_var(bp, var_id, port_op, ty);
+          }
+        }
       }
     }
   }
