@@ -1,7 +1,7 @@
-use container::ArrayVec;
+use crate::types::*;
 use core_lang::parser::ast::annotation_Value;
 use ir::{
-  ir_rvsdg::{lower::get_type, SolveState, VarId},
+  ir_rvsdg::lower::get_type,
   types::{Type, TypeDatabase, *},
 };
 use istring::{CachedString, IString};
@@ -10,15 +10,12 @@ use rum_lang::{
   parser::script_parser::{expression_Value, routine_type_Value, RawRoutine},
   *,
 };
-
 use std::{
   collections::{HashMap, VecDeque},
-  fmt::{Debug, Display},
+  fmt::Debug,
   sync::Arc,
   u32,
 };
-
-use crate::types::*;
 use types::ConstVal;
 
 pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
@@ -27,6 +24,7 @@ pub(crate) const MATCH_ID: &'static str = "---MATCH---";
 pub(crate) const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
 pub(crate) const CLAUSE_ID: &'static str = "---CLAUSE---";
 pub(crate) const CALL_ID: &'static str = "---CALL---";
+
 pub fn compile_module(db: &mut Database, module: &str) {
   use rum_lang::parser::script_parser::*;
   let module_ast = rum_lang::parser::script_parser::parse_raw_module(module).expect("Failed to parse module");
@@ -38,6 +36,12 @@ pub fn compile_module(db: &mut Database, module: &str) {
           let node = compile_routine(db, routine.as_ref());
           db.routines.push(node);
         }
+        module_member_Value::RawBoundType(bound_ty) => match &bound_ty.ty {
+          type_Value::Type_Struct(strct) => {
+            todo!("Build struct {strct:#?}")
+          }
+          _ => unreachable!(),
+        },
         ty => todo!("handle {ty:#?}"),
       },
 
@@ -46,475 +50,37 @@ pub fn compile_module(db: &mut Database, module: &str) {
   }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum OPConstraint {
-  OpToTy(OpId, Type),
-  // The type of op at src must match te type of the op at dst.
-  // If both src and dst are resolved, a conversion must be made.
-  OpToOp { src: OpId, dst: OpId },
-  BindOpToOp { src: OpId, dst: OpId },
-  MemOp { ptr_op: OpId, val_op: OpId },
-  Deref { ptr_ty: Type, val_ty: Type, mutable: bool },
-  Num(Type),
-  Member { name: IString, ref_dst: OpId, par: OpId },
-  Mutable(u32, u32),
-  Agg(OpId),
-  GenTyToTy(Type, Type),
-  GenTyToGenTy(Type, Type),
-}
-
-pub(crate) struct OpAddress(*mut Operation, usize);
-
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Var {
-  pub(crate) id:                VarId,
-  pub(crate) op:                OpId,
-  pub(crate) ty:                Type,
-  pub(crate) origin_node_index: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct MemberEntry {
-  pub name:      IString,
-  pub origin_op: u32,
-  pub ty:        Type,
-}
-
-#[derive(Clone)]
-pub struct TypeVar {
-  pub id:          u32,
-  pub ref_id:      i32,
-  pub ty:          Type,
-  pub ref_count:   u32,
-  pub constraints: ArrayVec<2, VarConstraint>,
-  pub members:     ArrayVec<2, MemberEntry>,
-}
-
-impl Default for TypeVar {
-  fn default() -> Self {
-    Self {
-      id:          Default::default(),
-      ref_id:      -1,
-      ref_count:   0,
-      ty:          Default::default(),
-      constraints: Default::default(),
-      members:     Default::default(),
-    }
-  }
-}
-
-impl TypeVar {
-  pub fn new(id: u32) -> Self {
-    Self { id: id, ..Default::default() }
-  }
-
-  #[track_caller]
-  pub fn has(&self, constraint: VarConstraint) -> bool {
-    self.constraints.find_ordered(&constraint).is_some()
-  }
-
-  #[track_caller]
-  pub fn add(&mut self, constraint: VarConstraint) {
-    let _ = self.constraints.push_unique(constraint);
-  }
-
-  pub fn add_mem(&mut self, name: IString, ty: Type, origin_node: u32) {
-    self.constraints.push_unique(VarConstraint::Agg).unwrap();
-
-    for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
-      if *n == name {
-        self.members.remove(index);
-        break;
-      }
-    }
-
-    let _ = self.members.insert_ordered(MemberEntry { name, origin_op: origin_node, ty });
-  }
-
-  pub fn get_mem(&self, name: IString) -> Option<(u32, Type)> {
-    for MemberEntry { name: n, origin_op: origin_node, ty } in self.members.iter() {
-      if *n == name {
-        return Some((*origin_node, *ty));
-      }
-    }
-    None
-  }
-}
-
-impl Debug for TypeVar {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self, f)
-  }
-}
-
-impl Display for TypeVar {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let Self { id, ty, constraints, members, ref_id, ref_count } = self;
-
-    if ty.is_generic() {
-      f.write_fmt(format_args!("[{id}] refs:{ref_count:03} {}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
-    } else {
-      f.write_fmt(format_args!("[{id}] refs:{ref_count:03} {}v{id}: {ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
-    }
-    if !constraints.is_empty() {
-      f.write_str(" <")?;
-      for constraint in constraints.iter() {
-        f.write_fmt(format_args!("{constraint:?},"))?;
-      }
-      f.write_str(">")?;
-    }
-
-    if !members.is_empty() {
-      f.write_str(" [\n")?;
-      for MemberEntry { name, origin_op: origin_node, ty } in members.iter() {
-        f.write_fmt(format_args!("  {name}: {ty} @ `{origin_node},\n"))?;
-      }
-      f.write_str("]")?;
-    }
-
-    Ok(())
-  }
-}
-
-#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
-pub enum VarConstraint {
-  Agg,
-  Indexable,
-  Method,
-  Member,
-  Index(u32),
-  Numeric,
-  Float,
-  Unsigned,
-  Ptr,
-  Load(u32, u32),
-  MemOp {
-    ptr_ty: Type,
-    val_ty: Type,
-  },
-  Convert {
-    dst: OpId,
-    src: OpId,
-  },
-  Callable,
-  Mutable,
-  Default(Type),
-  /// Node index, node port index, is_output
-  Binding(u32, u32, bool),
-}
-
-impl Debug for VarConstraint {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    use VarConstraint::*;
-    match self {
-      Indexable => f.write_fmt(format_args!("[*]",)),
-      Callable => f.write_fmt(format_args!("* => x -> x",)),
-      Method => f.write_fmt(format_args!("*.X => x -> x",)),
-      MemOp { ptr_ty: ptr, val_ty: val } => f.write_fmt(format_args!("memop  *{ptr} = {val}",)),
-      Load(a, b) => f.write_fmt(format_args!("load (@ `{a}, src: `{b})",)),
-      Convert { dst, src } => f.write_fmt(format_args!("{src} => {dst}",)),
-      Member => f.write_fmt(format_args!("*.X",)),
-      Agg => f.write_fmt(format_args!("agg",)),
-      Mutable => f.write_fmt(format_args!("mut",)),
-      Index(index) => f.write_fmt(format_args!("*.[{index}]",)),
-      Numeric => f.write_fmt(format_args!("numeric",)),
-      Float => f.write_fmt(format_args!("floating-point",)),
-      Unsigned => f.write_fmt(format_args!("unsigned",)),
-      Ptr => f.write_fmt(format_args!("* = *ptr",)),
-      &Default(ty) => f.write_fmt(format_args!("could be {ty}",)),
-      Binding(node_index, binding_index, output) => {
-        if *output {
-          f.write_fmt(format_args!("`{node_index} => output[{binding_index}]"))
-        } else {
-          f.write_fmt(format_args!("`{node_index} => input[{binding_index}]"))
-        }
-      }
-    }
-  }
-}
-
-pub(crate) enum Operation {
-  Param(VarId, u32),
-  OutputPort(u32, Vec<(u32, OpId)>),
-  Op { op_name: &'static str, operands: [OpId; 3] },
-  Const(ConstVal),
-  Name(IString),
-}
-
-impl Debug for Operation {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self, f)
-  }
-}
-
-impl Display for Operation {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
-      Operation::OutputPort(root, ops) => f.write_fmt(format_args!(
-        "{:12}  {}",
-        format!("PORT@{root}"),
-        ops.iter().map(|(a, b)| { format!("{:5}", format!("{b}@{a}")) }).collect::<Vec<String>>().join("  ")
-      )),
-      Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
-      Operation::Op { op_name, operands } => {
-        f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
-      }
-      Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
-    }
-  }
-}
-
-pub(crate) struct SuperNode {
-  pub(crate) binding_name: IString,
-  pub(crate) nodes:        Vec<Node>,
-  pub(crate) operands:     Vec<Operation>,
-  pub(crate) types:        Vec<Type>,
-  pub(crate) type_vars:    Vec<TypeVar>,
-  pub(crate) errors:       Vec<String>,
-  pub(crate) constraints:  Vec<OPConstraint>,
-}
-
-pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
-  let mut string = Default::default();
-
-  string += format!("{} => {{", var.ty).as_str();
-
-  for (index, mem) in var.members.iter().enumerate() {
-    let mem_var = &vars[mem.ty.generic_id().unwrap()];
-
-    string += mem.name.to_str().as_str();
-    string += ": ";
-
-    if mem_var.has(VarConstraint::Agg) {
-      string += write_agg(mem_var, vars).as_str();
-    } else {
-      string += format!("{}", mem_var.ty).as_str();
-    }
-
-    if index < var.members.len() - 1 {
-      string += ", ";
-    }
-  }
-
-  string += format!("}}").as_str();
-
-  string
-}
-
-impl Debug for SuperNode {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    {
-      f.write_str("\n###################### \n")?;
-      let sig_node = &self.nodes[0];
-
-      let vars = self
-        .type_vars
-        .iter()
-        .filter_map(|f| {
-          if f.ty.is_open() {
-            if f.has(VarConstraint::Agg) {
-              Some(write_agg(f, &self.type_vars))
-            } else {
-              Some(format!("∀{}={:?}", f.id, &f.constraints))
-            }
-          } else {
-            None
-          }
-        })
-        .collect::<Vec<_>>();
-
-      if vars.len() > 0 {
-        f.write_str("<")?;
-        f.write_str(&vars.join(", "))?;
-        f.write_str(">")?;
-      }
-
-      f.write_str("(")?;
-      f.write_str(
-        &sig_node
-          .inputs
-          .iter()
-          .map(|input| {
-            let ty = self.get_base_ty(self.types[input.0 .0 as usize]);
-            format!("{}: {ty}", input.1)
-          })
-          .collect::<Vec<_>>()
-          .join(", "),
-      )?;
-      f.write_str(")")?;
-      f.write_str(" => ")?;
-      for input in sig_node.outputs.iter() {
-        let ty = self.get_base_ty(self.types[input.0 .0 as usize]);
-
-        if input.1 == VarId::Return {
-          f.write_fmt(format_args!(" {ty}"))?;
-        } else {
-          f.write_fmt(format_args!(" [{}: {ty}]", input.1))?;
-        }
-      }
-
-      f.write_str("\n###################### \n")?;
-    }
-
-    for ((index, op), ty) in self.operands.iter().enumerate().zip(self.types.iter()) {
-      let ty = self.get_base_ty(*ty);
-
-      let err = &self.errors[index];
-
-      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{ty} {err}", format!("{op}")))?
-    }
-    f.write_str("\nnodes:")?;
-
-    for node in self.nodes.iter() {
-      Display::fmt(node, f)?;
-      f.write_str("\n")?;
-    }
-    if !self.type_vars.is_empty() {
-      f.write_str("\nty_vars:\n")?;
-      for (index, var) in self.type_vars.iter().enumerate() {
-        f.write_fmt(format_args!("{index:3}: {var:?}\n"))?;
-      }
-    }
-
-    if !self.constraints.is_empty() {
-      f.write_str("\nconstraints:")?;
-      for node in self.constraints.iter() {
-        f.write_str("\n")?;
-        Debug::fmt(node, f)?;
-      }
-    }
-
-    Ok(())
-  }
-}
-
-impl SuperNode {
-  pub(crate) fn get_base_ty(&self, ty: Type) -> Type {
-    if let Some(index) = ty.generic_id() {
-      let r_ty = get_root_var(index, &self.type_vars).ty;
-      if r_ty.is_open() {
-        ty
-      } else {
-        r_ty
-      }
-    } else {
-      ty
-    }
-  }
-
-  pub fn solve_state(&self) -> SolveState {
-    if self.type_vars.iter().any(|v| v.ty.is_open()) {
-      SolveState::Template
-    } else {
-      SolveState::Solved
-    }
-  }
-}
-
-pub(crate) struct Node {
-  pub(crate) index:    usize,
-  pub(crate) type_str: &'static str,
-  pub(crate) inputs:   Vec<(OpId, VarId)>,
-  pub(crate) outputs:  Vec<(OpId, VarId)>,
-}
-
-impl Debug for Node {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self, f)
-  }
-}
-
-impl Display for Node {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("[{}] {}\n", self.index, self.type_str))?;
-
-    f.write_str("inputs:\n")?;
-    for (op, id) in self.inputs.iter() {
-      f.write_fmt(format_args!("  {op}[{}]\n", id.to_string()))?;
-    }
-
-    f.write_str("outputs:\n")?;
-
-    for (op, id) in self.outputs.iter() {
-      f.write_fmt(format_args!("  {op}[{}]\n", id.to_string()))?;
-    }
-
-    Ok(())
-  }
+struct Var {
+  id:                VarId,
+  op:                OpId,
+  ty:                Type,
+  origin_node_index: usize,
 }
 
 #[derive(Debug)]
-pub(crate) struct NodeScope {
-  pub(crate) id:         &'static str,
-  pub(crate) node_index: usize,
-  pub(crate) vars:       Vec<Var>,
-  pub(crate) var_lu:     HashMap<VarId, usize>,
+struct NodeScope {
+  id:         &'static str,
+  node_index: usize,
+  vars:       Vec<Var>,
+  var_lu:     HashMap<VarId, usize>,
 }
 
 #[derive(Debug)]
-pub(crate) struct BuildPack {
-  pub(crate) super_node: Box<SuperNode>,
-  pub(crate) node_stack: Vec<NodeScope>,
-  pub(crate) db:         *mut Database,
+struct BuildPack {
+  super_node: Box<RootNode>,
+  node_stack: Vec<NodeScope>,
+  db:         *mut Database,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct OpId(pub(crate) u32);
-
-impl Debug for OpId {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self, f)
-  }
-}
-
-impl Display for OpId {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    if self.is_valid() {
-      f.write_fmt(format_args!("{:>3}", format!("`{}", self.0)))
-    } else {
-      f.write_fmt(format_args!("`xxx"))
-    }
-  }
-}
-
-impl Default for OpId {
-  fn default() -> Self {
-    Self(u32::MAX)
-  }
-}
-
-impl OpId {
-  pub(crate) fn is_invalid(&self) -> bool {
-    self.0 == u32::MAX
-  }
-  pub(crate) fn is_valid(&self) -> bool {
-    !self.is_invalid()
-  }
-  pub fn usize(&self) -> usize {
-    self.0 as usize
-  }
-}
-
-pub fn push_node(bp: &mut BuildPack, id: &'static str) {
+fn push_node(bp: &mut BuildPack, id: &'static str) {
   let node_index = bp.super_node.nodes.len();
   bp.super_node.nodes.push(Node { index: node_index, type_str: id, inputs: Default::default(), outputs: Default::default() });
   bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), id });
 }
 
-pub fn add_existing_var(bp: &mut BuildPack, op: OpId, mut var: Var) {
-  let node_data = bp.node_stack.last_mut().unwrap();
-
-  var.op = op;
-
-  let var_index = node_data.vars.len();
-  node_data.vars.push(var);
-  node_data.var_lu.insert(var.id.clone(), var_index);
-}
-
 /// Declare a variable within in the current node scope
-pub fn declare_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &mut Var {
+fn declare_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &mut Var {
   let node_data = bp.node_stack.last_mut().unwrap();
 
   let origin_node_index = node_data.node_index;
@@ -525,12 +91,12 @@ pub fn declare_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &mu
   &mut node_data.vars[var_index]
 }
 
-pub fn remove_var(bp: &mut BuildPack, var_id: VarId) {
+fn remove_var(bp: &mut BuildPack, var_id: VarId) {
   let node_data = bp.node_stack.last_mut().unwrap();
   node_data.var_lu.remove(&var_id);
 }
 
-pub fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option<(Var, usize)> {
+fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option<(Var, usize)> {
   for node_stack_index in (0..=current).rev() {
     let node = &mut bp.node_stack[node_stack_index];
     if let Some(var) = node.var_lu.get(&var_id) {
@@ -561,7 +127,7 @@ pub fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Op
 }
 
 /// Retrieves a named variable declared along the current scope stack, or none.
-pub fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, Type)> {
+fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, Type)> {
   let current = bp.node_stack.len() - 1;
 
   if let Some((var, index)) = get_var_internal(bp, var_id, current) {
@@ -579,7 +145,7 @@ pub fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, Type)> {
 }
 
 /// Update the op id of a variable. The new op should have the same type as the existing op.
-pub fn update_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) {
+fn update_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) {
   let node_data = bp.node_stack.last_mut().unwrap();
 
   if let Some(var) = node_data.var_lu.get(&var_id) {
@@ -598,7 +164,7 @@ pub fn update_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) {
   }
 }
 
-pub fn get_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
+fn get_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
   debug_assert_eq!(var_id, VarId::HeapContext);
 
   if let Some(var) = get_var(bp, var_id) {
@@ -622,12 +188,12 @@ pub fn get_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
   }
 }
 
-pub fn update_context(bp: &mut BuildPack, var_id: VarId, op: OpId) {
+fn update_context(bp: &mut BuildPack, var_id: VarId, op: OpId) {
   debug_assert_eq!(var_id, VarId::HeapContext);
   update_var(bp, var_id, op, Default::default())
 }
 
-pub(crate) fn add_op(bp: &mut BuildPack, operation: Operation, ty: Type, error: String) -> OpId {
+fn add_op(bp: &mut BuildPack, operation: Operation, ty: Type, error: String) -> OpId {
   let op_id = OpId(bp.super_node.operands.len() as u32);
   bp.super_node.operands.push(operation);
   bp.super_node.types.push(ty);
@@ -645,24 +211,24 @@ pub fn add_ty_var(bp: &mut BuildPack) -> &mut TypeVar {
   &mut bp.super_node.type_vars[last_index]
 }
 
-pub fn add_input(bp: &mut BuildPack, op_id: OpId, var_id: VarId) {
+fn add_input(bp: &mut BuildPack, op_id: OpId, var_id: VarId) {
   let top = bp.node_stack.last().unwrap().node_index;
   bp.super_node.nodes[top].inputs.push((op_id, var_id));
 }
 
-pub fn add_output(bp: &mut BuildPack, op_id: OpId, var_id: VarId) {
+fn add_output(bp: &mut BuildPack, op_id: OpId, var_id: VarId) {
   let top = bp.node_stack.last().unwrap().node_index;
   bp.super_node.nodes[top].outputs.push((op_id, var_id));
 }
 
-pub(crate) fn add_constraint(bp: &mut BuildPack, constraint: OPConstraint) {
+fn add_constraint(bp: &mut BuildPack, constraint: OPConstraint) {
   bp.super_node.constraints.push(constraint)
 }
 
-pub(crate) fn compile_routine(db: &mut Database, routine: &RawRoutine<Token>) -> Box<SuperNode> {
+pub(crate) fn compile_routine(db: &mut Database, routine: &RawRoutine<Token>) -> Box<RootNode> {
   let mut bp = BuildPack {
     db,
-    super_node: Box::new(SuperNode {
+    super_node: Box::new(RootNode {
       binding_name: routine.name.id.intern(),
       nodes:        Vec::with_capacity(8),
       operands:     Vec::with_capacity(8),
@@ -800,9 +366,9 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<OPConstraint>, t
   }
 }
 
-pub(crate) fn solve(node: &mut SuperNode, ty_db: &mut TypeDatabase) {
+pub(crate) fn solve(node: &mut RootNode, ty_db: &mut TypeDatabase) {
   dbg!(&node);
-  let SuperNode { nodes, operands, types, type_vars, constraints, .. } = node;
+  let RootNode { nodes, operands, types, type_vars, constraints, .. } = node;
   let mut constraint_queue = VecDeque::from_iter(constraints.drain(..));
 
   while let Some(constraint) = constraint_queue.pop_front() {
@@ -937,19 +503,6 @@ pub(crate) fn solve(node: &mut SuperNode, ty_db: &mut TypeDatabase) {
   dbg!(node);
 }
 
-pub(crate) fn get_root_var<'a>(mut index: usize, type_vars: &'a [TypeVar]) -> &'a TypeVar {
-  unsafe {
-    let mut var = type_vars.as_ptr().offset(index as isize);
-
-    while (&*var).id != index as u32 {
-      index = (&*var).id as usize;
-      var = type_vars.as_ptr().offset(index as isize);
-    }
-
-    &*var
-  }
-}
-
 pub(crate) fn get_root_var_mut<'a>(mut index: usize, type_vars: &mut [TypeVar]) -> &'a mut TypeVar {
   unsafe {
     let mut var = type_vars.as_mut_ptr().offset(index as isize);
@@ -963,14 +516,13 @@ pub(crate) fn get_root_var_mut<'a>(mut index: usize, type_vars: &mut [TypeVar]) 
   }
 }
 
-pub(crate) enum VarLookup {
+enum VarLookup {
   Var(OpId, Type, IString),
   Ptr(OpId, Type),
 }
 
 /// Returns either the underlying value assigned to a variable name, or the caclulated pointer to the value.
 pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<parser::script_parser::MemberCompositeAccess<Token>>) -> VarLookup {
-  let ty_vars = bp.super_node.type_vars.as_mut_ptr();
   let var_name = mem.root.name.id.intern();
   if let Some((mut op, mut ty)) = get_var(bp, VarId::Name(var_name)) {
     if mem.sub_members.is_empty() {
@@ -984,6 +536,7 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<parser::script_parser::Me
       let mut ptr_ty = ty;
 
       for (index, mem_val) in mem.sub_members.iter().enumerate() {
+        let ty_vars = bp.super_node.type_vars.as_mut_ptr();
         let var = unsafe { &mut *ty_vars.offset(ty_var_index as isize) };
 
         match mem_val {
@@ -1003,9 +556,7 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<parser::script_parser::Me
               let mem_ty = add_ty_var(bp);
               mem_ty.add(VarConstraint::Member);
               let mem_ty = mem_ty.ty;
-
               var.add_mem(name, mem_ty, Default::default());
-
               add_constraint(bp, OPConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty, mutable: false });
             }
           }
@@ -1138,6 +689,37 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
     }
     expression_Value::RawMatch(match_) => process_match(match_, bp, None).0,
     expression_Value::RawCall(call) => process_call(call, bp),
+    expression_Value::RawAggregateInstantiation(agg_decl) => {
+      let (agg_ptr_op, agg_ty) = process_op("AGG_DECL", &[], bp);
+
+      let ty_vars = bp.super_node.type_vars.as_mut_ptr();
+      let var = unsafe { &mut *ty_vars.offset(agg_ty.generic_id().unwrap() as isize) };
+
+      let mut index = 0;
+
+      for (index, init) in agg_decl.inits.iter().enumerate() {
+        let (expr_op, ty) = compile_expression(&init.expression.expr, bp);
+        if let Some(name) = &init.name {
+          let name = name.id.intern();
+          let name_op = add_op(bp, Operation::Name(name), Type::NoUse, Default::default());
+          let (ref_op, ref_ty) = process_op("NAMED_PTR", &[agg_ptr_op, name_op], bp);
+
+          let mem_ty = add_ty_var(bp);
+          mem_ty.add(VarConstraint::Member);
+          let mem_ty = mem_ty.ty;
+          var.add_mem(name, mem_ty, Default::default());
+          add_constraint(bp, OPConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty, mutable: false });
+
+          process_op("STORE", &[ref_op, expr_op], bp);
+        } else {
+          todo!("Handle indexed expression")
+        }
+      }
+
+      dbg!(bp);
+
+      (agg_ptr_op, agg_ty)
+    }
     ty => todo!("{ty:#?}"),
   }
 }
@@ -1230,10 +812,6 @@ pub(crate) fn process_match(
 
       let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp);
 
-      /*       if output_ty_new != activation_ty && !activation_ty.is_undefined() {
-        add_constraint(bp, OPConstraint::GenTyToGenTy(output_ty_new, activation_ty));
-      } */
-
       update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
     } else {
       update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
@@ -1253,7 +831,7 @@ pub(crate) fn process_match(
 
   join_nodes(clauses, bp);
 
-  let selector_op = get_var(bp, VarId::MatchActivation).unwrap().0;
+  get_var(bp, VarId::MatchActivation).unwrap().0;
   let output_ty = add_ty_var(bp).ty;
   declare_var(bp, VarId::MatchOutputVal, Default::default(), output_ty);
 
@@ -1463,7 +1041,7 @@ pub(crate) fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildP
   // Add constraints
 }
 
-pub(crate) fn add_annotations(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu: &HashMap<&str, Type>, bp: &mut BuildPack, ty: Type) {
+fn add_annotations(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu: &HashMap<&str, Type>, bp: &mut BuildPack, ty: Type) {
   for annotation in annotations {
     match annotation {
       annotation_Value::Deref(val) => {
@@ -1479,6 +1057,7 @@ pub(crate) fn add_annotations(annotations: std::slice::Iter<'_, annotation_Value
       }
 
       annotation_Value::Annotation(val) => match val.name.as_str() {
+        //"agg" => add_constraint(bp, OPConstraint::Agg(Default::default())),
         "Numeric" => add_constraint(bp, OPConstraint::Num(ty)),
         "poison" => add_constraint(bp, OPConstraint::GenTyToTy(ty, ty_poison)),
         "bool" => add_constraint(bp, OPConstraint::GenTyToTy(ty, ty_bool)),
@@ -1507,6 +1086,8 @@ x [A: Input] => out [A]
 op: SEL  l [A: bool]  r [B: Numeric]  => out [B]
 
 op: POISON  => out [B: poison]
+
+op: AGG_DECL  ctx [read_ctx] => agg_ptr [Agg: agg] ctx [write_ctx]
 
 op: OFFSET_PTR  b [Base: agg]  n [Offset: Numeric]  => out [MemPtr]
 op: NAMED_PTR  b [Base: agg]  n [MemName: label]  => out [MemPtr]
@@ -1539,7 +1120,7 @@ int:
 "###;
 
 #[test]
-pub fn test() {
+fn test_compile_of_fn() {
   let mut db: Database = Database::default();
 
   add_ops_to_db(&mut db, OPS);
@@ -1548,7 +1129,23 @@ pub fn test() {
     &mut db,
     "
 
-  test (a:u32, b:?) => u64 test(a, b)
+  vec ( x: u32, y: u32 ) => ? :[x = x, y = y]
+  
+  ",
+  );
+}
+
+#[test]
+fn test_compile_of_struct() {
+  let mut db: Database = Database::default();
+
+  add_ops_to_db(&mut db, OPS);
+
+  compile_module(
+    &mut db,
+    "
+
+  TEST => [x: u32, y: u32]
   
   ",
   );

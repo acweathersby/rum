@@ -1,5 +1,9 @@
 
+# Types Database as hierarchy
 
+Types should be accessible the same way as variables are accessed, as named and scoped bindings that can be quried for the value, and 
+also added and removed from the given scope as needed. The creation of a type (that is all types that are not primitive) can either be
+through manual definitions in user's source code, or ad hoc as derived from 
 
 
 

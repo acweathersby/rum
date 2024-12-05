@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
-use rum_lang::{ir::types::TypeDatabase, istring::IString};
+use rum_lang::{
+  ir::{ir_rvsdg::SolveState, types::TypeDatabase},
+  istring::IString,
+};
 
-use crate::compiler::SuperNode;
+use super::RootNode;
 
 pub(crate) struct Database {
   pub ops:      Vec<Arc<core_lang::parser::ast::Op>>,
-  pub routines: Vec<Box<SuperNode>>,
+  pub routines: Vec<Box<RootNode>>,
   pub ty_db:    TypeDatabase,
 }
 
@@ -17,13 +20,31 @@ impl Default for Database {
 }
 
 impl Database {
-  pub fn get_routine(&self, fn_name: IString) -> Option<&SuperNode> {
+  pub fn get_routine(&self, fn_name: IString) -> Option<&RootNode> {
     for node in self.routines.iter() {
       if node.binding_name == fn_name {
         return Some(node);
       }
     }
     None
+  }
+
+  pub fn get_routine_with_adhoc_polyfills(&self, fn_name: IString) -> Option<&RootNode> {
+    if let Some(routine) = self.get_routine(fn_name) {
+      if routine.solve_state() == SolveState::Template {
+        for ty in &routine.type_vars {
+          if ty.ty.is_generic() {
+            println!("Need to polyfill {ty}");
+          }
+        }
+
+        todo!("Polyfill");
+      } else {
+        Some(routine)
+      }
+    } else {
+      None
+    }
   }
 }
 

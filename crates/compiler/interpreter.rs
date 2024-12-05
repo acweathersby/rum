@@ -1,12 +1,12 @@
 use std::usize;
 
 use crate::{
-  compiler::{compile_module, OpId, Operation, SuperNode, LOOP_ID, MATCH_ID, OPS},
-  types::*,
+  compiler::{compile_module, LOOP_ID, MATCH_ID, OPS},
+  types::{VarId, *},
 };
 use rum_lang::{
   ir::{
-    ir_rvsdg::{SolveState, VarId},
+    ir_rvsdg::SolveState,
     types::{ty_poison, PrimitiveBaseType, PrimitiveType, Type},
   },
   ir_interpreter::{interpreter::process_op, value},
@@ -51,7 +51,30 @@ macro_rules! cmp_match {
 }
 
 #[test]
-fn test_interpreter() {
+fn test_interpreter_adhoc_struct() {
+  let mut db = Database::default();
+
+  add_ops_to_db(&mut db, &OPS);
+
+  compile_module(&mut db, " vec ( x: u32, y: u32 ) => ? :[x = x, y = y]");
+
+  if let Some(test) = db.get_routine_with_adhoc_polyfills("vec".intern()) {
+    // Create temporary types based on the type definitions
+
+    if test.solve_state() == SolveState::Solved {
+      let val = interpret_fn(test, &[Value::u32(30), Value::u32(33)], &mut Vec::new(), 0);
+
+      assert_eq!(val, Value::Ptr(0 as *mut _, Default::default()))
+    } else {
+      panic!("test is a template and cannot be directly interpreted {test:?}")
+    }
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn test_interpreter_fibonacci() {
   let mut db = Database::default();
 
   add_ops_to_db(&mut db, &OPS);
@@ -78,7 +101,7 @@ fn test_interpreter() {
   }
 }
 
-pub fn interpret_fn(super_node: &SuperNode, args: &[Value], scratch: &mut Vec<Value>, offset: usize) -> Value {
+pub fn interpret_fn(super_node: &RootNode, args: &[Value], scratch: &mut Vec<Value>, offset: usize) -> Value {
   let require_scratch_size = super_node.operands.len();
 
   if scratch.len() < offset + require_scratch_size {
@@ -117,7 +140,7 @@ pub fn interpret_fn(super_node: &SuperNode, args: &[Value], scratch: &mut Vec<Va
   Value::Null
 }
 
-pub fn interprete_node(super_node: &SuperNode, node_id: usize, scratch: &mut Vec<Value>, slice_start: usize, slice_end: usize) {
+pub fn interprete_node(super_node: &RootNode, node_id: usize, scratch: &mut Vec<Value>, slice_start: usize, slice_end: usize) {
   let scratch_slice = &mut scratch[slice_start..slice_end];
   let node = &super_node.nodes[node_id];
 
@@ -131,7 +154,7 @@ pub fn interprete_node(super_node: &SuperNode, node_id: usize, scratch: &mut Vec
   }
 }
 
-pub fn interprete_op(super_node: &SuperNode, op: OpId, scratch: &mut Vec<Value>, slice_start: usize, slice_end: usize) -> Value {
+pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<Value>, slice_start: usize, slice_end: usize) -> Value {
   let scratch_index = slice_start + op.usize();
   if scratch[scratch_index] == Value::Uninitialized || true {
     scratch[scratch_index] = match &super_node.operands[op.usize()] {
@@ -208,7 +231,7 @@ pub fn interprete_op(super_node: &SuperNode, op: OpId, scratch: &mut Vec<Value>,
   scratch[scratch_index]
 }
 
-pub fn interprete_port(super_node: &SuperNode, port_op: OpId, scratch: &mut Vec<Value>, slice_start: usize, slice_end: usize) -> Value {
+pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<Value>, slice_start: usize, slice_end: usize) -> Value {
   let scratch_index = slice_start + port_op.usize();
   let Operation::OutputPort(host_index, port_inputs) = &super_node.operands[port_op.usize()] else { unreachable!() };
 
@@ -344,7 +367,7 @@ fn print_scratch(scratch: &mut Vec<Value>, slice_start: usize, slice_end: usize)
 
 #[inline]
 fn interprete_binary_args(
-  super_node: &SuperNode,
+  super_node: &RootNode,
   op: OpId,
   operands: &[OpId; 3],
   scratch: &mut Vec<Value>,
@@ -363,7 +386,7 @@ fn interprete_binary_args(
 
 #[inline]
 fn interprete_binary_cmp_args(
-  super_node: &SuperNode,
+  super_node: &RootNode,
   op: OpId,
   operands: &[OpId; 3],
   scratch: &mut Vec<Value>,
