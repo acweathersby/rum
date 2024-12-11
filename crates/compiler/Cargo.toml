@@ -6,10 +6,7 @@ edition = "2021"
 [lib]
 path = "./lib.rs"
 
-
-
-
-
 [dependencies]
 rum_lang    = { path="../rum_lang" }
 core_lang       = { path="../core" }
+num-traits        = "0.2.17"

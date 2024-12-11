@@ -104,6 +104,7 @@ name = "rum_compiler"
 version = "0.0.0"
 dependencies = [
  "core_lang",
+ "num-traits",
  "rum_lang",
 ]
 

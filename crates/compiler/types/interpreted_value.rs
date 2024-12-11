@@ -1,9 +1,10 @@
-use rum_lang::ir::types::Type;
+use super::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
   Uninitialized,
   Null,
+  SideEffect,
   Bool(bool),
   u64(u64),
   u32(u32),

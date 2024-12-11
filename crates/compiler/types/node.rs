@@ -1,12 +1,9 @@
-use std::fmt::{Debug, Display};
-
-use rum_lang::{
-  ir::{ir_rvsdg::SolveState, types::Type},
-  istring::{CachedString, IString},
-  types::ConstVal,
-};
-
 use super::*;
+use rum_lang::{
+  ir::ir_rvsdg::SolveState,
+  istring::{CachedString, IString},
+};
+use std::fmt::{Debug, Display};
 
 #[derive(Default, Clone, Copy, Hash, Debug, PartialEq, Eq)]
 pub enum VarId {
@@ -27,6 +24,7 @@ pub enum VarId {
   CallRef,
   BaseType,
   ElementCount,
+  AggSize,
 }
 
 impl Display for VarId {
@@ -89,6 +87,7 @@ impl OpId {
   }
 }
 
+#[derive(Clone)]
 pub(crate) enum Operation {
   Param(VarId, u32),
   OutputPort(u32, Vec<(u32, OpId)>),
@@ -121,14 +120,23 @@ impl Display for Operation {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct CallLookup {
+  pub name:        IString,
+  pub args:        Vec<Type>,
+  pub ret:         Type,
+  pub origin_node: usize,
+}
+
+#[derive(Clone)]
 pub(crate) struct RootNode {
+  pub(crate) host_db:      Option<Database>,
   pub(crate) binding_name: IString,
   pub(crate) nodes:        Vec<Node>,
   pub(crate) operands:     Vec<Operation>,
   pub(crate) types:        Vec<Type>,
   pub(crate) type_vars:    Vec<TypeVar>,
   pub(crate) errors:       Vec<String>,
-  pub(crate) constraints:  Vec<OPConstraint>,
 }
 
 pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
@@ -233,14 +241,6 @@ impl Debug for RootNode {
       }
     }
 
-    if !self.constraints.is_empty() {
-      f.write_str("\nconstraints:")?;
-      for node in self.constraints.iter() {
-        f.write_str("\n")?;
-        Debug::fmt(node, f)?;
-      }
-    }
-
     Ok(())
   }
 }
@@ -267,7 +267,7 @@ impl RootNode {
     }
   }
 }
-
+#[derive(Clone)]
 pub(crate) struct Node {
   pub(crate) index:    usize,
   pub(crate) type_str: &'static str,

@@ -1,8 +1,8 @@
 use std::fmt::{Debug, Display};
 
-use rum_lang::{container::ArrayVec, ir::types::Type, istring::IString};
+use rum_lang::{container::ArrayVec, istring::IString};
 
-use super::OpId;
+use super::{OpId, Type};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct MemberEntry {
@@ -13,7 +13,7 @@ pub struct MemberEntry {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
-pub enum OPConstraint {
+pub enum NodeConstraint {
   OpToTy(OpId, Type),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
@@ -27,6 +27,8 @@ pub enum OPConstraint {
   Agg(OpId),
   GenTyToTy(Type, Type),
   GenTyToGenTy(Type, Type),
+  CallArg { call_ref_op: OpId, arg_index: u32, callee_ty: Type },
+  CallRet { call_ref_op: OpId, callee_ty: Type },
 }
 
 #[derive(Clone)]
