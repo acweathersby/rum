@@ -1,6 +1,6 @@
 use super::Type;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
   Uninitialized,
   Null,

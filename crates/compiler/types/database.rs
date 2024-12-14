@@ -1,16 +1,13 @@
 use std::{
-  collections::VecDeque,
+  collections::{HashMap, VecDeque},
   sync::{Arc, Mutex, MutexGuard},
 };
 
-use rum_lang::{
-  ir::ir_rvsdg::SolveState,
-  istring::{CachedString, IString},
-};
+use rum_lang::istring::{CachedString, IString};
 
 use crate::{
   compiler::{compile_struct, OPS},
-  solver::{polyfill, solve, GlobalConstraint},
+  solver::{solve, GlobalConstraint},
   types::*,
 };
 
@@ -20,7 +17,81 @@ use super::{CallLookup, RootNode};
 struct DatabaseCore {
   pub parent:  *const Database,
   pub ops:     Vec<Arc<core_lang::parser::ast::Op>>,
-  pub objects: Vec<Box<RootNode>>,
+  pub objects: Vec<(IString, NodeHandle)>,
+}
+
+pub enum RootType {
+  ExecutableEntry(IString),
+  LibRoutine(IString),
+  Test(IString),
+}
+
+pub struct SolveDatabase<'a> {
+  // Used to lookup
+  pub db:          &'a Database,
+  pub roots:       Vec<(RootType, NodeHandle)>,
+  pub sig_lookup:  Vec<(u64, NodeHandle)>,
+  pub name_lookup: Vec<(IString, NodeHandle)>,
+}
+
+impl<'a> SolveDatabase<'a> {
+  pub fn solve_for<'b>(
+    name: IString,
+    db: &'b Database,
+    poly_fill_types: bool,
+    mut global_constraints: Vec<GlobalConstraint>,
+  ) -> Option<(NodeHandle, SolveDatabase<'b>)> {
+    let mut db = SolveDatabase { db, roots: Default::default(), sig_lookup: Default::default(), name_lookup: Default::default() };
+
+    if let Some(obj) = db.db.get_object_mut(name) {
+      let duplicate = obj.duplicate();
+      db.roots.push((RootType::ExecutableEntry(name), duplicate.clone()));
+
+      solve(&mut db, poly_fill_types);
+
+      db.get_type_by_name(name).map(|n| (n, db))
+    } else {
+      None
+    }
+  }
+
+  pub fn add_object(&mut self, name: IString, node: NodeHandle) {}
+
+  // Returns a Type bound to a name in the user's binding namespace.
+  pub fn get_type_by_name(&mut self, name: IString) -> Option<NodeHandle> {
+    for ((root_ty, root)) in &self.roots {
+      match root_ty {
+        RootType::ExecutableEntry(root_name) => {
+          if *root_name == name {
+            return Some(root.clone());
+          }
+        }
+        _ => unreachable!(),
+      }
+    }
+
+    if let Some(node) = self.name_lookup.iter().find(|(n, _)| *n == name) {
+      return Some(node.1.clone());
+    }
+
+    if let Some(node) = self.db.get_object_mut(name) {
+      let node = node.duplicate();
+      self.name_lookup.push((name, node.clone()));
+      return Some(node);
+    }
+
+    None
+  }
+
+  // Returns a type generated from an inline definition. May return a virtual type.
+  pub fn generate_type() -> Type {
+    Type::Undefined
+  }
+
+  // Returns any type that matches the given signature.
+  pub fn get_type_by_signature() -> Option<NodeHandle> {
+    None
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -49,54 +120,27 @@ impl Database {
     self.0.lock().expect("Failed to lock database")
   }
 
-  pub fn add_object(&self, mut node: Box<RootNode>) -> Option<*const RootNode> {
-    node.host_db = Some(self.clone());
-
-    let name = node.binding_name;
-
+  pub fn add_object(&self, name: IString, node: NodeHandle) {
     let mut db = self.get_mut_ref();
 
-    for outgoing in &db.objects {
-      if outgoing.binding_name == name {
+    for (binding_name, outgoing) in &db.objects {
+      if *binding_name == name {
         //panic!("Incoming {node:?} would replace outgoing node {outgoing:?}");
       }
     }
 
-    let len = db.objects.len();
-    db.objects.push(node);
-
-    Some(Box::as_ptr(&db.objects[len]))
+    db.objects.push((name, node));
   }
 
-  pub fn get_object_mut(&self, fn_name: IString) -> Option<*mut RootNode> {
-    for node in self.get_ref().objects.iter_mut() {
-      if node.binding_name == fn_name {
-        return Some(Box::as_mut_ptr(node));
+  pub fn get_object_mut(&self, fn_name: IString) -> Option<NodeHandle> {
+    for (binding_name, node) in self.get_ref().objects.iter_mut() {
+      if *binding_name == fn_name {
+        return Some(node.clone());
       }
     }
 
     if self.get_ref().parent != std::ptr::null() {
       unsafe { &*self.get_ref().parent }.get_object_mut(fn_name)
-    } else {
-      None
-    }
-  }
-
-  pub fn get_routine_with_adhoc_polyfills(&mut self, fn_name: IString, global_constraints: Vec<GlobalConstraint>) -> Option<(*const RootNode)> {
-    let mut proxy_db = solve(self, global_constraints, true);
-
-    let db = proxy_db.as_mut().unwrap_or(self);
-
-    if let Some(node_ref) = db.get_object_mut(fn_name).map(|n| unsafe { n as *mut _ }) {
-      let node: &mut RootNode = unsafe { &mut *node_ref };
-
-      if node.solve_state() == SolveState::Template {
-        let global_constraints = polyfill(node, db);
-        solve(db, global_constraints, true);
-      }
-      dbg!(node);
-
-      return db.get_object_mut(fn_name).map(|f| f as *const _);
     } else {
       None
     }

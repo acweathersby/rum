@@ -1,5 +1,5 @@
 use crate::{
-  solver::{solve_node, GlobalConstraint},
+  solver::{solve_node_intrinsics, GlobalConstraint},
   types::*,
 };
 use core_lang::parser::ast::annotation_Value;
@@ -7,6 +7,7 @@ use rum_lang::{
   istring::{CachedString, IString},
   parser::script_parser::{
     assignment_var_Value,
+    ast::ASTNode,
     expression_Value,
     loop_statement_group_1_Value,
     member_group_Value,
@@ -39,7 +40,7 @@ pub(crate) const CLAUSE_ID: &'static str = "---CLAUSE---";
 pub(crate) const CALL_ID: &'static str = "---CALL---";
 pub(crate) const STRUCT_ID: &'static str = "---STRUCT---";
 
-pub fn compile_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
+pub fn add_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
   use rum_lang::parser::script_parser::*;
 
   let mut global_constraints = vec![];
@@ -51,8 +52,9 @@ pub fn compile_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> 
         module_member_Value::RawRoutine(routine) => {
           let (node, constraints) = compile_routine(db, routine.as_ref());
 
-          db.add_object(node);
-          global_constraints.push(constraints);
+          db.add_object(routine.name.id.intern(), node.clone());
+
+          solve_node_intrinsics(node, constraints);
         }
         module_member_Value::RawBoundType(bound_ty) => match &bound_ty.ty {
           type_Value::Type_Struct(strct) => {
@@ -65,10 +67,11 @@ pub fn compile_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> 
               }
             }
 
-            let (node, constraints) = compile_struct(db, bound_ty.name.id.intern(), &properties);
+            let (node, constraints) = compile_struct(db, &properties);
 
-            db.add_object(node);
-            global_constraints.push(constraints);
+            db.add_object(bound_ty.name.id.intern(), node.clone());
+
+            solve_node_intrinsics(node, constraints);
           }
           _ => unreachable!(),
         },
@@ -82,7 +85,7 @@ pub fn compile_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> 
   global_constraints
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Var {
   id:                VarId,
   op:                OpId,
@@ -99,8 +102,8 @@ struct NodeScope {
 }
 
 #[derive(Debug)]
-struct BuildPack {
-  super_node:  Box<RootNode>,
+struct BuildPack<'a> {
+  super_node:  &'a mut RootNode,
   node_stack:  Vec<NodeScope>,
   constraints: Vec<NodeConstraint>,
   db:          Database,
@@ -112,12 +115,12 @@ fn push_node(bp: &mut BuildPack, id: &'static str) {
   bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), id });
 }
 
-fn declare_top_scope_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &mut Var {
+fn declare_top_scope_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &'a mut Var {
   declare_var(bp, var_id, op, ty, bp.node_stack.len() - 1)
 }
 
 /// Declare a variable within in the current node scope
-fn declare_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type, declare_index: usize) -> &mut Var {
+fn declare_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: Type, declare_index: usize) -> &'a mut Var {
   debug_assert!(declare_index < bp.node_stack.len());
 
   let node_data = &mut bp.node_stack[declare_index];
@@ -139,20 +142,22 @@ fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option
   for node_stack_index in (0..=current).rev() {
     let node = &mut bp.node_stack[node_stack_index];
     if let Some(var) = node.var_lu.get(&var_id) {
-      return Some((node.vars[*var], node_stack_index));
+      return Some((node.vars[*var].clone(), node_stack_index));
     } else if bp.super_node.nodes[bp.node_stack[node_stack_index].node_index].type_str == LOOP_ID {
       let index = bp.node_stack[node_stack_index].node_index;
 
       if let Some((var, _)) = get_var_internal(bp, var_id, node_stack_index - 1) {
         let Var { id, op, ty, origin_node_index } = var;
-        let op = add_op(bp, Operation::OutputPort(index as u32, vec![(0, op)]), ty, Default::default());
+
+        let op = add_op(bp, Operation::OutputPort(index as u32, vec![(0, op)]), ty.clone(), Default::default());
+
         bp.super_node.nodes[index].inputs.push((op, var_id));
 
         let node_data = &mut bp.node_stack[node_stack_index];
         let var_index = node_data.vars.len();
 
         let new_var = Var { id: var_id, op, ty, origin_node_index: var.origin_node_index };
-        node_data.vars.push(new_var);
+        node_data.vars.push(new_var.clone());
         node_data.var_lu.insert(var_id.clone(), var_index);
 
         return Some((new_var, node_stack_index));
@@ -173,7 +178,7 @@ fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, Type)> {
     if index != current {
       let current_node = &mut bp.node_stack[current];
       let var_index = current_node.vars.len();
-      current_node.vars.push(var);
+      current_node.vars.push(var.clone());
       current_node.var_lu.insert(var.id, var_index);
     }
 
@@ -193,7 +198,7 @@ fn update_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) {
     //debug_assert_eq!(var.ty, ty);
 
     if ty.is_generic() && ty != v.ty {
-      let constraint = NodeConstraint::GenTyToGenTy(ty, v.ty);
+      let constraint = NodeConstraint::GenTyToGenTy(ty, v.ty.clone());
       add_constraint(bp, constraint);
     }
 
@@ -211,12 +216,12 @@ fn get_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
     var
   } else {
     // Contexts need to be added as a params in the root
-    let ty = add_ty_var(bp).ty;
+    let ty = add_ty_var(bp).ty.clone();
 
     let root: &mut Node = &mut bp.super_node.nodes[0];
     let index = root.inputs.len();
 
-    let op = add_op(bp, Operation::Param(var_id, index as u32), ty, Default::default());
+    let op = add_op(bp, Operation::Param(var_id, index as u32), ty.clone(), Default::default());
 
     let root = &mut bp.super_node.nodes[0];
 
@@ -233,16 +238,16 @@ fn update_context(bp: &mut BuildPack, var_id: VarId, op: OpId) {
   update_var(bp, var_id, op, Default::default())
 }
 
-fn add_op(bp: &mut BuildPack, operation: Operation, ty: Type, error: String) -> OpId {
+fn add_op(bp: &mut BuildPack, operation: Operation, ty: Type, node: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> OpId {
   debug_assert!(ty.is_open() || ty.is_not_valid());
   let op_id = OpId(bp.super_node.operands.len() as u32);
   bp.super_node.operands.push(operation);
   bp.super_node.types.push(ty);
-  bp.super_node.errors.push(error);
+  bp.super_node.source_tokens.push(node);
   op_id
 }
 
-pub fn add_ty_var(bp: &mut BuildPack) -> &mut TypeVar {
+pub fn add_ty_var<'a>(bp: &'a mut BuildPack) -> &'a mut TypeVar {
   let ty_index = bp.super_node.type_vars.len();
   let ty = Type::generic(ty_index);
   let mut ty_var = TypeVar::new(ty_index as u32);
@@ -298,18 +303,18 @@ pub fn get_type(ir_type: &type_Value<Token>, insert_unresolved: bool /* , ty_db:
   }
 }
 
-pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IString, Type)]) -> (Box<RootNode>, GlobalConstraint) {
+pub(crate) fn compile_struct(db: &Database, properties: &[(IString, Type)]) -> (NodeHandle, Vec<NodeConstraint>) {
+  let mut super_node = RootNode {
+    nodes:         Vec::with_capacity(8),
+    operands:      Vec::with_capacity(8),
+    types:         Vec::with_capacity(8),
+    type_vars:     Vec::with_capacity(8),
+    source_tokens: Vec::with_capacity(8),
+  };
+
   let mut bp = BuildPack {
     db:          db.clone(),
-    super_node:  Box::new(RootNode {
-      host_db:      Some(db.clone()),
-      binding_name: name,
-      nodes:        Vec::with_capacity(8),
-      operands:     Vec::with_capacity(8),
-      types:        Vec::with_capacity(8),
-      errors:       Vec::with_capacity(8),
-      type_vars:    Vec::with_capacity(8),
-    }),
+    super_node:  &mut super_node,
     node_stack:  Default::default(),
     constraints: Vec::with_capacity(8),
   };
@@ -319,9 +324,9 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
   {
     let bp = &mut bp;
 
-    let offset_ty = add_ty_var(bp).ty;
+    let offset_ty = add_ty_var(bp).ty.clone();
 
-    add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty, ty_u64));
+    add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty.clone(), ty_u64));
 
     let mut offset_op = add_op(bp, Operation::Const(ConstVal::new(ty_u64.to_primitive().unwrap(), 0)), offset_ty, Default::default());
 
@@ -331,7 +336,7 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
       let (prop_op, prop_ty) = process_op("PROP", &[prop_name_op, offset_op], bp);
 
       if !real_ty.is_open() {
-        add_constraint(bp, NodeConstraint::GenTyToTy(prop_ty, *real_ty));
+        add_constraint(bp, NodeConstraint::GenTyToTy(prop_ty, real_ty.clone()));
       }
 
       let (prop_offset_op, _) = process_op("CALC_AGG_SIZE", &[prop_op, offset_op], bp);
@@ -344,25 +349,25 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
     add_output(bp, offset_op, VarId::AggSize);
   }
 
-  let BuildPack { mut super_node, constraints, .. } = bp;
+  let BuildPack { constraints, .. } = bp;
 
-  let constraint = GlobalConstraint::ResolveObjectConstraints { node: Box::as_mut_ptr(&mut super_node), constraints };
+  let handle = NodeHandle::new(super_node);
 
-  (super_node, constraint)
+  (handle, constraints)
 }
 
-pub(crate) fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (Box<RootNode>, GlobalConstraint) {
+pub(crate) fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (NodeHandle, Vec<NodeConstraint>) {
+  let mut super_node = RootNode {
+    nodes:         Vec::with_capacity(8),
+    operands:      Vec::with_capacity(8),
+    types:         Vec::with_capacity(8),
+    type_vars:     Vec::with_capacity(8),
+    source_tokens: Vec::with_capacity(8),
+  };
+
   let mut bp = BuildPack {
     db:          db.clone(),
-    super_node:  Box::new(RootNode {
-      host_db:      Some(db.clone()),
-      binding_name: routine.name.id.intern(),
-      nodes:        Vec::with_capacity(8),
-      operands:     Vec::with_capacity(8),
-      types:        Vec::with_capacity(8),
-      errors:       Vec::with_capacity(8),
-      type_vars:    Vec::with_capacity(8),
-    }),
+    super_node:  &mut super_node,
     node_stack:  Default::default(),
     constraints: Vec::with_capacity(8),
   };
@@ -376,11 +381,11 @@ pub(crate) fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (Bo
       for (index, param) in fn_ty.params.params.iter().enumerate() {
         let name = &param.var.id;
 
-        let ty = add_ty_var(&mut bp).ty;
+        let ty = add_ty_var(&mut bp).ty.clone();
         let var_id = VarId::Name(name.intern());
-        let op_id = add_op(&mut bp, Operation::Param(var_id, index as u32), ty, Default::default());
+        let op_id = add_op(&mut bp, Operation::Param(var_id, index as u32), ty.clone(), param.clone().into());
 
-        declare_top_scope_var(&mut bp, var_id, op_id, ty);
+        declare_top_scope_var(&mut bp, var_id, op_id, ty.clone());
 
         add_input(&mut bp, op_id, var_id);
 
@@ -394,7 +399,25 @@ pub(crate) fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (Bo
       out_ty = get_type(&fn_ty.return_type.ty, false /* , &mut db.ty_db */).unwrap_or_default();
     }
     routine_type_Value::RawProcedureType(proc_ty) => {
-      todo!()
+      for (index, param) in proc_ty.params.params.iter().enumerate() {
+        let name = &param.var.id;
+
+        let ty = add_ty_var(&mut bp).ty.clone();
+        let var_id = VarId::Name(name.intern());
+        let op_id = add_op(&mut bp, Operation::Param(var_id, index as u32), ty.clone(), param.clone().into());
+
+        declare_top_scope_var(&mut bp, var_id, op_id, ty.clone());
+
+        add_input(&mut bp, op_id, var_id);
+
+        if let Some(defined_ty) = get_type(&param.ty.ty, false /* , &mut unsafe { &mut *bp.db }.ty_db */) {
+          if !defined_ty.is_open() {
+            add_constraint(&mut bp, NodeConstraint::GenTyToTy(ty, defined_ty));
+          }
+        }
+      }
+
+      out_ty = Type::NoUse;
     }
     routine_type_Value::None => {
       unreachable!()
@@ -422,9 +445,9 @@ pub(crate) fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (Bo
 
   let BuildPack { super_node: mut routine, constraints, .. } = bp;
 
-  let constraint = GlobalConstraint::ResolveObjectConstraints { node: Box::as_mut_ptr(&mut routine), constraints };
+  let handle = NodeHandle::new(super_node);
 
-  (routine, constraint)
+  (handle, constraints)
 }
 
 pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
@@ -467,6 +490,20 @@ pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpI
               update_var(bp, VarId::Name(var_name), expr_op, expr_ty);
             }
           },
+          assignment_var_Value::RawAssignmentDeclaration(decl) => {
+            let var = add_ty_var(bp);
+
+            let var_ty = var.ty.clone();
+
+            update_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
+
+            if let Some(ty) = get_type(&decl.ty, false) {
+              add_constraint(bp, NodeConstraint::GenTyToTy(var_ty.clone(), ty));
+              add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
+            } else {
+              todo!("Handle unresolved type");
+            }
+          }
           assign => todo!("{assign:#?}"),
         }
 
@@ -500,12 +537,12 @@ fn compile_aggregate(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::parser::script
         let (ref_op, ref_ty) = process_op("NAMED_PTR", &[agg_ptr_op, name_op], bp);
 
         let mem_ty = add_ty_var(bp);
-        mem_ty.add(VarConstraint::Member);
-        let mem_ty = mem_ty.ty;
+        mem_ty.add(VarAttribute::Member);
+        let mem_ty = mem_ty.ty.clone();
 
         println!("{}", bp.super_node.type_vars[agg_var_index]);
 
-        bp.super_node.type_vars[agg_var_index].add_mem(name, mem_ty, Default::default());
+        bp.super_node.type_vars[agg_var_index].add_mem(name, mem_ty.clone(), Default::default());
 
         add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty, mutable: false });
 
@@ -531,7 +568,7 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Tok
       let mut ty_var_index = ty.generic_id().expect("All vars should have generic ids");
 
       let mut ptr_op = op;
-      let mut ptr_ty = ty;
+      let mut ptr_ty = ty.clone();
 
       for (index, mem_val) in mem.sub_members.iter().enumerate() {
         let ty_vars = bp.super_node.type_vars.as_mut_ptr();
@@ -540,24 +577,24 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Tok
           member_group_Value::IndexedMember(index) => {
             todo!("handle indexed lookup")
           }
-          member_group_Value::NamedMember(name) => {
-            let name = name.name.id.intern();
-            let name_op = add_op(bp, Operation::Name(name), Type::NoUse, Default::default());
+          member_group_Value::NamedMember(name_node) => {
+            let name = name_node.name.id.intern();
+            let name_op = add_op(bp, Operation::Name(name), Type::NoUse, name_node.clone().into());
             let (ref_op, ref_ty) = process_op("NAMED_PTR", &[ptr_op, name_op], bp);
-            ptr_ty = ref_ty;
+            ptr_ty = ref_ty.clone();
             ptr_op = ref_op;
 
             let var = &mut bp.super_node.type_vars[ty_var_index];
             if let Some(mem) = var.members.iter().find(|m| m.name == name) {
-              let val_ty = mem.ty;
+              let val_ty = mem.ty.clone();
               add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty, mutable: false });
             } else {
               let mem_ty = add_ty_var(bp);
-              mem_ty.add(VarConstraint::Member);
-              let mem_ty = mem_ty.ty;
+              mem_ty.add(VarAttribute::Member);
+              let mem_ty = mem_ty.ty.clone();
 
               let var = &mut bp.super_node.type_vars[ty_var_index];
-              var.add_mem(name, mem_ty, Default::default());
+              var.add_mem(name, mem_ty.clone(), Default::default());
               add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty, mutable: false });
             }
           }
@@ -577,7 +614,7 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Tok
       VarLookup::Ptr(ptr_op, ptr_ty)
     }
   } else {
-    let ty = add_ty_var(bp).ty;
+    let ty = add_ty_var(bp).ty.clone();
 
     declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
 
@@ -602,9 +639,9 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
         ConstVal::new(ty_s64.to_primitive().unwrap(), string_val.parse::<i64>().unwrap())
       };
       let ty_var = add_ty_var(bp);
-      ty_var.add(VarConstraint::Numeric);
-      let ty = ty_var.ty;
-      let op = add_op(bp, Operation::Const(const_val), ty, Default::default());
+      ty_var.add(VarAttribute::Numeric);
+      let ty = ty_var.ty.clone();
+      let op = add_op(bp, Operation::Const(const_val), ty.clone(), num.clone().into());
 
       (op, ty)
     }
@@ -654,7 +691,7 @@ pub(crate) fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (O
     }
   } else {
     //let ty = add_ty_var(bp).ty;
-    add_op(bp, Operation::Name(call.member.root.name.id.intern()), Default::default(), Default::default())
+    add_op(bp, Operation::Name(call.member.root.name.id.intern()), Default::default(), call.member.clone().into())
   };
 
   push_node(bp, CALL_ID);
@@ -662,24 +699,25 @@ pub(crate) fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (O
 
   for (index, (op_id, op_ty)) in args.iter().enumerate() {
     add_input(bp, *op_id, VarId::Param(index));
-    add_constraint(bp, NodeConstraint::CallArg { call_ref_op, arg_index: index as u32, callee_ty: *op_ty });
+    //add_constraint(bp, NodeConstraint::CallArg { call_ref_op, arg_index: index as u32, callee_ty: op_ty.clone() });
   }
 
   let (heap_in_op, heap_ty) = get_context(bp, VarId::HeapContext);
   add_input(bp, heap_in_op, VarId::HeapContext);
 
   ///////////////////////////////////
+  let var = add_ty_var(bp);
+  var.add(VarAttribute::ForeignType);
+  let ret_ty = var.ty.clone();
 
-  let ret_ty = add_ty_var(bp).ty;
+  let ret_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), ret_ty.clone(), call.clone().into());
+  declare_top_scope_var(bp, VarId::Return, ret_op, ret_ty.clone());
 
-  let ret_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), ret_ty, Default::default());
-  declare_top_scope_var(bp, VarId::Return, ret_op, ret_ty);
-
-  let heap_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), heap_ty, Default::default());
+  let heap_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), heap_ty, call.clone().into());
 
   add_output(bp, ret_op, VarId::Return);
 
-  add_constraint(bp, NodeConstraint::CallRet { call_ref_op, callee_ty: ret_ty });
+  //add_constraint(bp, NodeConstraint::CallRet { call_ref_op, callee_ty: ret_ty.clone() });
 
   add_output(bp, heap_op, VarId::HeapContext);
 
@@ -703,9 +741,9 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
   let activation_ty = if let Some(activation_ty) = activation_ty {
     activation_ty
   } else {
-    let activation_ty = add_ty_var(bp).ty;
-    bp.constraints.push(NodeConstraint::GenTyToTy(activation_ty, ty_u32));
-    declare_top_scope_var(bp, VarId::MatchActivation, Default::default(), activation_ty);
+    let activation_ty = add_ty_var(bp).ty.clone();
+    bp.constraints.push(NodeConstraint::GenTyToTy(activation_ty.clone(), ty_u32));
+    declare_top_scope_var(bp, VarId::MatchActivation, Default::default(), activation_ty.clone());
     activation_ty
   };
 
@@ -717,7 +755,7 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
     push_node(bp, CLAUSE_SELECTOR_ID);
     get_var(bp, VarId::MatchActivation);
 
-    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), index as u32)), activation_ty, Default::default());
+    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), index as u32)), activation_ty.clone(), Default::default());
 
     if let Some(expr) = &clause.expr {
       let (expr_op, _) = compile_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), bp);
@@ -740,7 +778,7 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
 
       update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
     } else {
-      update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
+      update_var(bp, VarId::MatchActivation, sel_op, activation_ty.clone());
     }
 
     clauses.push(pop_node(bp, false));
@@ -750,7 +788,7 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
     push_node(bp, CLAUSE_SELECTOR_ID);
     get_var(bp, VarId::MatchActivation);
 
-    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), u32::MAX)), activation_ty, Default::default());
+    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), u32::MAX)), activation_ty.clone(), Default::default());
     update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
     clauses.push(pop_node(bp, false));
   }
@@ -758,7 +796,7 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
   join_nodes(clauses, bp);
 
   get_var(bp, VarId::MatchActivation).unwrap().0;
-  let output_ty = add_ty_var(bp).ty;
+  let output_ty = add_ty_var(bp).ty.clone();
   declare_top_scope_var(bp, VarId::MatchOutputVal, Default::default(), output_ty);
 
   let mut clauses = Vec::new();
@@ -827,7 +865,7 @@ pub fn pop_node(bp: &mut BuildPack, port_outputs: bool) -> NodeScope {
 }
 
 pub(crate) fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
-  let current_node = bp.node_stack.last().unwrap();
+  let current_node: &NodeScope = bp.node_stack.last().unwrap();
 
   let current_node_index = current_node.node_index;
 
@@ -844,10 +882,10 @@ pub(crate) fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
 
       match outgoing_vars.entry(var.0) {
         std::collections::hash_map::Entry::Occupied(mut e) => {
-          e.get_mut().push((outgoing_node.node_index, *out_var));
+          e.get_mut().push((outgoing_node.node_index, out_var.clone()));
         }
         std::collections::hash_map::Entry::Vacant(e) => {
-          e.insert(vec![(outgoing_node.node_index, *out_var)]);
+          e.insert(vec![(outgoing_node.node_index, out_var.clone())]);
         }
       }
     }
@@ -858,13 +896,17 @@ pub(crate) fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
       let vars = vars.iter().filter(|(_, v)| v.op != op).collect::<Vec<_>>();
 
       if vars.len() > 0 {
-        let ty_a = if op.is_valid() { bp.super_node.types[op.0 as usize] } else { vars[0].1.ty };
+        let ty_a = if op.is_valid() { bp.super_node.types[op.0 as usize].clone() } else { vars[0].1.ty.clone() };
 
         for out_var in &vars {
-          let ty_b = bp.super_node.types[out_var.1.op.0 as usize];
+          let ty_b = bp.super_node.types[out_var.1.op.0 as usize].clone();
 
           if ty_a != ty_b {
-            add_constraint(bp, NodeConstraint::GenTyToGenTy(ty_a, ty_b));
+            if var_id == VarId::HeapContext {
+              //debug_assert!(ty_a.is_generic() && ty_b.is_generic(), "Should be generic types {var_id}{op} a:{ty_a} b:{ty_b} ");
+            } else {
+              add_constraint(bp, NodeConstraint::GenTyToGenTy(ty_a.clone(), ty_b));
+            }
           }
         }
 
@@ -874,7 +916,7 @@ pub(crate) fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
             port_vars.extend(iter);
           }
           _ => {
-            let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty, Default::default());
+            let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty.clone(), Default::default());
             update_var(bp, var_id, port_op, ty);
           }
         }
@@ -888,7 +930,7 @@ pub(crate) fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildP
 
   let mut operands = [OpId::default(); 3];
 
-  let mut ty_lu = HashMap::new();
+  let mut ty_lu: HashMap<&str, Type> = HashMap::new();
 
   let mut op_index: isize = -1;
   for (port_index, port) in op_def.inputs.iter().enumerate() {
@@ -909,14 +951,14 @@ pub(crate) fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildP
 
         let op_id = operands[port_index];
 
-        let ty = if op_id.is_valid() { bp.super_node.types[op_id.0 as usize] } else { add_ty_var(bp).ty };
+        let ty = if op_id.is_valid() { bp.super_node.types[op_id.0 as usize].clone() } else { add_ty_var(bp).ty.clone() };
 
         match ty_lu.entry(type_ref_name) {
           std::collections::hash_map::Entry::Occupied(d) => {
             // Create a link
             if *d.get() != ty {
-              let other_ty = *d.get();
-              bp.constraints.push(NodeConstraint::GenTyToGenTy(other_ty, ty));
+              let other_ty = d.get().clone();
+              bp.constraints.push(NodeConstraint::GenTyToGenTy(other_ty, ty.clone()));
             }
           }
           std::collections::hash_map::Entry::Vacant(entry) => {
@@ -926,7 +968,7 @@ pub(crate) fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildP
               }
             }
 
-            entry.insert(ty);
+            entry.insert(ty.clone());
           }
         }
 
@@ -951,10 +993,10 @@ pub(crate) fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildP
         let type_ref_name = output.var.name.as_str();
 
         ty = match ty_lu.entry(type_ref_name) {
-          std::collections::hash_map::Entry::Occupied(d) => *d.get(),
+          std::collections::hash_map::Entry::Occupied(d) => d.get().clone(),
           std::collections::hash_map::Entry::Vacant(..) => {
-            let ty = add_ty_var(bp).ty;
-            add_annotations(output.var.annotations.iter(), &ty_lu, bp, ty);
+            let ty = add_ty_var(bp).ty.clone();
+            add_annotations(output.var.annotations.iter(), &ty_lu, bp, ty.clone());
             ty
           }
         };
@@ -962,7 +1004,7 @@ pub(crate) fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildP
     }
   }
 
-  bp.super_node.types[op_id.0 as usize] = ty;
+  bp.super_node.types[op_id.0 as usize] = ty.clone();
 
   (op_id, ty)
   // Add constraints
@@ -973,31 +1015,31 @@ fn add_annotations(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu: &
     match annotation {
       annotation_Value::Deref(val) => {
         if let Some(target) = ty_lu.get(val.target.as_str()) {
-          add_constraint(bp, NodeConstraint::Deref { ptr_ty: *target, val_ty: ty, mutable: false });
+          add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty.clone(), mutable: false });
         }
       }
 
       annotation_Value::MutDeref(val) => {
         if let Some(target) = ty_lu.get(val.target.as_str()) {
-          add_constraint(bp, NodeConstraint::Deref { ptr_ty: *target, val_ty: ty, mutable: true });
+          add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty.clone(), mutable: true });
         }
       }
 
       annotation_Value::Annotation(val) => match val.name.as_str() {
         //"agg" => add_constraint(bp, OPConstraint::Agg(Default::default())),
-        "Numeric" => add_constraint(bp, NodeConstraint::Num(ty)),
-        "poison" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_poison)),
-        "bool" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_bool)),
-        "u8" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u8)),
-        "u16" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u16)),
-        "u32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u32)),
-        "u64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u64)),
-        "i8" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s8)),
-        "i16" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s16)),
-        "i32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s32)),
-        "i64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s64)),
-        "f32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_f32)),
-        "f64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_f64)),
+        "Numeric" => add_constraint(bp, NodeConstraint::Num(ty.clone())),
+        "poison" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_poison)),
+        "bool" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_bool)),
+        "u8" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_u8)),
+        "u16" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_u16)),
+        "u32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_u32)),
+        "u64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_u64)),
+        "i8" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_s8)),
+        "i16" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_s16)),
+        "i32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_s32)),
+        "i64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_s64)),
+        "f32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_f32)),
+        "f64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_f64)),
         _ => {}
       },
       _ => {}
@@ -1047,7 +1089,7 @@ op: ADD  l [A: Numeric]  r [A]  => out [A]
 fn test_compile_of_fn() {
   let mut db: Database = Database::default();
 
-  compile_module(
+  add_module(
     &mut db,
     "
 
@@ -1061,7 +1103,7 @@ fn test_compile_of_fn() {
 fn test_compile_of_struct() {
   let mut db: Database = Database::default();
 
-  compile_module(
+  add_module(
     &mut db,
     "
 

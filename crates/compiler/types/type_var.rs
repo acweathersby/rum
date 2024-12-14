@@ -4,14 +4,14 @@ use rum_lang::{container::ArrayVec, istring::IString};
 
 use super::{OpId, Type};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct MemberEntry {
   pub name:      IString,
   pub origin_op: u32,
   pub ty:        Type,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum NodeConstraint {
   OpToTy(OpId, Type),
@@ -27,8 +27,8 @@ pub enum NodeConstraint {
   Agg(OpId),
   GenTyToTy(Type, Type),
   GenTyToGenTy(Type, Type),
-  CallArg { call_ref_op: OpId, arg_index: u32, callee_ty: Type },
-  CallRet { call_ref_op: OpId, callee_ty: Type },
+  // CallArg { call_ref_op: OpId, arg_index: u32, callee_ty: Type },
+  // CallRet { call_ref_op: OpId, callee_ty: Type },
 }
 
 #[derive(Clone)]
@@ -37,7 +37,7 @@ pub struct TypeVar {
   pub ref_id:      i32,
   pub ty:          Type,
   pub ref_count:   u32,
-  pub constraints: ArrayVec<2, VarConstraint>,
+  pub constraints: ArrayVec<2, VarAttribute>,
   pub members:     ArrayVec<2, MemberEntry>,
 }
 
@@ -60,17 +60,17 @@ impl TypeVar {
   }
 
   #[track_caller]
-  pub fn has(&self, constraint: VarConstraint) -> bool {
+  pub fn has(&self, constraint: VarAttribute) -> bool {
     self.constraints.find_ordered(&constraint).is_some()
   }
 
   #[track_caller]
-  pub fn add(&mut self, constraint: VarConstraint) {
+  pub fn add(&mut self, constraint: VarAttribute) {
     let _ = self.constraints.push_unique(constraint);
   }
 
   pub fn add_mem(&mut self, name: IString, ty: Type, origin_node: u32) {
-    self.constraints.push_unique(VarConstraint::Agg).unwrap();
+    self.constraints.push_unique(VarAttribute::Agg).unwrap();
 
     for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
       if *n == name {
@@ -85,7 +85,7 @@ impl TypeVar {
   pub fn get_mem(&self, name: IString) -> Option<(u32, Type)> {
     for MemberEntry { name: n, origin_op: origin_node, ty } in self.members.iter() {
       if *n == name {
-        return Some((*origin_node, *ty));
+        return Some((*origin_node, ty.clone()));
       }
     }
     None
@@ -127,8 +127,8 @@ impl Display for TypeVar {
   }
 }
 
-#[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
-pub enum VarConstraint {
+#[derive(Clone, PartialEq, PartialOrd, Ord, Eq)]
+pub enum VarAttribute {
   Agg,
   Indexable,
   Method,
@@ -152,12 +152,14 @@ pub enum VarConstraint {
   Default(Type),
   /// Node index, node port index, is_output
   Binding(u32, u32, bool),
+  ForeignType,
 }
 
-impl Debug for VarConstraint {
+impl Debug for VarAttribute {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    use VarConstraint::*;
+    use VarAttribute::*;
     match self {
+      ForeignType => f.write_str("FOREIGN"),
       Indexable => f.write_fmt(format_args!("[*]",)),
       Callable => f.write_fmt(format_args!("* => x -> x",)),
       Method => f.write_fmt(format_args!("*.X => x -> x",)),
@@ -172,7 +174,7 @@ impl Debug for VarConstraint {
       Float => f.write_fmt(format_args!("floating-point",)),
       Unsigned => f.write_fmt(format_args!("unsigned",)),
       Ptr => f.write_fmt(format_args!("* = *ptr",)),
-      &Default(ty) => f.write_fmt(format_args!("could be {ty}",)),
+      Default(ty) => f.write_fmt(format_args!("could be {ty}",)),
       Binding(node_index, binding_index, output) => {
         if *output {
           f.write_fmt(format_args!("`{node_index} => output[{binding_index}]"))

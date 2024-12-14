@@ -10,3 +10,10 @@ path = "./lib.rs"
 rum_lang    = { path="../rum_lang" }
 core_lang       = { path="../core" }
 num-traits        = "0.2.17"
+
+[dependencies.radlr_rust_runtime]
+path = "../../../lib_radlr/crates/radlr-rust-runtime"
+
+[build-dependencies.radlr_build]
+path = "../../../lib_radlr/crates/radlr-build"
+

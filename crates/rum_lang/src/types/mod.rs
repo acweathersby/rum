@@ -1,7 +1,6 @@
 #![allow(unused)]
 
 mod bitsize;
-mod const_val;
 mod reg;
 
 pub use bitsize::*;

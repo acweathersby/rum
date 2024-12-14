@@ -1,15 +1,53 @@
+use rum_lang::istring::CachedString;
+
 use crate::{
-  compiler::compile_module,
+  compiler::add_module,
   interpreter::interpret_node,
-  types::{Database, Value},
+  types::{Database, SolveDatabase, SolveState, Value},
 };
-use rum_lang::{ir::ir_rvsdg::SolveState, istring::CachedString};
 
 #[test]
-fn test_fn_call() {
+fn test_missing_call_name() {
   let mut db = Database::default();
 
-  let global_constraints = compile_module(
+  let global_constraints = add_module(
+    &mut db,
+    "
+    best (d: u32) => u32 202222
+    
+    guest (d: ?) => ? guest(best)
+    
+    test (d: ?) => ? best(d)
+
+    scope () => ? { 
+      test(32)
+    }
+  ",
+  );
+
+  if let Some((test, _)) = SolveDatabase::solve_for("scope".intern(), &db, true, global_constraints) {
+    let test = test.get().unwrap();
+
+    dbg!(test);
+    // Create temporary types based on the type definitions
+
+    if test.solve_state() == SolveState::Solved {
+      let val = interpret_node(test, &[Value::u32(1), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
+
+      dbg!(val);
+    } else {
+      panic!("test is a template and cannot be directly interpreted {test:?}")
+    }
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn test_fn_call_with_adhoc_structs() {
+  let mut db = Database::default();
+
+  let global_constraints = add_module(
     &mut db,
     "
     vec2 ( x: u32, y: u32) => ? :[x = x, y = y] 
@@ -17,17 +55,14 @@ fn test_fn_call() {
     vec3 ( x: u32, y: u32, z: u32 ) => ? { 
       vec2 = vec2(x,y)
       
-      
       if x > 2 { :[ x = vec2.x, y = vec2.y, z = z ] }
-        otherwise { :[ x = vec2.x, y = vec2.y, z = z ] }
+        otherwise { :[ x = vec2.y, y = vec2.x, z = z ] }
     }
-
-
   ",
   );
 
-  if let Some(test) = db.get_routine_with_adhoc_polyfills("vec3".intern(), global_constraints) {
-    let test = unsafe { &*test };
+  if let Some((test, _)) = SolveDatabase::solve_for("vec3".intern(), &db, true, global_constraints) {
+    let test = test.get().unwrap();
 
     dbg!(test);
     // Create temporary types based on the type definitions
@@ -54,14 +89,16 @@ fn test_fn_call() {
 fn test_interpreter_adhoc_struct() {
   let mut db = Database::default();
 
-  let global_constraints = compile_module(
+  let global_constraints = add_module(
     &mut db,
-    "vec ( x: u32, y: u32) => ? :[x = x + y, y = y, local = x + 4] 
+    "vec ( x: u32, y: u32) => ? :[x = x, y = y, local = x + 4] 
   ",
   );
 
-  if let Some(test) = db.get_routine_with_adhoc_polyfills("vec".intern(), global_constraints) {
-    let test = unsafe { &*test };
+  dbg!(&db);
+
+  if let Some((test, _)) = SolveDatabase::solve_for("vec".intern(), &db, true, global_constraints) {
+    let test = test.get().unwrap();
 
     dbg!(test);
     // Create temporary types based on the type definitions
@@ -88,7 +125,7 @@ fn test_interpreter_adhoc_struct() {
 fn test_interpreter_fibonacci() {
   let mut db = Database::default();
 
-  let global_constraints = compile_module(
+  let global_constraints = add_module(
     &mut db,
     "
   fib (a:?) => ? 
@@ -97,8 +134,9 @@ fn test_interpreter_fibonacci() {
 ",
   );
 
-  if let Some(test) = db.get_routine_with_adhoc_polyfills("fib".intern(), global_constraints) {
-    let test = unsafe { &*test };
+  if let Some((test, _)) = SolveDatabase::solve_for("fib".intern(), &db, true, global_constraints) {
+    let test = test.get().unwrap();
+
     if test.solve_state() == SolveState::Solved {
       let val = interpret_node(test, &[Value::u32(30), Value::u32(2)], &mut Vec::new(), 0);
 

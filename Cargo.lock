@@ -105,6 +105,8 @@ version = "0.0.0"
 dependencies = [
  "core_lang",
  "num-traits",
+ "radlr_build",
+ "radlr_rust_runtime",
  "rum_lang",
 ]
 

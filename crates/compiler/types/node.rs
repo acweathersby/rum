@@ -1,9 +1,137 @@
 use super::*;
+use core_lang::parser::ast::ASTNode;
 use rum_lang::{
-  ir::ir_rvsdg::SolveState,
   istring::{CachedString, IString},
+  Token,
 };
-use std::fmt::{Debug, Display};
+use std::{
+  alloc::Layout,
+  fmt::{Debug, Display},
+  ptr::drop_in_place,
+  thread::sleep,
+  time::Duration,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum SolveState {
+  #[default]
+  Unsolved,
+  Solved,
+  Template,
+}
+
+struct NodeWrapper {
+  owners:  std::sync::atomic::AtomicU16,
+  writers: std::sync::atomic::AtomicU16,
+  readers: std::sync::atomic::AtomicU16,
+  node:    RootNode,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeHandle(*mut NodeWrapper);
+
+impl Default for NodeHandle {
+  fn default() -> Self {
+    NodeHandle(std::ptr::null_mut())
+  }
+}
+impl Debug for NodeHandle {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let r = unsafe { self.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
+    r.node.fmt(f)
+  }
+}
+
+impl Clone for NodeHandle {
+  fn clone(&self) -> Self {
+    let other = Self(self.0);
+
+    let r = unsafe { other.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
+
+    r.owners.fetch_add(1, std::sync::atomic::Ordering::Release);
+
+    other
+  }
+}
+
+impl Drop for NodeHandle {
+  fn drop(&mut self) {
+    let r = unsafe { self.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
+
+    let val = r.owners.fetch_sub(1, std::sync::atomic::Ordering::Acquire);
+
+    if val == 1 {
+      unsafe { drop_in_place(self.0) };
+      let layout = Layout::new::<NodeWrapper>();
+      unsafe { std::alloc::dealloc(self.0 as *mut _, layout) };
+    }
+  }
+}
+
+impl NodeHandle {
+  pub fn new(node: RootNode) -> Self {
+    unsafe {
+      let layout = Layout::new::<NodeWrapper>();
+      let ptr = std::alloc::alloc(layout) as *mut NodeWrapper;
+
+      if ptr.is_null() {
+        panic!("Could not allocate space for Node");
+      }
+
+      let mut wrapper = NodeWrapper {
+        node,
+        owners: std::sync::atomic::AtomicU16::new(1),
+        readers: Default::default(),
+        writers: Default::default(),
+      };
+      std::mem::swap(ptr.as_mut().unwrap(), &mut wrapper);
+      std::mem::forget(wrapper);
+
+      Self(ptr)
+    }
+  }
+
+  /// Creates a clone of the original Node, instead of cloning the handle.
+  pub fn duplicate(&self) -> Self {
+    unsafe {
+      let layout = Layout::new::<NodeWrapper>();
+      let ptr = std::alloc::alloc(layout) as *mut NodeWrapper;
+
+      if ptr.is_null() {
+        panic!("Could not allocate space for Node");
+      }
+
+      let mut wrapper = NodeWrapper {
+        node:    self.get().unwrap().clone(),
+        owners:  std::sync::atomic::AtomicU16::new(1),
+        readers: Default::default(),
+        writers: Default::default(),
+      };
+      std::mem::swap(ptr.as_mut().unwrap(), &mut wrapper);
+      std::mem::forget(wrapper);
+
+      Self(ptr)
+    }
+  }
+
+  pub fn get_mut<'a>(&'a self) -> Option<&'a mut RootNode> {
+    let wrapper = unsafe { self.0.as_mut().expect("Invalid internal pointer for NodeHandle") };
+
+    Some(&mut wrapper.node)
+  }
+
+  pub fn get<'a>(&'a self) -> Option<&'a RootNode> {
+    let wrapper = unsafe { self.0.as_mut().expect("Invalid internal pointer for NodeHandle") };
+
+    wrapper.readers.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+
+    while wrapper.writers.load(std::sync::atomic::Ordering::Acquire) > 0 {
+      sleep(Duration::from_nanos(300));
+    }
+
+    Some(&mut wrapper.node)
+  }
+}
 
 #[derive(Default, Clone, Copy, Hash, Debug, PartialEq, Eq)]
 pub enum VarId {
@@ -68,7 +196,6 @@ impl Display for OpId {
     }
   }
 }
-
 impl Default for OpId {
   fn default() -> Self {
     Self(u32::MAX)
@@ -94,6 +221,7 @@ pub(crate) enum Operation {
   Op { op_name: &'static str, operands: [OpId; 3] },
   Const(ConstVal),
   Name(IString),
+  CallTarget(NodeHandle),
 }
 
 impl Debug for Operation {
@@ -105,6 +233,7 @@ impl Debug for Operation {
 impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
+      Operation::CallTarget(target) => f.write_fmt(format_args!("Target [cmplx {}]", target.0 as usize)),
       Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::OutputPort(root, ops) => f.write_fmt(format_args!(
         "{:12}  {}",
@@ -130,13 +259,11 @@ pub struct CallLookup {
 
 #[derive(Clone)]
 pub(crate) struct RootNode {
-  pub(crate) host_db:      Option<Database>,
-  pub(crate) binding_name: IString,
-  pub(crate) nodes:        Vec<Node>,
-  pub(crate) operands:     Vec<Operation>,
-  pub(crate) types:        Vec<Type>,
-  pub(crate) type_vars:    Vec<TypeVar>,
-  pub(crate) errors:       Vec<String>,
+  pub(crate) nodes:         Vec<Node>,
+  pub(crate) operands:      Vec<Operation>,
+  pub(crate) types:         Vec<Type>,
+  pub(crate) type_vars:     Vec<TypeVar>,
+  pub(crate) source_tokens: Vec<rum_lang::parser::script_parser::ast::ASTNode<Token>>,
 }
 
 pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
@@ -150,7 +277,7 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
     string += mem.name.to_str().as_str();
     string += ": ";
 
-    if mem_var.has(VarConstraint::Agg) {
+    if mem_var.has(VarAttribute::Agg) {
       string += write_agg(mem_var, vars).as_str();
     } else {
       string += format!("{}", mem_var.ty).as_str();
@@ -168,8 +295,10 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
 
 impl Debug for RootNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    {
+    println!("-- {:?}", self.nodes);
+    if self.nodes.len() > 0 {
       f.write_str("\n###################### \n")?;
+
       let sig_node = &self.nodes[0];
 
       let vars = self
@@ -177,7 +306,7 @@ impl Debug for RootNode {
         .iter()
         .filter_map(|f| {
           if f.ty.is_open() {
-            if f.has(VarConstraint::Agg) {
+            if f.has(VarAttribute::Agg) {
               Some(write_agg(f, &self.type_vars))
             } else {
               Some(format!("∀{}={:?}", f.id, &f.constraints))
@@ -200,7 +329,7 @@ impl Debug for RootNode {
           .inputs
           .iter()
           .map(|input| {
-            let ty = self.get_base_ty(self.types[input.0 .0 as usize]);
+            let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
             format!("{}: {ty}", input.1)
           })
           .collect::<Vec<_>>()
@@ -209,7 +338,7 @@ impl Debug for RootNode {
       f.write_str(")")?;
       f.write_str(" => ")?;
       for input in sig_node.outputs.iter() {
-        let ty = self.get_base_ty(self.types[input.0 .0 as usize]);
+        let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
 
         if input.1 == VarId::Return {
           f.write_fmt(format_args!(" {ty}"))?;
@@ -222,11 +351,11 @@ impl Debug for RootNode {
     }
 
     for ((index, op), ty) in self.operands.iter().enumerate().zip(self.types.iter()) {
-      let ty = self.get_base_ty(*ty);
+      let ty = self.get_base_ty(ty.clone());
 
-      let err = &self.errors[index];
+      let err = self.source_tokens[index].token().to_string();
 
-      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{ty} {err}", format!("{op}")))?
+      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{ty} {:9}", format!("{op}"), err))?
     }
     f.write_str("\nnodes:")?;
 
@@ -248,7 +377,7 @@ impl Debug for RootNode {
 impl RootNode {
   pub(crate) fn get_base_ty(&self, ty: Type) -> Type {
     if let Some(index) = ty.generic_id() {
-      let r_ty = get_root_var(index, &self.type_vars).ty;
+      let r_ty = get_root_var(index, &self.type_vars).ty.clone();
       if r_ty.is_open() {
         ty
       } else {

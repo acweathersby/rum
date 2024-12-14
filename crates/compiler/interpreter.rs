@@ -1,12 +1,10 @@
 use crate::{
-  compiler::{compile_module, LOOP_ID, MATCH_ID, OPS},
+  compiler::{add_module, LOOP_ID, MATCH_ID, OPS},
   types::*,
 };
 use core_lang::parser::ast::Var;
 use rum_lang::{
   container::get_aligned_value,
-  ir::ir_rvsdg::SolveState,
-  ir_interpreter::{interpreter::process_op, value},
   istring::{CachedString, IString},
 };
 
@@ -101,7 +99,7 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
         debug_assert!(op_id.is_valid());
 
         match &super_node.operands[index] {
-          Operation::Param(_, arg_index) => scratch_slice[index] = (args[*arg_index as usize], 0),
+          Operation::Param(_, arg_index) => scratch_slice[index] = (args[*arg_index as usize].clone(), 0),
           _ => unreachable!(),
         }
       }
@@ -113,12 +111,10 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
 
   for (op_id, var_id) in root_node.outputs.iter() {
     match var_id {
-      VarId::Return => return scratch[offset + op_id.usize()].0,
+      VarId::Return => return scratch[offset + op_id.usize()].0.clone(),
       _ => {}
     }
   }
-
-  print!("Node has no return");
 
   Value::Null
 }
@@ -156,32 +152,32 @@ pub fn interprete_op(
 ) -> Value {
   let scratch_index = slice_start + op.usize();
 
-  let base_ty = super_node.types[op.usize()];
+  let base_ty = &super_node.types[op.usize()];
 
-  let ty = if let Some(offset) = base_ty.generic_id() { super_node.type_vars[offset].ty } else { base_ty };
+  let ty = if let Some(offset) = base_ty.generic_id() { &super_node.type_vars[offset].ty } else { base_ty };
 
   if scratch[scratch_index] == (Value::Uninitialized, 0) || scratch[scratch_index].1 == loop_old {
     scratch[scratch_index].0 = match &super_node.operands[op.usize()] {
-      Operation::Param(..) => scratch[scratch_index].0,
+      Operation::Param(..) => scratch[scratch_index].0.clone(),
       Operation::Const(cst) => match ty {
         Type::Primitive(_, prim) => match prim.base_ty {
           PrimitiveBaseType::Signed => match prim.byte_size {
-            8 => Value::i64(cst.convert(prim).load()),
-            4 => Value::i32(cst.convert(prim).load()),
-            2 => Value::i16(cst.convert(prim).load()),
-            1 => Value::i8(cst.convert(prim).load()),
+            8 => Value::i64(cst.convert(*prim).load()),
+            4 => Value::i32(cst.convert(*prim).load()),
+            2 => Value::i16(cst.convert(*prim).load()),
+            1 => Value::i8(cst.convert(*prim).load()),
             _ => unreachable!(),
           },
           PrimitiveBaseType::Unsigned => match prim.byte_size {
-            8 => Value::u64(cst.convert(prim).load()),
-            4 => Value::u32(cst.convert(prim).load()),
-            2 => Value::u16(cst.convert(prim).load()),
-            1 => Value::u8(cst.convert(prim).load()),
+            8 => Value::u64(cst.convert(*prim).load()),
+            4 => Value::u32(cst.convert(*prim).load()),
+            2 => Value::u16(cst.convert(*prim).load()),
+            1 => Value::u8(cst.convert(*prim).load()),
             _ => unreachable!(),
           },
           PrimitiveBaseType::Float => match prim.byte_size {
-            8 => Value::f64(cst.convert(prim).load()),
-            4 => Value::f32(cst.convert(prim).load()),
+            8 => Value::f64(cst.convert(*prim).load()),
+            4 => Value::f32(cst.convert(*prim).load()),
             _ => unreachable!(),
           },
           _ => unreachable!(),
@@ -227,7 +223,7 @@ pub fn interprete_op(
           // Calculates the offset of the current type.
           let curr_offset = interprete_op(super_node, operands[1], scratch, slice_start, slice_end, loop_old, loop_new);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
-          let size = get_ty_size(ty);
+          let size = get_ty_size(ty.clone());
           let new_offset = get_aligned_value(curr_offset, size);
           Value::u64(new_offset)
         }
@@ -235,7 +231,7 @@ pub fn interprete_op(
           // Calculates the new offset
           let curr_offset = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
-          let size = get_ty_size(super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty);
+          let size = get_ty_size(super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone());
           let new_offset = get_aligned_value(curr_offset, size);
           Value::u64(new_offset + size)
         }
@@ -244,9 +240,9 @@ pub fn interprete_op(
           interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new);
 
           // Create heap object
-          match ty {
+          match &ty {
             Type::Complex(_, agg) => {
-              let node = unsafe { &*agg };
+              let node = agg.get().unwrap();
               let size = get_agg_size(node);
 
               let size = size;
@@ -256,9 +252,9 @@ pub fn interprete_op(
               let layout = std::alloc::Layout::array::<u8>(size as usize).expect("Could not create bit field").align_to(alignment).unwrap();
               let ptr = unsafe { std::alloc::alloc(layout) };
 
-              Value::Ptr(ptr as _, ty)
+              Value::Ptr(ptr as _, ty.clone())
             }
-            _ => unreachable!(),
+            ty => unreachable!("Could not resolve type from op {op} {ty} in {super_node:#?}"),
           }
         }
         "NAMED_PTR" => {
@@ -269,8 +265,9 @@ pub fn interprete_op(
 
           match interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new) {
             Value::Ptr(ptr, Type::Complex(_, cmplx_ty)) => {
-              let offset = get_agg_offset(unsafe { &*cmplx_ty }, name);
-              Value::Ptr(unsafe { ptr.offset(offset as isize) }, ty)
+              let offset = get_agg_offset(cmplx_ty.get().unwrap(), name);
+              dbg!((op, name, offset));
+              Value::Ptr(unsafe { ptr.offset(offset as isize) }, ty.clone())
             }
             un => unreachable!("unexpected value {un:?} at {}", operands[0]),
           }
@@ -279,8 +276,6 @@ pub fn interprete_op(
           interprete_op(super_node, operands[1], scratch, slice_start, slice_end, loop_old, loop_new);
 
           let ptr = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new);
-
-          dbg!((ptr));
 
           match ptr {
             Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_u32 => unsafe { Value::u32(*(ptr as *mut u32)) },
@@ -310,7 +305,7 @@ pub fn interprete_op(
     scratch[scratch_index].1 = loop_new;
   }
 
-  scratch[scratch_index].0
+  scratch[scratch_index].0.clone()
 }
 
 fn get_ty_size(ty: Type) -> u64 {
@@ -353,7 +348,6 @@ pub fn interprete_port(
       let mut port_values = vec![Value::Uninitialized; host_hode.inputs.len()];
 
       if scratch[slice_start + activation_op_id.usize()].0 == Value::Uninitialized {
-        println!("AAA");
         // Preload phi nodes.
         for (phi_op, var_id) in host_hode.inputs.iter() {
           if !matches!(var_id, VarId::Name(..)) {
@@ -375,7 +369,7 @@ pub fn interprete_port(
                   for (_, op) in ports.iter().rev() {
                     let op_index = op.usize() + slice_start;
                     if scratch[op_index] != (Value::Uninitialized, 0) {
-                      port_values[val] = scratch[op_index].0;
+                      port_values[val] = scratch[op_index].0.clone();
                       break;
                     }
                   }
@@ -384,7 +378,7 @@ pub fn interprete_port(
 
               for (val, (phi_op, _)) in host_hode.inputs.iter().enumerate() {
                 let scratch_index = phi_op.usize() + slice_start;
-                scratch[scratch_index] = (port_values[val], current_loop_id);
+                scratch[scratch_index] = (port_values[val].clone(), current_loop_id);
                 port_values[val] = Value::Uninitialized;
               }
 
@@ -394,7 +388,7 @@ pub fn interprete_port(
 
               scratch[slice_start + activation_op_id.usize()].0 = Value::Uninitialized;
               println!("------------");
-              print_scratch(scratch, slice_start, slice_end);
+              //print_scratch(scratch, slice_start, slice_end);
               //panic!("AAA");
               //break;
 
@@ -445,6 +439,9 @@ pub fn interprete_port(
                   interprete_node(super_node, node_id as usize, scratch, slice_start, slice_end, loop_old, loop_new);
 
                   scratch[value_index] = (interprete_op(super_node, op, scratch, slice_start, slice_end, loop_old, loop_new), loop_new);
+
+                  print_scratch(scratch, slice_start, slice_end);
+                  dbg!(&scratch[value_index]);
                 }
 
                 break;
@@ -463,31 +460,25 @@ pub fn interprete_port(
         if output.1 == VarId::Return {
           let ret_val_index = output.0.usize();
           if scratch[ret_val_index] == (Value::Uninitialized, 0) || scratch[ret_val_index].1 == loop_old {
-            match super_node.operands[call_ref_op.usize()] {
-              Operation::Name(fn_name) => {
-                let db = super_node.host_db.iter().cloned().next().unwrap();
-                if let Some(call_target) = db.get_object_mut(fn_name) {
-                  let call_target = unsafe { &mut *call_target };
+            match &super_node.operands[call_ref_op.usize()] {
+              Operation::CallTarget(call_target) => {
+                let call_target = call_target.get().unwrap();
 
-                  let args = host_hode
-                    .inputs
-                    .iter()
-                    .filter_map(|n| match n.1 {
-                      VarId::Param(_) => Some(interprete_op(super_node, n.0, scratch, slice_start, slice_end, loop_old, loop_new)),
-                      _ => None,
-                    })
-                    .collect::<Vec<_>>();
+                let args = host_hode
+                  .inputs
+                  .iter()
+                  .filter_map(|n| match n.1 {
+                    VarId::Param(_) => Some(interprete_op(super_node, n.0, scratch, slice_start, slice_end, loop_old, loop_new)),
+                    _ => None,
+                  })
+                  .collect::<Vec<_>>();
 
-                  let ret = {
-                    let mut scratch = Vec::new();
-                    interpret_node(call_target, args.as_slice(), &mut scratch, 0)
-                  };
+                let ret = {
+                  let mut scratch = Vec::new();
+                  interpret_node(call_target, args.as_slice(), &mut scratch, 0)
+                };
 
-                  dbg!((ret_val_index, ret));
-                  scratch[ret_val_index] = (ret, loop_new);
-
-                  dbg!(scratch[ret_val_index]);
-                }
+                scratch[ret_val_index] = (ret, loop_new);
               }
               _ => unreachable!(),
             }
@@ -495,7 +486,7 @@ pub fn interprete_port(
         }
       }
 
-      print_scratch(scratch, slice_start, slice_end);
+      //print_scratch(scratch, slice_start, slice_end);
     }
     CLAUSE_SELECTOR_ID => {
       panic!("CLAUSE_SELECTOR_ID");
@@ -506,7 +497,7 @@ pub fn interprete_port(
     str => todo!("Handle processing of node type: {str}"),
   }
 
-  scratch[scratch_index].0
+  scratch[scratch_index].0.clone()
 }
 
 fn print_scratch(scratch: &Vec<(Value, u32)>, slice_start: usize, slice_end: usize) {
@@ -526,7 +517,7 @@ fn interprete_binary_args(
   loop_old: u32,
   loop_new: u32,
 ) -> (Value, Value) {
-  let ty = super_node.type_vars[super_node.types[op.usize()].generic_id().unwrap()].ty;
+  let ty = super_node.type_vars[super_node.types[op.usize()].generic_id().unwrap()].ty.clone();
 
   let l = interprete_op(super_node, operands[0], scratch, slice_off, slice_end, loop_old, loop_new);
   let r = interprete_op(super_node, operands[1], scratch, slice_off, slice_end, loop_old, loop_new);
@@ -547,7 +538,7 @@ fn interprete_binary_cmp_args(
   loop_old: u32,
   loop_new: u32,
 ) -> (Value, Value) {
-  let ty = super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty;
+  let ty = super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone();
 
   let l = interprete_op(super_node, operands[0], scratch, slice_off, slice_end, loop_old, loop_new);
   let r = interprete_op(super_node, operands[1], scratch, slice_off, slice_end, loop_old, loop_new);

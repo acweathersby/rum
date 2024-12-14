@@ -4,9 +4,9 @@ use std::{
   fmt::{Debug, Display},
 };
 
-use super::RootNode;
+use super::{NodeHandle, RootNode};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EntryOffsetData {
   pub ty:     Type,
   pub name:   IString,
@@ -77,7 +77,7 @@ pub const ty_f64: Type = Type::Primitive(0, prim_ty_f64);
 pub const ty_f128: Type = Type::Primitive(0, prim_ty_f128);
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Default, Hash)]
 pub enum Type {
   #[default]
   Undefined,
@@ -88,7 +88,7 @@ pub enum Type {
     gen_index: u32,
   },
   Primitive(u8, PrimitiveType),
-  Complex(u8, *const RootNode),
+  Complex(u8, NodeHandle),
   MemContext,
 }
 
@@ -208,7 +208,7 @@ impl Display for Type {
       Undefined => f.write_str("und"),
       Generic { ptr_count, gen_index } => f.write_fmt(format_args!("∀{}", gen_index)),
       Primitive(count, prim) => f.write_fmt(format_args!("{}{prim}", "*".repeat(*count as usize))),
-      Complex(count, node) => f.write_fmt(format_args!("{}cplx@[{}]", "*".repeat(*count as usize), *node as u64)),
+      Complex(count, node) => f.write_fmt(format_args!("{}cplx@[{:?}]", "*".repeat(*count as usize), node.get().unwrap() as *const _ as usize)),
       MemContext => f.write_fmt(format_args!("mem_ctx")),
     }
   }
