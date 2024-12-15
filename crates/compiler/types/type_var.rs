@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 
 use rum_lang::{container::ArrayVec, istring::IString};
 
-use super::{OpId, Type};
+use super::{OpId, Type, VarId};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct MemberEntry {
@@ -14,15 +14,35 @@ pub struct MemberEntry {
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum NodeConstraint {
+  /// Used to bind a variable to a type that is not defined in the current
+  /// routine scope.
+  GlobalNameReference(Type, IString),
   OpToTy(OpId, Type),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
-  OpToOp { src: OpId, dst: OpId },
-  BindOpToOp { src: OpId, dst: OpId },
-  MemOp { ptr_op: OpId, val_op: OpId },
-  Deref { ptr_ty: Type, val_ty: Type, mutable: bool },
+  OpToOp {
+    src: OpId,
+    dst: OpId,
+  },
+  BindOpToOp {
+    src: OpId,
+    dst: OpId,
+  },
+  MemOp {
+    ptr_op: OpId,
+    val_op: OpId,
+  },
+  Deref {
+    ptr_ty:  Type,
+    val_ty:  Type,
+    mutable: bool,
+  },
   Num(Type),
-  Member { name: IString, ref_dst: OpId, par: OpId },
+  Member {
+    name:    IString,
+    ref_dst: OpId,
+    par:     OpId,
+  },
   Mutable(u32, u32),
   Agg(OpId),
   GenTyToTy(Type, Type),

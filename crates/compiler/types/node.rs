@@ -295,7 +295,6 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
 
 impl Debug for RootNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    println!("-- {:?}", self.nodes);
     if self.nodes.len() > 0 {
       f.write_str("\n###################### \n")?;
 

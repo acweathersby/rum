@@ -538,6 +538,7 @@ fn interprete_binary_cmp_args(
   loop_old: u32,
   loop_new: u32,
 ) -> (Value, Value) {
+  dbg!((op, super_node));
   let ty = super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone();
 
   let l = interprete_op(super_node, operands[0], scratch, slice_off, slice_end, loop_old, loop_new);

@@ -1,17 +1,14 @@
-use std::{
-  collections::{HashMap, VecDeque},
-  sync::{Arc, Mutex, MutexGuard},
-};
-
-use rum_lang::istring::{CachedString, IString};
-
+use super::{CallLookup, RootNode};
 use crate::{
   compiler::{compile_struct, OPS},
   solver::{solve, GlobalConstraint},
   types::*,
 };
-
-use super::{CallLookup, RootNode};
+use rum_lang::istring::{CachedString, IString};
+use std::{
+  collections::{HashMap, VecDeque},
+  sync::{Arc, Mutex, MutexGuard},
+};
 
 #[derive(Debug)]
 struct DatabaseCore {
@@ -20,6 +17,7 @@ struct DatabaseCore {
   pub objects: Vec<(IString, NodeHandle)>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RootType {
   ExecutableEntry(IString),
   LibRoutine(IString),
@@ -30,40 +28,54 @@ pub struct SolveDatabase<'a> {
   // Used to lookup
   pub db:          &'a Database,
   pub roots:       Vec<(RootType, NodeHandle)>,
+  pub nodes:       Vec<NodeHandle>,
   pub sig_lookup:  Vec<(u64, NodeHandle)>,
   pub name_lookup: Vec<(IString, NodeHandle)>,
 }
 
+pub enum GetResult {
+  Existing(NodeHandle),
+  Introduced(NodeHandle),
+  NotFound,
+}
+
 impl<'a> SolveDatabase<'a> {
-  pub fn solve_for<'b>(
-    name: IString,
-    db: &'b Database,
-    poly_fill_types: bool,
-    mut global_constraints: Vec<GlobalConstraint>,
-  ) -> Option<(NodeHandle, SolveDatabase<'b>)> {
-    let mut db = SolveDatabase { db, roots: Default::default(), sig_lookup: Default::default(), name_lookup: Default::default() };
-
-    if let Some(obj) = db.db.get_object_mut(name) {
-      let duplicate = obj.duplicate();
-      db.roots.push((RootType::ExecutableEntry(name), duplicate.clone()));
-
-      solve(&mut db, poly_fill_types);
-
-      db.get_type_by_name(name).map(|n| (n, db))
-    } else {
-      None
+  pub fn new<'b>(db: &'b Database) -> SolveDatabase<'b> {
+    SolveDatabase {
+      db,
+      roots: Default::default(),
+      sig_lookup: Default::default(),
+      name_lookup: Default::default(),
+      nodes: Default::default(),
     }
   }
 
   pub fn add_object(&mut self, name: IString, node: NodeHandle) {}
 
+  pub fn get_root(&self, root_ty: RootType) -> Option<NodeHandle> {
+    for ((c_root_ty, root)) in &self.roots {
+      if *c_root_ty == root_ty {
+        return Some(root.clone());
+      }
+    }
+
+    None
+  }
+
+  pub fn add_root(&mut self, root_ty: RootType, root: NodeHandle) {
+    self.roots.push((root_ty, root.clone()));
+    self.nodes.push(root.clone());
+  }
+
   // Returns a Type bound to a name in the user's binding namespace.
-  pub fn get_type_by_name(&mut self, name: IString) -> Option<NodeHandle> {
+  pub fn get_type_by_name(&mut self, name: IString) -> GetResult {
+    use GetResult::*;
+
     for ((root_ty, root)) in &self.roots {
       match root_ty {
         RootType::ExecutableEntry(root_name) => {
           if *root_name == name {
-            return Some(root.clone());
+            return Existing(root.clone());
           }
         }
         _ => unreachable!(),
@@ -71,16 +83,17 @@ impl<'a> SolveDatabase<'a> {
     }
 
     if let Some(node) = self.name_lookup.iter().find(|(n, _)| *n == name) {
-      return Some(node.1.clone());
+      return Existing(node.1.clone());
     }
 
     if let Some(node) = self.db.get_object_mut(name) {
       let node = node.duplicate();
       self.name_lookup.push((name, node.clone()));
-      return Some(node);
+      self.nodes.push(node.clone());
+      return Introduced(node);
     }
 
-    None
+    NotFound
   }
 
   // Returns a type generated from an inline definition. May return a virtual type.

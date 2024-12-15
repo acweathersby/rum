@@ -147,7 +147,7 @@ fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option
       let index = bp.node_stack[node_stack_index].node_index;
 
       if let Some((var, _)) = get_var_internal(bp, var_id, node_stack_index - 1) {
-        let Var { id, op, ty, origin_node_index } = var;
+        let Var { op, ty, .. } = var;
 
         let op = add_op(bp, Operation::OutputPort(index as u32, vec![(0, op)]), ty.clone(), Default::default());
 
@@ -212,7 +212,6 @@ fn get_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
   debug_assert_eq!(var_id, VarId::HeapContext);
 
   if let Some(var) = get_var(bp, var_id) {
-    println!("a----------------------------a {var_id}");
     var
   } else {
     // Contexts need to be added as a params in the root
@@ -296,9 +295,7 @@ pub fn get_type(ir_type: &type_Value<Token>, insert_unresolved: bool /* , ty_db:
     Type_Pointer(ptr) => {
       todo!("Handle Type Pointer")
     }
-    Type_Variable(type_var) => {
-      todo!("Handle Type Variable")
-    }
+    Type_Variable(type_var) => Option::None,
     _t => Option::None,
   }
 }
@@ -482,7 +479,7 @@ pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpI
         let (expr_op, expr_ty) = compile_expression(&assign.expression.expr, bp);
 
         match &assign.var {
-          assignment_var_Value::MemberCompositeAccess(mem) => match get_mem_op(bp, mem) {
+          assignment_var_Value::MemberCompositeAccess(mem) => match get_mem_op(bp, mem, true) {
             VarLookup::Ptr(ptr_op, ..) => {
               process_op("STORE", &[ptr_op, expr_op], bp);
             }
@@ -500,8 +497,6 @@ pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpI
             if let Some(ty) = get_type(&decl.ty, false) {
               add_constraint(bp, NodeConstraint::GenTyToTy(var_ty.clone(), ty));
               add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
-            } else {
-              todo!("Handle unresolved type");
             }
           }
           assign => todo!("{assign:#?}"),
@@ -540,8 +535,6 @@ fn compile_aggregate(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::parser::script
         mem_ty.add(VarAttribute::Member);
         let mem_ty = mem_ty.ty.clone();
 
-        println!("{}", bp.super_node.type_vars[agg_var_index]);
-
         bp.super_node.type_vars[agg_var_index].add_mem(name, mem_ty.clone(), Default::default());
 
         add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty, mutable: false });
@@ -557,7 +550,7 @@ fn compile_aggregate(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::parser::script
 }
 
 /// Returns either the underlying value assigned to a variable name, or the caclulated pointer to the value.
-pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Token>>) -> VarLookup {
+pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Token>>, local_only: bool) -> VarLookup {
   let var_name = mem.root.name.id.intern();
   if let Some((op, ty)) = get_var(bp, VarId::Name(var_name)) {
     if mem.sub_members.is_empty() {
@@ -614,11 +607,17 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Tok
       VarLookup::Ptr(ptr_op, ptr_ty)
     }
   } else {
-    let ty = add_ty_var(bp).ty.clone();
+    let var = add_ty_var(bp);
+
+    let ty = var.ty.clone();
+
+    if !local_only {
+      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), var_name));
+    }
 
     declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
 
-    return get_mem_op(bp, mem);
+    return get_mem_op(bp, mem, true);
   }
 }
 
@@ -626,7 +625,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
   use rum_lang::parser::script_parser::*;
   match expr {
     expression_Value::RawBlock(block_scope) => compile_scope(&block_scope, bp),
-    expression_Value::MemberCompositeAccess(mem) => match get_mem_op(bp, mem) {
+    expression_Value::MemberCompositeAccess(mem) => match get_mem_op(bp, mem, false) {
       VarLookup::Ptr(ptr_op, ..) => process_op("LOAD", &[ptr_op], bp),
       VarLookup::Var(op, ty, ..) => (op, ty),
     },
@@ -685,7 +684,7 @@ pub(crate) fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (O
   }
 
   let call_ref_op = if call.member.sub_members.len() > 0 {
-    match get_mem_op(bp, &call.member) {
+    match get_mem_op(bp, &call.member, false) {
       VarLookup::Ptr(ptr_op, _) => ptr_op,
       _ => unreachable!(),
     }

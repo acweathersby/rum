@@ -22,100 +22,139 @@ pub enum GlobalConstraint {
   UnresolvedCalleeConstraint { caller_ref: NodeHandle, caller_arg_ty: Type, caller_arg_index: CallArgType, callee_ref: NodeHandle },
 }
 
-pub(crate) fn solve(db: &mut SolveDatabase, allow_poly_fill: bool) {
-  // Extract calls from nodes.
+enum DependencyLink {
+  GlobalName(IString),
+  Node(NodeHandle),
+}
 
-  let mut constraint_queue: VecDeque<GlobalConstraint> = VecDeque::with_capacity(128);
+pub(crate) fn solve(db: &Database, entry: IString, allow_poly_fill: bool) -> SolveDatabase {
+  let mut db = SolveDatabase::new(db);
+  let mut errors = vec![];
 
-  for index in 0..db.roots.len() {
-    let node = db.roots[index].1.clone();
-
-    fun_name(allow_poly_fill, node, db, &mut constraint_queue);
+  match db.get_type_by_name(entry) {
+    GetResult::Introduced(node) => {
+      db.add_root(RootType::ExecutableEntry(entry), node);
+    }
+    _ => return db,
   }
 
-  while let Some(constraint) = constraint_queue.pop_front() {
-    match constraint {
-      GlobalConstraint::ResolveObjectConstraints { node, constraints } => {
-        solve_node_intrinsics(node.clone(), constraints);
+  // Extract calls from nodes.
+  {
+    let db = &mut db;
 
-        if allow_poly_fill {
-          polyfill(node.clone(), db);
-        }
-      }
-      GlobalConstraint::UnresolvedCalleeConstraint { caller_ref, caller_arg_index, callee_ref, caller_arg_ty } => {
-        let callee = callee_ref.get_mut().unwrap();
+    let mut constraint_queue: VecDeque<GlobalConstraint> = VecDeque::with_capacity(128);
 
-        if caller_ref == callee_ref {
-          todo!("Handle recursive call");
-        } else {
-          let callee_param_ty = match caller_arg_index {
-            CallArgType::Index(index) => callee.nodes[0].inputs.iter().find_map(|(op_id, var_id)| match callee.operands[op_id.usize()] {
-              Operation::Param(a, b) if b == index => {
-                let ty = callee.types[op_id.usize()].clone();
-                let ty = if let Some(ty_index) = ty.generic_id() { callee.type_vars[ty_index].ty.clone() } else { ty };
-                Some(ty)
-              }
-              _ => None,
-            }),
-            CallArgType::Return => callee.nodes[0].outputs.iter().find_map(|(op_id, var_id)| match var_id {
-              VarId::Return => {
-                let ty = callee.types[op_id.usize()].clone();
-                let ty = if let Some(ty_index) = ty.generic_id() { callee.type_vars[ty_index].ty.clone() } else { ty };
-                Some(ty)
-              }
-              _ => None,
-            }),
+    for index in 0..db.roots.len() {
+      let node = db.roots[index].1.clone();
+      initialize_node(allow_poly_fill, node, db, &mut constraint_queue, &mut errors);
+    }
+
+    while let Some(constraint) = constraint_queue.pop_front() {
+      match constraint {
+        GlobalConstraint::ResolveObjectConstraints { node, constraints } => {
+          solve_node_intrinsics(node.clone(), constraints);
+
+          if allow_poly_fill {
+            let constraints = polyfill(node.clone(), db);
+            constraint_queue.extend(constraints.into_iter());
           }
-          .unwrap_or_default();
+        }
+        GlobalConstraint::UnresolvedCalleeConstraint { caller_ref, caller_arg_index, callee_ref, caller_arg_ty } => {
+          let callee = callee_ref.get_mut().unwrap();
 
-          println!("------------ {} =?= {}", &caller_arg_ty, &callee_param_ty);
-          if caller_arg_ty != callee_param_ty {
-            match (caller_arg_ty.is_open(), callee_param_ty.is_open()) {
-              (true, true) => {
-                if allow_poly_fill {
-                  let constraints = polyfill(callee_ref.clone(), db);
-                  constraint_queue.extend(constraints);
-                  constraint_queue.push_back(GlobalConstraint::UnresolvedCalleeConstraint { caller_ref, caller_arg_index, caller_arg_ty, callee_ref });
-                } else {
-                  // Both open
-                  todo!("A {caller_arg_index:?} call: {caller_arg_ty}, callee: {callee_param_ty}")
+          if caller_ref == callee_ref {
+            todo!("Handle recursive call");
+          } else {
+            let callee_param_ty = match caller_arg_index {
+              CallArgType::Index(index) => callee.nodes[0].inputs.iter().find_map(|(op_id, var_id)| match callee.operands[op_id.usize()] {
+                Operation::Param(a, b) if b == index => {
+                  let ty = callee.types[op_id.usize()].clone();
+                  let ty = if let Some(ty_index) = ty.generic_id() { callee.type_vars[ty_index].ty.clone() } else { ty };
+                  Some(ty)
                 }
+                _ => None,
+              }),
+              CallArgType::Return => callee.nodes[0].outputs.iter().find_map(|(op_id, var_id)| match var_id {
+                VarId::Return => {
+                  let ty = callee.types[op_id.usize()].clone();
+                  let ty = if let Some(ty_index) = ty.generic_id() { callee.type_vars[ty_index].ty.clone() } else { ty };
+                  Some(ty)
+                }
+                _ => None,
+              }),
+            }
+            .unwrap_or_default();
+
+            if caller_arg_ty != callee_param_ty {
+              match (caller_arg_ty.is_open(), callee_param_ty.is_open()) {
+                (true, true) => {
+                  if allow_poly_fill {
+                    polyfill(callee_ref.clone(), db);
+                    constraint_queue.push_back(GlobalConstraint::UnresolvedCalleeConstraint { caller_ref, caller_arg_index, caller_arg_ty, callee_ref });
+                  } else {
+                    // Both open
+                    todo!("A {caller_arg_index:?} call: {caller_arg_ty}, callee: {callee_param_ty}")
+                  }
+                }
+                (true, false) => {
+                  constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints {
+                    node:        caller_ref,
+                    constraints: vec![NodeConstraint::GenTyToTy(caller_arg_ty, callee_param_ty)],
+                  });
+                }
+                (false, true) => {
+                  todo!("C {caller_arg_index:?} call: {caller_arg_ty}, callee: {callee_param_ty}")
+                }
+                _ => unreachable!(),
               }
-              (true, false) => {
-                constraint_queue.push_back(GlobalConstraint::ResolveObjectConstraints {
-                  node:        caller_ref,
-                  constraints: vec![NodeConstraint::GenTyToTy(caller_arg_ty, callee_param_ty)],
-                });
-              }
-              (false, true) => {
-                todo!("C {caller_arg_index:?} call: {caller_arg_ty}, callee: {callee_param_ty}")
-              }
-              _ => unreachable!(),
             }
           }
         }
+
+        _ => unreachable!(),
+      }
+    }
+
+    if !errors.is_empty() {
+      for error in errors {
+        println!("{error}");
       }
 
-      _ => unreachable!(),
+      panic!("Have errors");
+    }
+
+    for i in 0..db.nodes.len() {
+      let node = db.nodes[i].clone();
+      polyfill(node.clone(), db);
+
+      dbg!(node);
     }
   }
+
+  db
 }
 
-fn fun_name(allow_poly_fill: bool, node: NodeHandle, db: &mut SolveDatabase<'_>, constraint_queue: &mut VecDeque<GlobalConstraint>) {
+fn initialize_node(
+  allow_poly_fill: bool,
+  node: NodeHandle,
+  db: &mut SolveDatabase<'_>,
+  constraint_queue: &mut VecDeque<GlobalConstraint>,
+  errors: &mut Vec<String>,
+) {
   if allow_poly_fill {
     // polyfill(node.clone(), db);
   }
 
-  dbg!(&node.get().unwrap());
-
-  let call_constratins = solve_node_calls(node, db);
-
-  constraint_queue.extend(call_constratins.into_iter());
+  let call_constratins = solve_node_calls(node, db, constraint_queue, allow_poly_fill, errors);
 }
 
-pub(crate) fn solve_node_calls(call_node: NodeHandle, db: &mut SolveDatabase) -> Vec<GlobalConstraint> {
-  let mut global_constraints = vec![];
-
+pub(crate) fn solve_node_calls(
+  call_node: NodeHandle,
+  db: &mut SolveDatabase,
+  constraint_queue: &mut VecDeque<GlobalConstraint>,
+  allow_poly_fill: bool,
+  errors: &mut Vec<String>,
+) {
   if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens }) = call_node.get_mut() {
     for node in nodes {
       if node.type_str == CALL_ID {
@@ -124,13 +163,21 @@ pub(crate) fn solve_node_calls(call_node: NodeHandle, db: &mut SolveDatabase) ->
             match operands[input.0.usize()] {
               Operation::Name(call_name) => {
                 // If name cannot be found then we have a reference error
+
                 match db.get_type_by_name(call_name) {
-                  Some(callee) => {
+                  GetResult::Introduced(node) => {
+                    initialize_node(allow_poly_fill, node, db, constraint_queue, errors);
+                  }
+                  _ => {}
+                }
+
+                match db.get_type_by_name(call_name) {
+                  GetResult::Existing(callee) => {
                     operands[input.0.usize()] = Operation::CallTarget(callee.clone());
 
                     for input in node.inputs.iter() {
                       if let VarId::Param(arg_index) = input.1 {
-                        global_constraints.push(GlobalConstraint::UnresolvedCalleeConstraint {
+                        constraint_queue.push_back(GlobalConstraint::UnresolvedCalleeConstraint {
                           caller_ref:       call_node.clone(),
                           caller_arg_index: CallArgType::Index(arg_index as u32),
                           caller_arg_ty:    types[input.0.usize()].clone(),
@@ -141,7 +188,8 @@ pub(crate) fn solve_node_calls(call_node: NodeHandle, db: &mut SolveDatabase) ->
 
                     for output in node.outputs.iter() {
                       if output.1 == VarId::Return {
-                        global_constraints.push(GlobalConstraint::UnresolvedCalleeConstraint {
+                        println!("{call_name} -> {:?}", CallArgType::Return);
+                        constraint_queue.push_back(GlobalConstraint::UnresolvedCalleeConstraint {
                           caller_ref:       call_node.clone(),
                           caller_arg_index: CallArgType::Return,
                           caller_arg_ty:    types[output.0.usize()].clone(),
@@ -150,10 +198,10 @@ pub(crate) fn solve_node_calls(call_node: NodeHandle, db: &mut SolveDatabase) ->
                       }
                     }
                   }
-                  None => {
+                  _ => {
                     let token = &source_tokens[input.0.usize()];
                     let tok = token.token();
-                    panic!("Missing routine:\n{}", tok.blame(1, 1, "Cannot find routine", BlameColor::BLUE))
+                    errors.push(format!("Missing routine:\n{}", tok.blame(1, 1, "Cannot find routine", BlameColor::BLUE)))
                   }
                 }
 
@@ -166,7 +214,6 @@ pub(crate) fn solve_node_calls(call_node: NodeHandle, db: &mut SolveDatabase) ->
       }
     }
   }
-  global_constraints
 }
 
 fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstraint> {
@@ -222,8 +269,6 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
 
           if !invalid {
             let (strct, constraints) = compile_struct(poly_db.db, &properties);
-
-            dbg!((&strct, properties));
 
             solve_node_intrinsics(strct.clone(), constraints);
 
@@ -464,7 +509,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>)
     var.constraints.sort();
 
     if var.has(VarAttribute::Agg) {
-      let mut ty = var.ty.clone();
+      let ty = var.ty.clone();
       let members = var.members.as_slice();
 
       match ty {
