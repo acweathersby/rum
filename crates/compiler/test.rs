@@ -38,7 +38,6 @@ fn allocator_binding() {
   if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
     let test = test.get().unwrap();
 
-    dbg!(test);
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
@@ -77,7 +76,6 @@ fn test_missing_call_name() {
   if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
     let test = test.get().unwrap();
 
-    dbg!(test);
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
@@ -99,8 +97,13 @@ fn test_missing_var() {
   let global_constraints = add_module(
     &mut db,
     "
-    scope(i: ?) => u32 {
-      i + a
+
+    c(r: u32) => ? r + 2
+
+    a(b: u32) => ? { d = b  + c(2) + 2 d }
+
+    scope(i: ?) => ? {
+      i + a(100) + 2
     }
 
   ",
@@ -110,11 +113,10 @@ fn test_missing_var() {
   if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
     let test = test.get().unwrap();
 
-    dbg!(test);
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(11), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::u32(7), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
 
       dbg!(val);
     } else {
@@ -147,7 +149,6 @@ fn test_fn_call_with_adhoc_structs() {
   if let GetResult::Existing(test) = sdb.get_type_by_name("vec3".intern()) {
     let test = test.get().unwrap();
 
-    dbg!(test);
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
@@ -184,7 +185,6 @@ fn test_interpreter_adhoc_struct() {
   if let GetResult::Existing(test) = sdb.get_type_by_name("vec".intern()) {
     let test = test.get().unwrap();
 
-    dbg!(test);
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {

@@ -24,6 +24,7 @@ pub enum RootType {
   Test(IString),
 }
 
+#[derive(Debug)]
 pub struct SolveDatabase<'a> {
   // Used to lookup
   pub db:          &'a Database,

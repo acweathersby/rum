@@ -53,23 +53,23 @@ pub enum NodeConstraint {
 
 #[derive(Clone)]
 pub struct TypeVar {
-  pub id:          u32,
-  pub ref_id:      i32,
-  pub ty:          Type,
-  pub ref_count:   u32,
-  pub constraints: ArrayVec<2, VarAttribute>,
-  pub members:     ArrayVec<2, MemberEntry>,
+  pub id:         u32,
+  pub ref_id:     i32,
+  pub ty:         Type,
+  pub ref_count:  u32,
+  pub attributes: ArrayVec<2, VarAttribute>,
+  pub members:    ArrayVec<2, MemberEntry>,
 }
 
 impl Default for TypeVar {
   fn default() -> Self {
     Self {
-      id:          Default::default(),
-      ref_id:      -1,
-      ref_count:   0,
-      ty:          Default::default(),
-      constraints: Default::default(),
-      members:     Default::default(),
+      id:         Default::default(),
+      ref_id:     -1,
+      ref_count:  0,
+      ty:         Default::default(),
+      attributes: Default::default(),
+      members:    Default::default(),
     }
   }
 }
@@ -81,16 +81,16 @@ impl TypeVar {
 
   #[track_caller]
   pub fn has(&self, constraint: VarAttribute) -> bool {
-    self.constraints.find_ordered(&constraint).is_some()
+    self.attributes.find_ordered(&constraint).is_some()
   }
 
   #[track_caller]
   pub fn add(&mut self, constraint: VarAttribute) {
-    let _ = self.constraints.push_unique(constraint);
+    let _ = self.attributes.push_unique(constraint);
   }
 
   pub fn add_mem(&mut self, name: IString, ty: Type, origin_node: u32) {
-    self.constraints.push_unique(VarAttribute::Agg).unwrap();
+    self.attributes.push_unique(VarAttribute::Agg).unwrap();
 
     for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
       if *n == name {
@@ -120,7 +120,7 @@ impl Debug for TypeVar {
 
 impl Display for TypeVar {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let Self { id, ty, constraints, members, ref_id, ref_count } = self;
+    let Self { id, ty, attributes: constraints, members, ref_id, ref_count } = self;
 
     if ty.is_generic() {
       f.write_fmt(format_args!("[{id}] refs:{ref_count:03} {}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
@@ -169,10 +169,10 @@ pub enum VarAttribute {
   },
   Callable,
   Mutable,
-  Default(Type),
   /// Node index, node port index, is_output
   Binding(u32, u32, bool),
   ForeignType,
+  Global(IString),
 }
 
 impl Debug for VarAttribute {
@@ -194,7 +194,7 @@ impl Debug for VarAttribute {
       Float => f.write_fmt(format_args!("floating-point",)),
       Unsigned => f.write_fmt(format_args!("unsigned",)),
       Ptr => f.write_fmt(format_args!("* = *ptr",)),
-      Default(ty) => f.write_fmt(format_args!("could be {ty}",)),
+      &Global(ty) => f.write_fmt(format_args!("typeof({ty})",)),
       Binding(node_index, binding_index, output) => {
         if *output {
           f.write_fmt(format_args!("`{node_index} => output[{binding_index}]"))

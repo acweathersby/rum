@@ -480,7 +480,9 @@ pub fn interprete_port(
 
                 scratch[ret_val_index] = (ret, loop_new);
               }
-              _ => unreachable!(),
+              op => {
+                panic!("Could not find call target of {op:?}. Type solve failed")
+              }
             }
           }
         }

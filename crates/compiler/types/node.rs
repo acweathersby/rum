@@ -308,7 +308,7 @@ impl Debug for RootNode {
             if f.has(VarAttribute::Agg) {
               Some(write_agg(f, &self.type_vars))
             } else {
-              Some(format!("∀{}={:?}", f.id, &f.constraints))
+              Some(format!("∀{}={:?}", f.id, &f.attributes))
             }
           } else {
             None
