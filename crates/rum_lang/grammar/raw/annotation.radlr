@@ -3,7 +3,7 @@ IGNORE { c:sp c:nl }
 
 <> annotation_declaration > annotation{1} "=>"{2} annotation_expression^expr
 
-  :ast { t_AnnotationVariable, name: $1, expr }
+  :ast { t_AnnotationVariable, name: $1, expr, tok }
 
 <> annotation_expression >
 

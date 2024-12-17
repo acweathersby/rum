@@ -156,6 +156,7 @@ pub enum VarAttribute {
   Indexable,
   Method,
   Member,
+  HeapType,
   Index(u32),
   Numeric,
   Float,
@@ -182,6 +183,7 @@ impl Debug for VarAttribute {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     use VarAttribute::*;
     match self {
+      HeapType => f.write_str("Heap"),
       ForeignType => f.write_str("FOREIGN"),
       Indexable => f.write_fmt(format_args!("[*]",)),
       Callable => f.write_fmt(format_args!("* => x -> x",)),

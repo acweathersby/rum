@@ -33,7 +33,7 @@ IMPORT ../common/comment as cmt
 
   > anno::lifetime^binding_name "=>" prim::var^allocator_name "(" anno::lifetime?^parent_allocator ")"
 
-    :ast { t_RawAllocatorBinding, binding_name, allocator_name, parent_allocator }
+    :ast { t_RawAllocatorBinding, binding_name, allocator_name, parent_allocator, tok }
 
 <> assignment_statement 
 

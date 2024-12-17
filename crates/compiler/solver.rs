@@ -123,7 +123,7 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
         GlobalConstraint::ExtractGlobals { node: call_node } => {
           let mut intrinsic_constraints = vec![];
 
-          if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens }) = call_node.get_mut() {
+          if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. }) = call_node.get_mut() {
             for ty_var in type_vars {
               if !ty_var.ty.is_open() {
                 continue;

@@ -16,11 +16,17 @@ fn allocator_binding() {
     "
     g => [ x: f32 ]
 
+    slot => [ size: address ]
+
+    named_heap => [ addr: u32 ]
+
     scope (i:?) => ? {
-      b: g = :[ x = i ]           
+      hilbert* => named_heap(local*)
 
-      d: g = :[ x = i + b.x + b.x ]
-
+      b: g = hilbert*:[ x = i ]           
+      
+      d: g = hilbert*:[ x = i + b.x + b.x ]
+      
       d.x
     }
 

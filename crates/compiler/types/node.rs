@@ -6,6 +6,7 @@ use rum_lang::{
 };
 use std::{
   alloc::Layout,
+  default,
   fmt::{Debug, Display},
   ptr::drop_in_place,
   thread::sleep,
@@ -259,11 +260,38 @@ pub struct CallLookup {
   pub origin_node: usize,
 }
 
+#[derive(Clone, Copy, Default)]
+pub enum HeapData {
+  #[default]
+  Undefined,
+  Named(IString),
+  Local, // The stack in other languages
+  Primitive,
+}
+
+impl Debug for HeapData {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self, f)
+  }
+}
+
+impl Display for HeapData {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      HeapData::Local => f.write_str("~local"),
+      HeapData::Undefined => f.write_str("~"),
+      HeapData::Primitive => f.write_str("~reg"),
+      HeapData::Named(d) => f.write_fmt(format_args!("*{d}")),
+    }
+  }
+}
+
 #[derive(Clone)]
 pub(crate) struct RootNode {
   pub(crate) nodes:         Vec<Node>,
   pub(crate) operands:      Vec<Operation>,
   pub(crate) types:         Vec<Type>,
+  pub(crate) heaps:         Vec<HeapData>,
   pub(crate) type_vars:     Vec<TypeVar>,
   pub(crate) source_tokens: Vec<rum_lang::parser::script_parser::ast::ASTNode<Token>>,
 }
@@ -353,10 +381,11 @@ impl Debug for RootNode {
 
     for ((index, op), ty) in self.operands.iter().enumerate().zip(self.types.iter()) {
       let ty = self.get_base_ty(ty.clone());
+      let mut tok = self.source_tokens[index].token();
+      let source = tok.to_string();
+      let heap = self.heaps.get(index).cloned().unwrap_or_default();
 
-      let err = self.source_tokens[index].token().blame(1, 1, "", None);
-
-      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{ty} \n{:9}", format!("{op}"), err))?
+      f.write_fmt(format_args!("\n  {index:3} <= {:36} @{:10} :{:32} {}: {:}", format!("{op}"), format!("{heap:?}"), format!("{ty}"), tok.get_line(), source))?
     }
     f.write_str("\nnodes:")?;
 

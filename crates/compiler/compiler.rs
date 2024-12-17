@@ -8,7 +8,9 @@ use rum_lang::{
   parser::script_parser::{
     assignment_var_Value,
     ast::ASTNode,
+    block_expression_group_Value,
     expression_Value,
+    lifetime_Value,
     loop_statement_group_1_Value,
     member_group_Value,
     property_Value,
@@ -243,7 +245,16 @@ fn add_op(bp: &mut BuildPack, operation: Operation, ty: Type, node: rum_lang::pa
   bp.super_node.operands.push(operation);
   bp.super_node.types.push(ty);
   bp.super_node.source_tokens.push(node);
+  bp.super_node.heaps.push(HeapData::Undefined);
   op_id
+}
+
+fn set_heap(bp: &mut BuildPack, op: OpId, heap: HeapData) {
+  bp.super_node.heaps[op.usize()] = heap;
+}
+
+fn get_heap(bp: &BuildPack, op: OpId) -> HeapData {
+  bp.super_node.heaps[op.usize()]
 }
 
 pub fn add_ty_var<'a>(bp: &'a mut BuildPack) -> &'a mut TypeVar {
@@ -307,6 +318,7 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, Type)]) -> (
     types:         Vec::with_capacity(8),
     type_vars:     Vec::with_capacity(8),
     source_tokens: Vec::with_capacity(8),
+    heaps:         Vec::with_capacity(8),
   };
 
   let mut bp = BuildPack {
@@ -360,6 +372,7 @@ pub(crate) fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (No
     types:         Vec::with_capacity(8),
     type_vars:     Vec::with_capacity(8),
     source_tokens: Vec::with_capacity(8),
+    heaps:         Vec::with_capacity(8),
   };
 
   let mut bp = BuildPack {
@@ -450,6 +463,29 @@ pub(crate) fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (No
 pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
   let mut output = Default::default();
 
+  let mut heaps = vec![];
+
+  for annotation in block.attributes.iter() {
+    match annotation {
+      block_expression_group_Value::RawAllocatorBinding(binding) => {
+        let heap_binding = binding.allocator_name.id.intern();
+        let name_op = add_op(bp, Operation::Name(heap_binding), Type::NoUse, binding.allocator_name.clone().into());
+
+        let (op, ty) = process_op("REGISTER_HEAP", &[name_op], bp, binding.clone().into());
+
+        bp.super_node.type_vars[ty.generic_id().unwrap()].add(VarAttribute::HeapType);
+
+        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), heap_binding));
+
+        heaps.push((op, ty));
+      }
+      block_expression_group_Value::Annotation(annotation) => {
+        todo!("{annotation:?}",)
+      }
+      block_expression_group_Value::None => {}
+    }
+  }
+
   for stmt in block.statements.iter() {
     match stmt {
       statement_Value::Expression(expr) => {
@@ -515,6 +551,10 @@ pub(crate) fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpI
     }
   }
 
+  for (op, _) in heaps.iter().rev() {
+    process_op("DELETE_HEAP", &[*op], bp, Default::default());
+  }
+
   output
 }
 enum VarLookup {
@@ -522,11 +562,28 @@ enum VarLookup {
   Ptr(OpId, Type),
 }
 
-fn compile_aggregate(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::parser::script_parser::RawAggregateInstantiation<Token>>) -> (OpId, Type) {
+fn compile_aggregate_instantiation(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::parser::script_parser::RawAggregateInstantiation<Token>>) -> (OpId, Type) {
   let (agg_ptr_op, agg_ty) = process_op("AGG_DECL", &[], bp, agg_decl.clone().into());
+
+  let heap = if let Some(heap) = &agg_decl.heap {
+    match heap {
+      lifetime_Value::GlobalLifetime(d) => HeapData::Named("global".intern()),
+      lifetime_Value::ScopedLifetime(scope) => {
+        let scope_name = scope.val.intern();
+        HeapData::Named(scope_name)
+      }
+      lifetime_Value::None => HeapData::Local,
+    }
+  } else {
+    HeapData::Local
+  };
+
+  set_heap(bp, agg_ptr_op, heap);
 
   let agg_var_index = agg_ty.generic_id().unwrap() as usize;
   {
+    let heap = get_heap(bp, agg_ptr_op);
+
     for (_, init) in agg_decl.inits.iter().enumerate() {
       let (expr_op, _) = compile_expression(&init.expression.expr, bp);
       if let Some(name_var) = &init.name {
@@ -534,6 +591,7 @@ fn compile_aggregate(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::parser::script
 
         let name_op = add_op(bp, Operation::Name(name), Type::NoUse, name_var.clone().into());
         let (ref_op, ref_ty) = process_op("NAMED_PTR", &[agg_ptr_op, name_op], bp, name_var.clone().into());
+        set_heap(bp, ref_op, heap);
 
         let mem_ty = add_ty_var(bp);
         mem_ty.add(VarAttribute::Member);
@@ -566,6 +624,7 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Tok
 
       let mut ptr_op = op;
       let mut ptr_ty = ty.clone();
+      let heap = get_heap(bp, ptr_op);
 
       for (index, mem_val) in mem.sub_members.iter().enumerate() {
         let ty_vars = bp.super_node.type_vars.as_mut_ptr();
@@ -578,6 +637,7 @@ pub(crate) fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Tok
             let name = name_node.name.id.intern();
             let name_op = add_op(bp, Operation::Name(name), Type::NoUse, name_node.clone().into());
             let (ref_op, ref_ty) = process_op("NAMED_PTR", &[ptr_op, name_op], bp, name_node.clone().into());
+            set_heap(bp, ref_op, heap);
             ptr_ty = ref_ty.clone();
             ptr_op = ref_op;
 
@@ -676,7 +736,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
     }
     expression_Value::RawMatch(match_) => process_match(match_, bp, None).0,
     expression_Value::RawCall(call) => process_call(call, bp),
-    expression_Value::RawAggregateInstantiation(agg_decl) => compile_aggregate(bp, agg_decl),
+    expression_Value::RawAggregateInstantiation(agg_decl) => compile_aggregate_instantiation(bp, agg_decl),
     ty => todo!("{ty:#?}"),
   }
 }
@@ -1048,7 +1108,6 @@ fn add_annotations(
       }
 
       annotation_Value::Annotation(val) => match val.name.as_str() {
-        //"agg" => add_constraint(bp, OPConstraint::Agg(Default::default())),
         "Numeric" => add_constraint(bp, NodeConstraint::Num(ty.clone())),
         "poison" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_poison)),
         "bool" => add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), ty_bool)),
@@ -1077,6 +1136,9 @@ x [A: Input] => out [A]
 op: SEL  l [A: bool]  r [B: Numeric]  => out [B]
 
 op: POISON  => out [B: poison]
+
+op: REGISTER_HEAP name [HeapName] ctx [read_ctx] => out[HeapType] ctx [write_ctx]
+op: DELETE_HEAP heap [HeapType] ctx [read_ctx] => ctx [write_ctx]
 
 op: AGG_DECL  ctx [read_ctx] => agg_ptr [Agg: agg] ctx [write_ctx]
 
