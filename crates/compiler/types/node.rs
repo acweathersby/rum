@@ -147,7 +147,8 @@ pub enum VarId {
   Return,
   GlobalContext,
   Generic,
-  HeapContext,
+  MemCtx,
+  Heap(IString),
   Param(usize),
   CallRef,
   BaseType,
@@ -166,7 +167,8 @@ impl Display for VarId {
       Self::MatchActivation => f.write_str("MATCH_ACTIVATION"),
       Self::Return => f.write_str("RETURN"),
       Self::LoopActivation => f.write_str("LOOP_ACTIVATION"),
-      Self::HeapContext => f.write_str("HeapCTX"),
+      Self::MemCtx => f.write_fmt(format_args!("MemCTX")),
+      Self::Heap(name) => f.write_fmt(format_args!("Heap(`{name})")),
       _ => f.write_fmt(format_args!("{self:?}")),
     }
   }
@@ -352,9 +354,9 @@ impl Debug for RootNode {
     for ((index, op), ty) in self.operands.iter().enumerate().zip(self.types.iter()) {
       let ty = self.get_base_ty(ty.clone());
 
-      let err = self.source_tokens[index].token().to_string();
+      let err = self.source_tokens[index].token().blame(1, 1, "", None);
 
-      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{ty} {:9}", format!("{op}"), err))?
+      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{ty} \n{:9}", format!("{op}"), err))?
     }
     f.write_str("\nnodes:")?;
 

@@ -47,8 +47,11 @@ pub enum NodeConstraint {
   Agg(OpId),
   GenTyToTy(Type, Type),
   GenTyToGenTy(Type, Type),
-  // CallArg { call_ref_op: OpId, arg_index: u32, callee_ty: Type },
-  // CallRet { call_ref_op: OpId, callee_ty: Type },
+  OpConvertTo {
+    target_op: OpId,
+    arg_index: usize,
+    target_ty: Type,
+  },
 }
 
 #[derive(Clone)]

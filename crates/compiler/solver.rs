@@ -322,10 +322,12 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
 }
 
 pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeConstraint>) {
+  dbg!((&node, &constraints));
+
   let mut constraint_queue = VecDeque::from_iter(constraints.drain(..));
 
   while let Some(constraint) = constraint_queue.pop_front() {
-    let RootNode { nodes: nodes, operands, types, type_vars, .. } = node.get_mut().unwrap();
+    let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. } = node.get_mut().unwrap();
     match constraint {
       NodeConstraint::Deref { ptr_ty, val_ty, mutable } => {
         let ptr_index = ptr_ty.generic_id().expect("ptr_ty should be generic");
@@ -424,6 +426,25 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
         let var_a = get_root_var_mut(a_index, type_vars);
         var_a.add(VarAttribute::Global(name));
       }
+      NodeConstraint::OpConvertTo { target_op, arg_index, target_ty } => {
+        let index = target_ty.generic_id().expect("Left ty should be generic");
+        let var = get_root_var_mut(index, type_vars);
+        let target_ty = var.ty.clone();
+
+        let out_op = OpId(operands.len() as u32);
+        match &mut operands[target_op.usize()] {
+          Operation::Op { operands: ops, .. } => {
+            let target_op = ops[arg_index];
+
+            ops[arg_index] = out_op;
+
+            operands.push(Operation::Op { op_name: "CONVERT", operands: [target_op, Default::default(), Default::default()] });
+            types.push(target_ty.clone());
+            source_tokens.push(Default::default());
+          }
+          _ => unreachable!(),
+        }
+      }
       cs => todo!("Handle {cs:?}"),
     }
   }
@@ -487,6 +508,8 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
   }
 
   node_ref.type_vars = output_type_vars;
+
+  dbg!((&node));
 
   //global_constraints
 }
@@ -557,20 +580,18 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>)
         Type::Complex(_, node) => {
           let node = node.get().unwrap();
           for member in members.iter() {
-            let (op_id, _) = node.nodes[0]
-              .outputs
-              .iter()
-              .find(|(_, v)| match v {
-                VarId::Name(n) => *n == member.name,
-                _ => false,
-              })
-              .unwrap();
+            if let Some((op_id, _)) = node.nodes[0].outputs.iter().find(|(_, v)| match v {
+              VarId::Name(n) => *n == member.name,
+              _ => false,
+            }) {
+              let ty = node.types[op_id.usize()].clone();
+              let ty = if let Some(ty_index) = ty.generic_id() { node.type_vars[ty_index].ty.clone() } else { ty };
 
-            let ty = node.types[op_id.usize()].clone();
-            let ty = if let Some(ty_index) = ty.generic_id() { node.type_vars[ty_index].ty.clone() } else { ty };
-
-            if !ty.is_open() {
-              queue.push_back(NodeConstraint::GenTyToTy(member.ty.clone(), ty));
+              if !ty.is_open() {
+                queue.push_back(NodeConstraint::GenTyToTy(member.ty.clone(), ty));
+              }
+            } else {
+              panic!("Complex type does not have member {}@{} {node:?}", member.name, member.ty)
             }
           }
         }

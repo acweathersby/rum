@@ -14,21 +14,14 @@ fn allocator_binding() {
   let global_constraints = add_module(
     &mut db,
     "
+    g => [ x: f32 ]
 
+    scope (i:?) => ? {
+      b: g = :[ x = i ]           
 
-    testStruct => [
-      a: u32, 
-      b: u32
-    ] 
+      d: g = :[ x = i + b.x + b.x ]
 
-    scope (c: ?) => ? {
-      {
-        test* => douglas ( test* )
-
-        d: testStruct = :[ a = c, b = 0 ] 
-
-        d
-      }
+      d.x
     }
 
   ",
@@ -38,10 +31,12 @@ fn allocator_binding() {
   if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
     let test = test.get().unwrap();
 
+    dbg!(test);
+
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(11), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
 
       dbg!(val);
     } else {

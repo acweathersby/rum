@@ -91,7 +91,7 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
   for (op_id, var_id) in root_node.inputs.iter() {
     let index = op_id.usize();
     match var_id {
-      VarId::HeapContext => match &super_node.operands[index] {
+      VarId::MemCtx => match &super_node.operands[index] {
         Operation::Param(..) => scratch_slice[index] = (Value::SideEffect, 0),
         _ => unreachable!(),
       },
@@ -186,6 +186,29 @@ pub fn interprete_op(
       },
       Operation::OutputPort(..) => interprete_port(super_node, op, scratch, slice_start, slice_end, loop_old, loop_new),
       Operation::Op { op_name, operands } => match *op_name {
+        "CONVERT" => {
+          let val = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new);
+
+          match val {
+            Value::i32(v) => match ty {
+              Type::Primitive(_, prim_ty) => match *prim_ty {
+                prim_ty_u32 => Value::u32(v as u32),
+                prim_ty_s32 => val,
+                dd_ => unreachable!("{dd_}"),
+              },
+              _ => unreachable!(),
+            },
+            Value::f32(v) => match ty {
+              Type::Primitive(_, prim_ty) => match *prim_ty {
+                prim_ty_u32 => Value::u32(v as u32),
+                prim_ty_f32 => val,
+                dd_ => unreachable!("{dd_}"),
+              },
+              _ => unreachable!(),
+            },
+            _ => unreachable!(),
+          }
+        }
         "POISON" => Value::Ptr(0 as *mut _, ty_poison),
         "DECL" => interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new),
         "ADD" | "SUB" | "DIV" | "MUL" => {
@@ -279,6 +302,8 @@ pub fn interprete_op(
 
           match ptr {
             Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_u32 => unsafe { Value::u32(*(ptr as *mut u32)) },
+            Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_f32 => unsafe { Value::f32(*(ptr as *mut f32)) },
+            Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_f64 => unsafe { Value::f64(*(ptr as *mut f64)) },
             _ => unreachable!(),
           }
         }
@@ -293,7 +318,7 @@ pub fn interprete_op(
             (Value::Ptr(ptr, Type::Primitive(1, v)), Value::u32(val)) if v == prim_ty_u32 => unsafe { *(ptr as *mut u32) = val },
             (Value::Ptr(ptr, Type::Primitive(1, v)), Value::f32(val)) if v == prim_ty_f32 => unsafe { *(ptr as *mut f32) = val },
             (Value::Ptr(ptr, Type::Primitive(1, v)), Value::f64(val)) if v == prim_ty_f64 => unsafe { *(ptr as *mut f64) = val },
-            _ => unreachable!(),
+            (ptr, val) => todo!("Store {val:?} into {ptr:?} at {op}"),
           }
 
           Value::SideEffect
