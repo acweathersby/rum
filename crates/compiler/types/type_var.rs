@@ -56,6 +56,7 @@ pub enum NodeConstraint {
 
 #[derive(Clone)]
 pub struct TypeVar {
+  pub ctx_id:     VarId,
   pub id:         u32,
   pub ref_id:     i32,
   pub ty:         Type,
@@ -67,6 +68,7 @@ pub struct TypeVar {
 impl Default for TypeVar {
   fn default() -> Self {
     Self {
+      ctx_id:     Default::default(),
       id:         Default::default(),
       ref_id:     -1,
       ref_count:  0,
@@ -123,7 +125,7 @@ impl Debug for TypeVar {
 
 impl Display for TypeVar {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let Self { id, ty, attributes: constraints, members, ref_id, ref_count } = self;
+    let Self { id, ty, attributes: constraints, members, ref_id, ref_count, .. } = self;
 
     if ty.is_generic() {
       f.write_fmt(format_args!("[{id}] refs:{ref_count:03} {}{ty: >6}", if *ref_id >= 0 { "*" } else { "" }))?;
@@ -153,8 +155,6 @@ impl Display for TypeVar {
 #[derive(Clone, PartialEq, PartialOrd, Ord, Eq)]
 pub enum VarAttribute {
   Agg,
-  Indexable,
-  Method,
   Member,
   HeapType,
   Index(u32),
@@ -185,9 +185,7 @@ impl Debug for VarAttribute {
     match self {
       HeapType => f.write_str("Heap"),
       ForeignType => f.write_str("FOREIGN"),
-      Indexable => f.write_fmt(format_args!("[*]",)),
       Callable => f.write_fmt(format_args!("* => x -> x",)),
-      Method => f.write_fmt(format_args!("*.X => x -> x",)),
       MemOp { ptr_ty: ptr, val_ty: val } => f.write_fmt(format_args!("memop  *{ptr} = {val}",)),
       Load(a, b) => f.write_fmt(format_args!("load (@ `{a}, src: `{b})",)),
       Convert { dst, src } => f.write_fmt(format_args!("{src} => {dst}",)),

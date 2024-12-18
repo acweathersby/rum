@@ -9,8 +9,6 @@ use std::{
   usize,
 };
 
-type NodePointer = *mut RootNode;
-
 #[derive(Debug, Copy, Clone)]
 enum CallArgType {
   Index(u32),
@@ -255,10 +253,6 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
   let mut node_constraints = vec![];
 
   if routine_ref.solve_state() == SolveState::Template {
-    //let mut new_routine = routine_ref.clone();
-
-    // perform
-
     for index in 0..routine_ref.type_vars.len() {
       let ty = &routine_ref.type_vars[index];
       if ty.ty.is_generic() {
@@ -322,8 +316,6 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
 }
 
 pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeConstraint>) {
-  dbg!((&node, &constraints));
-
   let mut constraint_queue = VecDeque::from_iter(constraints.drain(..));
 
   while let Some(constraint) = constraint_queue.pop_front() {
@@ -496,22 +488,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
     var.attributes.sort();
   }
 
-  fn update_type(out_map: &Vec<Type>, arg: Type, output_type_vars: &Vec<TypeVar>) -> Type {
-    let new_ty = out_map[arg.generic_id().expect("index") as usize].clone();
-    let var = &output_type_vars[new_ty.generic_id().unwrap()];
-
-    if !var.ty.is_open() {
-      var.ty.clone()
-    } else {
-      new_ty
-    }
-  }
-
   node_ref.type_vars = output_type_vars;
-
-  dbg!((&node));
-
-  //global_constraints
 }
 
 pub(crate) fn get_root_var_mut<'a>(mut index: usize, type_vars: &mut [TypeVar]) -> &'a mut TypeVar {

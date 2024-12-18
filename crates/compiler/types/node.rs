@@ -139,6 +139,7 @@ pub enum VarId {
   #[default]
   Undefined,
   Name(IString),
+  MemName(usize, IString),
   SideEffect(usize),
   MemRef(usize),
   MatchInputExpr,
@@ -220,6 +221,7 @@ impl OpId {
 #[derive(Clone)]
 pub(crate) enum Operation {
   Param(VarId, u32),
+  Heap(VarId),
   OutputPort(u32, Vec<(u32, OpId)>),
   Op { op_name: &'static str, operands: [OpId; 3] },
   Const(ConstVal),
@@ -244,6 +246,7 @@ impl Display for Operation {
         ops.iter().map(|(a, b)| { format!("{:5}", format!("{b}@{a}")) }).collect::<Vec<String>>().join("  ")
       )),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
+      Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
       Operation::Op { op_name, operands } => {
         f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
       }
@@ -291,7 +294,6 @@ pub(crate) struct RootNode {
   pub(crate) nodes:         Vec<Node>,
   pub(crate) operands:      Vec<Operation>,
   pub(crate) types:         Vec<Type>,
-  pub(crate) heaps:         Vec<HeapData>,
   pub(crate) type_vars:     Vec<TypeVar>,
   pub(crate) source_tokens: Vec<rum_lang::parser::script_parser::ast::ASTNode<Token>>,
 }
@@ -358,8 +360,12 @@ impl Debug for RootNode {
           .inputs
           .iter()
           .map(|input| {
-            let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
-            format!("{}: {ty}", input.1)
+            if input.0.is_valid() {
+              let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
+              format!("{}: {ty}", input.1)
+            } else {
+              format!("{}: --", input.1)
+            }
           })
           .collect::<Vec<_>>()
           .join(", "),
@@ -367,12 +373,16 @@ impl Debug for RootNode {
       f.write_str(")")?;
       f.write_str(" => ")?;
       for input in sig_node.outputs.iter() {
-        let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
+        if input.0.is_valid() {
+          let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
 
-        if input.1 == VarId::Return {
-          f.write_fmt(format_args!(" {ty}"))?;
+          if input.1 == VarId::Return {
+            f.write_fmt(format_args!(" {ty}"))?;
+          } else {
+            f.write_fmt(format_args!(" [{}: {ty}]", input.1))?;
+          }
         } else {
-          f.write_fmt(format_args!(" [{}: {ty}]", input.1))?;
+          f.write_fmt(format_args!("[{}: --]", input.1))?;
         }
       }
 
@@ -383,9 +393,8 @@ impl Debug for RootNode {
       let ty = self.get_base_ty(ty.clone());
       let mut tok = self.source_tokens[index].token();
       let source = tok.to_string();
-      let heap = self.heaps.get(index).cloned().unwrap_or_default();
 
-      f.write_fmt(format_args!("\n  {index:3} <= {:36} @{:10} :{:32} {}: {:}", format!("{op}"), format!("{heap:?}"), format!("{ty}"), tok.get_line(), source))?
+      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{:32} {}: {:}", format!("{op}"), format!("{ty}"), tok.get_line(), source))?
     }
     f.write_str("\nnodes:")?;
 

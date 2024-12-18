@@ -89,6 +89,7 @@ pub enum Type {
   },
   Primitive(u8, PrimitiveType),
   Complex(u8, NodeHandle),
+  Heap(IString),
   MemContext,
 }
 
@@ -204,6 +205,7 @@ impl Display for Type {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     use Type::*;
     match self {
+      Heap(name) => f.write_fmt(format_args!("*{name}")),
       NoUse => f.write_fmt(format_args!("no-use")),
       Undefined => f.write_str("und"),
       Generic { ptr_count, gen_index } => f.write_fmt(format_args!("∀{}", gen_index)),

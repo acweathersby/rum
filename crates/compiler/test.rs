@@ -14,22 +14,32 @@ fn allocator_binding() {
   let global_constraints = add_module(
     &mut db,
     "
-    g => [ x: f32 ]
+   g => [ x: f32 ]
 
-    slot => [ size: address ]
+//   slot => [ size: address ]
 
-    named_heap => [ addr: u32 ]
+//   named_heap => [ addr: u32 ]
 
-    scope (i:?) => ? {
-      hilbert* => named_heap(local*)
+//   scope (i:?) => ? {
+//   hilbert* => named_heap(local*)
 
-      b: g = hilbert*:[ x = i ]           
+//   b: g = hilbert*:[ x = i ]           
+//         
+//   d: g = hilbert*:[ x = i + b.x + b.x ]
+//         
+//   d.x
+//   }
+
+
+    scope () => ? {
+      test* => beaver(test*)   
       
-      d: g = hilbert*:[ x = i + b.x + b.x ]
+      b:g = test* :[x = 0]
+
+      b.x = 2
       
-      d.x
+      b
     }
-
   ",
   );
 
@@ -69,7 +79,6 @@ fn test_missing_call_name() {
     }
 
     test (c: u32) => u32 if a > 10 { c+ 2  } otherwise { c + 1 }
-
   ",
   );
 
