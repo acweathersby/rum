@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Display};
 
-use rum_lang::{container::ArrayVec, istring::IString};
+use core_lang::parser::ast::ASTNode;
+use rum_lang::{container::ArrayVec, istring::IString, Token};
 
 use super::{OpId, Type, VarId};
 
@@ -16,7 +17,7 @@ pub struct MemberEntry {
 pub enum NodeConstraint {
   /// Used to bind a variable to a type that is not defined in the current
   /// routine scope.
-  GlobalNameReference(Type, IString),
+  GlobalNameReference(Type, IString, Token),
   OpToTy(OpId, Type),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
@@ -176,7 +177,7 @@ pub enum VarAttribute {
   /// Node index, node port index, is_output
   Binding(u32, u32, bool),
   ForeignType,
-  Global(IString),
+  Global(IString, Token),
 }
 
 impl Debug for VarAttribute {
@@ -197,7 +198,7 @@ impl Debug for VarAttribute {
       Float => f.write_fmt(format_args!("floating-point",)),
       Unsigned => f.write_fmt(format_args!("unsigned",)),
       Ptr => f.write_fmt(format_args!("* = *ptr",)),
-      &Global(ty) => f.write_fmt(format_args!("typeof({ty})",)),
+      Global(ty, tok) => f.write_fmt(format_args!("typeof({ty})",)),
       Binding(node_index, binding_index, output) => {
         if *output {
           f.write_fmt(format_args!("`{node_index} => output[{binding_index}]"))

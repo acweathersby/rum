@@ -54,6 +54,7 @@ pub const prim_ty_f16: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseTyp
 pub const prim_ty_f32: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 14, byte_size: 4, ele_count: 1 };
 pub const prim_ty_f64: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 15, byte_size: 8, ele_count: 1 };
 pub const prim_ty_f128: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 16, byte_size: 8, ele_count: 1 };
+pub const prim_ty_addr: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 17, byte_size: 8, ele_count: 1 };
 
 pub const ty_undefined: Type = Type::Primitive(0, prim_ty_undefined);
 pub const ty_poison: Type = Type::Primitive(0, prim_ty_poison);
@@ -75,6 +76,8 @@ pub const ty_f16: Type = Type::Primitive(0, prim_ty_f16);
 pub const ty_f32: Type = Type::Primitive(0, prim_ty_f32);
 pub const ty_f64: Type = Type::Primitive(0, prim_ty_f64);
 pub const ty_f128: Type = Type::Primitive(0, prim_ty_f128);
+
+pub const ty_addr: Type = Type::Primitive(0, prim_ty_addr);
 
 #[repr(u8)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Default, Hash)]

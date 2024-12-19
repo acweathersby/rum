@@ -32,13 +32,20 @@ fn allocator_binding() {
 
 
     scope () => ? {
-      test* => beaver(test*)   
-      
-      b:g = test* :[x = 0]
+      b = {
 
-      b.x = 2
-      
-      b
+        test* => beaver(test*)   
+        
+        b:g = test* :[x = 0]
+        
+        //loop if i > 1 { b.x = 2 } otherwise { b.x = 1 }
+
+        b.x = 2
+
+        b
+      }
+
+      b.x
     }
   ",
   );

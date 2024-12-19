@@ -1,5 +1,4 @@
 use super::*;
-use core_lang::parser::ast::ASTNode;
 use rum_lang::{
   istring::{CachedString, IString},
   Token,
@@ -143,14 +142,14 @@ pub enum VarId {
   SideEffect(usize),
   MemRef(usize),
   MatchInputExpr,
-  MatchOutputVal,
+  OutputVal,
   MatchActivation,
   LoopActivation,
   Return,
   GlobalContext,
   Generic,
-  MemCtx,
   Heap(IString),
+  DeletedHeap,
   Param(usize),
   CallRef,
   BaseType,
@@ -165,11 +164,10 @@ impl Display for VarId {
       Self::SideEffect(id) => f.write_fmt(format_args!("--{id}--")),
       Self::MemRef(id) => f.write_fmt(format_args!("--*{id}--")),
       Self::MatchInputExpr => f.write_str("MATCH_INPUT_VALUE"),
-      Self::MatchOutputVal => f.write_str("MATCH_OUTPUT_VALUE"),
+      Self::OutputVal => f.write_str("OUTPUT_VALUE"),
       Self::MatchActivation => f.write_str("MATCH_ACTIVATION"),
       Self::Return => f.write_str("RETURN"),
       Self::LoopActivation => f.write_str("LOOP_ACTIVATION"),
-      Self::MemCtx => f.write_fmt(format_args!("MemCTX")),
       Self::Heap(name) => f.write_fmt(format_args!("Heap(`{name})")),
       _ => f.write_fmt(format_args!("{self:?}")),
     }
@@ -222,6 +220,7 @@ impl OpId {
 pub(crate) enum Operation {
   Param(VarId, u32),
   Heap(VarId),
+  MemCheck(OpId),
   OutputPort(u32, Vec<(u32, OpId)>),
   Op { op_name: &'static str, operands: [OpId; 3] },
   Const(ConstVal),
@@ -240,6 +239,7 @@ impl Display for Operation {
     match self {
       Operation::CallTarget(target) => f.write_fmt(format_args!("Target [cmplx {}]", target.0 as usize)),
       Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
+      Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::OutputPort(root, ops) => f.write_fmt(format_args!(
         "{:12}  {}",
         format!("PORT@{root}"),
@@ -295,7 +295,21 @@ pub(crate) struct RootNode {
   pub(crate) operands:      Vec<Operation>,
   pub(crate) types:         Vec<Type>,
   pub(crate) type_vars:     Vec<TypeVar>,
+  pub(crate) heap_id:       Vec<usize>,
   pub(crate) source_tokens: Vec<rum_lang::parser::script_parser::ast::ASTNode<Token>>,
+}
+
+impl Default for RootNode {
+  fn default() -> Self {
+    RootNode {
+      nodes:         Vec::with_capacity(8),
+      operands:      Vec::with_capacity(8),
+      types:         Vec::with_capacity(8),
+      type_vars:     Vec::with_capacity(8),
+      source_tokens: Vec::with_capacity(8),
+      heap_id:       Vec::with_capacity(8),
+    }
+  }
 }
 
 pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
@@ -393,8 +407,13 @@ impl Debug for RootNode {
       let ty = self.get_base_ty(ty.clone());
       let mut tok = self.source_tokens[index].token();
       let source = tok.to_string();
+      let heap = self.heap_id.get(index).cloned().unwrap_or_default();
 
-      f.write_fmt(format_args!("\n  {index:3} <= {:36} :{:32} {}: {:}", format!("{op}"), format!("{ty}"), tok.get_line(), source))?
+      //let heap = if heap < self.type_vars.len() { self.type_vars[heap].ty.to_string() } else { "???".to_string() };
+
+      let heap = if heap == usize::MAX { "".to_string() } else { heap.to_string() };
+
+      f.write_fmt(format_args!("\n  {index:3} <= {:36} @{heap:10} :{:32} {}: {:}", format!("{op}"), format!("{ty}"), tok.get_line(), source))?
     }
     f.write_str("\nnodes:")?;
 

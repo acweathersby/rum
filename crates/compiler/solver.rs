@@ -128,11 +128,11 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
               }
 
               for cstr in ty_var.attributes.iter() {
-                if let VarAttribute::Global(node_name) = cstr {
+                if let VarAttribute::Global(node_name, tok) = cstr {
                   if let Some(node) = get_node(db, *node_name, &mut constraint_queue) {
                     intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, node)));
                   } else {
-                    panic!("Could not find object {node_name}")
+                    panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
                   }
                 }
               }
@@ -413,10 +413,10 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
           panic!("TY_A [{}], TY_B [ {}   {var}", ty_a, ty_b);
         }
       }
-      NodeConstraint::GlobalNameReference(ty, name) => {
+      NodeConstraint::GlobalNameReference(ty, name, tok) => {
         let a_index = ty.generic_id().expect("ty should be generic");
         let var_a = get_root_var_mut(a_index, type_vars);
-        var_a.add(VarAttribute::Global(name));
+        var_a.add(VarAttribute::Global(name, tok));
       }
       NodeConstraint::OpConvertTo { target_op, arg_index, target_ty } => {
         let index = target_ty.generic_id().expect("Left ty should be generic");
@@ -463,6 +463,12 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
         *var_ty = out_map[index].clone();
       }
       _ => {}
+    }
+  }
+
+  for index in node_ref.heap_id.iter_mut() {
+    if *index < usize::MAX {
+      *index = out_map[*index].clone().generic_id().unwrap();
     }
   }
 

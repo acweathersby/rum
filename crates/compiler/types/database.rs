@@ -146,6 +146,10 @@ impl Database {
     db.objects.push((name, node));
   }
 
+  pub fn get_object_mut_with_sig(&self, obj_name: IString, obj_sig: u64) -> Option<NodeHandle> {
+    None
+  }
+
   pub fn get_object_mut(&self, fn_name: IString) -> Option<NodeHandle> {
     for (binding_name, node) in self.get_ref().objects.iter_mut() {
       if *binding_name == fn_name {

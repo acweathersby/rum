@@ -91,7 +91,7 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
   for (op_id, var_id) in root_node.inputs.iter() {
     let index = op_id.usize();
     match var_id {
-      VarId::MemCtx => match &super_node.operands[index] {
+      VarId::Heap(_) => match &super_node.operands[index] {
         Operation::Param(..) => scratch_slice[index] = (Value::SideEffect, 0),
         _ => unreachable!(),
       },
@@ -365,7 +365,7 @@ pub fn interprete_port(
     }
     LOOP_ID => {
       let (activation_op_id, _) = host_hode.outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
-      let (output_op_id, _) = host_hode.outputs.iter().find(|(_, var)| *var == VarId::MatchOutputVal).unwrap();
+      let (output_op_id, _) = host_hode.outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
 
       let mut current_loop_id = loop_new + 1;
       let mut prev_loop_id = current_loop_id;
@@ -436,7 +436,7 @@ pub fn interprete_port(
     }
     MATCH_ID => {
       let (activation_op_id, _) = host_hode.outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
-      let (output_op_id, _) = host_hode.outputs.iter().find(|(_, var)| *var == VarId::MatchOutputVal).unwrap();
+      let (output_op_id, _) = host_hode.outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
 
       let act_op = &super_node.operands[activation_op_id.usize()];
       let out_op = &super_node.operands[output_op_id.usize()];
