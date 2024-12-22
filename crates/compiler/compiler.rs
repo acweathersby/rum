@@ -212,7 +212,7 @@ fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (NodeHandle, V
 
   for (id, index) in node_stack[0].var_lu.iter() {
     match node_stack[0].vars[*index].id {
-      var_id @ VarId::Heap(..) => {
+      var_id @ VarId::MemCTX => {
         let op = node_stack[0].vars[*index].val_op;
         routine.nodes[0].outputs.push((op, var_id));
       }
@@ -243,6 +243,7 @@ struct NodeScope {
   node_index: usize,
   vars:       Vec<Var>,
   var_lu:     HashMap<VarId, usize>,
+  heap_lu:    HashMap<IString, Type>,
 }
 
 #[derive(Debug)]
@@ -256,7 +257,7 @@ struct BuildPack<'a> {
 fn push_node(bp: &mut BuildPack, id: &'static str) {
   let node_index = bp.super_node.nodes.len();
   bp.super_node.nodes.push(Node { index: node_index, type_str: id, inputs: Default::default(), outputs: Default::default() });
-  bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), id });
+  bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), heap_lu: Default::default(), id });
 }
 
 fn declare_top_scope_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &'a mut Var {
@@ -318,54 +319,17 @@ fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option
   return None;
 }
 
-fn get_heap_context_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> (Var, usize) {
-  for node_stack_index in (0..=current).rev() {
-    let node = &mut bp.node_stack[node_stack_index];
-    if let Some(var) = node.var_lu.get(&var_id) {
-      return (node.vars[*var].clone(), node_stack_index);
-    } else if bp.super_node.nodes[bp.node_stack[node_stack_index].node_index].type_str == MEMORY_REGION_ID {
-      let index = bp.node_stack[node_stack_index].node_index;
+fn get_mem_context(bp: &mut BuildPack) -> (OpId, Type) {
+  let var_id = VarId::MemCTX;
 
-      let (var, _) = get_heap_context_internal(bp, var_id, node_stack_index - 1);
-      let Var { val_op: op, ty, .. } = var;
-
-      bp.super_node.nodes[index].inputs.push((op, var_id));
-
-      let node_data = &mut bp.node_stack[node_stack_index];
-      let var_index = node_data.vars.len();
-
-      let new_var = Var { id: var_id, val_op: op, ty, origin_node_index: var.origin_node_index, ctx_id: Default::default() };
-      node_data.vars.push(new_var.clone());
-      node_data.var_lu.insert(var_id.clone(), var_index);
-
-      return (new_var, node_stack_index);
-    }
+  if let Some(result) = get_var(bp, var_id) {
+    result
+  } else {
+    let mem_ctx_ty = add_ty_var(bp).ty.clone();
+    declare_var(bp, var_id, Default::default(), mem_ctx_ty.clone(), 0);
+    add_constraint(bp, NodeConstraint::GenTyToTy(mem_ctx_ty, Type::MemContext));
+    return get_mem_context(bp);
   }
-
-  // Contexts need to be added as a params in the root
-  let heap_ty = add_ty_var(bp).ty.clone();
-
-  let op: OpId = add_op(bp, Operation::Heap(var_id), heap_ty.clone(), Default::default());
-
-  set_heap(bp, op, heap_ty.generic_id().unwrap());
-
-  let root = &mut bp.super_node.nodes[0];
-
-  root.inputs.push((op, var_id));
-
-  let var = declare_var(bp, var_id, op, heap_ty, 0);
-
-  return (var.clone(), 0);
-}
-
-fn get_heap_context(bp: &mut BuildPack, var_id: VarId) -> (OpId, Type) {
-  debug_assert!(matches!(var_id, VarId::Heap(..)));
-
-  let current = bp.node_stack.len() - 1;
-
-  let (var, _) = get_heap_context_internal(bp, var_id, current);
-
-  (var.val_op, var.ty.clone())
 }
 
 /// Retrieves a named variable declared along the current scope stack, or none.
@@ -405,9 +369,8 @@ fn update_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: Type) {
   }
 }
 
-fn update_context(bp: &mut BuildPack, var_id: VarId, op: OpId) {
-  debug_assert!(matches!(var_id, VarId::Heap(..)));
-  update_var(bp, var_id, op, Default::default())
+fn update_mem_context(bp: &mut BuildPack, op: OpId) {
+  update_var(bp, VarId::MemCTX, op, Default::default())
 }
 
 fn add_op(bp: &mut BuildPack, operation: Operation, ty: Type, node: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> OpId {
@@ -420,13 +383,13 @@ fn add_op(bp: &mut BuildPack, operation: Operation, ty: Type, node: rum_lang::pa
   op_id
 }
 
-fn set_heap(bp: &mut BuildPack, op_id: OpId, heap_id: usize) {
+fn set_op_heap(bp: &mut BuildPack, op_id: OpId, heap_id: usize) {
   if op_id.is_valid() {
     bp.super_node.heap_id[op_id.usize()] = heap_id;
   }
 }
 
-fn get_heap(bp: &mut BuildPack, op_id: OpId) -> usize {
+fn get_op_heap(bp: &mut BuildPack, op_id: OpId) -> usize {
   if op_id.is_valid() {
     bp.super_node.heap_id[op_id.usize()]
   } else {
@@ -434,11 +397,37 @@ fn get_heap(bp: &mut BuildPack, op_id: OpId) -> usize {
   }
 }
 
-fn clone_heap(bp: &mut BuildPack, from: OpId, to: OpId) {
+fn clone_op_heap(bp: &mut BuildPack, from: OpId, to: OpId) {
   if from.is_valid() && to.is_valid() {
     let heap = bp.super_node.heap_id[from.usize()];
     bp.super_node.heap_id[to.usize()] = heap;
   }
+}
+
+fn create_heap_internal(bp: &mut BuildPack, heap_name: IString, node_index: usize) -> Type {
+  let heap_var = add_ty_var(bp);
+  heap_var.add(VarAttribute::HeapType);
+  let ty = heap_var.ty.clone();
+  add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), Type::Heap(heap_name)));
+  bp.node_stack[node_index].heap_lu.insert(heap_name, ty.clone());
+  ty
+}
+
+fn create_node_heap(bp: &mut BuildPack, heap_name: IString) -> Type {
+  let node_index = bp.node_stack.len() - 1;
+  create_heap_internal(bp, heap_name, node_index)
+}
+
+fn get_node_heap(bp: &mut BuildPack, heap_name: IString) -> Type {
+  let current = bp.node_stack.len() - 1;
+  for node_stack_index in (0..=current).rev() {
+    let node = &mut bp.node_stack[node_stack_index];
+
+    if let Some(heap_ty) = node.heap_lu.get(&heap_name) {
+      return heap_ty.clone();
+    }
+  }
+  create_heap_internal(bp, heap_name, 0)
 }
 
 pub fn add_ty_var<'a>(bp: &'a mut BuildPack) -> &'a mut TypeVar {
@@ -490,7 +479,13 @@ pub fn get_type(ir_type: &type_Value<Token>) -> Option<Type> {
     Type_Pointer(ptr) => {
       todo!("Handle Type Pointer")
     }
-    Type_Variable(type_var) => Option::None,
+    Type_Variable(type_var) => {
+      if type_var.name.id == "addr" {
+        Some(ty_addr)
+      } else {
+        Option::None
+      }
+    }
     _t => Option::None,
   }
 }
@@ -507,25 +502,20 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
           push_node(bp, MEMORY_REGION_ID)
         }
 
-        let heap_lifetime = binding.parent_allocator.as_ref();
-
-        let (par_ctx_op, par_ctx_var, _) = get_heap_ctx(heap_lifetime, bp);
-
         let heap_binding = binding.allocator_name.id.intern();
+
+        let parent_heap_id = get_heap_ty_from_lifime(binding.parent_allocator.as_ref(), bp).generic_id().unwrap();
+
         let name_op = add_op(bp, Operation::Name(heap_binding), Type::NoUse, binding.allocator_name.clone().into());
 
-        let (op, ty) = process_op("REGISTER_HEAP", &[name_op, par_ctx_op], bp, binding.clone().into());
-        let (heap_var_id, _) = get_heap_vals(Some(&binding.binding_name));
+        let (op, ty) = process_op("REGISTER_HEAP", &[name_op, OpId(parent_heap_id as u32)], bp, binding.clone().into());
+        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), heap_binding, binding.tok.clone(), NodeUsage::Heap));
 
-        set_heap(bp, op, ty.generic_id().unwrap());
+        let heap_ty = create_node_heap(bp, get_heap_name_from_lt(Some(&binding.binding_name)));
+        let heap_id = heap_ty.generic_id().unwrap();
+        set_op_heap(bp, op, heap_id);
 
-        bp.super_node.type_vars[ty.generic_id().unwrap()].add(VarAttribute::HeapType);
-
-        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), heap_binding, binding.tok.clone()));
-
-        declare_top_scope_var(bp, heap_var_id, op, ty.clone());
-
-        heaps.push((op, ty, heap_var_id, par_ctx_var, par_ctx_op));
+        heaps.push((op, ty, heap_id));
       }
       block_expression_group_Value::Annotation(annotation) => {
         todo!("{annotation:?}",)
@@ -565,12 +555,8 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
         match &assign.var {
           assignment_var_Value::MemberCompositeAccess(mem) => match get_mem_op(bp, mem, true, mem.root.tok.clone()) {
             VarLookup::Ptr(ptr_op, ptr_ty, var_id, ctx_id) => {
-              let ctx_op = get_heap_context(bp, ctx_id).0;
-
-              let (op, ty) = process_op("STORE", &[ptr_op, expr_op, ctx_op], bp, mem.clone().into());
-
+              let (op, ty) = process_op("STORE", &[ptr_op, expr_op], bp, mem.clone().into());
               update_var(bp, var_id, op, ty.clone());
-              update_context(bp, ctx_id, op);
             }
             VarLookup::Var(.., ty, var_name) => {
               update_var(bp, VarId::Name(var_name), expr_op, expr_ty);
@@ -590,7 +576,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
               update_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
 
               let type_name = type_var.name.id.intern();
-              add_constraint(bp, NodeConstraint::GlobalNameReference(var_ty.clone(), type_name, type_var.name.tok.clone()));
+              add_constraint(bp, NodeConstraint::GlobalNameReference(var_ty.clone(), type_name, type_var.name.tok.clone(), NodeUsage::Complex));
               add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
             }
           }
@@ -609,37 +595,37 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
   if heaps.len() > 0 {
     let node_index = bp.node_stack.last().unwrap().node_index;
 
-    for (creation_op, _, var_id, par_id, par_ctx_op) in heaps.iter_mut().rev() {
-      let op = get_heap_context(bp, *var_id).0;
-      let (op, _) = process_op("DELETE_HEAP", &[op], bp, Default::default());
-      clone_heap(bp, *creation_op, op);
+    // Identify dead heaps
 
-      let op = add_op(bp, Operation::OutputPort(node_index as u32, vec![(0, op)]), Default::default(), Default::default());
-      clone_heap(bp, *par_ctx_op, op);
-
-      remove_var(bp, *var_id);
-      add_output(bp, op, VarId::DeletedHeap);
-      *creation_op = op;
-      add_output(bp, op, *par_id);
+    for ((heap_creation_op, heap_manager_ty, heap_ty_index)) in heaps.iter_mut().rev() {
+      add_output(bp, *heap_creation_op, VarId::DeletedHeap);
     }
 
-    let output = if output.0.is_valid() {
-      declare_top_scope_var(bp, VarId::OutputVal, output.0, output.1.clone());
-      let node = pop_mem_region_node(bp, op_start);
-      let out = &node.vars[*node.var_lu.get(&VarId::OutputVal).unwrap()];
-      let output = (out.val_op, out.ty.clone());
-      join_nodes(vec![node], bp);
-      output
-    } else {
-      join_nodes(vec![pop_mem_region_node(bp, op_start)], bp);
-      output
-    };
-
-    for (op, _, var_id, par_id, ..) in heaps.iter().rev() {
-      update_context(bp, *par_id, *op);
+    if output.0.is_valid() {
+      declare_top_scope_var(bp, VarId::OutputVal, output.0, output.1);
     }
 
-    output
+    let mut node = pop_node(bp, false);
+
+    for (var_id, var_index) in node.var_lu.iter() {
+      if matches!(var_id, VarId::MemName(..)) {
+        continue;
+      }
+      if let Some(var) = node.vars.get_mut(*var_index) {
+        if var.val_op.is_valid() {
+          let mem_op = add_op(bp, Operation::OutputPort(node_index as u32, vec![(0, var.val_op)]), var.ty.clone(), Default::default());
+          clone_op_heap(bp, var.val_op, mem_op);
+          bp.super_node.nodes[node_index as usize].outputs.push((var.val_op, *var_id));
+          var.val_op = mem_op;
+        }
+      }
+    }
+
+    let out = node.var_lu.get(&VarId::OutputVal).map(|v| &node.vars[*v]).map(|v| (v.val_op, v.ty.clone())).unwrap_or_default();
+
+    join_nodes(vec![node], bp);
+
+    out
   } else {
     output
   }
@@ -650,16 +636,11 @@ enum VarLookup {
 }
 
 fn compile_aggregate_instantiation(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::parser::script_parser::RawAggregateInstantiation<Token>>) -> (OpId, Type) {
-  let lifetime = agg_decl.heap.as_ref();
+  let heap = get_heap_ty_from_lifime(agg_decl.heap.as_ref(), bp);
 
-  let (ctx_op, ctx_id, ..) = get_heap_ctx(lifetime, bp);
+  let (agg_ptr_op, agg_ty) = process_op("AGG_DECL", &[], bp, agg_decl.clone().into());
 
-  let (agg_ptr_op, agg_ty) = process_op("AGG_DECL", &[ctx_op], bp, agg_decl.clone().into());
-  clone_heap(bp, ctx_op, agg_ptr_op);
-
-  bp.super_node.type_vars[agg_ty.generic_id().unwrap()].ctx_id = ctx_id;
-
-  update_context(bp, ctx_id, agg_ptr_op);
+  set_op_heap(bp, agg_ptr_op, heap.generic_id().unwrap());
 
   let agg_var_index = agg_ty.generic_id().unwrap() as usize;
   {
@@ -670,7 +651,7 @@ fn compile_aggregate_instantiation(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::
 
         let name_op = add_op(bp, Operation::Name(name), Type::NoUse, name_var.clone().into());
         let (mem_ptr_op, ref_ty) = process_op("NAMED_PTR", &[agg_ptr_op, name_op], bp, name_var.clone().into());
-        clone_heap(bp, agg_ptr_op, mem_ptr_op);
+        clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
 
         let mem_ty = add_ty_var(bp);
         mem_ty.add(VarAttribute::Member);
@@ -682,12 +663,9 @@ fn compile_aggregate_instantiation(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::
 
         add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty.clone(), mutable: false });
 
-        let (ctx_op, _) = get_heap_context(bp, ctx_id);
-        let (op, ty) = process_op("STORE", &[mem_ptr_op, expr_op, ctx_op], bp, init.clone().into());
-
-        clone_heap(bp, ctx_op, op);
-        update_var(bp, var_id, op, ty.clone());
-        update_context(bp, ctx_id, op);
+        let (store_op, ty) = process_op("STORE", &[mem_ptr_op, expr_op], bp, init.clone().into());
+        clone_op_heap(bp, agg_ptr_op, store_op);
+        update_var(bp, var_id, store_op, ty.clone());
       } else {
         todo!("Handle indexed expression")
       }
@@ -697,25 +675,19 @@ fn compile_aggregate_instantiation(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::
   (agg_ptr_op, agg_ty)
 }
 
-fn get_heap_ctx(heap: Option<&lifetime_Value>, bp: &mut BuildPack<'_>) -> (OpId, VarId, Type) {
-  let (ctx_id, ty) = get_heap_vals(heap);
-  let (ctx, agg_heap_ty) = get_heap_context(bp, ctx_id);
-  add_constraint(bp, NodeConstraint::GenTyToTy(agg_heap_ty.clone(), ty));
-  (ctx, ctx_id, agg_heap_ty)
+fn get_heap_ty_from_lifime(lifetime: Option<&lifetime_Value>, bp: &mut BuildPack<'_>) -> Type {
+  let name = get_heap_name_from_lt(lifetime);
+  get_node_heap(bp, name)
 }
 
-fn get_heap_vals(heap: Option<&lifetime_Value>) -> (VarId, Type) {
-  if let Some(heap) = heap {
-    match heap {
-      lifetime_Value::GlobalLifetime(d) => (VarId::Heap("global".intern()), Type::Heap("global".intern())),
-      lifetime_Value::ScopedLifetime(scope) => {
-        let scope_name = scope.val.intern();
-        (VarId::Heap(scope_name), Type::Heap(scope_name))
-      }
-      lifetime_Value::None => (VarId::Heap("local".intern()), Type::Heap("local".intern())),
+fn get_heap_name_from_lt(lifetime: Option<&lifetime_Value>) -> IString {
+  if let Some(lt) = lifetime {
+    match lt {
+      lifetime_Value::ScopedLifetime(name) => name.val.intern(),
+      _ => "global".intern(),
     }
   } else {
-    (VarId::Heap("local".intern()), Type::Heap("local".intern()))
+    "global".intern()
   }
 }
 
@@ -730,13 +702,13 @@ fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Token>>, local
 
       let mut agg_ty_index = ty.generic_id().expect("All vars should have generic ids");
 
-      if bp.super_node.type_vars[agg_ty_index].ctx_id == VarId::Undefined {
-        let ctx_id = VarId::Heap("local".intern());
-        let (_, agg_heap_ty) = get_heap_context(bp, ctx_id);
-        add_constraint(bp, NodeConstraint::GenTyToTy(agg_heap_ty.clone(), Type::Heap("local".intern())));
-        bp.super_node.type_vars[agg_ty_index].ctx_id = ctx_id;
-      }
-
+      /*       if bp.super_node.type_vars[agg_ty_index].ctx_id == VarId::Undefined {
+             let ctx_id = VarId::MemCTX("local".intern());
+             let (_, agg_heap_ty) = get_mem_context(bp);
+             add_constraint(bp, NodeConstraint::GenTyToTy(agg_heap_ty.clone(), Type::Heap("local".intern())));
+             bp.super_node.type_vars[agg_ty_index].ctx_id = ctx_id;
+           }
+      */
       let ctx_id = bp.super_node.type_vars[agg_ty_index].ctx_id;
 
       println!("------------------------");
@@ -782,7 +754,7 @@ fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Token>>, local
               let name_op = add_op(bp, Operation::Name(name), Type::NoUse, name_node.clone().into());
               let (ref_op, ref_ty) = process_op("NAMED_PTR", &[ptr_op, name_op], bp, name_node.clone().into());
               dbg!((ptr_op, ref_op));
-              clone_heap(bp, ptr_op, ref_op);
+              clone_op_heap(bp, ptr_op, ref_op);
 
               ptr_ty = mem_ty.clone();
               ptr_op = ref_op;
@@ -800,7 +772,7 @@ fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Token>>, local
         if index != mem.sub_members.len() - 1 {
           // load the value of the pointer
           let (loaded_val_op, loaded_val_ty) = process_op("LOAD", &[ptr_op], bp, Default::default());
-          clone_heap(bp, ptr_op, loaded_val_op);
+          clone_op_heap(bp, ptr_op, loaded_val_op);
           ptr_op = loaded_val_op;
           ptr_ty = loaded_val_ty;
         }
@@ -812,7 +784,7 @@ fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Token>>, local
     let ty = add_ty_var(bp).ty.clone();
 
     if !local_only {
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), var_name, source_token.clone()));
+      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), var_name, source_token.clone(), NodeUsage::Complex));
     }
 
     declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
@@ -828,7 +800,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
     expression_Value::MemberCompositeAccess(mem) => match get_mem_op(bp, mem, false, mem.tok.clone()) {
       VarLookup::Ptr(ptr_op, ..) => {
         let (op, ty) = process_op("LOAD", &[ptr_op], bp, mem.clone().into());
-        clone_heap(bp, ptr_op, op);
+        clone_op_heap(bp, ptr_op, op);
         (op, ty)
       }
       VarLookup::Var(op, ty, ..) => (op, ty),
@@ -902,7 +874,7 @@ pub(crate) fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (O
     add_input(bp, *op_id, VarId::Param(index));
   }
 
-  let (heap_in_op, heap_ty) = get_heap_context(bp, VarId::Heap("local".intern()));
+  let (heap_in_op, heap_ty) = get_mem_context(bp);
 
   ///////////////////////////////////
   let var = add_ty_var(bp);
@@ -1056,35 +1028,6 @@ fn pop_node(bp: &mut BuildPack, port_outputs: bool) -> NodeScope {
   node
 }
 
-fn pop_mem_region_node(bp: &mut BuildPack, region_op_start: usize) -> NodeScope {
-  let mut node = bp.node_stack.pop().unwrap();
-
-  let node_index = node.node_index as u32;
-
-  for (var_id, var_index) in node.var_lu.iter() {
-    if matches!(var_id, VarId::MemName(..)) {
-      //continue;
-    }
-    if let Some(var) = node.vars.get_mut(*var_index) {
-      if (var.origin_node_index < node.node_index || *var_id == VarId::OutputVal) && var.val_op.is_valid() && var.val_op.usize() >= region_op_start {
-        match var_id {
-          VarId::Heap(..) => {
-            //  bp.super_node.nodes[node_index as usize].outputs.push((var.val_op, *var_id));
-          }
-          _ => {
-            let op = add_op(bp, Operation::OutputPort(node_index, vec![(0, var.val_op)]), var.ty.clone(), Default::default());
-            clone_heap(bp, var.val_op, op);
-            var.val_op = op;
-            bp.super_node.nodes[node_index as usize].outputs.push((op, *var_id));
-          }
-        }
-      }
-    }
-  }
-
-  node
-}
-
 fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
   let current_node: &NodeScope = bp.node_stack.last().unwrap();
 
@@ -1121,9 +1064,11 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
 
         for out_var in &vars {
           let ty_b = bp.super_node.types[out_var.1.val_op.0 as usize].clone();
-
           if ty_a != ty_b {
-            add_constraint(bp, NodeConstraint::GenTyToGenTy(ty_a.clone(), ty_b));
+            if var_id == VarId::MemCTX {
+            } else {
+              add_constraint(bp, NodeConstraint::GenTyToGenTy(ty_a.clone(), ty_b));
+            }
           }
         }
 
@@ -1155,6 +1100,10 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
     let type_ref_name = port.var.name.as_str();
 
     match type_ref_name {
+      "read_ctx" => {
+        let (op, ty) = get_mem_context(bp);
+        operands[port_index] = op;
+      }
       type_ref_name => {
         op_index += 1;
 
@@ -1196,6 +1145,9 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
   let mut have_output = false;
   for output in op_def.outputs.iter() {
     match output.var.name.as_str() {
+      "write_ctx" => {
+        update_mem_context(bp, op_id);
+      }
       _ => {
         debug_assert_eq!(have_output, false);
         have_output = true;
@@ -1278,10 +1230,10 @@ op: SEL  l [A: bool]  r [B: Numeric]  => out [B]
 
 op: POISON  => out [B: poison]
 
-op: REGISTER_HEAP name [HeapName] par_ctx [B] => out[HeapType]
+op: REGISTER_HEAP name [HeapName] par_heap_id[ParHeap] ctx[read_ctx] => out[HeapType] ctx[write_ctx]
 op: DELETE_HEAP heap [HeapType]
 
-op: AGG_DECL  ctx [A] => agg_ptr [Agg: agg]
+op: AGG_DECL  ctx [read_ctx] => agg_ptr [Agg: agg]
 
 op: OFFSET_PTR  b [Base: agg]  n [Offset: Numeric]  => out [MemPtr]
 op: NAMED_PTR  b [Base: agg]  n [MemName: label]  => out [MemPtr]
@@ -1290,7 +1242,7 @@ op: CALC_AGG_SIZE prop [Prop] offset [Offset: Numeric] => offset [Offset]
 op: PROP  name [Name: agg] offset [Offset: Numeric] => out [PropData]
 
 op: LOAD  ptr [ptr] => out [val: deref(ptr)]
-op: STORE  ptr [ptr] val [val: mut_deref(ptr)] heap [Heap] =>  out [ptr]
+op: STORE  ptr [ptr] val [val: mut_deref(ptr)] ctx[read_ctx] =>  out [ptr] ctx[write_ctx]
 
 op: CONVERT from[A] => to[B]
 

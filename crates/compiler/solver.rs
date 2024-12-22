@@ -128,11 +128,36 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
               }
 
               for cstr in ty_var.attributes.iter() {
-                if let VarAttribute::Global(node_name, tok) = cstr {
-                  if let Some(node) = get_node(db, *node_name, &mut constraint_queue) {
-                    intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, node)));
-                  } else {
-                    panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
+                if let VarAttribute::Global(node_name, tok, usage) = cstr {
+                  match usage {
+                    NodeUsage::Callable | NodeUsage::Complex => {
+                      if let Some(node) = get_node(db, *node_name, &mut constraint_queue) {
+                        intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, node)));
+                      } else {
+                        panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
+                      }
+                    }
+                    NodeUsage::Heap => {
+                      let name = *node_name;
+                      let root_db = db.db;
+
+                      if let Some(node) = root_db.get_object_mut(name) {
+                        let root_db = root_db.get_ref();
+                        let allocate_sig = Signature::new(&vec![Type::Complex(0, node.clone()), ty_u64], &vec![ty_addr]);
+                        let sig_hash = allocate_sig.hash();
+
+                        println!("AAA {sig_hash:X}\n");
+
+                        for node in root_db.objects.iter() {
+                          let sig = get_signature(node.1.get().unwrap());
+                          println!("Other {sig:X} {node:?}");
+                        }
+
+                        todo!("check for appropriate binding points for node type of {node_name}")
+                      } else {
+                        panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED));
+                      }
+                    }
                   }
                 }
               }
@@ -333,6 +358,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
         }
 
         if !var_ptr.ty.is_open() {
+          dbg!(&var_ptr, from_ptr(var_ptr.ty.clone()));
           constraint_queue.push_back(NodeConstraint::GenTyToTy(val_ty, from_ptr(var_ptr.ty.clone()).unwrap()));
         } else if !var_val.ty.is_open() {
           constraint_queue.push_back(NodeConstraint::GenTyToTy(ptr_ty, to_ptr(var_val.ty.clone()).unwrap()));
@@ -399,7 +425,8 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
         constraint_queue.push_back(NodeConstraint::GenTyToTy(ty, ty_a));
       }
       NodeConstraint::GenTyToTy(ty_a, ty_b) => {
-        debug_assert!(ty_a.is_generic() && !ty_b.is_open());
+        debug_assert!(ty_a.is_generic());
+        debug_assert!(!ty_b.is_open(), "Expected {ty_b} to be a non open type when resolving {ty_a}");
 
         let index = ty_a.generic_id().expect("Left ty should be generic");
 
@@ -413,10 +440,10 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
           panic!("TY_A [{}], TY_B [ {}   {var}", ty_a, ty_b);
         }
       }
-      NodeConstraint::GlobalNameReference(ty, name, tok) => {
+      NodeConstraint::GlobalNameReference(ty, name, tok, usage) => {
         let a_index = ty.generic_id().expect("ty should be generic");
         let var_a = get_root_var_mut(a_index, type_vars);
-        var_a.add(VarAttribute::Global(name, tok));
+        var_a.add(VarAttribute::Global(name, tok, usage));
       }
       NodeConstraint::OpConvertTo { target_op, arg_index, target_ty } => {
         let index = target_ty.generic_id().expect("Left ty should be generic");

@@ -30,11 +30,16 @@ fn allocator_binding() {
 //   d.x
 //   }
 
+    beaver => [ x:u32 ]
+    allocate (ctx: beaver, size: u64) => addr {
+      0
+    }
+
 
     scope () => ? {
       b = {
 
-        test* => beaver(test*)   
+        test* => beaver(test*) 
         
         b:g = test* :[x = 0]
         

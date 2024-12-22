@@ -7,6 +7,7 @@ use std::{
   alloc::Layout,
   default,
   fmt::{Debug, Display},
+  hash::{DefaultHasher, Hash, Hasher},
   ptr::drop_in_place,
   thread::sleep,
   time::Duration,
@@ -148,7 +149,7 @@ pub enum VarId {
   Return,
   GlobalContext,
   Generic,
-  Heap(IString),
+  MemCTX,
   DeletedHeap,
   Param(usize),
   CallRef,
@@ -168,7 +169,7 @@ impl Display for VarId {
       Self::MatchActivation => f.write_str("MATCH_ACTIVATION"),
       Self::Return => f.write_str("RETURN"),
       Self::LoopActivation => f.write_str("LOOP_ACTIVATION"),
-      Self::Heap(name) => f.write_fmt(format_args!("Heap(`{name})")),
+      Self::MemCTX => f.write_fmt(format_args!("MemCtx")),
       _ => f.write_fmt(format_args!("{self:?}")),
     }
   }
@@ -339,6 +340,14 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
   string
 }
 
+pub fn get_signature(node: &RootNode) -> u64 {
+  Signature::new(
+    &node.nodes[0].inputs.iter().map(|i| node.get_base_ty(node.types[i.0.usize()].clone())).collect::<Vec<_>>(),
+    &node.nodes[0].outputs.iter().map(|i| node.get_base_ty(node.types[i.0.usize()].clone())).collect::<Vec<_>>(),
+  )
+  .hash()
+}
+
 impl Debug for RootNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.nodes.len() > 0 {
@@ -484,5 +493,37 @@ impl Display for Node {
     }
 
     Ok(())
+  }
+}
+
+pub struct Signature {
+  inputs:  Vec<Type>,
+  outputs: Vec<Type>,
+}
+
+impl Signature {
+  pub fn new(inputs: &[Type], outputs: &[Type]) -> Self {
+    Self { inputs: inputs.to_vec(), outputs: outputs.to_vec() }
+  }
+
+  pub fn hash(&self) -> u64 {
+    let mut h = DefaultHasher::new();
+    for ty in &self.inputs {
+      if ty.is_generic() {
+        0u64.hash(&mut h);
+      } else {
+        ty.hash(&mut h);
+      }
+    }
+
+    for ty in &self.outputs {
+      if ty.is_generic() {
+        0u64.hash(&mut h);
+      } else {
+        ty.hash(&mut h);
+      }
+    }
+
+    h.finish()
   }
 }

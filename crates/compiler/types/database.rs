@@ -11,7 +11,7 @@ use std::{
 };
 
 #[derive(Debug)]
-struct DatabaseCore {
+pub struct DatabaseCore {
   pub parent:  *const Database,
   pub ops:     Vec<Arc<core_lang::parser::ast::Op>>,
   pub objects: Vec<(IString, NodeHandle)>,
@@ -109,7 +109,7 @@ impl<'a> SolveDatabase<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Database(std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
+pub struct Database(pub std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
 
 impl Default for Database {
   fn default() -> Self {
@@ -126,11 +126,11 @@ impl Database {
     db
   }
 
-  fn get_mut_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<DatabaseCore> {
+  pub fn get_mut_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<DatabaseCore> {
     self.0.lock().expect("Failed to lock database")
   }
 
-  fn get_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<DatabaseCore> {
+  pub fn get_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<DatabaseCore> {
     self.0.lock().expect("Failed to lock database")
   }
 

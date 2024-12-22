@@ -91,7 +91,7 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
   for (op_id, var_id) in root_node.inputs.iter() {
     let index = op_id.usize();
     match var_id {
-      VarId::Heap(_) => match &super_node.operands[index] {
+      VarId::MemCTX => match &super_node.operands[index] {
         Operation::Param(..) => scratch_slice[index] = (Value::SideEffect, 0),
         _ => unreachable!(),
       },

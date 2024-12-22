@@ -54,7 +54,7 @@ pub const prim_ty_f16: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseTyp
 pub const prim_ty_f32: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 14, byte_size: 4, ele_count: 1 };
 pub const prim_ty_f64: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 15, byte_size: 8, ele_count: 1 };
 pub const prim_ty_f128: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 16, byte_size: 8, ele_count: 1 };
-pub const prim_ty_addr: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 17, byte_size: 8, ele_count: 1 };
+pub const prim_ty_addr: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Address, base_index: 17, byte_size: 8, ele_count: 1 };
 
 pub const ty_undefined: Type = Type::Primitive(0, prim_ty_undefined);
 pub const ty_poison: Type = Type::Primitive(0, prim_ty_poison);
@@ -100,6 +100,7 @@ pub enum Type {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub enum PrimitiveBaseType {
   Undefined,
+  Address,
   Unsigned,
   Signed,
   Float,
@@ -129,6 +130,7 @@ impl Display for PrimitiveType {
       Undefined => f.write_str("und"),
       Bool => f.write_str("bool"),
       Poison => f.write_str("XXPOISONXX"),
+      Address => f.write_str("addr"),
       Signed => {
         if *ele_count > 1 {
           f.write_fmt(format_args!("s{}x{}", byte_size * 8, ele_count))
