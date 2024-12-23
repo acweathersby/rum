@@ -17,6 +17,7 @@ enum CallArgType {
 
 #[derive(Debug)]
 pub enum GlobalConstraint {
+  CalculateHeap { node: NodeHandle },
   ExtractGlobals { node: NodeHandle },
   ResolveObjectConstraints { node: NodeHandle, constraints: Vec<NodeConstraint> },
   // Callee must be resolved, then caller is resolved in terms of callee.
@@ -110,140 +111,193 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
     let db = &mut db;
 
     let mut constraint_queue: VecDeque<GlobalConstraint> = VecDeque::with_capacity(128);
+    let mut secondary_constraints = vec![];
 
     for index in 0..db.roots.len() {
       let node = db.roots[index].1.clone();
       constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node });
     }
 
-    while let Some(constraint) = constraint_queue.pop_front() {
-      match constraint {
-        GlobalConstraint::ExtractGlobals { node: call_node } => {
-          let mut intrinsic_constraints = vec![];
-
-          if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. }) = call_node.get_mut() {
-            for ty_var in type_vars {
-              if !ty_var.ty.is_open() {
+    loop {
+      while let Some(constraint) = constraint_queue.pop_front() {
+        match &constraint {
+          GlobalConstraint::CalculateHeap { node } => {
+            match db.get_type_by_name("allocate".intern()) {
+              GetResult::Introduced(node) => {
+                constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
                 continue;
               }
+              GetResult::Existing(allocator_node) => {
+                let allocate_sig = Signature::new(&vec![Type::Complex(0, node.clone()), ty_u64], &vec![ty_addr]);
 
-              for cstr in ty_var.attributes.iter() {
-                if let VarAttribute::Global(node_name, tok, usage) = cstr {
-                  match usage {
-                    NodeUsage::Callable | NodeUsage::Complex => {
-                      if let Some(node) = get_node(db, *node_name, &mut constraint_queue) {
-                        intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, node)));
-                      } else {
-                        panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
-                      }
-                    }
-                    NodeUsage::Heap => {
-                      let name = *node_name;
-                      let root_db = db.db;
+                let sig_hash = allocate_sig.hash();
 
-                      if let Some(node) = root_db.get_object_mut(name) {
-                        let root_db = root_db.get_ref();
-                        let allocate_sig = Signature::new(&vec![Type::Complex(0, node.clone()), ty_u64], &vec![ty_addr]);
-                        let sig_hash = allocate_sig.hash();
+                let sig_2 = get_signature(allocator_node.get().unwrap());
 
-                        println!("AAA {sig_hash:X}\n");
-
-                        for node in root_db.objects.iter() {
-                          let sig = get_signature(node.1.get().unwrap());
-                          println!("Other {sig:X} {node:?}");
-                        }
-
-                        todo!("check for appropriate binding points for node type of {node_name}")
-                      } else {
-                        panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED));
-                      }
-                    }
-                  }
+                if sig_hash == sig_2 {
+                  dbg!(sig_hash, sig_2, allocator_node);
+                  todo!("Handle comparison \n {constraint_queue:?}");
+                } else {
+                  panic!("No match");
                 }
               }
-            }
+              _ => {
+                // panic!("Could not find appropriate allocation for heap {}", tok.blame(1, 1, "inline_comment", BlameColor::RED));
+              }
+            };
+          }
 
-            for node in nodes {
-              if node.type_str == CALL_ID {
-                for caller_input in node.inputs.iter() {
-                  if caller_input.1 == VarId::CallRef {
-                    match operands[caller_input.0.usize()] {
-                      Operation::Name(call_name) => {
-                        // If name cannot be found then we have a reference error
+          GlobalConstraint::ExtractGlobals { node: call_node } => {
+            let mut intrinsic_constraints = vec![];
 
-                        if let Some(callee_node) = get_node(db, call_name, &mut constraint_queue) {
-                          let side_ban_actions = dependency_links.entry(callee_node.clone()).or_default();
+            if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. }) = call_node.get_mut() {
+              for ty_var in type_vars {
+                if !ty_var.ty.is_open() {
+                  continue;
+                }
 
-                          operands[caller_input.0.usize()] = Operation::CallTarget(callee_node.clone());
-
-                          for input in node.inputs.iter() {
-                            if let VarId::Param(arg_index) = input.1 {
-                              let trg_arg = CallArgType::Index(arg_index as u32);
-                              if let Some(ty) = get_routine_type_or_none(callee_node.clone(), trg_arg) {
-                                intrinsic_constraints.push(NodeConstraint::OpToTy(input.0, ty));
-                              } else {
-                                side_ban_actions.push(DependencyBinding { caller: call_node.clone(), caller_op: input.0, trg_arg });
-                              }
-                            }
-                          }
-
-                          for output in node.outputs.iter() {
-                            if output.1 == VarId::Return {
-                              let trg_arg = CallArgType::Return;
-                              if let Some(ty) = get_routine_type_or_none(callee_node.clone(), trg_arg) {
-                                intrinsic_constraints.push(NodeConstraint::OpToTy(output.0, ty));
-                              } else {
-                                side_ban_actions.push(DependencyBinding { caller: call_node.clone(), caller_op: output.0, trg_arg });
-                              }
-                            }
-                          }
+                for cstr in ty_var.attributes.iter() {
+                  if let VarAttribute::Global(node_name, tok, usage) = cstr {
+                    match usage {
+                      NodeUsage::Callable | NodeUsage::Complex => {
+                        if let Some(node) = get_node(db, *node_name, &mut constraint_queue) {
+                          intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, node)));
                         } else {
-                          let token = &source_tokens[caller_input.0.usize()];
-                          let tok = token.token();
-                          errors.push(format!("Missing routine:\n{}", tok.blame(1, 1, "Cannot find routine", BlameColor::BLUE)))
+                          panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
                         }
-
-                        break;
                       }
-                      _ => {}
+                      NodeUsage::Heap => match db.get_type_by_name(*node_name) {
+                        GetResult::Introduced(stct_node) => {
+                          // Create a heap poly fill.
+
+                          let mut properties = Vec::new();
+                          if let Some(scope) = db.db.get_ref().scopes.get(node_name) {
+                            // Create a struct type containing everything we need for
+
+                            let ctx = "ctx".intern();
+                            {
+                              let allocator_ty = Type::Complex(0, stct_node.clone());
+                              properties.push((ctx, allocator_ty));
+                              constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: stct_node.clone() });
+                            }
+
+                            let allocate_fn_name = "allocate".intern();
+
+                            if let Some(allocator) = scope.get(&allocate_fn_name) {
+                              let allocator_ty = Type::Complex(0, allocator.clone());
+                              properties.push((allocate_fn_name, allocator_ty));
+                              constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: allocator.clone() });
+                            }
+                          }
+
+                          let (strct, constraints) = compile_struct(&db.db, &properties);
+
+                          solve_node_intrinsics(strct.clone(), &constraints);
+
+                          let name = (node_name.to_string() + "_allocator_scope").intern();
+
+                          dbg!(strct.clone());
+
+                          db.add_object(name, strct.clone());
+
+                          intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, strct.clone())));
+                        }
+                        GetResult::Existing(node) => {}
+                        _ => {}
+                      },
                     }
                   }
                 }
               }
-            }
 
-            if intrinsic_constraints.len() > 0 {
-              constraint_queue.push_back(GlobalConstraint::ResolveObjectConstraints { node: call_node, constraints: intrinsic_constraints });
+              for node in nodes {
+                if node.type_str == CALL_ID {
+                  for caller_input in node.inputs.iter() {
+                    if caller_input.1 == VarId::CallRef {
+                      match operands[caller_input.0.usize()] {
+                        Operation::Name(call_name) => {
+                          // If name cannot be found then we have a reference error
+
+                          if let Some(callee_node) = get_node(db, call_name, &mut constraint_queue) {
+                            let side_ban_actions = dependency_links.entry(callee_node.clone()).or_default();
+
+                            operands[caller_input.0.usize()] = Operation::CallTarget(callee_node.clone());
+
+                            for input in node.inputs.iter() {
+                              if let VarId::Param(arg_index) = input.1 {
+                                let trg_arg = CallArgType::Index(arg_index as u32);
+                                if let Some(ty) = get_routine_type_or_none(callee_node.clone(), trg_arg) {
+                                  intrinsic_constraints.push(NodeConstraint::OpToTy(input.0, ty));
+                                } else {
+                                  side_ban_actions.push(DependencyBinding { caller: call_node.clone(), caller_op: input.0, trg_arg });
+                                }
+                              }
+                            }
+
+                            for output in node.outputs.iter() {
+                              if output.1 == VarId::Return {
+                                let trg_arg = CallArgType::Return;
+                                if let Some(ty) = get_routine_type_or_none(callee_node.clone(), trg_arg) {
+                                  intrinsic_constraints.push(NodeConstraint::OpToTy(output.0, ty));
+                                } else {
+                                  side_ban_actions.push(DependencyBinding { caller: call_node.clone(), caller_op: output.0, trg_arg });
+                                }
+                              }
+                            }
+                          } else {
+                            let token = &source_tokens[caller_input.0.usize()];
+                            let tok = token.token();
+                            errors.push(format!("Missing routine:\n{}", tok.blame(1, 1, "Cannot find routine", BlameColor::BLUE)))
+                          }
+
+                          break;
+                        }
+                        _ => {}
+                      }
+                    }
+                  }
+                }
+              }
+
+              if intrinsic_constraints.len() > 0 {
+                constraint_queue.push_back(GlobalConstraint::ResolveObjectConstraints { node: call_node.clone(), constraints: intrinsic_constraints });
+              }
             }
           }
-        }
 
-        GlobalConstraint::ResolveObjectConstraints { node, constraints } => {
-          solve_node_intrinsics(node.clone(), constraints);
+          GlobalConstraint::ResolveObjectConstraints { node, constraints } => {
+            solve_node_intrinsics(node.clone(), constraints);
 
-          let nodes = dependency_links.entry(node.clone()).or_default();
-          let pending_nodes = nodes.drain(..).collect::<Vec<_>>();
+            let nodes = dependency_links.entry(node.clone()).or_default();
+            let pending_nodes = nodes.drain(..).collect::<Vec<_>>();
 
-          for dep in pending_nodes {
-            if let Some(ty) = get_routine_type_or_none(node.clone(), dep.trg_arg) {
-              let constraint = NodeConstraint::OpToTy(dep.caller_op, ty);
-              constraint_queue.push_back(GlobalConstraint::ResolveObjectConstraints { node: dep.caller, constraints: vec![constraint] });
-            } else {
-              nodes.push(dep);
+            for dep in pending_nodes {
+              if let Some(ty) = get_routine_type_or_none(node.clone(), dep.trg_arg) {
+                let constraint = NodeConstraint::OpToTy(dep.caller_op, ty);
+                constraint_queue.push_back(GlobalConstraint::ResolveObjectConstraints { node: dep.caller, constraints: vec![constraint] });
+              } else {
+                nodes.push(dep);
+              }
             }
           }
+
+          _ => unreachable!(),
+        }
+      }
+
+      if !errors.is_empty() {
+        for error in errors {
+          println!("{error}");
         }
 
-        _ => unreachable!(),
-      }
-    }
-
-    if !errors.is_empty() {
-      for error in errors {
-        println!("{error}");
+        panic!("Have errors");
       }
 
-      panic!("Have errors");
+      if secondary_constraints.len() > 0 {
+        constraint_queue.extend(secondary_constraints.drain(..));
+      } else {
+        break;
+      }
     }
 
     /*     if allow_polyfill {
@@ -255,7 +309,7 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
       }
     } */
   }
-
+  dbg!(&db);
   db
 }
 
@@ -288,7 +342,7 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
       }
     }
 
-    solve_node_intrinsics(node.clone(), node_constraints);
+    solve_node_intrinsics(node.clone(), &node_constraints);
 
     let mut node_constraints = vec![];
 
@@ -320,7 +374,7 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
           if !invalid {
             let (strct, constraints) = compile_struct(poly_db.db, &properties);
 
-            solve_node_intrinsics(strct.clone(), constraints);
+            solve_node_intrinsics(strct.clone(), &constraints);
 
             let name = ((routine_ref as *const _ as usize).to_string() + "test_struct").intern();
 
@@ -334,14 +388,14 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
       }
     }
 
-    solve_node_intrinsics(node.clone(), node_constraints);
+    solve_node_intrinsics(node.clone(), &node_constraints);
   }
 
   global_constraints
 }
 
-pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeConstraint>) {
-  let mut constraint_queue = VecDeque::from_iter(constraints.drain(..));
+pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstraint]) {
+  let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
 
   while let Some(constraint) = constraint_queue.pop_front() {
     let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. } = node.get_mut().unwrap();
@@ -445,21 +499,32 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, mut constraints: Vec<NodeC
         let var_a = get_root_var_mut(a_index, type_vars);
         var_a.add(VarAttribute::Global(name, tok, usage));
       }
-      NodeConstraint::OpConvertTo { target_op, arg_index, target_ty } => {
+      NodeConstraint::OpConvertTo { src_op, arg_index, target_ty } => {
         let index = target_ty.generic_id().expect("Left ty should be generic");
         let var = get_root_var_mut(index, type_vars);
         let target_ty = var.ty.clone();
 
         let out_op = OpId(operands.len() as u32);
-        match &mut operands[target_op.usize()] {
+        let mut operand = operands[src_op.usize()].clone();
+        match &mut operand {
           Operation::Op { operands: ops, .. } => {
             let target_op = ops[arg_index];
 
-            ops[arg_index] = out_op;
+            match operands[target_op.usize()] {
+              Operation::Const(..) => {
+                let ops = &ops;
+                let ty = types[ops[arg_index].usize()].clone();
+                constraint_queue.push_back(NodeConstraint::GenTyToGenTy(target_ty, ty));
+              }
+              _ => {
+                ops[arg_index] = out_op;
 
-            operands.push(Operation::Op { op_name: "CONVERT", operands: [target_op, Default::default(), Default::default()] });
-            types.push(target_ty.clone());
-            source_tokens.push(Default::default());
+                operands.push(Operation::Op { op_name: "CONVERT", operands: [target_op, Default::default(), Default::default()] });
+                types.push(target_ty.clone());
+                source_tokens.push(Default::default());
+                operands[src_op.usize()] = operand;
+              }
+            }
           }
           _ => unreachable!(),
         }

@@ -1,11 +1,10 @@
-use rum_lang::istring::CachedString;
-
 use crate::{
   compiler::add_module,
   interpreter::interpret_node,
   solver::solve,
   types::{Database, GetResult, SolveDatabase, SolveState, Value},
 };
+use rum_lang::istring::CachedString;
 
 #[test]
 fn allocator_binding() {
@@ -14,36 +13,41 @@ fn allocator_binding() {
   let global_constraints = add_module(
     &mut db,
     "
-   g => [ x: f32 ]
+    g => [ x: f32 ]
 
-//   slot => [ size: address ]
+    AllocatorI => [
+      allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) => addr,
+      free: (ctx: AllocatorI, ptr: addr, par: AllocatorI) =|
+    ]
 
-//   named_heap => [ addr: u32 ]
+    allocate (ctx: RootAllocator, size: u64) => addr { 
+      __allocate__(size)
+    } 
 
-//   scope (i:?) => ? {
-//   hilbert* => named_heap(local*)
+    AppendOnlyAllocator => [ x: addr, capacity: u64 ]
 
-//   b: g = hilbert*:[ x = i ]           
-//         
-//   d: g = hilbert*:[ x = i + b.x + b.x ]
-//         
-//   d.x
-//   }
+    allocate (ctx: AppendOnlyAllocator, size: u64, par: AllocatorI) => addr {
+      if ctx.capacity == 0 { 7 } otherwise  { 2 }
 
-    beaver => [ x:u32 ]
-    allocate (ctx: beaver, size: u64) => addr {
-      0
+      // returns address 10. This is normally not valid in 
+      // most modern computing environments, but is allowed in 
+      // testing. 
     }
 
+    free (ctx: AppendOnlyAllocator, ptr: addr) =| {
+      //if ctx.capacity == 0 { 7 } otherwise  { 2 }
+
+      // returns address 10. This is normally not valid in 
+      // most modern computing environments, but is allowed in 
+      // testing. 
+    }
 
     scope () => ? {
-      b = {
+      b = {       
 
-        test* => beaver(test*) 
+        test* => AppendOnlyAllocator(test*) 
         
         b:g = test* :[x = 0]
-        
-        //loop if i > 1 { b.x = 2 } otherwise { b.x = 1 }
 
         b.x = 2
 
@@ -64,7 +68,43 @@ fn allocator_binding() {
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
+
+      dbg!(val);
+    } else {
+      panic!("test is a template and cannot be directly interpreted {test:?}")
+    }
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn interface_structure() {
+  let mut db = Database::default();
+
+  let global_constraints = add_module(
+    &mut db,
+    "
+    AllocatorI => [
+      allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) => addr,
+      free: (ctx: AllocatorI, ptr: addr, par: AllocatorI) =|
+    ]
+
+   
+  ",
+  );
+
+  let mut sdb: SolveDatabase<'_> = solve(&db, "AllocatorI".intern(), true);
+  if let GetResult::Existing(test) = sdb.get_type_by_name("AllocatorI".intern()) {
+    let test = test.get().unwrap();
+
+    dbg!(test);
+
+    // Create temporary types based on the type definitions
+
+    if test.solve_state() == SolveState::Solved {
+      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
 
       dbg!(val);
     } else {
@@ -90,7 +130,7 @@ fn test_missing_call_name() {
       test(input)
     }
 
-    test (c: u32) => u32 if a > 10 { c+ 2  } otherwise { c + 1 }
+    test (c: u32) => u32 if a > 10 { c + 2  } otherwise { c + 1 }
   ",
   );
 
@@ -101,7 +141,7 @@ fn test_missing_call_name() {
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(11), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::u32(11), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
 
       dbg!(val);
     } else {
@@ -138,7 +178,7 @@ fn test_missing_var() {
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(7), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::u32(7), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
 
       dbg!(val);
     } else {
@@ -174,7 +214,7 @@ fn test_fn_call_with_adhoc_structs() {
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(1), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::u32(1), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
 
       match val {
         Value::Ptr(ptr, _) => {
@@ -210,7 +250,7 @@ fn test_interpreter_adhoc_struct() {
     // Create temporary types based on the type definitions
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(30), Value::u32(33)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::u32(30), Value::u32(33)], &mut Vec::new(), 0, &mut Vec::new());
 
       match val {
         Value::Ptr(ptr, _) => {
@@ -244,7 +284,7 @@ fn test_interpreter_fibonacci() {
     let test = test.get().unwrap();
 
     if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(30), Value::u32(2)], &mut Vec::new(), 0);
+      let val = interpret_node(test, &[Value::u32(30), Value::u32(2)], &mut Vec::new(), 0, &mut Vec::new());
 
       assert_eq!(val, Value::f64(832040.0))
     } else {

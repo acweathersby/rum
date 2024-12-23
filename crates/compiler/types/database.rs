@@ -6,7 +6,7 @@ use crate::{
 };
 use rum_lang::istring::{CachedString, IString};
 use std::{
-  collections::{HashMap, VecDeque},
+  collections::{BTreeMap, HashMap, VecDeque},
   sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -15,6 +15,7 @@ pub struct DatabaseCore {
   pub parent:  *const Database,
   pub ops:     Vec<Arc<core_lang::parser::ast::Op>>,
   pub objects: Vec<(IString, NodeHandle)>,
+  pub scopes:  BTreeMap<IString, BTreeMap<IString, NodeHandle>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -113,7 +114,12 @@ pub struct Database(pub std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
 
 impl Default for Database {
   fn default() -> Self {
-    let mut core = DatabaseCore { ops: Default::default(), objects: Default::default(), parent: std::ptr::null() };
+    let mut core = DatabaseCore {
+      ops:     Default::default(),
+      objects: Default::default(),
+      parent:  std::ptr::null(),
+      scopes:  Default::default(),
+    };
     add_ops_to_db(&mut core, &OPS);
     Self(Arc::new(Mutex::new(core)))
   }
@@ -136,6 +142,29 @@ impl Database {
 
   pub fn add_object(&self, name: IString, node: NodeHandle) {
     let mut db = self.get_mut_ref();
+    let obj = node.get().unwrap();
+
+    if let Some(input) = obj.nodes[0].inputs.get(0) {
+      if let Some(var_id) = obj.get_base_ty(obj.types[input.0.usize()].clone()).generic_id() {
+        let var = &obj.type_vars[var_id];
+
+        for constraint in var.attributes.iter() {
+          match constraint {
+            VarAttribute::Global(scope_name, ..) => {
+              let scope = db.scopes.entry(*scope_name).or_default();
+
+              match scope.entry(name) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                  entry.insert(node.clone());
+                }
+                _ => panic!("Scope already declared"),
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+    }
 
     for (binding_name, outgoing) in &db.objects {
       if *binding_name == name {
@@ -144,6 +173,8 @@ impl Database {
     }
 
     db.objects.push((name, node));
+
+    dbg!(&db.scopes);
   }
 
   pub fn get_object_mut_with_sig(&self, obj_name: IString, obj_sig: u64) -> Option<NodeHandle> {

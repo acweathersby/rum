@@ -57,9 +57,9 @@ pub fn add_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
         module_member_Value::RawRoutine(routine) => {
           let (node, constraints) = compile_routine(db, routine.as_ref());
 
-          db.add_object(routine.name.id.intern(), node.clone());
+          solve_node_intrinsics(node.clone(), &constraints);
 
-          solve_node_intrinsics(node, constraints);
+          db.add_object(routine.name.id.intern(), node.clone());
         }
         module_member_Value::RawBoundType(bound_ty) => match &bound_ty.ty {
           type_Value::Type_Struct(strct) => {
@@ -67,16 +67,26 @@ pub fn add_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
 
             for mem in strct.properties.iter() {
               match mem {
-                property_Value::Property(prop) => properties.push((prop.name.id.intern(), get_type(&prop.ty).unwrap_or_default())),
+                property_Value::Property(prop) => {
+                  match &prop.ty {
+                    type_Value::RawFunctionType(ty) => {
+                      panic!("AA")
+                    }
+
+                    _ => properties.push((prop.name.id.intern(), get_type(&prop.ty).unwrap_or_default())),
+                  }
+                  dbg!(prop);
+                  panic!("AA");
+                }
                 prop => todo!("{prop:#?}"),
               }
             }
 
             let (node, constraints) = compile_struct(db, &properties);
 
-            db.add_object(bound_ty.name.id.intern(), node.clone());
+            solve_node_intrinsics(node.clone(), &constraints);
 
-            solve_node_intrinsics(node, constraints);
+            db.add_object(bound_ty.name.id.intern(), node.clone());
           }
           _ => unreachable!(),
         },
@@ -168,6 +178,8 @@ fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (NodeHandle, V
           if !defined_ty.is_open() {
             add_constraint(&mut bp, NodeConstraint::GenTyToTy(ty, defined_ty));
           }
+        } else if let type_Value::Type_Variable(ty_name) = &param.ty.ty {
+          add_constraint(&mut bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone(), NodeUsage::Complex));
         }
       }
 
@@ -1190,7 +1202,7 @@ fn add_annotations(
       annotation_Value::Converts(cvt) => {
         if let Some(target) = ty_lu.get(cvt.target.as_str()) {
           if let Some(index) = op_index {
-            add_constraint(bp, NodeConstraint::OpConvertTo { target_op: out_op, arg_index: index, target_ty: target.clone() })
+            add_constraint(bp, NodeConstraint::OpConvertTo { src_op: out_op, arg_index: index, target_ty: target.clone() })
           }
         }
       }

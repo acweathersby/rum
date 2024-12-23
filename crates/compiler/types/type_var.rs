@@ -49,7 +49,7 @@ pub enum NodeConstraint {
   GenTyToTy(Type, Type),
   GenTyToGenTy(Type, Type),
   OpConvertTo {
-    target_op: OpId,
+    src_op:    OpId,
     arg_index: usize,
     target_ty: Type,
   },
