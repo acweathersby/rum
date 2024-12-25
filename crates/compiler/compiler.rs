@@ -42,6 +42,7 @@ pub(crate) const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
 pub(crate) const CLAUSE_ID: &'static str = "---CLAUSE---";
 pub(crate) const CALL_ID: &'static str = "---CALL---";
 pub(crate) const STRUCT_ID: &'static str = "---STRUCT---";
+pub(crate) const INTERFACE_ID: &'static str = "---INTERFACE---";
 pub(crate) const MEMORY_REGION_ID: &'static str = "---MEMORY_REGION---";
 
 pub fn add_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
@@ -63,6 +64,10 @@ pub fn add_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
           }
           routine_definition_Value::Type_Struct(strct) => {
             let (node, constraints) = compile_struct(db, &strct.properties.iter().map(|p| (p.name.id.intern(), p.ty.clone())).collect::<Vec<_>>());
+
+            if mem.annotation.as_ref().is_some_and(|a| a.val.as_str() == "interface") {
+              node.get_mut().unwrap().nodes[0].type_str = INTERFACE_ID;
+            }
 
             solve_node_intrinsics(node.clone(), &constraints);
 
@@ -269,10 +274,11 @@ struct BuildPack<'a> {
   db:          Database,
 }
 
-fn push_node(bp: &mut BuildPack, id: &'static str) {
+fn push_node(bp: &mut BuildPack, id: &'static str) -> usize {
   let node_index = bp.super_node.nodes.len();
   bp.super_node.nodes.push(Node { index: node_index, type_str: id, inputs: Default::default(), outputs: Default::default() });
   bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), heap_lu: Default::default(), id });
+  bp.node_stack.len() - 1
 }
 
 fn declare_top_scope_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: Type) -> &'a mut Var {
@@ -519,7 +525,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
     match annotation {
       block_expression_group_Value::RawAllocatorBinding(binding) => {
         if heaps.is_empty() {
-          push_node(bp, MEMORY_REGION_ID)
+          push_node(bp, MEMORY_REGION_ID);
         }
 
         let heap_binding = binding.allocator_name.id.intern();
@@ -901,7 +907,7 @@ pub(crate) fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (O
     add_op(bp, Operation::Name(call.member.root.name.id.intern()), Default::default(), call.member.clone().into())
   };
 
-  push_node(bp, CALL_ID);
+  let node_id = push_node(bp, CALL_ID);
   add_input(bp, call_ref_op, VarId::CallRef);
 
   for (index, (op_id, op_ty)) in args.iter().enumerate() {

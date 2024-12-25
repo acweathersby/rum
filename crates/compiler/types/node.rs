@@ -92,6 +92,10 @@ impl NodeHandle {
     }
   }
 
+  pub fn get_type(&self) -> &'static str {
+    self.get().unwrap().nodes[0].type_str
+  }
+
   /// Creates a clone of the original Node, instead of cloning the handle.
   pub fn duplicate(&self) -> Self {
     unsafe {
@@ -344,12 +348,11 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
   string
 }
 
-pub fn get_signature(node: &RootNode) -> u64 {
+pub fn get_signature(node: &RootNode) -> Signature {
   Signature::new(
-    &node.nodes[0].inputs.iter().map(|i| node.get_base_ty(node.types[i.0.usize()].clone())).collect::<Vec<_>>(),
-    &node.nodes[0].outputs.iter().map(|i| node.get_base_ty(node.types[i.0.usize()].clone())).collect::<Vec<_>>(),
+    &node.nodes[0].inputs.iter().map(|i| (i.0, node.get_base_ty(node.types[i.0.usize()].clone()))).collect::<Vec<_>>(),
+    &node.nodes[0].outputs.iter().map(|i| (i.0, node.get_base_ty(node.types[i.0.usize()].clone()))).collect::<Vec<_>>(),
   )
-  .hash()
 }
 
 impl Debug for RootNode {
@@ -500,19 +503,20 @@ impl Display for Node {
   }
 }
 
+#[derive(Debug)]
 pub struct Signature {
-  inputs:  Vec<Type>,
-  outputs: Vec<Type>,
+  pub inputs:  Vec<(OpId, Type)>,
+  pub outputs: Vec<(OpId, Type)>,
 }
 
 impl Signature {
-  pub fn new(inputs: &[Type], outputs: &[Type]) -> Self {
+  pub fn new(inputs: &[(OpId, Type)], outputs: &[(OpId, Type)]) -> Self {
     Self { inputs: inputs.to_vec(), outputs: outputs.to_vec() }
   }
 
   pub fn hash(&self) -> u64 {
     let mut h = DefaultHasher::new();
-    for ty in &self.inputs {
+    for (_, ty) in &self.inputs {
       if ty.is_generic() {
         0u64.hash(&mut h);
       } else {
@@ -520,7 +524,7 @@ impl Signature {
       }
     }
 
-    for ty in &self.outputs {
+    for (_, ty) in &self.outputs {
       if ty.is_generic() {
         0u64.hash(&mut h);
       } else {

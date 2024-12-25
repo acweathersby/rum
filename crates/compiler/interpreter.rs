@@ -1,5 +1,5 @@
 use crate::{
-  compiler::{add_module, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS},
+  compiler::{add_module, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS, ROUTINE_ID},
   types::*,
 };
 use core_lang::parser::ast::Var;

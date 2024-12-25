@@ -223,9 +223,3 @@ pub fn get_op_from_db(db: &Database, name: &str) -> Option<Arc<core_lang::parser
 
   None
 }
-pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
-pub(crate) const LOOP_ID: &'static str = "---LOOP---";
-pub(crate) const MATCH_ID: &'static str = "---MATCH---";
-pub(crate) const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
-pub(crate) const CLAUSE_ID: &'static str = "---CLAUSE---";
-pub(crate) const CALL_ID: &'static str = "---CALL---";

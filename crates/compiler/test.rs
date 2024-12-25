@@ -100,18 +100,23 @@ fn method_lookup() {
     "
 
     #interface
-    I => [ allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) > addr ]
-    
+    I => [ allocate: (ctx: I, size: u64, par: I) > addr, val: u32 ]
+
+
+
     base 
       => [ val: u32 ]
       
     base_getter_method 
-      => (b: base) > ? b.val
+      => (b: I, test: f32) > ? b.val + test
+
+    Dase
+      => [ val: u32 ]
 
     calls_method 
       => () > u32 {
         b: base = :[ val = 200 ]
-        b.base_getter_method()
+        b.base_getter_method(2)
       }
   ",
   );
