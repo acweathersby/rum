@@ -227,6 +227,8 @@ pub(crate) enum Operation {
   Const(ConstVal),
   Name(IString),
   CallTarget(NodeHandle),
+  Allocate,
+  Free,
 }
 
 impl Debug for Operation {
@@ -252,6 +254,8 @@ impl Display for Operation {
         f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
       }
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
+      Operation::Allocate => f.write_fmt(format_args!("allocate",)),
+      Operation::Free => f.write_fmt(format_args!("free",)),
     }
   }
 }

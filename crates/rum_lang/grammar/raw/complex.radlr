@@ -9,19 +9,11 @@ IMPORT ../common/comment as cmt
 
   :ast { t_Expression, expr: $1, tok }
 
-+> expr::term > pointer_cast_to_value
-
 <> aggregate_instantiation 
 
   > anno::lifetime?^heap ':[' aggregate_member_initializer(*",")^inits ","(*) "]"
 
     :ast  { t_RawAggregateInstantiation, allocator_binding, inits, heap, tok }
-
-<> pointer_cast_to_value
-
-  > "[[" prim::var^type_name ":" ( prim::var | pointer_cast_to_value )^base  ( "+" + expr::bitwise^expression )?^offset_expression "]]"{1} "*"{3}?^to_pointer
-
-    :ast  { t_PointerCastToAddress, type_name, base, offset_expression, to_pointer:bool($to_pointer), tok }
 
 <> aggregate_member_initializer 
 

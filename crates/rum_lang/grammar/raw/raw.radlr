@@ -2,12 +2,14 @@ IGNORE { c:sp c:nl tk:cmt::comment }
 
 IMPORT module as module
 IMPORT expression as expr
+IMPORT type as ty
 IMPORT routine as rt
 IMPORT ../common/comment as cmt
 
 EXPORT raw_module as raw_module
 EXPORT raw_function_definition as raw_routine_def
 EXPORT expr::call as raw_call
+EXPORT ty::type as types
 
 <> raw_module > module::module
 

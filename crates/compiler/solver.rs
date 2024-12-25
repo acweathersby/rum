@@ -2,7 +2,7 @@ use crate::{compiler::compile_struct, types::*};
 use radlr_rust_runtime::types::BlameColor;
 use rum_lang::{
   istring::{CachedString, IString},
-  parser::script_parser::{Params, Root},
+  parser::script_parser::{parse_type, Params, Property, Root},
 };
 use std::{
   collections::{HashMap, VecDeque},
@@ -17,7 +17,6 @@ enum CallArgType {
 
 #[derive(Debug)]
 pub enum GlobalConstraint {
-  CalculateHeap { node: NodeHandle },
   ExtractGlobals { node: NodeHandle },
   ResolveObjectConstraints { node: NodeHandle, constraints: Vec<NodeConstraint> },
   // Callee must be resolved, then caller is resolved in terms of callee.
@@ -99,6 +98,8 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
 
   let mut dependency_links = HashMap::<NodeHandle, Vec<DependencyBinding>>::new();
 
+  // Add __root_allocator__ if it exists;
+
   match db.get_type_by_name(entry) {
     GetResult::Introduced(node) => {
       db.add_root(RootType::ExecutableEntry(entry), node);
@@ -113,6 +114,10 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
     let mut constraint_queue: VecDeque<GlobalConstraint> = VecDeque::with_capacity(128);
     let mut secondary_constraints = vec![];
 
+    if let Some(node) = get_node(db, "__root_allocator__".intern(), &mut constraint_queue) {
+      solve_heap(db, "__root_allocator__".intern(), node, &mut constraint_queue);
+    }
+
     for index in 0..db.roots.len() {
       let node = db.roots[index].1.clone();
       constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node });
@@ -121,38 +126,18 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
     loop {
       while let Some(constraint) = constraint_queue.pop_front() {
         match &constraint {
-          GlobalConstraint::CalculateHeap { node } => {
-            match db.get_type_by_name("allocate".intern()) {
-              GetResult::Introduced(node) => {
-                constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
-                continue;
-              }
-              GetResult::Existing(allocator_node) => {
-                let allocate_sig = Signature::new(&vec![Type::Complex(0, node.clone()), ty_u64], &vec![ty_addr]);
-
-                let sig_hash = allocate_sig.hash();
-
-                let sig_2 = get_signature(allocator_node.get().unwrap());
-
-                if sig_hash == sig_2 {
-                  dbg!(sig_hash, sig_2, allocator_node);
-                  todo!("Handle comparison \n {constraint_queue:?}");
-                } else {
-                  panic!("No match");
-                }
-              }
-              _ => {
-                // panic!("Could not find appropriate allocation for heap {}", tok.blame(1, 1, "inline_comment", BlameColor::RED));
-              }
-            };
-          }
-
           GlobalConstraint::ExtractGlobals { node: call_node } => {
             let mut intrinsic_constraints = vec![];
 
             if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. }) = call_node.get_mut() {
               for ty_var in type_vars {
                 if !ty_var.ty.is_open() {
+                  match &ty_var.ty {
+                    Type::Complex(_, node_complex) => {
+                      add_node(db, node_complex.clone(), &mut constraint_queue);
+                    }
+                    _ => {}
+                  }
                   continue;
                 }
 
@@ -167,40 +152,14 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                         }
                       }
                       NodeUsage::Heap => match db.get_type_by_name(*node_name) {
-                        GetResult::Introduced(stct_node) => {
+                        GetResult::Introduced(heap_node) => {
                           // Create a heap poly fill.
 
-                          let mut properties = Vec::new();
-                          if let Some(scope) = db.db.get_ref().scopes.get(node_name) {
-                            // Create a struct type containing everything we need for
-
-                            let ctx = "ctx".intern();
-                            {
-                              let allocator_ty = Type::Complex(0, stct_node.clone());
-                              properties.push((ctx, allocator_ty));
-                              constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: stct_node.clone() });
-                            }
-
-                            let allocate_fn_name = "allocate".intern();
-
-                            if let Some(allocator) = scope.get(&allocate_fn_name) {
-                              let allocator_ty = Type::Complex(0, allocator.clone());
-                              properties.push((allocate_fn_name, allocator_ty));
-                              constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: allocator.clone() });
-                            }
-                          }
-
-                          let (strct, constraints) = compile_struct(&db.db, &properties);
-
-                          solve_node_intrinsics(strct.clone(), &constraints);
-
-                          let name = (node_name.to_string() + "_allocator_scope").intern();
-
-                          dbg!(strct.clone());
-
-                          db.add_object(name, strct.clone());
+                          let strct = solve_heap(db, *node_name, heap_node, &mut constraint_queue);
 
                           intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, strct.clone())));
+
+                          // Assert conformance to AllocatorI
                         }
                         GetResult::Existing(node) => {}
                         _ => {}
@@ -218,7 +177,13 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                         Operation::Name(call_name) => {
                           // If name cannot be found then we have a reference error
 
-                          if let Some(callee_node) = get_node(db, call_name, &mut constraint_queue) {
+                          if call_name.to_str().as_str() == "__allocate__" {
+                            operands[caller_input.0.usize()] = Operation::Allocate;
+
+                            dbg!(call_node);
+                          } else if call_name.to_str().as_str() == "__free__" {
+                            operands[caller_input.0.usize()] = Operation::Free;
+                          } else if let Some(callee_node) = get_node(db, call_name, &mut constraint_queue) {
                             let side_ban_actions = dependency_links.entry(callee_node.clone()).or_default();
 
                             operands[caller_input.0.usize()] = Operation::CallTarget(callee_node.clone());
@@ -313,6 +278,52 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
   db
 }
 
+fn solve_heap(db: &mut SolveDatabase<'_>, node_name: IString, stct_node: NodeHandle, constraint_queue: &mut VecDeque<GlobalConstraint>) -> NodeHandle {
+  todo!("create heap struct");
+  /*   let mut properties = Vec::new();
+  if let Some(scope) = db.db.get_ref().scopes.get(&node_name) {
+    // Create a struct type containing everything we need for
+
+    let ctx = "ctx".intern();
+    {
+      let allocator_ty = Type::Complex(0, stct_node.clone());
+      properties.push((ctx, allocator_ty));
+      constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: stct_node.clone() });
+    }
+
+    let allocate_fn_name = "allocate".intern();
+
+    if let Some(allocator) = scope.get(&allocate_fn_name) {
+      let allocator_ty = Type::Complex(0, allocator.clone());
+      let ty = parse_type(&format!("{allocate_fn_name}")).unwrap();
+      properties.push((  ty));
+      constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: allocator.clone() });
+    }
+  }
+
+  let (strct, constraints) = compile_struct(&db.db, &properties);
+
+  solve_node_intrinsics(strct.clone(), &constraints);
+
+  let name = (node_name.to_string() + "_allocator_scope").intern();
+
+  db.add_object(name, strct.clone());
+
+  strct */
+}
+
+fn add_node(db: &mut SolveDatabase<'_>, node: NodeHandle, constraint_queue: &mut VecDeque<GlobalConstraint>) -> Option<NodeHandle> {
+  match db.add_node_handle(node.clone()) {
+    GetResult::Introduced(node) => {
+      constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
+
+      Some(node)
+    }
+    GetResult::Existing(node) => Some(node),
+    _ => None,
+  }
+}
+
 fn get_node(db: &mut SolveDatabase<'_>, node_name: IString, constraint_queue: &mut VecDeque<GlobalConstraint>) -> Option<NodeHandle> {
   match db.get_type_by_name(node_name) {
     GetResult::Introduced(node) => {
@@ -359,12 +370,13 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
 
               if ty.ty.is_open() {
                 if ty.has(VarAttribute::Numeric) {
-                  properties.push((*name, ty_f64))
+                  properties.push((*name, parse_type("u64").unwrap()))
                 } else {
                   invalid = true;
                 }
               } else {
-                properties.push((*name, ty.ty.clone()))
+                todo!("handle {ty}");
+                //properties.push((*name, ty.ty.clone()))
               }
             } else {
               unreachable!()

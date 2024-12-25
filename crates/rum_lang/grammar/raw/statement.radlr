@@ -53,8 +53,6 @@ IMPORT ../common/comment as cmt
 
   | expr::member
 
-  | complex::pointer_cast_to_value
-
 <> break_statement 
 
   > "break" ("#" prim::var)?^label

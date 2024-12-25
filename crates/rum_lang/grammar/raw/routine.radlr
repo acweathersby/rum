@@ -5,13 +5,6 @@ IMPORT ../common/primitive as prim
 IMPORT ./expression as expr
 IMPORT ../common/comment as cmt
 
-<> routine 
-
-  >  prim::var^name routine_definition^def
-
-    :ast { t_RawRoutine, name, def }
-
-
 <> routine_definition > 
 
   routine_type^routine_type expr::expression^expression
@@ -20,13 +13,9 @@ IMPORT ../common/comment as cmt
 
 <> routine_type 
 
-  > params "=>" param_type^return_type
+  > params ( ">" param_type )?^return_type
 
-    :ast { t_RawFunctionType, params, return_type  }
-
-  | params "=|"
-
-    :ast { t_RawProcedureType, params  }
+    :ast { t_RawRoutineType, params, return_type  }
 
 <> params 
 

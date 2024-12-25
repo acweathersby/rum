@@ -2,7 +2,7 @@ use crate::{
   compiler::add_module,
   interpreter::interpret_node,
   solver::solve,
-  types::{Database, GetResult, SolveDatabase, SolveState, Value},
+  types::{Database, GetResult, SolveDatabase, SolveState, Type, Value},
 };
 use rum_lang::istring::CachedString;
 
@@ -20,27 +20,31 @@ fn allocator_binding() {
       free: (ctx: AllocatorI, ptr: addr, par: AllocatorI) =|
     ]
 
-    allocate (ctx: RootAllocator, size: u64) => addr { 
+    __root_allocator__ => [ x: u32 ]
+
+    allocate (ctx: __root_allocator__, size: u64, par: AllocatorI) => addr { 
       __allocate__(size)
     } 
+
+    free (ctx: __root_allocator__, ptr: addr) =| {}
 
     AppendOnlyAllocator => [ x: addr, capacity: u64 ]
 
     allocate (ctx: AppendOnlyAllocator, size: u64, par: AllocatorI) => addr {
-      if ctx.capacity == 0 { 7 } otherwise  { 2 }
+
+      if ctx.capacity == 0 { 
+        ctx.x = par.allocate(4096)
+      }
+
+      if ctx.capacity == 0 { 7 } otherwise { 2 }
 
       // returns address 10. This is normally not valid in 
       // most modern computing environments, but is allowed in 
       // testing. 
     }
 
-    free (ctx: AppendOnlyAllocator, ptr: addr) =| {
-      //if ctx.capacity == 0 { 7 } otherwise  { 2 }
+    free (ctx: AppendOnlyAllocator, ptr: addr) =| {}
 
-      // returns address 10. This is normally not valid in 
-      // most modern computing environments, but is allowed in 
-      // testing. 
-    }
 
     scope () => ? {
       b = {       
@@ -61,6 +65,59 @@ fn allocator_binding() {
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "scope".intern(), true);
   if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
+    let test = test.get().unwrap();
+
+    let GetResult::Existing(global_heap) = sdb.get_type_by_name("__root_allocator___allocator_scope".intern()) else {
+      panic!("Could not load");
+    };
+
+    let GetResult::Existing(global_ctx) = sdb.get_type_by_name("__root_allocator__".intern()) else {
+      panic!("Could not load");
+    };
+
+    let mut heaps = vec![(Default::default(), global_heap, 0 as *mut _, Type::Complex(0, global_ctx))];
+
+    // Create temporary types based on the type definitions
+
+    if test.solve_state() == SolveState::Solved {
+      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut heaps);
+
+      dbg!(val);
+    } else {
+      panic!("test is a template and cannot be directly interpreted {test:?}")
+    }
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn method_lookup() {
+  let mut db: Database = Database::default();
+
+  let global_constraints = add_module(
+    &mut db,
+    "
+
+    #interface
+    I => [ allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) > addr ]
+    
+    base 
+      => [ val: u32 ]
+      
+    base_getter_method 
+      => (b: base) > ? b.val
+
+    calls_method 
+      => () > u32 {
+        b: base = :[ val = 200 ]
+        b.base_getter_method()
+      }
+  ",
+  );
+
+  let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
+  if let GetResult::Existing(test) = sdb.get_type_by_name("calls_method".intern()) {
     let test = test.get().unwrap();
 
     dbg!(test);
@@ -87,8 +144,9 @@ fn interface_structure() {
     &mut db,
     "
     AllocatorI => [
-      allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) => addr,
-      free: (ctx: AllocatorI, ptr: addr, par: AllocatorI) =|
+      par: *AllocatorI,
+      allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) > addr,
+      free: (ctx: AllocatorI, ptr: addr, par: AllocatorI)
     ]
 
    

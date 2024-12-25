@@ -8,27 +8,25 @@ use rum_lang::{
   parser::script_parser::{
     assignment_var_Value,
     ast::ASTNode,
+    base_type_Value,
     block_expression_group_Value,
     expression_Value,
     lifetime_Value,
     loop_statement_group_1_Value,
     member_group_Value,
-    property_Value,
-    routine_type_Value,
     statement_Value,
     type_Value,
     MemberCompositeAccess,
     RawBlock,
     RawCall,
     RawMatch,
-    RawRoutine,
-    Type_Flag,
-    Type_Struct,
+    RawRoutineDefinition,
+    RawRoutineType,
   },
   Token,
 };
 use std::{
-  collections::{HashMap, VecDeque},
+  collections::{vec_deque, HashMap, VecDeque},
   fmt::Debug,
   sync::Arc,
   u32,
@@ -37,6 +35,7 @@ use std::{
 const HEAP_DEFAULT: usize = usize::MAX;
 
 pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
+pub(crate) const ROUTINE_SIGNATURE_ID: &'static str = "---ROUTINE_SIG---";
 pub(crate) const LOOP_ID: &'static str = "---LOOP---";
 pub(crate) const MATCH_ID: &'static str = "---MATCH---";
 pub(crate) const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
@@ -54,35 +53,16 @@ pub fn add_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
   for module_mem in module_ast.members.members.iter() {
     match &module_mem {
       module_members_group_Value::AnnotatedModMember(mem) => match &mem.member {
-        module_member_Value::RawRoutine(routine) => {
-          let (node, constraints) = compile_routine(db, routine.as_ref());
-
-          solve_node_intrinsics(node.clone(), &constraints);
-
-          db.add_object(routine.name.id.intern(), node.clone());
-        }
         module_member_Value::RawBoundType(bound_ty) => match &bound_ty.ty {
-          type_Value::Type_Struct(strct) => {
-            let mut properties = Vec::new();
+          routine_definition_Value::RawRoutineDefinition(routine) => {
+            let (node, constraints) = compile_routine(db, routine.as_ref());
 
-            for mem in strct.properties.iter() {
-              match mem {
-                property_Value::Property(prop) => {
-                  match &prop.ty {
-                    type_Value::RawFunctionType(ty) => {
-                      panic!("AA")
-                    }
+            solve_node_intrinsics(node.clone(), &constraints);
 
-                    _ => properties.push((prop.name.id.intern(), get_type(&prop.ty).unwrap_or_default())),
-                  }
-                  dbg!(prop);
-                  panic!("AA");
-                }
-                prop => todo!("{prop:#?}"),
-              }
-            }
-
-            let (node, constraints) = compile_struct(db, &properties);
+            db.add_object(bound_ty.name.id.intern(), node.clone());
+          }
+          routine_definition_Value::Type_Struct(strct) => {
+            let (node, constraints) = compile_struct(db, &strct.properties.iter().map(|p| (p.name.id.intern(), p.ty.clone())).collect::<Vec<_>>());
 
             solve_node_intrinsics(node.clone(), &constraints);
 
@@ -100,7 +80,7 @@ pub fn add_module(db: &mut Database, module: &str) -> Vec<GlobalConstraint> {
   global_constraints
 }
 
-pub(crate) fn compile_struct(db: &Database, properties: &[(IString, Type)]) -> (NodeHandle, Vec<NodeConstraint>) {
+pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<Token>)]) -> (NodeHandle, Vec<NodeConstraint>) {
   let mut super_node = RootNode::default();
 
   let mut bp = BuildPack {
@@ -121,19 +101,61 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, Type)]) -> (
 
     let mut offset_op = add_op(bp, Operation::Const(ConstVal::new(ty_u64.to_primitive().unwrap(), 0)), offset_ty, Default::default());
 
-    for (prop_name, real_ty) in properties.iter() {
+    for ((prop_name, type_val)) in properties.iter() {
       let prop_name_op = add_op(bp, Operation::Name(*prop_name), Default::default(), Default::default());
-
       let (prop_op, prop_ty) = process_op("PROP", &[prop_name_op, offset_op], bp, Default::default());
 
-      if !real_ty.is_open() {
-        add_constraint(bp, NodeConstraint::GenTyToTy(prop_ty, real_ty.clone()));
-      }
+      match type_val {
+        type_Value::RawRoutineType(ty) => {
+          // Create a routine signature and set that as the type to attach to
+          let mut super_node = RootNode::default();
+          let mut sig_bp = BuildPack {
+            db:          db.clone(),
+            super_node:  &mut super_node,
+            node_stack:  Default::default(),
+            constraints: Vec::with_capacity(8),
+          };
+
+          push_node(&mut sig_bp, ROUTINE_SIGNATURE_ID);
+          compile_routine_signature(ty, &mut sig_bp, &mut Default::default());
+
+          let BuildPack { constraints, .. } = sig_bp;
+
+          let handle = NodeHandle::new(super_node);
+
+          solve_node_intrinsics(handle.clone(), &constraints);
+
+          add_constraint(bp, NodeConstraint::GenTyToTy(prop_ty, Type::Complex(0, handle.clone())));
+        }
+        type_Value::Type_Pointer(ptr_ty) => {
+          // add base value and set
+          let base_ty = add_ty_var(bp).ty.clone();
+          if let Some(ty) = get_type(&ptr_ty.ty.clone().to_ast().into_type_Value().unwrap()) {
+            add_constraint(bp, NodeConstraint::GenTyToTy(base_ty.clone(), ty.clone()));
+            add_constraint(bp, NodeConstraint::Deref { ptr_ty: prop_ty.clone(), val_ty: base_ty, mutable: true })
+          } else if let base_type_Value::Type_Variable(var) = &ptr_ty.ty {
+            let name: IString = var.name.id.intern();
+            add_constraint(bp, NodeConstraint::GlobalNameReference(base_ty.clone(), name, Default::default(), NodeUsage::Complex));
+            add_constraint(bp, NodeConstraint::Deref { ptr_ty: prop_ty.clone(), val_ty: base_ty, mutable: true })
+          } else {
+            todo!("handle pointer {ptr_ty:#?}");
+          }
+        }
+        type_Value::Type_Variable(var) => {
+          let name: IString = var.name.id.intern();
+          add_constraint(bp, NodeConstraint::GlobalNameReference(prop_ty, name, Default::default(), NodeUsage::Complex))
+        }
+        _ => {
+          if let Some(ty) = get_type(type_val) {
+            add_constraint(bp, NodeConstraint::GenTyToTy(prop_ty, ty.clone()));
+          } else {
+            unreachable!()
+          }
+        }
+      };
 
       let (prop_offset_op, _) = process_op("CALC_AGG_SIZE", &[prop_op, offset_op], bp, Default::default());
-
       offset_op = prop_offset_op;
-
       add_output(bp, prop_op, VarId::Name(*prop_name));
     }
 
@@ -147,7 +169,7 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, Type)]) -> (
   (handle, constraints)
 }
 
-fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (NodeHandle, Vec<NodeConstraint>) {
+fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (NodeHandle, Vec<NodeConstraint>) {
   let mut super_node = RootNode::default();
 
   let mut bp = BuildPack {
@@ -160,58 +182,9 @@ fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (NodeHandle, V
   push_node(&mut bp, ROUTINE_ID);
 
   let mut out_ty = Default::default();
+  compile_routine_signature(&routine.ty, &mut bp, &mut out_ty);
 
-  match &routine.def.ty {
-    routine_type_Value::RawFunctionType(fn_ty) => {
-      for (index, param) in fn_ty.params.params.iter().enumerate() {
-        let name = &param.var.id;
-
-        let ty = add_ty_var(&mut bp).ty.clone();
-        let var_id = VarId::Name(name.intern());
-        let op_id = add_op(&mut bp, Operation::Param(var_id, index as u32), ty.clone(), param.clone().into());
-
-        declare_top_scope_var(&mut bp, var_id, op_id, ty.clone());
-
-        add_input(&mut bp, op_id, var_id);
-
-        if let Some(defined_ty) = get_type(&param.ty.ty) {
-          if !defined_ty.is_open() {
-            add_constraint(&mut bp, NodeConstraint::GenTyToTy(ty, defined_ty));
-          }
-        } else if let type_Value::Type_Variable(ty_name) = &param.ty.ty {
-          add_constraint(&mut bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone(), NodeUsage::Complex));
-        }
-      }
-
-      out_ty = get_type(&fn_ty.return_type.ty).unwrap_or_default();
-    }
-    routine_type_Value::RawProcedureType(proc_ty) => {
-      for (index, param) in proc_ty.params.params.iter().enumerate() {
-        let name = &param.var.id;
-
-        let ty = add_ty_var(&mut bp).ty.clone();
-        let var_id = VarId::Name(name.intern());
-        let op_id = add_op(&mut bp, Operation::Param(var_id, index as u32), ty.clone(), param.clone().into());
-
-        declare_top_scope_var(&mut bp, var_id, op_id, ty.clone());
-
-        add_input(&mut bp, op_id, var_id);
-
-        if let Some(defined_ty) = get_type(&param.ty.ty) {
-          if !defined_ty.is_open() {
-            add_constraint(&mut bp, NodeConstraint::GenTyToTy(ty.clone(), defined_ty));
-          }
-        }
-      }
-
-      out_ty = Type::NoUse;
-    }
-    routine_type_Value::None => {
-      unreachable!()
-    }
-  }
-
-  let (out_op, out_gen_ty) = compile_expression(&routine.def.expression.expr, &mut bp);
+  let (out_op, out_gen_ty) = compile_expression(&routine.expression.expr, &mut bp);
 
   if out_op.is_valid() {
     bp.super_node.nodes[0].outputs.push((out_op, VarId::Return));
@@ -238,6 +211,36 @@ fn compile_routine(db: &Database, routine: &RawRoutine<Token>) -> (NodeHandle, V
   let handle = NodeHandle::new(super_node);
 
   (handle, constraints)
+}
+
+fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildPack<'_>, out_ty: &mut Type) {
+  for (index, param) in routine_ty.params.params.iter().enumerate() {
+    let name = &param.var.id;
+
+    let ty = add_ty_var(bp).ty.clone();
+    let var_id = VarId::Name(name.intern());
+    let op_id = add_op(bp, Operation::Param(var_id, index as u32), ty.clone(), param.clone().into());
+
+    declare_top_scope_var(bp, var_id, op_id, ty.clone());
+
+    add_input(bp, op_id, var_id);
+
+    if let Some(defined_ty) = get_type(&param.ty.ty) {
+      if !defined_ty.is_open() {
+        add_constraint(bp, NodeConstraint::GenTyToTy(ty, defined_ty));
+      }
+    } else if let type_Value::Type_Variable(ty_name) = &param.ty.ty {
+      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone(), NodeUsage::Complex));
+    } else if let type_Value::Type_Pointer(ty_ptr) = &param.ty.ty {
+      if let base_type_Value::Type_Variable(ty_name) = &ty_ptr.ty {
+        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone(), NodeUsage::Complex));
+      }
+    }
+  }
+
+  if let Some(return_ty) = &routine_ty.return_type {
+    *out_ty = get_type(&return_ty.ty).unwrap_or_default();
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -489,7 +492,12 @@ pub fn get_type(ir_type: &type_Value<Token>) -> Option<Type> {
       todo!("Handle Type Reference")
     }
     Type_Pointer(ptr) => {
-      todo!("Handle Type Pointer")
+      let node = ptr.ty.clone().to_ast();
+      if let Some(ty) = get_type(&node.into_type_Value().unwrap()) {
+        to_ptr(ty)
+      } else {
+        Option::None
+      }
     }
     Type_Variable(type_var) => {
       if type_var.name.id == "addr" {
@@ -704,7 +712,7 @@ fn get_heap_name_from_lt(lifetime: Option<&lifetime_Value>) -> IString {
 }
 
 /// Returns either the underlying value assigned to a variable name, or the caclulated pointer to the value.
-fn get_mem_op(bp: &mut BuildPack, mem: &Arc<MemberCompositeAccess<Token>>, local_only: bool, source_token: Token) -> VarLookup {
+fn get_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, local_only: bool, source_token: Token) -> VarLookup {
   let var_name = mem.root.name.id.intern();
   if let Some((op, ty)) = get_var(bp, VarId::Name(var_name)) {
     if mem.sub_members.is_empty() {
@@ -865,14 +873,28 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
 }
 
 pub(crate) fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (OpId, Type) {
-  let mut args = vec![];
+  let mut args = VecDeque::new();
   for arg in call.args.iter() {
-    args.push(compile_expression(&arg.expr, bp));
+    args.push_back(compile_expression(&arg.expr, bp));
   }
 
   let call_ref_op = if call.member.sub_members.len() > 0 {
-    match get_mem_op(bp, &call.member, false, call.member.tok.clone()) {
-      VarLookup::Ptr(ptr_op, ..) => ptr_op,
+    let mut mem = (*call.member).clone();
+
+    match mem.sub_members.pop().unwrap() {
+      member_group_Value::NamedMember(name) => {
+        let method_name = name.name.id.intern();
+        let name_op = add_op(bp, Operation::Name(method_name), Default::default(), call.member.clone().into());
+
+        let (op, ty) = match get_mem_op(bp, &mem, false, call.member.tok.clone()) {
+          VarLookup::Ptr(ptr_op, ty, ..) => (ptr_op, ty),
+          VarLookup::Var(var_op, ty, ..) => (var_op, ty),
+          _ => unreachable!(),
+        };
+
+        args.push_front((op, ty));
+        name_op
+      }
       _ => unreachable!(),
     }
   } else {
@@ -896,7 +918,7 @@ pub(crate) fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (O
   let ret_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), ret_ty.clone(), call.clone().into());
   declare_top_scope_var(bp, VarId::Return, ret_op, ret_ty.clone());
 
-  let heap_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), heap_ty, call.clone().into());
+  add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), heap_ty, call.clone().into());
 
   add_output(bp, ret_op, VarId::Return);
 
@@ -910,7 +932,6 @@ fn current_node_index(bp: &BuildPack) -> usize {
 }
 
 pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_ty: Option<Type>) -> ((OpId, Type), (OpId, Type)) {
-  // Build input test
   let input_op = compile_expression(&expression_Value::MemberCompositeAccess(match_.expression.clone()), bp);
 
   push_node(bp, MATCH_ID);
@@ -1249,6 +1270,7 @@ op: AGG_DECL  ctx [read_ctx] => agg_ptr [Agg: agg]
 
 op: OFFSET_PTR  b [Base: agg]  n [Offset: Numeric]  => out [MemPtr]
 op: NAMED_PTR  b [Base: agg]  n [MemName: label]  => out [MemPtr]
+op: ROUTINE_PTR  => out [FN_PTR]
 
 op: CALC_AGG_SIZE prop [Prop] offset [Offset: Numeric] => offset [Offset]
 op: PROP  name [Name: agg] offset [Offset: Numeric] => out [PropData]
@@ -1273,7 +1295,5 @@ op: DIV  l [A: Numeric]  r [B: converts(A)]  => out [A]
 
 op: SUB  l [A: Numeric]  r [B: converts(A)]  => out [A]
 op: ADD  l [A: Numeric]  r [B: converts(A)]  => out [A]
-
-
 
 "###;

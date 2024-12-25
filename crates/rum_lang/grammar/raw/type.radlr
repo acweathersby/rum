@@ -62,10 +62,6 @@ IGNORE { c:sp c:nl }
 
 <> property 
 
-  > single_prop | bitfield_type
-
-<> single_prop 
-
   > prim::var^name ":" type^ty
 
       :ast  { t_Property, name, ty, tok  }

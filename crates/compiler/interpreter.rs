@@ -105,6 +105,7 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
       VarId::Name(..) => {
         debug_assert!(op_id.is_valid());
 
+        dbg!(super_node);
         match &super_node.operands[index] {
           Operation::Param(_, arg_index) => scratch_slice[index] = (args[*arg_index as usize].clone(), 0),
           _ => unreachable!(),
@@ -265,6 +266,7 @@ pub fn interprete_op(
           // Calculates the offset of the current type.
           let curr_offset = interprete_op(super_node, operands[1], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
+          dbg!(super_node);
           let size = get_ty_size(ty.clone(), heaps);
 
           if size == 0 {
@@ -345,8 +347,6 @@ pub fn interprete_op(
           }
         }
         "LOAD" => {
-          //interprete_op(super_node, operands[1], scratch, slice_start, slice_end, loop_old, loop_new);
-
           let ptr = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
 
           match ptr {

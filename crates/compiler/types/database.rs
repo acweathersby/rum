@@ -52,8 +52,6 @@ impl<'a> SolveDatabase<'a> {
     }
   }
 
-  pub fn add_object(&mut self, name: IString, node: NodeHandle) {}
-
   pub fn get_root(&self, root_ty: RootType) -> Option<NodeHandle> {
     for ((c_root_ty, root)) in &self.roots {
       if *c_root_ty == root_ty {
@@ -67,6 +65,15 @@ impl<'a> SolveDatabase<'a> {
   pub fn add_root(&mut self, root_ty: RootType, root: NodeHandle) {
     self.roots.push((root_ty, root.clone()));
     self.nodes.push(root.clone());
+  }
+
+  pub fn add_node_handle(&mut self, handle: NodeHandle) -> GetResult {
+    if let Some(node) = self.nodes.iter().find(|n| **n == handle) {
+      GetResult::Existing(node.clone())
+    } else {
+      self.nodes.push(handle.clone());
+      GetResult::Introduced(handle)
+    }
   }
 
   // Returns a Type bound to a name in the user's binding namespace.
@@ -89,13 +96,17 @@ impl<'a> SolveDatabase<'a> {
     }
 
     if let Some(node) = self.db.get_object_mut(name) {
-      let node = node.duplicate();
-      self.name_lookup.push((name, node.clone()));
-      self.nodes.push(node.clone());
-      return Introduced(node);
+      return Introduced(self.add_object(name, node));
     }
 
     NotFound
+  }
+
+  pub fn add_object(&mut self, name: IString, node: NodeHandle) -> NodeHandle {
+    let node = node.duplicate();
+    self.name_lookup.push((name, node.clone()));
+    self.nodes.push(node.clone());
+    node
   }
 
   // Returns a type generated from an inline definition. May return a virtual type.

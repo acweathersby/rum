@@ -31,12 +31,15 @@ IMPORT ../common/comment as cmt
 <> module_member 
 
   > bound_type
-  | rt::routine 
   | scope
 
 <> bound_type 
 
-  > prim::var^name "=>" ty::type^ty
+  > prim::var^name "=>" ty::complex_type^ty
+
+    :ast { t_RawBoundType, name, ty, tok }
+
+  | prim::var^name "=>" rt::routine_definition^ty
 
     :ast { t_RawBoundType, name, ty, tok }
 

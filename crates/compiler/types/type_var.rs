@@ -18,6 +18,7 @@ pub enum NodeConstraint {
   /// Used to bind a variable to a type that is not defined in the current
   /// routine scope.
   GlobalNameReference(Type, IString, Token, NodeUsage),
+  GlobalMemberReference(Type, IString, Token, NodeUsage),
   OpToTy(OpId, Type),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
