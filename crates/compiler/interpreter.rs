@@ -1,3 +1,5 @@
+use std::{collections::HashMap, thread::Scope};
+
 use crate::{
   compiler::{add_module, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS, ROUTINE_ID},
   types::*,
@@ -47,14 +49,14 @@ macro_rules! cmp_match {
   };
 }
 
-pub fn get_agg_size(super_node: &RootNode, heaps: &mut HeapList) -> u64 {
+pub fn get_agg_size(super_node: &RootNode, ctx: &mut RuntimeSystem) -> u64 {
   if super_node.nodes[0].inputs.len() > 0 {
     return 0;
   }
 
   let mut scratch = Vec::new();
 
-  interpret_node(super_node, &[], &mut scratch, 0, heaps);
+  interpret_node(super_node, &[], &mut scratch, 0, ctx);
 
   for (op_id, var_id) in super_node.nodes[0].outputs.iter() {
     match var_id {
@@ -68,9 +70,9 @@ pub fn get_agg_size(super_node: &RootNode, heaps: &mut HeapList) -> u64 {
   0
 }
 
-pub fn get_agg_offset(super_node: &RootNode, name: IString, heaps: &mut HeapList) -> u64 {
+pub fn get_agg_offset(super_node: &RootNode, name: IString, ctx: &mut RuntimeSystem) -> u64 {
   let mut scratch = Vec::new();
-  interpret_node(super_node, &[], &mut scratch, 0, heaps);
+  interpret_node(super_node, &[], &mut scratch, 0, ctx);
 
   for (op_id, var_id) in super_node.nodes[0].outputs.iter() {
     match var_id {
@@ -84,7 +86,26 @@ pub fn get_agg_offset(super_node: &RootNode, name: IString, heaps: &mut HeapList
   0
 }
 
-pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(Value, u32)>, offset: usize, heaps: &mut HeapList) -> Value {
+pub fn interpret(node: NodeHandle, args: &[Value], db: &SolveDatabase) -> Value {
+  if node.get().unwrap().solve_state() == SolveState::Solved {
+    let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: Type::Undefined };
+
+    if let GetResult::Existing(allocate_interface) = ctx.db.get_type_by_name("AllocatorI".intern()) {
+      if let GetResult::Existing(global_heap) = ctx.db.get_type_by_name("__root_allocator__".intern()) {
+        ctx.allocator_interface = Type::Complex(0, allocate_interface);
+        let global_heap_stack = ctx.heaps.entry("global".intern()).or_default();
+        global_heap_stack.push(Value::Ptr(std::ptr::null_mut(), Type::Complex(0, global_heap)));
+      }
+    }
+
+    let mut scratch = Default::default();
+    interpret_node(node.get().unwrap(), args, &mut scratch, 0, &mut ctx)
+  } else {
+    panic!("test is a template and cannot be directly interpreted {node:?}")
+  }
+}
+
+pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(Value, u32)>, offset: usize, ctx: &mut RuntimeSystem) -> Value {
   let require_scratch_size = super_node.operands.len();
 
   if scratch.len() < offset + require_scratch_size {
@@ -115,7 +136,9 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
     }
   }
 
-  interprete_node(super_node, 0, scratch, offset, offset + require_scratch_size, 0, 1, heaps);
+  let scope = ScopeData { loop_new: 1, loop_old: 0, slice_start: offset, slice_end: offset + require_scratch_size };
+
+  interprete_node(super_node, 0, scratch, ctx, scope);
 
   for (op_id, var_id) in root_node.outputs.iter() {
     match var_id {
@@ -127,23 +150,41 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
   Value::Null
 }
 
+pub struct RuntimeSystem<'a, 'b: 'a> {
+  db:                  &'a SolveDatabase<'b>,
+  heaps:               HashMap<IString, Vec<Value>>,
+  allocator_interface: Type,
+}
+
+#[derive(Clone, Copy)]
+pub struct ScopeData {
+  slice_start: usize,
+  slice_end:   usize,
+  loop_old:    u32,
+  loop_new:    u32,
+}
+
 pub fn interprete_node(
   super_node: &RootNode,
   node_id: usize,
   scratch: &mut Vec<(Value, u32)>,
-  slice_start: usize,
-  slice_end: usize,
-  loop_old: u32,
-  loop_new: u32,
-  heaps: &mut HeapList,
+  ctx: &mut RuntimeSystem,
+  scope_data: ScopeData,
+  //slice_start: usize,
+  //slice_end: usize,
+  //loop_old: u32,
+  //loop_new: u32,
+  //heaps: &mut HeapList,
 ) {
+  let ScopeData { slice_start, slice_end, loop_old, loop_new } = scope_data;
+
   let scratch_slice = &mut scratch[slice_start..slice_end];
   let node = &super_node.nodes[node_id];
 
   for (op_id, var_id) in node.outputs.iter() {
     match var_id {
       _ | VarId::Return => {
-        interprete_op(super_node, *op_id, scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+        interprete_op(super_node, *op_id, scratch, ctx, scope_data);
       }
       _ => unreachable!(),
     }
@@ -154,18 +195,22 @@ pub fn interprete_op(
   super_node: &RootNode,
   op: OpId,
   scratch: &mut Vec<(Value, u32)>,
-  slice_start: usize,
-  slice_end: usize,
-  loop_old: u32,
-  loop_new: u32,
-  heaps: &mut HeapList,
+  ctx: &mut RuntimeSystem,
+  scope_data: ScopeData,
+  //slice_start: usize,
+  //slice_end: usize,
+  //loop_old: u32,
+  //loop_new: u32,
+  //heaps: &mut HeapList,
 ) -> Value {
+  let ScopeData { slice_start, slice_end, loop_old, loop_new } = scope_data;
   let scratch_index = slice_start + op.usize();
 
-  dbg!(op);
   let base_ty = &super_node.types[op.usize()];
 
   let ty = if let Some(offset) = base_ty.generic_id() { &super_node.type_vars[offset].ty } else { base_ty };
+
+  dbg!((op, super_node.operands.get(op.usize())));
 
   if scratch[scratch_index] == (Value::Uninitialized, 0) || scratch[scratch_index].1 == loop_old {
     scratch[scratch_index].0 = match &super_node.operands[op.usize()] {
@@ -196,10 +241,10 @@ pub fn interprete_op(
         },
         ty => panic!("unexpected node type {ty}"),
       },
-      Operation::OutputPort(..) => interprete_port(super_node, op, scratch, slice_start, slice_end, loop_old, loop_new, heaps),
+      Operation::OutputPort(..) => interprete_port(super_node, op, scratch, ctx, scope_data),
       Operation::Op { op_name, operands } => match *op_name {
         "CONVERT" => {
-          let val = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 
           match val {
             Value::i32(v) => match ty {
@@ -230,9 +275,9 @@ pub fn interprete_op(
           }
         }
         "POISON" => Value::Ptr(0 as *mut _, ty_poison),
-        "DECL" => interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps),
+        "DECL" => interprete_op(super_node, operands[0], scratch, ctx, scope_data),
         "ADD" | "SUB" | "DIV" | "MUL" => {
-          let (l_val, r_val) = interprete_binary_args(super_node, op, operands, scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          let (l_val, r_val) = interprete_binary_args(super_node, op, operands, scratch, ctx, scope_data);
           match *op_name {
             "ADD" => op_match!(+, l_val, r_val),
             "SUB" => op_match!(-, l_val, r_val),
@@ -244,7 +289,7 @@ pub fn interprete_op(
           }
         }
         "EQ" | "NEQ" | "GR" | "LS" | "GE" | "LE" => {
-          let (l_val, r_val) = interprete_binary_cmp_args(super_node, op, operands, scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          let (l_val, r_val) = interprete_binary_cmp_args(super_node, op, operands, scratch, ctx, scope_data);
           match *op_name {
             "GE" => cmp_match!(>=, l_val, r_val),
             "LE" => cmp_match!(<=, l_val, r_val),
@@ -255,19 +300,37 @@ pub fn interprete_op(
             _ => Value::Null,
           }
         }
+
+        "MAPS_TO" => {
+          let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+          match l {
+            Value::Ptr(ptr, _) => Value::Ptr(ptr, ty.clone()),
+            _ => unreachable!("MAPS_TO can only be applied to complex types"),
+          }
+        }
+
+        "TY_EQ" => {
+          let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+          let r = super_node.get_base_ty(super_node.types[operands[1].usize()].clone());
+
+          match l {
+            Value::Ptr(_, ty) => Value::Bool(ty == r),
+            _ => Value::Bool(false),
+          }
+        }
         "SEL" => {
-          if Value::Bool(true) == interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps) {
-            interprete_op(super_node, operands[1], scratch, slice_start, slice_end, loop_old, loop_new, heaps)
+          if Value::Bool(true) == interprete_op(super_node, operands[0], scratch, ctx, scope_data) {
+            interprete_op(super_node, operands[1], scratch, ctx, scope_data)
           } else {
             Value::Null
           }
         }
         "PROP" => {
           // Calculates the offset of the current type.
-          let curr_offset = interprete_op(super_node, operands[1], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          let curr_offset = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
           dbg!(super_node);
-          let size = get_ty_size(ty.clone(), heaps);
+          let size = get_ty_size(ty.clone(), ctx);
 
           if size == 0 {
             Value::u64(curr_offset)
@@ -278,9 +341,9 @@ pub fn interprete_op(
         }
         "CALC_AGG_SIZE" => {
           // Calculates the new offset
-          let curr_offset = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          let curr_offset = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
-          let size = get_ty_size(super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone(), heaps);
+          let size = get_ty_size(super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone(), ctx);
 
           if size == 0 {
             Value::u64(curr_offset)
@@ -291,7 +354,7 @@ pub fn interprete_op(
         }
         "AGG_DECL" => {
           // Calculate context side effects
-          interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 
           // Create heap object
           match &ty {
@@ -301,9 +364,9 @@ pub fn interprete_op(
 
               match new_heap {
                 Type::Heap(new_heap) => {
-                  let size = get_agg_size(node, heaps);
+                  let size = get_agg_size(node, ctx);
 
-                  let heap_ctx_ptr = allocate_from_heap(heaps, new_heap, size);
+                  let heap_ctx_ptr = allocate_from_heap(ctx, new_heap, size);
 
                   Value::Ptr(heap_ctx_ptr as _, ty.clone())
                 }
@@ -317,12 +380,28 @@ pub fn interprete_op(
           let parent_heap_id = operands[1].usize();
           let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty.clone();
           let par_heap = super_node.type_vars[parent_heap_id].ty.clone();
+
           match (par_heap, new_heap) {
             (Type::Heap(par_heap), Type::Heap(new_name)) => match ty {
               Type::Complex(_, heap_context_node) => {
-                let size = get_agg_size(heap_context_node.get().unwrap(), heaps);
-                let heap_ctx_ptr = allocate_from_heap(heaps, par_heap, size);
-                heaps.push((new_name, heap_context_node.clone(), heap_ctx_ptr, ty.clone()));
+                if let Some(global) = ctx.heaps.get(&"global".to_token()) {
+                  let global_root = global[0].clone();
+
+                  let par_heap = ctx.heaps.entry(par_heap).or_default();
+
+                  if par_heap.is_empty() {
+                    par_heap.push(global_root);
+                  }
+
+                  let par = par_heap.last().unwrap();
+                  let target_heap = ctx.heaps.entry(new_name).or_default();
+
+                  // Todo, instantiate heap instance
+
+                  target_heap.push(Value::Ptr(std::ptr::null_mut(), Type::Complex(0, heap_context_node.clone())));
+                } else {
+                  panic!("Heap system is not setup")
+                }
               }
               _ => {}
             },
@@ -337,9 +416,9 @@ pub fn interprete_op(
             _ => unreachable!(),
           };
 
-          match interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps) {
+          match interprete_op(super_node, operands[0], scratch, ctx, scope_data) {
             Value::Ptr(ptr, Type::Complex(_, cmplx_ty)) => {
-              let offset = get_agg_offset(cmplx_ty.get().unwrap(), name, heaps);
+              let offset = get_agg_offset(cmplx_ty.get().unwrap(), name, ctx);
               dbg!((op, name, offset));
               Value::Ptr(unsafe { ptr.offset(offset as isize) }, ty.clone())
             }
@@ -347,7 +426,7 @@ pub fn interprete_op(
           }
         }
         "LOAD" => {
-          let ptr = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          let ptr = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 
           match ptr {
             Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_u32 => unsafe { Value::u32(*(ptr as *mut u32)) },
@@ -359,10 +438,10 @@ pub fn interprete_op(
         }
         "STORE" => {
           // Calculate context side effects
-          interprete_op(super_node, operands[2], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          interprete_op(super_node, operands[2], scratch, ctx, scope_data);
 
-          let ptr = interprete_op(super_node, operands[0], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
-          let val = interprete_op(super_node, operands[1], scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+          let ptr = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+          let val = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
           match (ptr, val) {
             (Value::Ptr(ptr, Type::Primitive(1, v)), Value::u32(val)) if v == prim_ty_u32 => unsafe { *(ptr as *mut u32) = val },
@@ -383,8 +462,42 @@ pub fn interprete_op(
   scratch[scratch_index].0.clone()
 }
 
-fn allocate_from_heap(heaps: &mut HeapList, heap_name: IString, size: u64) -> *mut u8 {
-  dbg!((heap_name, &heaps));
+fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: IString, size: u64) -> *mut u8 {
+  if let Some(target_heap) = ctx.heaps.get(&heap_name).or_else(|| ctx.heaps.get(&"global".to_token())) {
+    let heap = target_heap.last().unwrap();
+    let par_heap = if target_heap.len() > 1 { &target_heap[target_heap.len() - 2] } else { heap };
+    let allocator_i = ctx.allocator_interface.clone();
+
+    let Value::Ptr(_, heap_type) = heap else { panic!("Incorrect heap type stored") };
+
+    let sig = Signature::new(&[(Default::default(), heap_type.clone()), (Default::default(), ty_u64), (Default::default(), allocator_i.clone())], &[(
+      Default::default(),
+      ty_addr,
+    )])
+    .hash();
+
+    if let Some(allocate_method) = ctx
+      .db
+      .interface_instances
+      .get(&allocator_i)
+      .expect("Could not find allocate interface instances")
+      .get(heap_type)
+      .expect("Could not find interface for heap")
+      .get(&sig)
+    {
+      let mut scratch = Vec::new();
+      let address = interpret_node(allocate_method.get().unwrap(), &[heap.clone(), Value::u64(size), par_heap.clone()], &mut scratch, 0, ctx);
+
+      panic!("Handle address {address:?}")
+    } else {
+      panic!("Could not find allocator method")
+    }
+  } else {
+    panic!("Heap system not setup")
+  }
+
+  todo!("Allocate from heap");
+  /*
   if let Some((_, parent_space, ctx_ptr, ty)) = heaps.iter().find(|i| i.0 == heap_name) {
     dbg!(parent_space);
     let node = parent_space.get().unwrap();
@@ -395,7 +508,7 @@ fn allocate_from_heap(heaps: &mut HeapList, heap_name: IString, size: u64) -> *m
           let node = ref_node.get().unwrap();
           let val = Value::Ptr(*ctx_ptr, ty.clone());
 
-          match interpret_node(node, &[val, Value::u64(size)], &mut Vec::new(), 0, heaps) {
+          match interpret_node(node, &[val, Value::u64(size)], &mut Vec::new(), 0, ctx) {
             Value::u64(val) => val as usize as *mut u8,
             _ => unreachable!(),
           }
@@ -412,17 +525,17 @@ fn allocate_from_heap(heaps: &mut HeapList, heap_name: IString, size: u64) -> *m
     let alignment = 8;
     let layout = std::alloc::Layout::array::<u8>(size as usize).expect("Could not create bit field").align_to(alignment).unwrap();
     unsafe { std::alloc::alloc(layout) }
-  }
+  }*/
 }
 
-fn get_ty_size(ty: Type, heaps: &mut HeapList) -> u64 {
+fn get_ty_size(ty: Type, ctx: &mut RuntimeSystem) -> u64 {
   match ty {
     crate::types::ty_u32 => 4,
     crate::types::ty_f32 => 4,
     crate::types::ty_f64 => 8,
     crate::types::ty_u64 => 8,
     crate::types::ty_addr => 8,
-    crate::types::Type::Complex(0, node) => get_agg_size(node.get().unwrap(), heaps),
+    crate::types::Type::Complex(0, node) => get_agg_size(node.get().unwrap(), ctx),
     ty => todo!("Calculate size of {ty}"),
   }
 }
@@ -431,12 +544,15 @@ pub fn interprete_port(
   super_node: &RootNode,
   port_op: OpId,
   scratch: &mut Vec<(Value, u32)>,
-  slice_start: usize,
-  slice_end: usize,
-  loop_old: u32,
-  loop_new: u32,
-  heaps: &mut HeapList,
+  ctx: &mut RuntimeSystem,
+  scope_data: ScopeData,
+  //slice_start: usize,
+  //slice_end: usize,
+  //loop_old: u32,
+  //loop_new: u32,
+  //heaps: &mut HeapList,
 ) -> Value {
+  let ScopeData { slice_start, slice_end, loop_old, loop_new } = scope_data;
   let scratch_index = slice_start + port_op.usize();
   let Operation::OutputPort(host_index, port_inputs) = &super_node.operands[port_op.usize()] else { unreachable!() };
 
@@ -449,7 +565,7 @@ pub fn interprete_port(
         .outputs
         .iter()
         .filter_map(|(op, var_id)| match var_id {
-          VarId::DeletedHeap => Some(interprete_op(super_node, *op, scratch, slice_start, slice_end, loop_old, loop_new, heaps)),
+          VarId::DeletedHeap => Some(interprete_op(super_node, *op, scratch, ctx, scope_data)),
           _ => None,
         })
         .collect::<Vec<_>>();
@@ -459,7 +575,7 @@ pub fn interprete_port(
           continue;
         }
 
-        interprete_op(super_node, *op, scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+        interprete_op(super_node, *op, scratch, ctx, scope_data);
       }
 
       for op in mem_regions.iter().rev() {
@@ -469,15 +585,17 @@ pub fn interprete_port(
     ROUTINE_ID => {
       debug_assert!(port_inputs.len() == 1);
       let (_, op) = port_inputs[0];
-      scratch[scratch_index].0 = interprete_op(super_node, op, scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+      scratch[scratch_index].0 = interprete_op(super_node, op, scratch, ctx, scope_data);
       scratch[scratch_index].1 = loop_new;
     }
     LOOP_ID => {
       let (activation_op_id, _) = host_node.outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
       let (output_op_id, _) = host_node.outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
 
-      let mut current_loop_id = loop_new + 1;
-      let mut prev_loop_id = current_loop_id;
+      let mut new_scope = scope_data;
+
+      new_scope.loop_new = loop_new + 1;
+      new_scope.loop_old = new_scope.loop_new;
 
       let mut port_values = vec![Value::Uninitialized; host_node.inputs.len()];
 
@@ -490,13 +608,14 @@ pub fn interprete_port(
           let scratch_index = phi_op.usize() + slice_start;
 
           if let Operation::OutputPort(_, ports) = &super_node.operands[phi_op.usize()] {
-            scratch[scratch_index] =
-              (interprete_op(super_node, ports[0].1, scratch, slice_start, slice_end, current_loop_id, current_loop_id, heaps), current_loop_id);
+            let mut temp_scope = new_scope;
+            temp_scope.loop_old = temp_scope.loop_new;
+            scratch[scratch_index] = (interprete_op(super_node, ports[0].1, scratch, ctx, temp_scope), temp_scope.loop_new);
           }
         }
 
         loop {
-          match interprete_op(super_node, *activation_op_id, scratch, slice_start, slice_end, prev_loop_id, current_loop_id, heaps) {
+          match interprete_op(super_node, *activation_op_id, scratch, ctx, new_scope) {
             Value::u32(index) => {
               for (val, (phi_op, _)) in host_node.inputs.iter().enumerate() {
                 if let Operation::OutputPort(_, ports) = &super_node.operands[phi_op.usize()] {
@@ -512,7 +631,7 @@ pub fn interprete_port(
 
               for (val, (phi_op, _)) in host_node.inputs.iter().enumerate() {
                 let scratch_index = phi_op.usize() + slice_start;
-                scratch[scratch_index] = (port_values[val].clone(), current_loop_id);
+                scratch[scratch_index] = (port_values[val].clone(), new_scope.loop_new);
                 port_values[val] = Value::Uninitialized;
               }
 
@@ -526,8 +645,8 @@ pub fn interprete_port(
               //panic!("AAA");
               //break;
 
-              prev_loop_id = current_loop_id;
-              current_loop_id = current_loop_id + 1;
+              new_scope.loop_old = new_scope.loop_new;
+              new_scope.loop_new = new_scope.loop_new + 1;
             }
             _ => break,
           }
@@ -561,7 +680,7 @@ pub fn interprete_port(
           scratch[activation_index] = (Value::Null, loop_new);
 
           for (_, op) in activator.iter() {
-            match interprete_op(super_node, *op, scratch, slice_start, slice_end, loop_old, loop_new, heaps) {
+            match interprete_op(super_node, *op, scratch, ctx, scope_data) {
               val @ Value::u32(index) => {
                 scratch[activation_index] = (val, loop_new);
 
@@ -570,12 +689,11 @@ pub fn interprete_port(
 
                   //debug_assert_eq!(super_node.nodes[node_id as usize].type_str, CLAUSE_ID, "{op}");
 
-                  interprete_node(super_node, node_id as usize, scratch, slice_start, slice_end, loop_old, loop_new, heaps);
+                  interprete_node(super_node, node_id as usize, scratch, ctx, scope_data);
 
-                  scratch[value_index] = (interprete_op(super_node, op, scratch, slice_start, slice_end, loop_old, loop_new, heaps), loop_new);
+                  scratch[value_index] = (interprete_op(super_node, op, scratch, ctx, scope_data), loop_new);
 
                   print_scratch(scratch, slice_start, slice_end);
-                  dbg!(&scratch[value_index]);
                 }
 
                 break;
@@ -602,14 +720,14 @@ pub fn interprete_port(
                   .inputs
                   .iter()
                   .filter_map(|n| match n.1 {
-                    VarId::Param(_) => Some(interprete_op(super_node, n.0, scratch, slice_start, slice_end, loop_old, loop_new, heaps)),
+                    VarId::Param(_) => Some(interprete_op(super_node, n.0, scratch, ctx, scope_data)),
                     _ => None,
                   })
                   .collect::<Vec<_>>();
 
                 let ret = {
                   let mut scratch = Vec::new();
-                  interpret_node(call_target, args.as_slice(), &mut scratch, 0, heaps)
+                  interpret_node(call_target, args.as_slice(), &mut scratch, 0, ctx)
                 };
 
                 scratch[ret_val_index] = (ret, loop_new);
@@ -648,16 +766,18 @@ fn interprete_binary_args(
   op: OpId,
   operands: &[OpId; 3],
   scratch: &mut Vec<(Value, u32)>,
-  slice_off: usize,
-  slice_end: usize,
-  loop_old: u32,
-  loop_new: u32,
-  heaps: &mut HeapList,
+  ctx: &mut RuntimeSystem,
+  scope_data: ScopeData,
+  //slice_start: usize,
+  //slice_end: usize,
+  //loop_old: u32,
+  //loop_new: u32,
+  //heaps: &mut HeapList,
 ) -> (Value, Value) {
   let ty = super_node.type_vars[super_node.types[op.usize()].generic_id().unwrap()].ty.clone();
 
-  let l = interprete_op(super_node, operands[0], scratch, slice_off, slice_end, loop_old, loop_new, heaps);
-  let r = interprete_op(super_node, operands[1], scratch, slice_off, slice_end, loop_old, loop_new, heaps);
+  let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+  let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
   let l_val = convert_primitive_types(ty.to_primitive().unwrap(), l);
   let r_val: Value = convert_primitive_types(ty.to_primitive().unwrap(), r);
@@ -670,17 +790,19 @@ fn interprete_binary_cmp_args(
   op: OpId,
   operands: &[OpId; 3],
   scratch: &mut Vec<(Value, u32)>,
-  slice_off: usize,
-  slice_end: usize,
-  loop_old: u32,
-  loop_new: u32,
-  heaps: &mut HeapList,
+  ctx: &mut RuntimeSystem,
+  scope_data: ScopeData,
+  //slice_start: usize,
+  //slice_end: usize,
+  //loop_old: u32,
+  //loop_new: u32,
+  //heaps: &mut HeapList,
 ) -> (Value, Value) {
   dbg!((op, super_node));
   let ty = super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone();
 
-  let l = interprete_op(super_node, operands[0], scratch, slice_off, slice_end, loop_old, loop_new, heaps);
-  let r = interprete_op(super_node, operands[1], scratch, slice_off, slice_end, loop_old, loop_new, heaps);
+  let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+  let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
   let l_val = convert_primitive_types(ty.to_primitive().unwrap(), l);
   let r_val: Value = convert_primitive_types(ty.to_primitive().unwrap(), r);

@@ -1,4 +1,4 @@
-use super::{CallLookup, RootNode};
+use super::RootNode;
 use crate::{
   compiler::{compile_struct, OPS},
   solver::{solve, GlobalConstraint},
@@ -15,7 +15,6 @@ pub struct DatabaseCore {
   pub parent:  *const Database,
   pub ops:     Vec<Arc<core_lang::parser::ast::Op>>,
   pub objects: Vec<(IString, NodeHandle)>,
-  pub scopes:  BTreeMap<IString, BTreeMap<IString, NodeHandle>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -28,11 +27,12 @@ pub enum RootType {
 #[derive(Debug)]
 pub struct SolveDatabase<'a> {
   // Used to lookup
-  pub db:          &'a Database,
-  pub roots:       Vec<(RootType, NodeHandle)>,
-  pub nodes:       Vec<NodeHandle>,
-  pub sig_lookup:  Vec<(u64, NodeHandle)>,
-  pub name_lookup: Vec<(IString, NodeHandle)>,
+  pub db:                  &'a Database,
+  pub roots:               Vec<(RootType, NodeHandle)>,
+  pub nodes:               Vec<NodeHandle>,
+  pub sig_lookup:          Vec<(u64, NodeHandle)>,
+  pub name_lookup:         Vec<(IString, NodeHandle)>,
+  pub interface_instances: BTreeMap<Type, BTreeMap<Type, BTreeMap<u64, NodeHandle>>>,
 }
 
 pub enum GetResult {
@@ -49,6 +49,7 @@ impl<'a> SolveDatabase<'a> {
       sig_lookup: Default::default(),
       name_lookup: Default::default(),
       nodes: Default::default(),
+      interface_instances: Default::default(),
     }
   }
 
@@ -76,8 +77,29 @@ impl<'a> SolveDatabase<'a> {
     }
   }
 
+  pub fn get_type_by_name(&self, name: IString) -> GetResult {
+    use GetResult::*;
+
+    for ((root_ty, root)) in &self.roots {
+      match root_ty {
+        RootType::ExecutableEntry(root_name) => {
+          if *root_name == name {
+            return Existing(root.clone());
+          }
+        }
+        _ => unreachable!(),
+      }
+    }
+
+    if let Some(node) = self.name_lookup.iter().find(|(n, _)| *n == name) {
+      return Existing(node.1.clone());
+    }
+
+    NotFound
+  }
+
   // Returns a Type bound to a name in the user's binding namespace.
-  pub fn get_type_by_name(&mut self, name: IString) -> GetResult {
+  pub fn get_type_by_name_mut(&mut self, name: IString) -> GetResult {
     use GetResult::*;
 
     for ((root_ty, root)) in &self.roots {
@@ -125,12 +147,7 @@ pub struct Database(pub std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
 
 impl Default for Database {
   fn default() -> Self {
-    let mut core = DatabaseCore {
-      ops:     Default::default(),
-      objects: Default::default(),
-      parent:  std::ptr::null(),
-      scopes:  Default::default(),
-    };
+    let mut core = DatabaseCore { ops: Default::default(), objects: Default::default(), parent: std::ptr::null() };
     add_ops_to_db(&mut core, &OPS);
     Self(Arc::new(Mutex::new(core)))
   }
@@ -155,28 +172,6 @@ impl Database {
     let mut db = self.get_mut_ref();
     let obj = node.get().unwrap();
 
-    if let Some(input) = obj.nodes[0].inputs.get(0) {
-      if let Some(var_id) = obj.get_base_ty(obj.types[input.0.usize()].clone()).generic_id() {
-        let var = &obj.type_vars[var_id];
-
-        for constraint in var.attributes.iter() {
-          match constraint {
-            VarAttribute::Global(scope_name, ..) => {
-              let scope = db.scopes.entry(*scope_name).or_default();
-
-              match scope.entry(name) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                  entry.insert(node.clone());
-                }
-                _ => panic!("Scope already declared"),
-              }
-            }
-            _ => {}
-          }
-        }
-      }
-    }
-
     for (binding_name, outgoing) in &db.objects {
       if *binding_name == name {
         //panic!("Incoming {node:?} would replace outgoing node {outgoing:?}");
@@ -184,8 +179,6 @@ impl Database {
     }
 
     db.objects.push((name, node));
-
-    dbg!(&db.scopes);
   }
 
   pub fn get_object_mut_with_sig(&self, obj_name: IString, obj_sig: u64) -> Option<NodeHandle> {

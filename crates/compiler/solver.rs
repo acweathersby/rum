@@ -1,5 +1,5 @@
 use crate::{
-  compiler::{compile_struct, CALL_ID, INTERFACE_ID, MEMORY_REGION_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
+  compiler::{compile_struct, CALL_ID, INTERFACE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
   types::*,
 };
 use radlr_rust_runtime::types::BlameColor;
@@ -8,7 +8,7 @@ use rum_lang::{
   parser::script_parser::{parse_type, Params, Property, Root},
 };
 use std::{
-  collections::{HashMap, VecDeque},
+  collections::{BTreeMap, HashMap, VecDeque},
   hash::Hash,
   usize,
 };
@@ -24,7 +24,7 @@ pub enum GlobalConstraint {
   ExtractGlobals { node: NodeHandle },
   ResolveObjectConstraints { node: NodeHandle, constraints: Vec<NodeConstraint> },
   ResolveFunction { node: NodeHandle, call_node_id: usize },
-  ResolveMemoryRegion { node: NodeHandle, heap_node_id: usize },
+  ResolveMemoryRegion { routine: NodeHandle, heap_node_id: usize },
   VerifyInterface { target: NodeHandle, interface: NodeHandle },
 }
 
@@ -106,7 +106,7 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
 
   // Add __root_allocator__ if it exists;
 
-  match db.get_type_by_name(entry) {
+  match db.get_type_by_name_mut(entry) {
     GetResult::Introduced(node) => {
       db.add_root(RootType::ExecutableEntry(entry), node);
     }
@@ -120,8 +120,10 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
     let mut constraint_queue: VecDeque<GlobalConstraint> = VecDeque::with_capacity(128);
     let mut next_stage_constraints = vec![];
 
-    if let Some(node) = get_node(db, "__root_allocator__".intern(), &mut constraint_queue) {
-      solve_heap(db, "__root_allocator__".intern(), node, &mut constraint_queue);
+    if let Some(root_allocator) = get_node(db, "__root_allocator__".intern(), &mut constraint_queue) {
+      if let Some(allocator_i) = get_node(db, "AllocatorI".intern(), &mut constraint_queue) {
+        constraint_queue.push_back(GlobalConstraint::VerifyInterface { target: root_allocator, interface: allocator_i });
+      }
     }
 
     for index in 0..db.roots.len() {
@@ -131,39 +133,124 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
 
     let mut resolve_stage = 0;
     loop {
-      while let Some(constraint) = constraint_queue.pop_front() {
+      'outer: while let Some(constraint) = constraint_queue.pop_front() {
         match &constraint {
           GlobalConstraint::VerifyInterface { target, interface } => {
-            dbg!((target, interface));
-
             if target.get_type() != STRUCT_ID {
               panic!("Interfaces can only be enforced on struct types");
             }
 
+            let target_ty = Type::Complex(0, target.clone());
+            let interface_ty = Type::Complex(0, interface.clone());
+
+            if db.interface_instances.get(&interface_ty).is_some_and(|d| d.get(&target_ty).is_some()) {
+              continue;
+            }
+
             let interface_node = interface.get().unwrap();
             let target_node = target.get().unwrap();
+
+            let mut interface_methods = BTreeMap::new();
 
             for (op, interface_param_id) in interface_node.nodes[0].outputs.iter().filter(|(_, var)| matches!(var, VarId::Name(_))) {
               let gen_ty = &interface_node.types[op.usize()];
               let ty_var_index = gen_ty.generic_id().unwrap();
               let ty_var = &interface_node.type_vars[ty_var_index];
               let ty = &ty_var.ty;
+              let VarId::Name(param_name) = interface_param_id else { unreachable!() };
 
               match ty {
-                Type::Complex(_, v) => {
-                  if v.get_type() == ROUTINE_SIGNATURE_ID {
-                    if let VarId::Name(method_name) = interface_param_id {
-                      // Pull in and verify any method that matches the criteria of 
+                Type::Complex(_, method_interface) => {
+                  if method_interface.get_type() == ROUTINE_SIGNATURE_ID {
+                    // Pull in and verify any method that matches the criteria of
+                    let rdb = db.db.get_ref();
+
+                    let mut have_match = false;
+
+                    let i_method_sig = get_signature(method_interface.get().unwrap());
+
+                    'method_lookup: for (_, method_candidate) in rdb.objects.iter().filter(|(name, node)| name == param_name && node.get_type() == ROUTINE_ID) {
+                      match db.add_node_handle(method_candidate.clone()) {
+                        GetResult::Introduced(node) => {
+                          constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
+                          next_stage_constraints.push(constraint);
+                          continue 'outer;
+                        }
+                        _ => {}
+                      }
+
+                      let candidate_sig = get_signature(method_candidate.get().unwrap());
+                      let mut score = 0;
+
+                      if candidate_sig.inputs.len() == i_method_sig.inputs.len() && candidate_sig.outputs.len() == i_method_sig.outputs.len() {
+                        for (_index, ((_, candidate_ty), (_, i_method_ty))) in candidate_sig
+                          .inputs
+                          .iter()
+                          .zip(i_method_sig.inputs.iter())
+                          .chain(candidate_sig.outputs.iter().zip(i_method_sig.outputs.iter()))
+                          .enumerate()
+                        {
+                          if candidate_ty != i_method_ty {
+                            match (candidate_ty.is_generic(), i_method_ty.is_generic()) {
+                              (true, true) => {
+                                continue 'method_lookup;
+                                panic!("open types {candidate_ty}, {i_method_ty}")
+                              }
+                              (true, false) => {
+                                score += 100;
+                              }
+                              (false, false) => {
+                                // Case where the input type supplants the Interface placeholder
+                                if candidate_ty.clone() == Type::Complex(0, target.clone()) && i_method_ty.clone() == Type::Complex(0, interface.clone()) {
+                                  score += 50;
+                                  // Valid
+                                } else {
+                                  continue 'method_lookup;
+                                  // two incompatible types
+                                  panic!("incompatible types \n{candidate_ty}:{candidate_sig:?}, \n{i_method_ty}:{i_method_sig:?}")
+                                }
+                              }
+                              (false, true) => {
+                                panic!("Interface methods should not have undefined parameters")
+                              }
+                            }
+                          }
+                        }
+                      } else {
+                        continue 'method_lookup;
+                        panic!("Mismatched params \ncandidate: {candidate_sig:?}  \nmethod:{i_method_sig:?}\n")
+                      }
+
+                      have_match = true;
+                      interface_methods.insert(candidate_sig.hash(), method_candidate.clone());
+                    }
+
+                    if !have_match {
+                      panic!("No method exists that is compatible with this type  {param_name} => {method_interface:?}")
+                    } else {
+                      // Successfully navigated this interface method. Ideally, we have 1 or more candidates, and select for
+                      // the most matched candidate, which depends on factors such as the number of generics in the signature,
+                      // and the compatibility of primitive types.
                     }
                   } else {
-                    panic!("Interfaces only support primitive and function signature member types")
+                    panic!(
+                      "Interfaces only support primitive and function signature member types, this type is incompatible {} => {}",
+                      method_interface.get_type(),
+                      ty.clone()
+                    )
                   }
                 }
                 ty @ Type::Primitive(..) => {
-                  if let Some((obj, id)) = target_node.nodes[0].outputs.iter().find(|(_, v)| *v == *interface_param_id) {
-                    todo!("Could not ")
+                  if let Some((op, id)) = target_node.nodes[0].outputs.iter().find(|(_, v)| *v == *interface_param_id) {
+                    let struct_ty = target_node.get_base_ty(target_node.types[op.usize()].clone());
+
+                    if struct_ty == ty.clone() {
+                      // Alls good in this path.
+                    } else {
+                      panic!("Struct's member {param_name} of ty {struct_ty} does not match the interface type requirement of {ty}")
+                    }
                   } else {
-                    panic!("Expected interface implementation to contain a member {interface_param_id} of ty ")
+                    panic!("Expected interface implementation to contain a member {interface_param_id} of {ty} ")
                   }
                 }
                 Type::Generic { .. } => panic!("Generic members are invalid in an interface context"),
@@ -173,11 +260,11 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
               println!("got {interface_param_id}  => {ty}")
             }
 
-            todo!("Verify this!");
+            let entries = db.interface_instances.entry(Type::Complex(0, interface.clone())).or_default();
+            entries.insert(Type::Complex(0, target.clone()), interface_methods);
+            // Reached a verified point. We should add a verification stamp to the target type to avoid repeating this work
           }
           GlobalConstraint::ResolveFunction { node: caller_node, call_node_id } => {
-            dbg!(caller_node);
-
             if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. }) = caller_node.get_mut() {
               let call_node = &nodes[*call_node_id];
 
@@ -191,140 +278,186 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                 panic!("Call node defined without CallRef name");
               };
 
-              let mut callee_node = match db.get_type_by_name(function_name) {
-                GetResult::Introduced(node) => {
-                  constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
-                  next_stage_constraints.push(constraint);
-                  continue;
+              if function_name == "__malloc__".intern() {
+                panic!("AAA");
+              }
+
+              // Pull in and verify any method that matches the criteria of
+              let rdb = db.db.get_ref();
+
+              'method_lookup: for (_, callee_node) in rdb.objects.iter().filter(|(name, node)| *name == function_name && node.get_type() == ROUTINE_ID) {
+                let mut callee_node = callee_node.clone();
+
+                match db.add_node_handle(callee_node.clone()) {
+                  GetResult::Introduced(node) => {
+                    constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
+                    next_stage_constraints.push(constraint);
+                    continue 'outer;
+                  }
+                  _ => {}
                 }
-                GetResult::Existing(node) => node,
-                _ => panic!("Could not find node {function_name}"),
-              };
 
-              dbg!(&callee_node);
+                dbg!(&callee_node);
 
-              let callee_sig = get_signature(callee_node.get().unwrap());
+                let callee_sig = get_signature(callee_node.get().unwrap());
 
-              // Build the signature
-              let caller_sig = Signature::new(
-                &call_node
-                  .inputs
-                  .iter()
-                  .filter_map(|(op, i)| match i {
-                    VarId::Param(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
-                    _ => None,
-                  })
-                  .collect::<Vec<_>>(),
-                &call_node
-                  .outputs
-                  .iter()
-                  .filter_map(|(op, i)| match i {
-                    VarId::Return => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
-                    _ => None,
-                  })
-                  .collect::<Vec<_>>(),
-              );
+                // Build the signature
+                let caller_sig = Signature::new(
+                  &call_node
+                    .inputs
+                    .iter()
+                    .filter_map(|(op, i)| match i {
+                      VarId::Param(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
+                      _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                  &call_node
+                    .outputs
+                    .iter()
+                    .filter_map(|(op, i)| match i {
+                      VarId::Return => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
+                      _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                );
 
-              // Comparing the two
-              let mut caller_constraints = vec![];
-              let mut callee_constraints = vec![];
+                // Comparing the two
+                let mut caller_constraints = vec![];
+                let mut callee_constraints = vec![];
 
-              if callee_sig.inputs.len() == caller_sig.inputs.len() && callee_sig.outputs.len() == caller_sig.outputs.len() {
-                for ((callee_op, callee_ty), (_, caller_ty)) in
-                  callee_sig.inputs.iter().zip(caller_sig.inputs.iter()).chain(callee_sig.outputs.iter().zip(caller_sig.outputs.iter()))
-                {
-                  if callee_ty != caller_ty {
-                    match (callee_ty.is_generic(), caller_ty.is_generic()) {
-                      (true, true) => {
-                        panic!("open types {callee_ty}, {caller_ty}")
-                      }
-                      (false, true) => {
-                        caller_constraints.push(NodeConstraint::GenTyToTy(caller_ty.clone(), callee_ty.clone()));
-                      }
-                      (true, false) => {
-                        callee_constraints.push(NodeConstraint::GenTyToTy(callee_ty.clone(), caller_ty.clone()));
-                      }
-                      (false, false) => {
-                        // Check for an interface type.
-
-                        if let Type::Complex(_, interface_node) = callee_ty {
-                          if interface_node.get_type() == INTERFACE_ID {
-                            // Do some magic to handle the interface type. For now, just duplicate node and reset the
-                            // node's input type.
-                            let new_type = callee_node.duplicate();
-                            callee_node = new_type;
-
-                            match db.add_node_handle(callee_node.clone()) {
-                              GetResult::Existing(..) => unreachable!(),
-                              _ => {}
-                            }
-
-                            {
-                              // Reset the type
-                              let new_type = callee_node.get_mut().unwrap();
-                              let index = new_type.types[callee_op.usize()].generic_id().unwrap();
-                              new_type.type_vars[index].ty = Type::generic(index);
-                              callee_constraints.push(NodeConstraint::GenTyToTy(Type::generic(index), caller_ty.clone()));
-
-                              let Type::Complex(_, caller_node) = caller_ty.clone() else { unreachable!() };
-                              constraint_queue
-                                .push_back(GlobalConstraint::VerifyInterface { target: caller_node.clone(), interface: interface_node.clone() });
-                            }
-
-                            continue;
-                          }
+                if callee_sig.inputs.len() == caller_sig.inputs.len() && callee_sig.outputs.len() == caller_sig.outputs.len() {
+                  for ((callee_op, callee_ty), (_, caller_ty)) in
+                    callee_sig.inputs.iter().zip(caller_sig.inputs.iter()).chain(callee_sig.outputs.iter().zip(caller_sig.outputs.iter()))
+                  {
+                    if callee_ty != caller_ty {
+                      match (callee_ty.is_generic(), caller_ty.is_generic()) {
+                        (true, true) => {
+                          continue 'method_lookup;
+                          panic!("open types {callee_ty}, {caller_ty}")
                         }
+                        (false, true) => {
+                          caller_constraints.push(NodeConstraint::GenTyToTy(caller_ty.clone(), callee_ty.clone()));
+                        }
+                        (true, false) => {
+                          callee_constraints.push(NodeConstraint::GenTyToTy(callee_ty.clone(), caller_ty.clone()));
+                        }
+                        (false, false) => {
+                          // Check for an interface type.
 
-                        // two incompatible types
-                        panic!("incompatible types \n{callee_ty}:{callee_sig:?}, \n{caller_ty}:{caller_sig:?}")
+                          if let Type::Complex(_, interface_node) = callee_ty {
+                            if interface_node.get_type() == INTERFACE_ID {
+                              // Do some magic to handle the interface type. For now, just duplicate node and reset the
+                              // node's input type.
+                              let new_type = callee_node.duplicate();
+                              callee_node = new_type;
+
+                              match db.add_node_handle(callee_node.clone()) {
+                                GetResult::Existing(..) => unreachable!(),
+                                _ => {}
+                              }
+
+                              {
+                                // Reset the type
+                                let new_type = callee_node.get_mut().unwrap();
+                                let index = new_type.types[callee_op.usize()].generic_id().unwrap();
+                                new_type.type_vars[index].ty = Type::generic(index);
+                                callee_constraints.push(NodeConstraint::GenTyToTy(Type::generic(index), caller_ty.clone()));
+
+                                let Type::Complex(_, caller_node) = caller_ty.clone() else { unreachable!() };
+                                constraint_queue
+                                  .push_back(GlobalConstraint::VerifyInterface { target: caller_node.clone(), interface: interface_node.clone() });
+                              }
+
+                              continue;
+                            }
+                          }
+
+                          continue 'method_lookup;
+                          // two incompatible types
+                          panic!("incompatible types \n{callee_ty}:{callee_sig:?}, \n{caller_ty}:{caller_sig:?}")
+                        }
                       }
                     }
                   }
+                } else {
+                  continue 'method_lookup;
+                  panic!("Mismatched types \ncaller: {caller_sig:?}, \ncallee: {callee_sig:?} \n{callee_node:?}")
                 }
-              } else {
-                panic!("Mismatched types")
+
+                operands[call_op.usize()] = Operation::CallTarget(callee_node.clone());
+
+                match (caller_constraints.is_empty(), callee_constraints.is_empty()) {
+                  (false, false) => {
+                    constraint_queue
+                      .push_front(GlobalConstraint::ResolveObjectConstraints { node: callee_node.clone(), constraints: callee_constraints.clone() });
+                    constraint_queue
+                      .push_front(GlobalConstraint::ResolveObjectConstraints { node: caller_node.clone(), constraints: caller_constraints.clone() });
+                  }
+                  (true, false) => {
+                    constraint_queue
+                      .push_front(GlobalConstraint::ResolveObjectConstraints { node: callee_node.clone(), constraints: callee_constraints.clone() });
+                  }
+                  (false, true) => {
+                    constraint_queue
+                      .push_front(GlobalConstraint::ResolveObjectConstraints { node: caller_node.clone(), constraints: caller_constraints.clone() });
+                  }
+                  _ => {}
+                }
+
+                continue 'outer;
               }
 
-              operands[call_op.usize()] = Operation::CallTarget(callee_node.clone());
-
-              match (caller_constraints.is_empty(), callee_constraints.is_empty()) {
-                (false, false) => {
-                  constraint_queue
-                    .push_front(GlobalConstraint::ResolveObjectConstraints { node: callee_node.clone(), constraints: callee_constraints.clone() });
-                  constraint_queue
-                    .push_front(GlobalConstraint::ResolveObjectConstraints { node: caller_node.clone(), constraints: caller_constraints.clone() });
-                }
-                (true, false) => {
-                  constraint_queue
-                    .push_front(GlobalConstraint::ResolveObjectConstraints { node: callee_node.clone(), constraints: callee_constraints.clone() });
-                }
-                (false, true) => {
-                  constraint_queue
-                    .push_front(GlobalConstraint::ResolveObjectConstraints { node: caller_node.clone(), constraints: caller_constraints.clone() });
-                }
-                _ => {}
-              }
+              panic!("Could not find suitable method in node {caller_node:?} @ {call_node:?}",)
             }
           }
-
-          GlobalConstraint::ResolveMemoryRegion { node, heap_node_id: heap_call_id } => {
+          GlobalConstraint::ResolveMemoryRegion { routine, heap_node_id } => {
             if resolve_stage == 0 {
               next_stage_constraints.push(constraint);
             } else {
-              todo!("Handle heap resolution")
-              /*        NodeUsage::Heap => match db.get_type_by_name(*node_name) {
-                GetResult::Introduced(heap_node) => {
-                  // Create a heap poly fill.
-
-                  let strct = solve_heap(db, *node_name, heap_node, &mut constraint_queue);
-
-                  intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, strct.clone())));
-
-                  // Assert conformance to AllocatorI
+              // Ensure AllocatorI interface is included in scope.
+              let allocator_interface: NodeHandle = match db.get_type_by_name_mut("AllocatorI".intern()) {
+                GetResult::Existing(node) => node,
+                GetResult::Introduced(node) => {
+                  constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
+                  next_stage_constraints.push(constraint);
+                  continue 'outer;
                 }
-                GetResult::Existing(node) => {}
-                _ => {}
-              }, */
+                GetResult::NotFound => panic!("Could not find AllocatorI interface"),
+              };
+
+              if routine.get_type() != ROUTINE_ID {
+                panic!("Heap regions are only supported in routines!");
+              }
+
+              if allocator_interface.get_type() != INTERFACE_ID {
+                panic!("AllocatorI must be an interface");
+              }
+
+              let routine_node = routine.get().unwrap();
+              let allocator_interface_node = allocator_interface.get().unwrap();
+
+              let routine_inner_node = &routine_node.nodes[*heap_node_id];
+
+              for (op, var_id) in routine_inner_node.outputs.iter() {
+                if let VarId::DeletedHeap = var_id {
+                  match &routine_node.type_vars[routine_node.types[op.usize()].generic_id().unwrap()].ty {
+                    cmplx_ty @ Type::Complex(0, node) => {
+                      if node.get_type() != STRUCT_ID {
+                        panic!("Invalid complex type: {}", node.get_type());
+                      }
+
+                      constraint_queue.push_back(GlobalConstraint::VerifyInterface { target: node.clone(), interface: allocator_interface.clone() });
+
+                      // Construct a heap structure for this type, if one does not exist.
+                      // TODO someway to cache and restore the following process.
+                    }
+                    Type::Generic { .. } => panic!("Expected a resolved type when verifying the REGISTER_HEAP operation"),
+                    ty => panic!("Expected a complex type when verifying the REGISTER_HEAP operation: type invalid {ty}"),
+                  }
+                }
+              }
+
+              dbg!(routine_inner_node);
             }
           }
 
@@ -338,7 +471,7 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                     next_stage_constraints.push(GlobalConstraint::ResolveFunction { node: call_node.clone(), call_node_id: index });
                   }
                   MEMORY_REGION_ID => {
-                    next_stage_constraints.push(GlobalConstraint::ResolveMemoryRegion { node: call_node.clone(), heap_node_id: index });
+                    next_stage_constraints.push(GlobalConstraint::ResolveMemoryRegion { routine: call_node.clone(), heap_node_id: index });
                   }
                   _ => {}
                 }
@@ -356,16 +489,11 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                 }
 
                 for cstr in ty_var.attributes.iter() {
-                  if let VarAttribute::Global(node_name, tok, usage) = cstr {
-                    match usage {
-                      NodeUsage::Complex => {
-                        if let Some(node) = get_node(db, *node_name, &mut constraint_queue) {
-                          intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, node)));
-                        } else {
-                          panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
-                        }
-                      }
-                      _ => {}
+                  if let VarAttribute::Global(node_name, tok) = cstr {
+                    if let Some(node) = get_node(db, *node_name, &mut constraint_queue) {
+                      intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty.clone(), Type::Complex(0, node)));
+                    } else {
+                      panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
                     }
                   }
                 }
@@ -427,40 +555,6 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
   db
 }
 
-fn solve_heap(db: &mut SolveDatabase<'_>, node_name: IString, stct_node: NodeHandle, constraint_queue: &mut VecDeque<GlobalConstraint>) -> NodeHandle {
-  todo!("create heap struct");
-  /*   let mut properties = Vec::new();
-  if let Some(scope) = db.db.get_ref().scopes.get(&node_name) {
-    // Create a struct type containing everything we need for
-
-    let ctx = "ctx".intern();
-    {
-      let allocator_ty = Type::Complex(0, stct_node.clone());
-      properties.push((ctx, allocator_ty));
-      constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: stct_node.clone() });
-    }
-
-    let allocate_fn_name = "allocate".intern();
-
-    if let Some(allocator) = scope.get(&allocate_fn_name) {
-      let allocator_ty = Type::Complex(0, allocator.clone());
-      let ty = parse_type(&format!("{allocate_fn_name}")).unwrap();
-      properties.push((  ty));
-      constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: allocator.clone() });
-    }
-  }
-
-  let (strct, constraints) = compile_struct(&db.db, &properties);
-
-  solve_node_intrinsics(strct.clone(), &constraints);
-
-  let name = (node_name.to_string() + "_allocator_scope").intern();
-
-  db.add_object(name, strct.clone());
-
-  strct */
-}
-
 fn add_node(db: &mut SolveDatabase<'_>, node: NodeHandle, constraint_queue: &mut VecDeque<GlobalConstraint>) -> Option<NodeHandle> {
   match db.add_node_handle(node.clone()) {
     GetResult::Introduced(node) => {
@@ -474,7 +568,7 @@ fn add_node(db: &mut SolveDatabase<'_>, node: NodeHandle, constraint_queue: &mut
 }
 
 fn get_node(db: &mut SolveDatabase<'_>, node_name: IString, constraint_queue: &mut VecDeque<GlobalConstraint>) -> Option<NodeHandle> {
-  match db.get_type_by_name(node_name) {
+  match db.get_type_by_name_mut(node_name) {
     GetResult::Introduced(node) => {
       constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node: node.clone() });
       Some(node)
@@ -655,10 +749,10 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
           panic!("TY_A [{}], TY_B [ {}   {var}", ty_a, ty_b);
         }
       }
-      NodeConstraint::GlobalNameReference(ty, name, tok, usage) => {
+      NodeConstraint::GlobalNameReference(ty, name, tok) => {
         let a_index = ty.generic_id().expect("ty should be generic");
         let var_a = get_root_var_mut(a_index, type_vars);
-        var_a.add(VarAttribute::Global(name, tok, usage));
+        var_a.add(VarAttribute::Global(name, tok));
       }
       NodeConstraint::OpConvertTo { src_op, arg_index, target_ty } => {
         let index = target_ty.generic_id().expect("Left ty should be generic");
@@ -670,6 +764,8 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
         match &mut operand {
           Operation::Op { operands: ops, .. } => {
             let target_op = ops[arg_index];
+
+            dbg!(&node);
 
             match operands[target_op.usize()] {
               Operation::Const(..) => {

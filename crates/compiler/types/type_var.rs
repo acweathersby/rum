@@ -17,8 +17,8 @@ pub struct MemberEntry {
 pub enum NodeConstraint {
   /// Used to bind a variable to a type that is not defined in the current
   /// routine scope.
-  GlobalNameReference(Type, IString, Token, NodeUsage),
-  GlobalMemberReference(Type, IString, Token, NodeUsage),
+  GlobalNameReference(Type, IString, Token),
+  GlobalMemberReference(Type, IString, Token),
   OpToTy(OpId, Type),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
@@ -154,13 +154,6 @@ impl Display for TypeVar {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NodeUsage {
-  Heap,
-  Callable,
-  Complex,
-}
-
 #[derive(Clone, PartialEq, PartialOrd, Ord, Eq)]
 pub enum VarAttribute {
   Agg,
@@ -185,7 +178,7 @@ pub enum VarAttribute {
   /// Node index, node port index, is_output
   Binding(u32, u32, bool),
   ForeignType,
-  Global(IString, Token, NodeUsage),
+  Global(IString, Token),
 }
 
 impl Debug for VarAttribute {

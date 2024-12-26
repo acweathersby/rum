@@ -13,6 +13,7 @@ use rum_lang::{
     expression_Value,
     lifetime_Value,
     loop_statement_group_1_Value,
+    match_condition_Value,
     member_group_Value,
     statement_Value,
     type_Value,
@@ -26,7 +27,7 @@ use rum_lang::{
   Token,
 };
 use std::{
-  collections::{vec_deque, HashMap, VecDeque},
+  collections::{HashMap, VecDeque},
   fmt::Debug,
   sync::Arc,
   u32,
@@ -122,8 +123,10 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
           };
 
           push_node(&mut sig_bp, ROUTINE_SIGNATURE_ID);
-          compile_routine_signature(ty, &mut sig_bp, &mut Default::default());
-
+          if let Some((ret_ty, ret_node)) = compile_routine_signature(ty, &mut sig_bp) {
+            let op = add_op(&mut sig_bp, Operation::Param(VarId::Return, 0), ret_ty, ret_node);
+            sig_bp.super_node.nodes[0].outputs.push((op, VarId::Return));
+          }
           let BuildPack { constraints, .. } = sig_bp;
 
           let handle = NodeHandle::new(super_node);
@@ -140,7 +143,7 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
             add_constraint(bp, NodeConstraint::Deref { ptr_ty: prop_ty.clone(), val_ty: base_ty, mutable: true })
           } else if let base_type_Value::Type_Variable(var) = &ptr_ty.ty {
             let name: IString = var.name.id.intern();
-            add_constraint(bp, NodeConstraint::GlobalNameReference(base_ty.clone(), name, Default::default(), NodeUsage::Complex));
+            add_constraint(bp, NodeConstraint::GlobalNameReference(base_ty.clone(), name, Default::default()));
             add_constraint(bp, NodeConstraint::Deref { ptr_ty: prop_ty.clone(), val_ty: base_ty, mutable: true })
           } else {
             todo!("handle pointer {ptr_ty:#?}");
@@ -148,7 +151,7 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
         }
         type_Value::Type_Variable(var) => {
           let name: IString = var.name.id.intern();
-          add_constraint(bp, NodeConstraint::GlobalNameReference(prop_ty, name, Default::default(), NodeUsage::Complex))
+          add_constraint(bp, NodeConstraint::GlobalNameReference(prop_ty, name, Default::default()))
         }
         _ => {
           if let Some(ty) = get_type(type_val) {
@@ -186,16 +189,17 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
 
   push_node(&mut bp, ROUTINE_ID);
 
-  let mut out_ty = Default::default();
-  compile_routine_signature(&routine.ty, &mut bp, &mut out_ty);
+  let ret_data = compile_routine_signature(&routine.ty, &mut bp);
 
   let (out_op, out_gen_ty) = compile_expression(&routine.expression.expr, &mut bp);
 
   if out_op.is_valid() {
     bp.super_node.nodes[0].outputs.push((out_op, VarId::Return));
 
-    if !out_ty.is_open() {
-      add_constraint(&mut bp, NodeConstraint::GenTyToTy(out_gen_ty, out_ty));
+    if let Some((ret_type, _)) = ret_data {
+      add_constraint(&mut bp, NodeConstraint::GenTyToGenTy(out_gen_ty, ret_type));
+    } else {
+      panic!("Return expression found on routine that does not declare a return")
     }
   }
   let BuildPack { super_node: mut routine, constraints, node_stack, .. } = bp;
@@ -204,21 +208,22 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
     match node_stack[0].vars[*index].id {
       var_id @ VarId::MemCTX => {
         let op = node_stack[0].vars[*index].val_op;
-        routine.nodes[0].outputs.push((op, var_id));
+
+        if op.is_valid() {
+          routine.nodes[0].outputs.push((op, var_id));
+        }
       }
 
       _ => {}
     }
   }
 
-  dbg!((&super_node, &constraints));
-
   let handle = NodeHandle::new(super_node);
 
   (handle, constraints)
 }
 
-fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildPack<'_>, out_ty: &mut Type) {
+fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildPack<'_>) -> Option<(Type, ASTNode<Token>)> {
   for (index, param) in routine_ty.params.params.iter().enumerate() {
     let name = &param.var.id;
 
@@ -235,16 +240,34 @@ fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildP
         add_constraint(bp, NodeConstraint::GenTyToTy(ty, defined_ty));
       }
     } else if let type_Value::Type_Variable(ty_name) = &param.ty.ty {
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone(), NodeUsage::Complex));
+      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone()));
     } else if let type_Value::Type_Pointer(ty_ptr) = &param.ty.ty {
       if let base_type_Value::Type_Variable(ty_name) = &ty_ptr.ty {
-        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone(), NodeUsage::Complex));
+        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone()));
       }
     }
   }
 
   if let Some(return_ty) = &routine_ty.return_type {
-    *out_ty = get_type(&return_ty.ty).unwrap_or_default();
+    let out_ty = add_ty_var(bp).ty.clone();
+
+    let ty: Type = out_ty.clone();
+
+    if let Some(defined_ty) = get_type(&return_ty.ty) {
+      if !defined_ty.is_open() {
+        add_constraint(bp, NodeConstraint::GenTyToTy(ty, defined_ty));
+      }
+    } else if let type_Value::Type_Variable(ty_name) = &return_ty.ty {
+      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), return_ty.tok.clone()));
+    } else if let type_Value::Type_Pointer(ty_ptr) = &return_ty.ty {
+      if let base_type_Value::Type_Variable(ty_name) = &ty_ptr.ty {
+        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), return_ty.tok.clone()));
+      }
+    }
+
+    Some((out_ty, return_ty.clone().into()))
+  } else {
+    None
   }
 }
 
@@ -535,7 +558,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
         let name_op = add_op(bp, Operation::Name(heap_binding), Type::NoUse, binding.allocator_name.clone().into());
 
         let (op, ty) = process_op("REGISTER_HEAP", &[name_op, OpId(parent_heap_id as u32)], bp, binding.clone().into());
-        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), heap_binding, binding.tok.clone(), NodeUsage::Heap));
+        add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), heap_binding, binding.tok.clone()));
 
         let heap_ty = create_node_heap(bp, get_heap_name_from_lt(Some(&binding.binding_name)));
         let heap_id = heap_ty.generic_id().unwrap();
@@ -602,7 +625,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
               update_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
 
               let type_name = type_var.name.id.intern();
-              add_constraint(bp, NodeConstraint::GlobalNameReference(var_ty.clone(), type_name, type_var.name.tok.clone(), NodeUsage::Complex));
+              add_constraint(bp, NodeConstraint::GlobalNameReference(var_ty.clone(), type_name, type_var.name.tok.clone()));
               add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
             }
           }
@@ -810,7 +833,7 @@ fn get_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, local_only
     let ty = add_ty_var(bp).ty.clone();
 
     if !local_only {
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), var_name, source_token.clone(), NodeUsage::Complex));
+      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), var_name, source_token.clone()));
     }
 
     declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
@@ -952,6 +975,8 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
   };
 
   let mut clauses = Vec::new();
+  let mut clauses_input_ty = Vec::new();
+  let mut bound_id = match_.binding_name.as_ref().map(|d| d.id.intern());
 
   let clause_ast = match_.clauses.iter().chain(match_.default_clause.iter()).enumerate();
 
@@ -960,31 +985,53 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
     get_var(bp, VarId::MatchActivation);
 
     let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.to_primitive().unwrap(), index as u32)), activation_ty.clone(), Default::default());
+    let mut known_type = Type::default();
 
     if let Some(expr) = &clause.expr {
-      let (expr_op, _) = compile_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), bp);
-
-      let cmp_op_name = match expr.op.as_str() {
-        ">" => "GR",
-        "<" => "LS",
-        ">=" => "GE",
-        "<=" => "LE",
-        "==" => "EQ",
-        "!=" => "NE",
-        _ => todo!(),
-      };
-
       add_input(bp, input_op.0, VarId::MatchInputExpr);
 
-      let (bool_op, _) = process_op(cmp_op_name, &[input_op.0, expr_op], bp, expr.clone().into());
+      match expr {
+        match_condition_Value::RawExprMatch(expr) => {
+          let (expr_op, _) = compile_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), bp);
 
-      let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
+          let cmp_op_name = match expr.op.as_str() {
+            ">" => "GR",
+            "<" => "LS",
+            ">=" => "GE",
+            "<=" => "LE",
+            "==" => "EQ",
+            "!=" => "NE",
+            _ => todo!(),
+          };
 
-      update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
+          let (bool_op, _) = process_op(cmp_op_name, &[input_op.0, expr_op], bp, expr.clone().into());
+
+          let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
+
+          update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
+        }
+        match_condition_Value::RawTypeMatchExpr(ty_match) => {
+          let name = ty_match.name.id.intern();
+          let ty = add_ty_var(bp).ty.clone();
+          add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), name, ty_match.name.tok.clone()));
+
+          known_type = ty.clone();
+
+          let prop_name_op = add_op(bp, Operation::Name(name), ty, ty_match.name.clone().into());
+
+          let (bool_op, _) = process_op("TY_EQ", &[input_op.0, prop_name_op], bp, ty_match.clone().into());
+
+          let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
+
+          update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
+        }
+        _ => {}
+      }
     } else {
       update_var(bp, VarId::MatchActivation, sel_op, activation_ty.clone());
     }
 
+    clauses_input_ty.push(known_type);
     clauses.push(pop_node(bp, false));
   }
 
@@ -1005,9 +1052,21 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
 
   let mut clauses = Vec::new();
 
-  for (_, clause) in clause_ast {
+  for (index, clause) in clause_ast {
     push_node(bp, CLAUSE_ID);
     get_var(bp, VarId::OutputVal);
+
+    if let Some(name) = bound_id {
+      let known_ty = &clauses_input_ty[index];
+      if known_ty.is_generic() {
+        // Add port for this type
+        let (mapped_op, mapped_ty) = process_op("MAPS_TO", &[input_op.0], bp, Default::default());
+        add_constraint(bp, NodeConstraint::GenTyToGenTy(mapped_ty, known_ty.clone()));
+        update_var(bp, VarId::Name(name), mapped_op, known_ty.clone());
+      } else {
+        update_var(bp, VarId::Name(name), input_op.0, input_op.1.clone());
+      }
+    }
 
     let (op, output_ty) = compile_scope(&clause.scope, bp);
 
@@ -1139,6 +1198,10 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
     let type_ref_name = port.var.name.as_str();
 
     match type_ref_name {
+      "meta" => {
+        op_index += 1;
+        operands[port_index] = inputs[op_index as usize];
+      }
       "read_ctx" => {
         let (op, ty) = get_mem_context(bp);
         operands[port_index] = op;
@@ -1146,13 +1209,11 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
       type_ref_name => {
         op_index += 1;
 
-        let op_index = op_index as usize;
-
-        operands[port_index] = inputs[op_index];
+        operands[port_index] = inputs[op_index as usize];
 
         let op_id = operands[port_index];
 
-        let ty = if op_id.is_valid() { bp.super_node.types[op_id.0 as usize].clone() } else { add_ty_var(bp).ty.clone() };
+        let ty = if op_id.is_valid() { bp.super_node.types[op_id.usize()].clone() } else { add_ty_var(bp).ty.clone() };
 
         match ty_lu.entry(type_ref_name) {
           std::collections::hash_map::Entry::Occupied(d) => {
@@ -1173,7 +1234,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
           }
         }
 
-        add_annotations(port.var.annotations.iter(), &ty_lu, bp, ty, Some(op_index), out_op);
+        add_annotations(port.var.annotations.iter(), &ty_lu, bp, ty, Some(op_index as usize), out_op);
       }
     }
   }
@@ -1269,7 +1330,7 @@ op: SEL  l [A: bool]  r [B: Numeric]  => out [B]
 
 op: POISON  => out [B: poison]
 
-op: REGISTER_HEAP name [HeapName] par_heap_id[ParHeap] ctx[read_ctx] => out[HeapType] ctx[write_ctx]
+op: REGISTER_HEAP name [HeapName] par_heap_id[meta] ctx[read_ctx] => out[HeapType] ctx[write_ctx]
 op: DELETE_HEAP heap [HeapType]
 
 op: AGG_DECL  ctx [read_ctx] => agg_ptr [Agg: agg]
@@ -1285,6 +1346,10 @@ op: LOAD  ptr [ptr] => out [val: deref(ptr)]
 op: STORE  ptr [ptr] val [val: mut_deref(ptr)] ctx[read_ctx] =>  out [ptr] ctx[write_ctx]
 
 op: CONVERT from[A] => to[B]
+op: MAPS_TO from[A] => to[B]
+
+
+op: TY_EQ l [A]  r [B]  => out [C: bool]
 
 op: GE  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]
 op: LE  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]

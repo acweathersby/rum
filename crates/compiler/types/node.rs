@@ -38,6 +38,8 @@ impl Default for NodeHandle {
 }
 impl Debug for NodeHandle {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&Type::Complex(0, self.clone()), f)?;
+    f.write_str("\n")?;
     let r = unsafe { self.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
     r.node.fmt(f)
   }
@@ -264,40 +266,6 @@ impl Display for Operation {
   }
 }
 
-#[derive(Debug, Clone)]
-pub struct CallLookup {
-  pub name:        IString,
-  pub args:        Vec<Type>,
-  pub ret:         Type,
-  pub origin_node: usize,
-}
-
-#[derive(Clone, Copy, Default)]
-pub enum HeapData {
-  #[default]
-  Undefined,
-  Named(IString),
-  Local, // The stack in other languages
-  Primitive,
-}
-
-impl Debug for HeapData {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&self, f)
-  }
-}
-
-impl Display for HeapData {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      HeapData::Local => f.write_str("~local"),
-      HeapData::Undefined => f.write_str("~"),
-      HeapData::Primitive => f.write_str("~reg"),
-      HeapData::Named(d) => f.write_fmt(format_args!("*{d}")),
-    }
-  }
-}
-
 #[derive(Clone)]
 pub(crate) struct RootNode {
   pub(crate) nodes:         Vec<Node>,
@@ -349,6 +317,7 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
 }
 
 pub fn get_signature(node: &RootNode) -> Signature {
+  dbg!(node);
   Signature::new(
     &node.nodes[0].inputs.iter().map(|i| (i.0, node.get_base_ty(node.types[i.0.usize()].clone()))).collect::<Vec<_>>(),
     &node.nodes[0].outputs.iter().map(|i| (i.0, node.get_base_ty(node.types[i.0.usize()].clone()))).collect::<Vec<_>>(),

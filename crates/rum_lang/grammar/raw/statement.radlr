@@ -82,9 +82,9 @@ IMPORT ../common/comment as cmt
 
 <> match_expression 
 
-  > "if" expr::l_val^expression match_clause(+)^clauses default_clause?
+  > "if" expr::l_val^expression ( ( "as" | "=>"  ) prim::var )?^binding_name match_clause(+)^clauses default_clause?
 
-    :ast { t_RawMatch, expression, clauses, default_clause, tok  }
+    :ast { t_RawMatch, expression, clauses, default_clause, binding_name, tok  }
 
 
 <> default_clause 
@@ -100,8 +100,12 @@ IMPORT ../common/comment as cmt
     :ast { t_RawMatchClause, default: false, expr:$1, scope: $2, tok }
 
 <> match_condition
+ 
+  > "is" prim::var^var
 
-  > ( ">" | "<" | ">=" | "<=" | "==" | "!=" ) expr::r_val^expr
+    :ast { t_RawTypeMatchExpr, name: $var, tok  }
+
+  | ( ">" | "<" | ">=" | "<=" | "==" | "!=" ) expr::r_val^expr
 
     :ast { t_RawExprMatch, op:str($1), expr: $2, tok  }
 

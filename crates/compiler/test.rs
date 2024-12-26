@@ -1,6 +1,6 @@
 use crate::{
   compiler::add_module,
-  interpreter::interpret_node,
+  interpreter::{interpret, interpret_node},
   solver::solve,
   types::{Database, GetResult, SolveDatabase, SolveState, Type, Value},
 };
@@ -64,28 +64,10 @@ fn allocator_binding() {
   );
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "scope".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
-    let test = test.get().unwrap();
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("scope".intern()) {
+    let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
 
-    let GetResult::Existing(global_heap) = sdb.get_type_by_name("__root_allocator___allocator_scope".intern()) else {
-      panic!("Could not load");
-    };
-
-    let GetResult::Existing(global_ctx) = sdb.get_type_by_name("__root_allocator__".intern()) else {
-      panic!("Could not load");
-    };
-
-    let mut heaps = vec![(Default::default(), global_heap, 0 as *mut _, Type::Complex(0, global_ctx))];
-
-    // Create temporary types based on the type definitions
-
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut heaps);
-
-      dbg!(val);
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
-    }
+    dbg!(val);
   } else {
     panic!("routine test not found")
   }
@@ -99,43 +81,62 @@ fn method_lookup() {
     &mut db,
     "
 
+
     #interface
-    I => [ allocate: (ctx: I, size: u64, par: I) > addr, val: u32 ]
+    AllocatorI => [
+      // par: *AllocatorI, requires VTable like system.
+      allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) > addr,
+      free: (ctx: AllocatorI, ptr: addr, par: AllocatorI)
+    ]
 
 
+    __root_allocator__ => [ d: u32 ]
+
+    allocate => (ctx: __root_allocator__, size: u64, par: AllocatorI) > addr 2020202
+
+    allocate => (b: __root_allocator__, size: u64) > addr __malloc__(size)
+
+    free => (ctx: __root_allocator__, ptr: addr, par: AllocatorI) { }
+
+    allocate => (b: Dase, size: u64, par: AllocatorI) > addr {
+      if par as par is __root_allocator__ {
+        par.allocate(0) 
+      } otherwise {
+        0
+      }
+    }
+
+    free => (base: Dase, ptr: addr, par: AllocatorI) {}
+
+    Dase
+      => [ val: u32 ]
 
     base 
       => [ val: u32 ]
       
     base_getter_method 
-      => (b: I, test: f32) > ? b.val + test
-
-    Dase
-      => [ val: u32 ]
+      => (b: base, test: f32) > ? b.val + test
 
     calls_method 
       => () > u32 {
-        b: base = :[ val = 200 ]
+        global* => Dase(global*) 
+
+        // heap = :[]
+        // 
+        // 
+
+        b: base = global*:[ val = 200 ]
+
         b.base_getter_method(2)
       }
   ",
   );
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("calls_method".intern()) {
-    let test = test.get().unwrap();
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("calls_method".intern()) {
+    let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
 
-    dbg!(test);
-
-    // Create temporary types based on the type definitions
-
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
-
-      dbg!(val);
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
-    }
+    dbg!(val);
   } else {
     panic!("routine test not found")
   }
@@ -159,20 +160,10 @@ fn interface_structure() {
   );
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "AllocatorI".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("AllocatorI".intern()) {
-    let test = test.get().unwrap();
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("AllocatorI".intern()) {
+    let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
 
-    dbg!(test);
-
-    // Create temporary types based on the type definitions
-
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
-
-      dbg!(val);
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
-    }
+    dbg!(val);
   } else {
     panic!("routine test not found")
   }
@@ -198,18 +189,10 @@ fn test_missing_call_name() {
   );
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "scope".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
-    let test = test.get().unwrap();
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("scope".intern()) {
+    let val = interpret(test, &[Value::u32(11), Value::u32(2), Value::u32(3)], &sdb);
 
-    // Create temporary types based on the type definitions
-
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(11), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
-
-      dbg!(val);
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
-    }
+    dbg!(val);
   } else {
     panic!("routine test not found")
   }
@@ -235,18 +218,10 @@ fn test_missing_var() {
   );
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "scope".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("scope".intern()) {
-    let test = test.get().unwrap();
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("scope".intern()) {
+    let val = interpret(test, &[Value::u32(7), Value::u32(2), Value::u32(3)], &sdb);
 
     // Create temporary types based on the type definitions
-
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(7), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
-
-      dbg!(val);
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
-    }
   } else {
     panic!("routine test not found")
   }
@@ -271,23 +246,17 @@ fn test_fn_call_with_adhoc_structs() {
   );
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "vec3".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("vec3".intern()) {
-    let test = test.get().unwrap();
-
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("vec3".intern()) {
     // Create temporary types based on the type definitions
 
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(1), Value::u32(2), Value::u32(3)], &mut Vec::new(), 0, &mut Vec::new());
+    let val = interpret(test, &[Value::u32(7), Value::u32(2), Value::u32(3)], &sdb);
 
-      match val {
-        Value::Ptr(ptr, _) => {
-          let data = unsafe { std::slice::from_raw_parts(ptr as *const u32, 3) };
-          assert_eq!(data, &[1, 2, 3])
-        }
-        val => unreachable!("Unexpected value: {val:?}"),
+    match val {
+      Value::Ptr(ptr, _) => {
+        let data = unsafe { std::slice::from_raw_parts(ptr as *const u32, 3) };
+        assert_eq!(data, &[1, 2, 3])
       }
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
+      val => unreachable!("Unexpected value: {val:?}"),
     }
   } else {
     panic!("routine test not found")
@@ -307,23 +276,17 @@ fn test_interpreter_adhoc_struct() {
   dbg!(&db);
 
   let mut sdb = solve(&db, "vec".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("vec".intern()) {
-    let test = test.get().unwrap();
-
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("vec".intern()) {
     // Create temporary types based on the type definitions
 
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(30), Value::u32(33)], &mut Vec::new(), 0, &mut Vec::new());
+    let val = interpret(test, &[Value::u32(30), Value::u32(33)], &sdb);
 
-      match val {
-        Value::Ptr(ptr, _) => {
-          let data = unsafe { std::slice::from_raw_parts(ptr as *const u32, 3) };
-          assert_eq!(data, &[30, 33, 34])
-        }
-        val => unreachable!("Unexpected value: {val:?}"),
+    match val {
+      Value::Ptr(ptr, _) => {
+        let data = unsafe { std::slice::from_raw_parts(ptr as *const u32, 3) };
+        assert_eq!(data, &[30, 33, 34])
       }
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
+      val => unreachable!("Unexpected value: {val:?}"),
     }
   } else {
     panic!("routine test not found")
@@ -343,16 +306,10 @@ fn test_interpreter_fibonacci() {
 ",
   );
   let mut sdb = solve(&db, "fib".intern(), true);
-  if let GetResult::Existing(test) = sdb.get_type_by_name("fib".intern()) {
-    let test = test.get().unwrap();
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("fib".intern()) {
+    let val = interpret(test, &[Value::u32(30), Value::u32(2)], &sdb);
 
-    if test.solve_state() == SolveState::Solved {
-      let val = interpret_node(test, &[Value::u32(30), Value::u32(2)], &mut Vec::new(), 0, &mut Vec::new());
-
-      assert_eq!(val, Value::f64(832040.0))
-    } else {
-      panic!("test is a template and cannot be directly interpreted {test:?}")
-    }
+    assert_eq!(val, Value::f64(832040.0))
   } else {
     panic!("routine test not found")
   }
