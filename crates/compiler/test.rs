@@ -79,9 +79,10 @@ fn method_lookup() {
 
   let global_constraints = add_module(
     &mut db,
-    "
-
-
+    r####"
+    #intrinsic
+    __malloc__ => (size: u64) > addr { 0 }
+    
     #interface
     AllocatorI => [
       // par: *AllocatorI, requires VTable like system.
@@ -89,18 +90,18 @@ fn method_lookup() {
       free: (ctx: AllocatorI, ptr: addr, par: AllocatorI)
     ]
 
-
     __root_allocator__ => [ d: u32 ]
 
-    allocate => (ctx: __root_allocator__, size: u64, par: AllocatorI) > addr 2020202
-
+    allocate => (ctx:  __root_allocator__, size: u64, par: AllocatorI) > addr 2020202
+    
     allocate => (b: __root_allocator__, size: u64) > addr __malloc__(size)
 
     free => (ctx: __root_allocator__, ptr: addr, par: AllocatorI) { }
 
     allocate => (b: Dase, size: u64, par: AllocatorI) > addr {
+
       if par as par is __root_allocator__ {
-        par.allocate(0) 
+        par.allocate(size) 
       } otherwise {
         0
       }
@@ -109,27 +110,27 @@ fn method_lookup() {
     free => (base: Dase, ptr: addr, par: AllocatorI) {}
 
     Dase
-      => [ val: u32 ]
+      => total* [ val: u32 ]
 
     base 
-      => [ val: u32 ]
+      => total* [ val: u32 ]
       
     base_getter_method 
       => (b: base, test: f32) > ? b.val + test
 
     calls_method 
       => () > u32 {
-        global* => Dase(global*) 
+        total* => Dase(global*) 
 
         // heap = :[]
         // 
         // 
 
-        b: base = global*:[ val = 200 ]
+        b: base = :[ val = 200 ]
 
         b.base_getter_method(2)
       }
-  ",
+  "####,
   );
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
@@ -161,6 +162,93 @@ fn interface_structure() {
 
   let mut sdb: SolveDatabase<'_> = solve(&db, "AllocatorI".intern(), true);
   if let GetResult::Existing(test) = sdb.get_type_by_name_mut("AllocatorI".intern()) {
+    let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
+
+    dbg!(val);
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn array_handling() {
+  let mut db: Database = Database::default();
+
+  let global_constraints = add_module(
+    &mut db,
+    r####"
+
+    calls_method => () > ? {
+
+      b:base = :[ 10, 11, 0 ]
+      
+      i  = 0 // i.min = 0; i.max = 3; i.delta = 1;   unsigned 2 bits > 8 i == u8
+
+      loop if i < 3 { 
+        b[i] = 100 + i
+        i = i + 1
+      }
+
+      b // b is poisoned here
+      
+      b[0] + 2 + b.D()
+    }
+
+    D => (b: base) > u8 b[0] + 12
+    
+    base => total* [u8; 3]
+
+  "####,
+  );
+
+  let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("calls_method".intern()) {
+    dbg!(&test);
+    let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
+
+    dbg!(val);
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn heap_handling_temp() {
+  let mut db: Database = Database::default();
+
+  let global_constraints = add_module(
+    &mut db,
+    r####"
+
+
+    to_u32 => ( t: ? ) > f32 { 
+      d:f32 = t.val d
+    }
+
+    to_u32 => ( t: ? ) > f32 { 
+      d:f32 = t.tango d
+    }
+
+
+    calls_method => () > ? {
+        r = 200
+        b: base = :[ val = r ]
+        v: base = :[ val = b.val + 300 ] // :[ val = 200 ]  :[ val = 200 ]
+        b.val = b.val + 2000       // :[ val = 2200 ] :[ val = 200 ]
+        b = v                      // :[ val = 2200 ] :[ val = 2200 ]
+        b.val = 200000
+        v.val.to_u32()
+      }
+
+    
+      base 
+        => total* [ val: f32, tango: u32 ]
+  "####,
+  );
+
+  let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("calls_method".intern()) {
+    dbg!(&test);
     let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
 
     dbg!(val);
@@ -300,7 +388,7 @@ fn test_interpreter_fibonacci() {
   let global_constraints = add_module(
     &mut db,
     "
-  fib (a:?) => ? 
+  fib => (a:u32) > f64 
     { x1 = 0 x2 = 1 loop if a > 0 { r = x1 x1 = x1 + x2 x2 = r  a = a - 1 } x1 }
     
 ",

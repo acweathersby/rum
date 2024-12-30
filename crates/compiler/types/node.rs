@@ -146,6 +146,7 @@ pub enum VarId {
   Undefined,
   Name(IString),
   MemName(usize, IString),
+  ArrayMem(usize),
   SideEffect(usize),
   MemRef(usize),
   MatchInputExpr,
@@ -156,7 +157,8 @@ pub enum VarId {
   GlobalContext,
   Generic,
   MemCTX,
-  DeletedHeap,
+  Heap,
+  Freed,
   Param(usize),
   CallRef,
   BaseType,
@@ -176,6 +178,7 @@ impl Display for VarId {
       Self::Return => f.write_str("RETURN"),
       Self::LoopActivation => f.write_str("LOOP_ACTIVATION"),
       Self::MemCTX => f.write_fmt(format_args!("MemCtx")),
+      Self::Freed => f.write_fmt(format_args!("Freed")),
       _ => f.write_fmt(format_args!("{self:?}")),
     }
   }
@@ -233,6 +236,7 @@ pub(crate) enum Operation {
   Const(ConstVal),
   Name(IString),
   CallTarget(NodeHandle),
+  IntrinsicCallTarget(IString),
   Allocate,
   Free,
 }
@@ -247,6 +251,7 @@ impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       Operation::CallTarget(target) => f.write_fmt(format_args!("Target [cmplx {}]", target.0 as usize)),
+      Operation::IntrinsicCallTarget(target) => f.write_fmt(format_args!("Target [{}]", target)),
       Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::OutputPort(root, ops) => f.write_fmt(format_args!(
@@ -317,11 +322,33 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
 }
 
 pub fn get_signature(node: &RootNode) -> Signature {
-  dbg!(node);
-  Signature::new(
-    &node.nodes[0].inputs.iter().map(|i| (i.0, node.get_base_ty(node.types[i.0.usize()].clone()))).collect::<Vec<_>>(),
-    &node.nodes[0].outputs.iter().map(|i| (i.0, node.get_base_ty(node.types[i.0.usize()].clone()))).collect::<Vec<_>>(),
-  )
+  get_internal_node_signature(node, 0)
+}
+
+pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
+  let RootNode { nodes, operands, types, type_vars, heap_id, source_tokens } = node;
+  let call_node = &nodes[internal_node_index];
+
+  let caller_sig = Signature::new(
+    &call_node
+      .inputs
+      .iter()
+      .filter_map(|(op, i)| match i {
+        VarId::Param(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
+        VarId::Name(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
+        _ => None,
+      })
+      .collect::<Vec<_>>(),
+    &call_node
+      .outputs
+      .iter()
+      .filter_map(|(op, i)| match i {
+        VarId::Return => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
+        _ => None,
+      })
+      .collect::<Vec<_>>(),
+  );
+  caller_sig
 }
 
 impl Debug for RootNode {
@@ -418,6 +445,10 @@ impl Debug for RootNode {
 }
 
 impl RootNode {
+  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> Type {
+    self.get_base_ty(self.types[op.usize()].clone())
+  }
+
   pub(crate) fn get_base_ty(&self, ty: Type) -> Type {
     if let Some(index) = ty.generic_id() {
       let r_ty = get_root_var(index, &self.type_vars).ty.clone();
@@ -481,6 +512,17 @@ pub struct Signature {
 impl Signature {
   pub fn new(inputs: &[(OpId, Type)], outputs: &[(OpId, Type)]) -> Self {
     Self { inputs: inputs.to_vec(), outputs: outputs.to_vec() }
+  }
+
+  /// Changes the type of the givin paramater to `ty`, where index is
+  /// a value in the range 0...(inputs.len + outputs.len)
+  pub fn set_param_ty(&mut self, index: usize, ty: Type) {
+    if index >= self.inputs.len() {
+      let index = index - self.inputs.len();
+      self.outputs[index].1 = ty;
+    } else {
+      self.inputs[index].1 = ty;
+    }
   }
 
   pub fn hash(&self) -> u64 {

@@ -87,11 +87,11 @@ pub enum Type {
   // Indicates a type that has no use in the type system
   NoUse,
   Generic {
-    ptr_count: u8,
+    ptr_count: i8,
     gen_index: u32,
   },
-  Primitive(u8, PrimitiveType),
-  Complex(u8, NodeHandle),
+  Primitive(i8, PrimitiveType),
+  Complex(i8, NodeHandle),
   Heap(IString),
   MemContext,
 }
@@ -106,6 +106,7 @@ pub enum PrimitiveBaseType {
   Float,
   Bool,
   Poison,
+  Type,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
@@ -131,6 +132,7 @@ impl Display for PrimitiveType {
       Bool => f.write_str("bool"),
       Poison => f.write_str("XXPOISONXX"),
       Address => f.write_str("addr"),
+      Type => f.write_str("type"),
       Signed => {
         if *ele_count > 1 {
           f.write_fmt(format_args!("s{}x{}", byte_size * 8, ele_count))
@@ -213,11 +215,19 @@ impl Display for Type {
       Heap(name) => f.write_fmt(format_args!("*{name}")),
       NoUse => f.write_fmt(format_args!("no-use")),
       Undefined => f.write_str("und"),
-      Generic { ptr_count, gen_index } => f.write_fmt(format_args!("∀{}", gen_index)),
-      Primitive(count, prim) => f.write_fmt(format_args!("{}{prim}", "*".repeat(*count as usize))),
-      Complex(count, node) => f.write_fmt(format_args!("{}cplx@[{:?}]", "*".repeat(*count as usize), node.get().unwrap() as *const _ as usize)),
+      Generic { ptr_count: count, gen_index } => f.write_fmt(format_args!("{}∀{}", create_ptr_line(*count), gen_index)),
+      Primitive(count, prim) => f.write_fmt(format_args!("{}{prim}", create_ptr_line(*count))),
+      Complex(count, node) => f.write_fmt(format_args!("{}cplx@[{:?}]", create_ptr_line(*count), node.get().unwrap() as *const _ as usize)),
       MemContext => f.write_fmt(format_args!("mem_ctx")),
     }
+  }
+}
+
+fn create_ptr_line(count: i8) -> String {
+  if count >= 0 {
+    "*".repeat(count as usize)
+  } else {
+    "-".repeat((-count) as usize)
   }
 }
 

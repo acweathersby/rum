@@ -65,10 +65,10 @@ Test = [
 
 Bindable = gc* [ // Forces heap allocation through the 'gc binding. 
   sub   : gc* Bindable = 0
-  other : 'Test // Must be allocated or assigned from an outside scope since it is not nullable.
+  other : 'Test //Not allowed as this would require infinite recursion 
 ]
 
-test (other: 'mut Test) => *'global + 'gc Bindable { // Bindable's lifetimes are `global + 'gc
+test (other: 'mut Test) => Bindable { // Bindable's lifetimes are `global + 'gc
   Bindable [  sub = Bindable [ other ], other ]
 }
 
@@ -118,9 +118,9 @@ Temporary {
 
 ```
 
-A resolution oft he path to specific variable member to is restricted by the resolution semantics of each membership dereferenceing step.
+A resolution off the path to specific variable member to is restricted by the resolution semantics of each membership dereferenceing step.
 
-A base type is either a stack value or a pointer. For convincer, all stack values are referenced through pointer semantics as a refernce value. 
+A base type is either a stack value or a pointer. For convenience, all stack values are referenced through pointer semantics as a referenced value. 
 
 A direct member is one which an offset from a base type pointer is sufficient to resolve the memory location of the member value. The reference pointer
 derived from such an operation takes on the type characteristics of the direct member type.
@@ -158,3 +158,25 @@ member.d ( d = *d || d ) => {
 
 }
 
+
+
+
+
+```
+{
+  *ty = A
+}
+
+```
+
+heap [*ty] is now ordered **after** all other heap associations thus 
+
+  *ty < *∀ && *ty1 > *ty2
+
+
+This means that a R-*ty can hold references to any other type, and those references will not be cleared
+when *ty's scope is cleared. A type R-*∀ CANNOT hold any references to R-*ty, or such a type MUST be cleared of
+all *ty references (type R-*tr must be nullable). These are global requirements
+
+
+R => [ d: *test ]

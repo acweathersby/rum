@@ -49,6 +49,7 @@ pub enum NodeConstraint {
   Agg(OpId),
   GenTyToTy(Type, Type),
   GenTyToGenTy(Type, Type),
+  SetHeap(OpId, Type),
   OpConvertTo {
     src_op:    OpId,
     arg_index: usize,
@@ -58,7 +59,6 @@ pub enum NodeConstraint {
 
 #[derive(Clone)]
 pub struct TypeVar {
-  pub ctx_id:     VarId,
   pub id:         u32,
   pub ref_id:     i32,
   pub ty:         Type,
@@ -70,7 +70,6 @@ pub struct TypeVar {
 impl Default for TypeVar {
   fn default() -> Self {
     Self {
-      ctx_id:     Default::default(),
       id:         Default::default(),
       ref_id:     -1,
       ref_count:  0,
@@ -99,12 +98,12 @@ impl TypeVar {
   pub fn add_mem(&mut self, name: IString, ty: Type, origin_node: u32) {
     self.attributes.push_unique(VarAttribute::Agg).unwrap();
 
-    for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
-      if *n == name {
-        self.members.remove(index);
-        break;
-      }
-    }
+    // for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
+    //   if *n == name {
+    //     //self.members.remove(index);
+    //     //break;
+    //   }
+    // }
 
     let _ = self.members.insert_ordered(MemberEntry { name, origin_op: origin_node, ty });
   }
@@ -179,6 +178,8 @@ pub enum VarAttribute {
   Binding(u32, u32, bool),
   ForeignType,
   Global(IString, Token),
+  /// The operation that declares a heap variable
+  HeapOp(OpId),
 }
 
 impl Debug for VarAttribute {
@@ -199,6 +200,7 @@ impl Debug for VarAttribute {
       Float => f.write_fmt(format_args!("floating-point",)),
       Unsigned => f.write_fmt(format_args!("unsigned",)),
       Ptr => f.write_fmt(format_args!("* = *ptr",)),
+      HeapOp(op) => f.write_fmt(format_args!("heap_decl@{op}",)),
       Global(ty, tok, ..) => f.write_fmt(format_args!("typeof({ty})",)),
       Binding(node_index, binding_index, output) => {
         if *output {

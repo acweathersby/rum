@@ -11,9 +11,9 @@ IMPORT ../common/comment as cmt
 
 <> aggregate_instantiation 
 
-  > anno::lifetime?^heap ':[' aggregate_member_initializer(*",")^inits ","(*) "]"
+  > ':[' aggregate_member_initializer(*",")^inits ","(*) "]"
 
-    :ast  { t_RawAggregateInstantiation, allocator_binding, inits, heap, tok }
+    :ast  { t_RawAggregateInstantiation, allocator_binding, inits, tok }
 
 <> aggregate_member_initializer 
 

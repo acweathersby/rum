@@ -1,3 +1,5 @@
+use rum_lang::istring::IString;
+
 use super::Type;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,4 +20,5 @@ pub enum Value {
   f32(f32),
   Agg(*mut u8, Type),
   Ptr(*mut u8, Type),
+  Heap(IString),
 }

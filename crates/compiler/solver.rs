@@ -1,11 +1,11 @@
 use crate::{
-  compiler::{compile_struct, CALL_ID, INTERFACE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
+  compiler::{compile_struct, CALL_ID, INTERFACE_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
   types::*,
 };
 use radlr_rust_runtime::types::BlameColor;
 use rum_lang::{
   istring::{CachedString, IString},
-  parser::script_parser::{parse_type, Params, Property, Root},
+  parser::script_parser::parse_type,
 };
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
@@ -256,8 +256,6 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                 Type::Generic { .. } => panic!("Generic members are invalid in an interface context"),
                 ty => panic!("Invalid member type {ty} in interface"),
               }
-
-              println!("got {interface_param_id}  => {ty}")
             }
 
             let entries = db.interface_instances.entry(Type::Complex(0, interface.clone())).or_default();
@@ -265,7 +263,8 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
             // Reached a verified point. We should add a verification stamp to the target type to avoid repeating this work
           }
           GlobalConstraint::ResolveFunction { node: caller_node, call_node_id } => {
-            if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. }) = caller_node.get_mut() {
+            if let Some(root_node) = caller_node.get() {
+              let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. } = root_node;
               let call_node = &nodes[*call_node_id];
 
               let Some((function_name, call_op)) = call_node.inputs.iter().find_map(|(op_id, var_id)| match var_id {
@@ -278,14 +277,15 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                 panic!("Call node defined without CallRef name");
               };
 
-              if function_name == "__malloc__".intern() {
-                panic!("AAA");
-              }
-
               // Pull in and verify any method that matches the criteria of
               let rdb = db.db.get_ref();
 
-              'method_lookup: for (_, callee_node) in rdb.objects.iter().filter(|(name, node)| *name == function_name && node.get_type() == ROUTINE_ID) {
+              // Build the signature
+              let caller_sig = get_internal_node_signature(root_node, *call_node_id);
+
+              'method_lookup: for (_, callee_node) in
+                rdb.objects.iter().filter(|(name, node)| *name == function_name && matches!(node.get_type(), ROUTINE_ID | INTRINSIC_ROUTINE_ID))
+              {
                 let mut callee_node = callee_node.clone();
 
                 match db.add_node_handle(callee_node.clone()) {
@@ -297,34 +297,13 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                   _ => {}
                 }
 
-                dbg!(&callee_node);
-
                 let callee_sig = get_signature(callee_node.get().unwrap());
-
-                // Build the signature
-                let caller_sig = Signature::new(
-                  &call_node
-                    .inputs
-                    .iter()
-                    .filter_map(|(op, i)| match i {
-                      VarId::Param(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
-                      _ => None,
-                    })
-                    .collect::<Vec<_>>(),
-                  &call_node
-                    .outputs
-                    .iter()
-                    .filter_map(|(op, i)| match i {
-                      VarId::Return => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
-                      _ => None,
-                    })
-                    .collect::<Vec<_>>(),
-                );
 
                 // Comparing the two
                 let mut caller_constraints = vec![];
                 let mut callee_constraints = vec![];
 
+                dbg!((&callee_sig, &caller_sig));
                 if callee_sig.inputs.len() == caller_sig.inputs.len() && callee_sig.outputs.len() == caller_sig.outputs.len() {
                   for ((callee_op, callee_ty), (_, caller_ty)) in
                     callee_sig.inputs.iter().zip(caller_sig.inputs.iter()).chain(callee_sig.outputs.iter().zip(caller_sig.outputs.iter()))
@@ -384,7 +363,11 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                   panic!("Mismatched types \ncaller: {caller_sig:?}, \ncallee: {callee_sig:?} \n{callee_node:?}")
                 }
 
-                operands[call_op.usize()] = Operation::CallTarget(callee_node.clone());
+                if callee_node.get_type() == INTRINSIC_ROUTINE_ID {
+                  caller_node.get_mut().unwrap().operands[call_op.usize()] = Operation::IntrinsicCallTarget(function_name);
+                } else {
+                  caller_node.get_mut().unwrap().operands[call_op.usize()] = Operation::CallTarget(callee_node.clone());
+                }
 
                 match (caller_constraints.is_empty(), callee_constraints.is_empty()) {
                   (false, false) => {
@@ -407,7 +390,7 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                 continue 'outer;
               }
 
-              panic!("Could not find suitable method in node {caller_node:?} @ {call_node:?}",)
+              panic!("Could not find suitable method that matches {function_name} => {caller_sig:?}  in node {caller_node:?} @ {call_node:?}",)
             }
           }
           GlobalConstraint::ResolveMemoryRegion { routine, heap_node_id } => {
@@ -439,7 +422,7 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
               let routine_inner_node = &routine_node.nodes[*heap_node_id];
 
               for (op, var_id) in routine_inner_node.outputs.iter() {
-                if let VarId::DeletedHeap = var_id {
+                if let VarId::Heap = var_id {
                   match &routine_node.type_vars[routine_node.types[op.usize()].generic_id().unwrap()].ty {
                     cmplx_ty @ Type::Complex(0, node) => {
                       if node.get_type() != STRUCT_ID {
@@ -456,11 +439,8 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
                   }
                 }
               }
-
-              dbg!(routine_inner_node);
             }
           }
-
           GlobalConstraint::ExtractGlobals { node: call_node } => {
             let mut intrinsic_constraints = vec![];
 
@@ -551,7 +531,6 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
       }
     } */
   }
-  dbg!(&db);
   db
 }
 
@@ -627,7 +606,7 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
           }
 
           if !invalid {
-            let (strct, constraints) = compile_struct(poly_db.db, &properties);
+            let (strct, constraints) = compile_struct(poly_db.db, &properties, None);
 
             solve_node_intrinsics(strct.clone(), &constraints);
 
@@ -653,8 +632,9 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
   let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
 
   while let Some(constraint) = constraint_queue.pop_front() {
-    let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. } = node.get_mut().unwrap();
-    match constraint {
+    let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
+
+    match constraint.clone() {
       NodeConstraint::Deref { ptr_ty, val_ty, mutable } => {
         let ptr_index = ptr_ty.generic_id().expect("ptr_ty should be generic");
         let val_index = val_ty.generic_id().expect("val_ty should be generic");
@@ -667,7 +647,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
         }
 
         if !var_ptr.ty.is_open() {
-          dbg!(&var_ptr, from_ptr(var_ptr.ty.clone()));
+          println!("-------{constraint:?} {val_ty} {}", var_ptr.ty.clone());
           constraint_queue.push_back(NodeConstraint::GenTyToTy(val_ty, from_ptr(var_ptr.ty.clone()).unwrap()));
         } else if !var_val.ty.is_open() {
           constraint_queue.push_back(NodeConstraint::GenTyToTy(ptr_ty, to_ptr(var_val.ty.clone()).unwrap()));
@@ -731,12 +711,14 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
 
       NodeConstraint::OpToTy(op, ty_a) => {
         let ty = types[op.usize()].clone();
+
         constraint_queue.push_back(NodeConstraint::GenTyToTy(ty, ty_a));
       }
       NodeConstraint::GenTyToTy(ty_a, ty_b) => {
         debug_assert!(ty_a.is_generic());
         debug_assert!(!ty_b.is_open(), "Expected {ty_b} to be a non open type when resolving {ty_a}");
 
+        dbg!((&ty_a, &ty_b));
         let index = ty_a.generic_id().expect("Left ty should be generic");
 
         let var = get_root_var_mut(index, type_vars);
@@ -746,13 +728,23 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
           process_variable(var, &mut constraint_queue);
         } else if var.ty == Type::NoUse {
         } else if var.ty != ty_b {
-          panic!("TY_A [{}], TY_B [ {}   {var}", ty_a, ty_b);
+          panic!("TY_A [{}] @ {var}, TY_B [{}]", ty_a, ty_b);
         }
       }
       NodeConstraint::GlobalNameReference(ty, name, tok) => {
         let a_index = ty.generic_id().expect("ty should be generic");
         let var_a = get_root_var_mut(a_index, type_vars);
         var_a.add(VarAttribute::Global(name, tok));
+      }
+      NodeConstraint::SetHeap(op, heap) => {
+        let heap_ty = heap_id[op.usize()];
+        if heap_ty != usize::MAX {
+          let heap_id = Type::generic(heap_ty);
+
+          constraint_queue.push_back(NodeConstraint::GenTyToTy(heap_id, heap));
+        } else {
+          panic!("Heap identifier not assigned to op at {op}")
+        }
       }
       NodeConstraint::OpConvertTo { src_op, arg_index, target_ty } => {
         let index = target_ty.generic_id().expect("Left ty should be generic");
@@ -765,13 +757,18 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
           Operation::Op { operands: ops, .. } => {
             let target_op = ops[arg_index];
 
-            dbg!(&node);
-
             match operands[target_op.usize()] {
-              Operation::Const(..) => {
+              Operation::Const(..) | Operation::Op { op_name: "ADD", .. } => {
                 let ops = &ops;
                 let ty = types[ops[arg_index].usize()].clone();
-                constraint_queue.push_back(NodeConstraint::GenTyToGenTy(target_ty, ty));
+
+                if target_ty.is_generic() {
+                  constraint_queue.push_back(NodeConstraint::GenTyToGenTy(target_ty, ty));
+                } else if ty.is_generic() {
+                  constraint_queue.push_back(NodeConstraint::GenTyToTy(ty, target_ty));
+                } else {
+                  assert!(target_ty == ty);
+                }
               }
               _ => {
                 ops[arg_index] = out_op;
@@ -887,6 +884,7 @@ fn join_mem(var_from: &mut TypeVar, var_to: &mut TypeVar, constraint_queue: &mut
 }
 
 pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>) {
+  let ty = var.ty.clone();
   if !var.ty.is_open() {
     for (index, constraint) in var.attributes.as_slice().to_vec().into_iter().enumerate().rev() {
       match constraint {
@@ -898,42 +896,79 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>)
           queue.push_back(NodeConstraint::Deref { ptr_ty, val_ty, mutable: false });
           var.attributes.remove(index);
         }
+        VarAttribute::HeapOp(heap_op) => {
+          let mut heap_set = false;
+          match &ty {
+            Type::Complex(_, node) => {
+              let node = node.get().unwrap();
+              if node.nodes[0].type_str == INTERFACE_ID {
+                // Do not mark members
+              } else {
+                if let Some((op, _)) = node.nodes[0].outputs.iter().find(|(_, v)| *v == VarId::Heap) {
+                  match node.get_base_ty_from_op(*op) {
+                    heap_ty @ Type::Heap(_) => {
+                      queue.push_back(NodeConstraint::SetHeap(heap_op, heap_ty));
+                      heap_set = true;
+                    }
+                    _ => panic!("Could not resolve node heap value. This should be handled in the global scope as it crosses node boundaries"),
+                  }
+                }
+              }
+            }
+            _ => {}
+          }
+
+          if !heap_set {
+            queue.push_back(NodeConstraint::SetHeap(heap_op, Type::Heap(Default::default())));
+          }
+
+          var.attributes.remove(index);
+        }
+        VarAttribute::Global(..) => {
+          var.attributes.remove(index);
+        }
+        VarAttribute::Agg => {
+          dbg!(&var);
+          let members = var.members.as_slice();
+
+          match &ty {
+            Type::Complex(_, node) => {
+              let node = node.get().unwrap();
+
+              if node.nodes[0].type_str == INTERFACE_ID {
+                // Do not mark members
+              } else {
+                for member in members.iter() {
+                  if let Some((op_id, _)) = node.nodes[0].outputs.iter().find(|(_, v)| match v {
+                    VarId::Name(n) => {
+                      if n.to_str().as_str() == "base_type" {
+                        member.name == Default::default()
+                      } else {
+                        *n == member.name
+                      }
+                    }
+                    _ => false,
+                  }) {
+                    let ty = node.types[op_id.usize()].clone();
+                    let ty = if let Some(ty_index) = ty.generic_id() { node.type_vars[ty_index].ty.clone() } else { ty };
+
+                    if !ty.is_open() {
+                      dbg!((&member.ty, &ty));
+                      queue.push_back(NodeConstraint::GenTyToTy(member.ty.clone(), ty));
+                    }
+                  } else {
+                    panic!("Complex type does not have member {}@{} {node:?}", member.name, member.ty)
+                  }
+                }
+              }
+            }
+            _ => panic!("Expected type to be an aggregate type {ty}"),
+          }
+        }
         _ => {}
       }
     }
 
     var.attributes.sort();
-
-    if var.has(VarAttribute::Agg) {
-      let ty = var.ty.clone();
-      let members = var.members.as_slice();
-
-      match ty {
-        Type::Complex(_, node) => {
-          let node = node.get().unwrap();
-
-          if node.nodes[0].type_str == INTERFACE_ID {
-            // Do not mark members
-          } else {
-            for member in members.iter() {
-              if let Some((op_id, _)) = node.nodes[0].outputs.iter().find(|(_, v)| match v {
-                VarId::Name(n) => *n == member.name,
-                _ => false,
-              }) {
-                let ty = node.types[op_id.usize()].clone();
-                let ty = if let Some(ty_index) = ty.generic_id() { node.type_vars[ty_index].ty.clone() } else { ty };
-
-                if !ty.is_open() {
-                  queue.push_back(NodeConstraint::GenTyToTy(member.ty.clone(), ty));
-                }
-              } else {
-                panic!("Complex type does not have member {}@{} {node:?}", member.name, member.ty)
-              }
-            }
-          }
-        }
-        _ => unreachable!(),
-      }
-    }
   }
 }
