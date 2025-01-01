@@ -3,7 +3,6 @@ IGNORE { c:sp c:nl tk:cmt::comment }
 IMPORT routine as rt
 IMPORT statement as stmt
 IMPORT expression as expr
-IMPORT complex as complex
 IMPORT type as ty
 IMPORT annotation as anno
 IMPORT ../common/primitive as prim
@@ -30,10 +29,13 @@ IMPORT ../common/comment as cmt
 
 <> module_member 
 
-  > bound_type
-  | scope
+  > binding
+  | binding_union
+  | alias
+  | alias_union
+  | module_scope
 
-<> bound_type 
+<> binding 
 
   > prim::var^name "=>" ty::complex_type^ty
 
@@ -43,11 +45,30 @@ IMPORT ../common/comment as cmt
 
     :ast { t_RawBoundType, name, ty, tok }
 
-<> scope 
+<> binding_union 
 
-  > prim::var "{" module_members "}"
+  > prim::var^name "=>" prim::var(+"|")^names
 
-    :ast { t_RawScope, name: $1, members: $3   }
+    :ast { t_RawBoundUnion, name, names, ty, tok }
+
+<> alias
+
+  > prim::var^name "<:" ty::type^ty "=" expr::expression^expr
+
+   :ast { t_RawAlias, name, ty, expr, tok }
+
+
+<> alias_union
+
+  > prim::var^name "<:" ty::type^ty prim::var(+"|")^names
+
+     :ast { t_RawBoundUnion, name, ty, names, tok }
+
+<> module_scope 
+
+  > prim::var^name "{" module_members^members "}"
+
+    :ast { t_RawModuleScope, name: $1, members: $3   }
 
 
 <> test > "#test" expr::call^call "==" expr::r_val^expected_val

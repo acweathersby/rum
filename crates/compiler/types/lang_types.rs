@@ -37,6 +37,32 @@ macro_rules! create_primitive {
   };
 }
 
+pub struct Numeric {
+  // Indicates the log presence of decimal places if not zero
+  mantissa:    u8,
+  // Indicates the value can represent signed and unsigned values
+  signed:      bool,
+  // Indicates a complex component. Implies signed
+  complex:     bool,
+  // Indicates the number of bits needed to represent an integer value
+  significant: u8,
+  // Indicates the number of elements present in the value
+  elements:    u8,
+}
+
+impl std::ops::BitOr for Numeric {
+  type Output = Self;
+  fn bitor(self, rhs: Self) -> Self::Output {
+    Self {
+      mantissa:    self.mantissa.max(rhs.mantissa),
+      signed:      self.signed.max(rhs.signed),
+      complex:     self.complex.max(rhs.complex),
+      significant: self.significant.max(rhs.significant),
+      elements:    self.elements.max(rhs.elements),
+    }
+  }
+}
+
 pub const prim_ty_undefined: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 0, byte_size: 1, ele_count: 1 };
 pub const prim_ty_poison: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Poison, base_index: 1, byte_size: 1, ele_count: 1 };
 pub const prim_ty_bool: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Bool, base_index: 2, byte_size: 1, ele_count: 1 };
@@ -93,6 +119,7 @@ pub enum Type {
   Primitive(i8, PrimitiveType),
   Complex(i8, NodeHandle),
   Heap(IString),
+  Named(i8, IString),
   MemContext,
 }
 
@@ -214,6 +241,7 @@ impl Display for Type {
     match self {
       Heap(name) => f.write_fmt(format_args!("*{name}")),
       NoUse => f.write_fmt(format_args!("no-use")),
+      Named(count, name) => f.write_fmt(format_args!("{}{name}", create_ptr_line(*count))),
       Undefined => f.write_str("und"),
       Generic { ptr_count: count, gen_index } => f.write_fmt(format_args!("{}∀{}", create_ptr_line(*count), gen_index)),
       Primitive(count, prim) => f.write_fmt(format_args!("{}{prim}", create_ptr_line(*count))),
@@ -237,7 +265,19 @@ pub fn to_ptr(ty: Type) -> Option<Type> {
     Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count + 1, gen_index }),
     Type::Complex(count, data) => Some(Type::Complex(count + 1, data)),
     Type::Primitive(count, prim) => Some(Type::Primitive(count + 1, prim)),
+    Type::Named(count, prim) => Some(Type::Named(count + 1, prim)),
     _ => Some(Type::Undefined),
+  }
+}
+
+pub fn ptr_depth(ty: &Type) -> i8 {
+  match ty {
+    Type::NoUse => 0,
+    Type::Generic { ptr_count, gen_index } => *ptr_count,
+    Type::Complex(count, data) => *count,
+    Type::Primitive(count, prim) => *count,
+    Type::Named(count, prim) => *count,
+    _ => 0,
   }
 }
 
@@ -247,6 +287,7 @@ pub fn from_ptr(ty: Type) -> Option<Type> {
     Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count - 1, gen_index }),
     Type::Complex(count, data) => Some(Type::Complex(count - 1, data)),
     Type::Primitive(count, prim) => Some(Type::Primitive(count - 1, prim)),
+    Type::Named(count, prim) => Some(Type::Named(count - 1, prim)),
     _ => Some(Type::Undefined),
   }
 }

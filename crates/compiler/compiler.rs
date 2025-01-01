@@ -10,7 +10,7 @@ use rum_lang::{
     ast::ASTNode,
     base_type_Value,
     block_expression_group_Value,
-    expression_Value,
+    expression_types_Value as expression_Value,
     loop_statement_group_1_Value,
     match_condition_Value,
     member_group_Value,
@@ -182,11 +182,11 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 }
 
 fn add_properties(db: &Database, properties: &[(IString, type_Value<Token>)], bp: &mut BuildPack<'_>, offset_op: &mut OpId) {
-  for (prop_name, type_val) in properties.iter() {
+  for (prop_name, src_ty) in properties.iter() {
     let prop_name_op = add_op(bp, Operation::Name(*prop_name), Default::default(), Default::default());
     let (prop_op, prop_ty) = process_op("PROP", &[prop_name_op, *offset_op], bp, Default::default());
 
-    match type_val {
+    match src_ty {
       type_Value::RawRoutineType(ty) => {
         // Create a routine signature and set that as the type to attach to
         let mut super_node = RootNode::default();
@@ -210,29 +210,118 @@ fn add_properties(db: &Database, properties: &[(IString, type_Value<Token>)], bp
 
         add_constraint(bp, NodeConstraint::GenTyToTy(prop_ty, Type::Complex(0, handle.clone())));
       }
-      type_Value::Type_Pointer(ptr_ty) => {
-        // add base value and set
-        let base_ty = add_ty_var(bp).ty.clone();
-        let name: IString = ptr_ty.ty.name.id.intern();
-        add_constraint(bp, NodeConstraint::GlobalNameReference(base_ty.clone(), name, Default::default()));
-        add_constraint(bp, NodeConstraint::Deref { ptr_ty: prop_ty.clone(), val_ty: base_ty, mutable: true })
-      }
-      type_Value::Type_Variable(var) => {
-        let name: IString = var.name.id.intern();
-        add_constraint(bp, NodeConstraint::GlobalNameReference(prop_ty, name, Default::default()))
-      }
       _ => {
-        if let Some(ty) = get_type(type_val) {
-          add_constraint(bp, NodeConstraint::GenTyToTy(prop_ty, ty.clone()));
-        } else {
-          unreachable!()
-        }
+        add_type_constraints(bp, &prop_ty, src_ty);
       }
     };
 
     let (prop_offset_op, _) = process_op("CALC_AGG_SIZE", &[prop_op, *offset_op], bp, Default::default());
     *offset_op = prop_offset_op;
     add_output(bp, prop_op, VarId::Name(*prop_name));
+  }
+}
+
+fn add_type_constraints(bp: &mut BuildPack<'_>, ty: &Type, src_ty: &type_Value<Token>) {
+  let defined_ty = get_type_data(&src_ty);
+  if !defined_ty.is_open() {
+    match defined_ty {
+      Type::Named(_, name) => add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), name, Default::default())),
+      _ => {
+        add_constraint(bp, NodeConstraint::GenTyToTy(ty.clone(), defined_ty.clone()));
+      }
+    }
+
+    if ptr_depth(&defined_ty) > 0 {
+      let base_ty = add_ty_var(bp).ty.clone();
+      add_constraint(bp, NodeConstraint::Deref { ptr_ty: ty.clone(), val_ty: base_ty, mutable: false })
+    }
+  }
+}
+
+fn get_type_data(ty: &type_Value<Token>) -> Type {
+  use type_Value::*;
+  match ty {
+    Type_u8(_) => ty_u8,
+    Type_u16(_) => ty_u16,
+    Type_u32(_) => ty_u32,
+    Type_u64(_) => ty_u64,
+    Type_i8(_) => ty_s8,
+    Type_i16(_) => ty_s16,
+    Type_i32(_) => ty_s32,
+    Type_i64(_) => ty_s64,
+    Type_f32(_) => ty_f32,
+    Type_f64(_) => ty_f64,
+    Type_Generic(_) => Type::Generic { ptr_count: 0, gen_index: 0 },
+    Type_Struct(strct) => todo!("handle anonymous struct"),
+    Type_Array(array) => todo!("handle anonymous array"),
+    Type_Variable(type_var) => {
+      if type_var.name.id == "addr" {
+        ty_addr
+      } else {
+        Type::Named(0, type_var.name.id.intern())
+      }
+    }
+    Type_Pointer(ptr) => {
+      let base_ty = get_base_ty(&ptr.base_ty);
+      let ptr_ty = to_ptr(base_ty.clone()).expect(&format!("Could not turn {base_ty} into ptr"));
+      ptr_ty
+    }
+    ty => unreachable!("Type not implementd: {ty:#?}"),
+  }
+}
+
+fn get_base_ty(ty: &base_type_Value<Token>) -> Type {
+  use base_type_Value::*;
+  match ty {
+    Type_u8(_) => ty_u8,
+    Type_u16(_) => ty_u16,
+    Type_u32(_) => ty_u32,
+    Type_u64(_) => ty_u64,
+    Type_i8(_) => ty_s8,
+    Type_i16(_) => ty_s16,
+    Type_i32(_) => ty_s32,
+    Type_i64(_) => ty_s64,
+    Type_f32(_) => ty_f32,
+    Type_f64(_) => ty_f64,
+    Type_Generic(_) => Type::Generic { ptr_count: 0, gen_index: 0 },
+    Type_Variable(type_var) => {
+      if type_var.name.id == "addr" {
+        ty_addr
+      } else {
+        Type::Named(0, type_var.name.id.intern())
+      }
+    }
+    ty => unreachable!("Type not implementd: {ty:#?}"),
+  }
+}
+
+pub fn get_type(ir_type: &type_Value<Token>) -> Option<Type> {
+  use type_Value::*;
+  match ir_type {
+    Type_u8(_) => Some(ty_u8),
+    Type_u16(_) => Some(ty_u16),
+    Type_u32(_) => Some(ty_u32),
+    Type_u64(_) => Some(ty_u64),
+    Type_i8(_) => Some(ty_s8),
+    Type_i16(_) => Some(ty_s16),
+    Type_i32(_) => Some(ty_s32),
+    Type_i64(_) => Some(ty_s64),
+    Type_f32(_) => Some(ty_f32),
+    Type_f64(_) => Some(ty_f64),
+    /* Type_f32v2(_) => ty_db.get_ty("f32v2"),
+    Type_f32v4(_) => ty_db.get_ty("f32v4"),
+    Type_f64v2(_) => ty_db.get_ty("f64v2"),
+    Type_f64v4(_) => ty_db.get_ty("f64v4"), */
+    Type_Generic(_) => Some(Type::Generic { ptr_count: 0, gen_index: 0 }),
+    Type_Pointer(ptr) => Option::None,
+    Type_Variable(type_var) => {
+      if type_var.name.id == "addr" {
+        Some(ty_addr)
+      } else {
+        Option::None
+      }
+    }
+    _t => Option::None,
   }
 }
 
@@ -303,38 +392,24 @@ fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildP
 
     add_input(bp, op_id, var_id);
 
-    if let Some(defined_ty) = get_type(&param.ty.ty) {
-      if !defined_ty.is_open() {
-        add_constraint(bp, NodeConstraint::GenTyToTy(ty, defined_ty));
-      }
-    } else if let type_Value::Type_Variable(ty_name) = &param.ty.ty {
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), param.tok.clone()));
-    } else if let type_Value::Type_Pointer(ptr_ty) = &param.ty.ty {
-      let ty_name = ptr_ty.ty.name.id.intern();
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name, param.tok.clone()));
-    }
+    add_type_constraints(bp, &ty, &param.ty.ty);
   }
 
   if let Some(return_ty) = &routine_ty.return_type {
     let out_ty = add_ty_var(bp).ty.clone();
 
-    let ty: Type = out_ty.clone();
-
-    if let Some(defined_ty) = get_type(&return_ty.ty) {
-      if !defined_ty.is_open() {
-        add_constraint(bp, NodeConstraint::GenTyToTy(ty, defined_ty));
-      }
-    } else if let type_Value::Type_Variable(ty_name) = &return_ty.ty {
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name.name.id.intern(), return_ty.tok.clone()));
-    } else if let type_Value::Type_Pointer(ptr_ty) = &return_ty.ty {
-      let ty_name = ptr_ty.ty.name.id.intern();
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty.clone(), ty_name, return_ty.tok.clone()));
-    }
+    add_type_constraints(bp, &out_ty, &return_ty.ty);
 
     Some((out_ty, return_ty.clone().into()))
   } else {
     None
   }
+}
+
+struct Numeric {
+  signed:      bool,
+  bound_class: u8,
+  precision:   u8,
 }
 
 #[derive(Debug, Clone)]
@@ -587,36 +662,6 @@ fn add_constraint(bp: &mut BuildPack, constraint: NodeConstraint) {
   bp.constraints.push(constraint)
 }
 
-pub fn get_type(ir_type: &type_Value<Token>) -> Option<Type> {
-  use type_Value::*;
-  match ir_type {
-    Type_u8(_) => Some(ty_u8),
-    Type_u16(_) => Some(ty_u16),
-    Type_u32(_) => Some(ty_u32),
-    Type_u64(_) => Some(ty_u64),
-    Type_i8(_) => Some(ty_s8),
-    Type_i16(_) => Some(ty_s16),
-    Type_i32(_) => Some(ty_s32),
-    Type_i64(_) => Some(ty_s64),
-    Type_f32(_) => Some(ty_f32),
-    Type_f64(_) => Some(ty_f64),
-    /* Type_f32v2(_) => ty_db.get_ty("f32v2"),
-    Type_f32v4(_) => ty_db.get_ty("f32v4"),
-    Type_f64v2(_) => ty_db.get_ty("f64v2"),
-    Type_f64v4(_) => ty_db.get_ty("f64v4"), */
-    Type_Generic(_) => Some(Type::Generic { ptr_count: 0, gen_index: 0 }),
-    Type_Pointer(ptr) => Option::None,
-    Type_Variable(type_var) => {
-      if type_var.name.id == "addr" {
-        Some(ty_addr)
-      } else {
-        Option::None
-      }
-    }
-    _t => Option::None,
-  }
-}
-
 fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
   let mut output = Default::default();
   let mut heaps = vec![];
@@ -703,10 +748,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, Type) {
               VarLookup::Ptr { mem_ptr_op, mem_ptr_ty: mem_ty, mem_var_id, root_par_id } => {
                 let (op, ty) = process_op("STORE", &[mem_ptr_op, expr_op], bp, mem.clone().into());
                 println!("TODO: Free old version of member variable");
-
                 clone_op_heap(bp, mem_ptr_op, op);
-                //update_var(bp, mem_var_id, op, ty.clone());
-                //update_var(bp, root_par_id, op, Default::default());
               }
               VarLookup::Var(var_op, ty, var_name) => {
                 println!("TODO: Free old version of variable");
@@ -889,16 +931,7 @@ fn get_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, local_only
 
       let mut agg_ty_index = var.ty.generic_id().expect("All vars should have generic ids");
 
-      /*       if bp.super_node.type_vars[agg_ty_index].ctx_id == VarId::Undefined {
-             let ctx_id = VarId::MemCTX("local".intern());
-             let (_, agg_heap_ty) = get_mem_context(bp);
-             add_constraint(bp, NodeConstraint::GenTyToTy(agg_heap_ty.clone(), Type::Heap("local".intern())));
-             bp.super_node.type_vars[agg_ty_index].ctx_id = ctx_id;
-           }
-      */
       let root_par_id = VarId::Name(var_name);
-
-      println!("------------------------");
 
       debug_assert!(var.ori_op.is_valid(), "{var:#?}");
 
@@ -908,7 +941,7 @@ fn get_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, local_only
       for (index, mem_val) in mem.sub_members.iter().enumerate() {
         match mem_val {
           member_group_Value::IndexedMember(index) => {
-            let (expr_op, ty) = compile_expression(&index.expression.clone().to_ast().into_expression_Value().unwrap(), bp);
+            let (expr_op, ty) = compile_expression(&index.expression.clone().to_ast().into_expression_types_Value().unwrap(), bp);
 
             add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_addr));
 
@@ -1012,9 +1045,10 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
     expression_Value::RawBlock(block_scope) => compile_scope(&block_scope, bp),
     expression_Value::MemberCompositeAccess(mem) => match get_mem_op(bp, mem, false, mem.tok.clone()) {
       VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, mem_var_id, root_par_id } => {
-        let (op, ty) = process_op("LOAD", &[mem_ptr_op], bp, mem.clone().into());
-        clone_op_heap(bp, mem_ptr_op, op);
-        (op, ty)
+        (mem_ptr_op, mem_ptr_ty)
+        //let (op, ty) = process_op("LOAD", &[mem_ptr_op], bp, mem.clone().into());
+        //clone_op_heap(bp, mem_ptr_op, op);
+        //(op, ty)
       }
       VarLookup::Var(op, ty, ..) => (op, ty),
     },
@@ -1034,29 +1068,29 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
       (op, ty)
     }
     expression_Value::Add(add) => {
-      let left = compile_expression(&add.left.clone().to_ast().into_expression_Value().expect("Should be convertible"), bp).0;
-      let right = compile_expression(&add.right.clone().to_ast().into_expression_Value().expect("super_node.operands  be convertible"), bp).0;
+      let left = compile_expression(&add.left.clone().to_ast().into_expression_types_Value().expect("Should be convertible"), bp).0;
+      let right = compile_expression(&add.right.clone().to_ast().into_expression_types_Value().expect("super_node.operands  be convertible"), bp).0;
       process_op("ADD", &[left, right], bp, add.clone().into())
     }
-    expression_Value::Sub(sub) => {
-      let left = compile_expression(&sub.left.clone().to_ast().into_expression_Value().expect("Should be convertible"), bp).0;
-      let right = compile_expression(&sub.right.clone().to_ast().into_expression_Value().expect("  be convertible"), bp).0;
+    expression_types_Value::Sub(sub) => {
+      let left = compile_expression(&sub.left.clone().to_ast().into_expression_types_Value().expect("Should be convertible"), bp).0;
+      let right = compile_expression(&sub.right.clone().to_ast().into_expression_types_Value().expect("  be convertible"), bp).0;
       process_op("SUB", &[left, right], bp, sub.clone().into())
     }
-    expression_Value::Div(div) => {
-      let left = compile_expression(&div.left.clone().to_ast().into_expression_Value().expect("Should be convertible"), bp).0;
-      let right = compile_expression(&div.right.clone().to_ast().into_expression_Value().expect("  be convertible"), bp).0;
+    expression_types_Value::Div(div) => {
+      let left = compile_expression(&div.left.clone().to_ast().into_expression_types_Value().expect("Should be convertible"), bp).0;
+      let right = compile_expression(&div.right.clone().to_ast().into_expression_types_Value().expect("  be convertible"), bp).0;
       process_op("DIV", &[left, right], bp, div.clone().into())
     }
-    expression_Value::Mul(mul) => {
-      let left = compile_expression(&mul.left.clone().to_ast().into_expression_Value().expect("Should be convertible"), bp).0;
-      let right = compile_expression(&mul.right.clone().to_ast().into_expression_Value().expect("  be convertible"), bp).0;
+    expression_types_Value::Mul(mul) => {
+      let left = compile_expression(&mul.left.clone().to_ast().into_expression_types_Value().expect("Should be convertible"), bp).0;
+      let right = compile_expression(&mul.right.clone().to_ast().into_expression_types_Value().expect("  be convertible"), bp).0;
       process_op("MUL", &[left, right], bp, mul.clone().into())
     }
 
-    expression_Value::Pow(pow) => {
-      let left = compile_expression(&pow.left.clone().to_ast().into_expression_Value().expect("Should be convertible"), bp).0;
-      let right = compile_expression(&pow.right.clone().to_ast().into_expression_Value().expect("  be convertible"), bp).0;
+    expression_types_Value::Pow(pow) => {
+      let left = compile_expression(&pow.left.clone().to_ast().into_expression_types_Value().expect("Should be convertible"), bp).0;
+      let right = compile_expression(&pow.right.clone().to_ast().into_expression_types_Value().expect("  be convertible"), bp).0;
       process_op("POW", &[left, right], bp, pow.clone().into())
     }
     expression_Value::RawMatch(match_) => process_match(match_, bp, None).0,
@@ -1160,7 +1194,7 @@ pub(crate) fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, a
 
       match expr {
         match_condition_Value::RawExprMatch(expr) => {
-          let (expr_op, _) = compile_expression(&expr.expr.clone().to_ast().into_expression_Value().unwrap(), bp);
+          let (expr_op, _) = compile_expression(&expr.expr.clone().to_ast().into_expression_types_Value().unwrap(), bp);
 
           let cmp_op_name = match expr.op.as_str() {
             ">" => "GR",
@@ -1362,11 +1396,14 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
 
   let out_op = OpId(bp.super_node.operands.len() as u32);
 
+  let mut op_inputs = vec![];
+
   for (port_index, port) in op_def.inputs.iter().enumerate() {
     let type_ref_name = port.var.name.as_str();
 
     match type_ref_name {
       "meta" => {
+        op_inputs.push(port_index);
         op_index += 1;
         operands[port_index] = inputs[op_index as usize];
       }
@@ -1376,6 +1413,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
         operands[port_index] = op;
       }
       type_ref_name => {
+        op_inputs.push(port_index);
         op_index += 1;
 
         operands[port_index] = inputs[op_index as usize];
@@ -1403,7 +1441,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
           }
         }
 
-        add_annotations(port.var.annotations.iter(), &ty_lu, bp, ty, Some(op_index as usize), out_op);
+        add_op_constraints(port.var.annotations.iter(), &ty_lu, bp, ty, Some(op_index as usize), out_op);
       }
     }
   }
@@ -1428,7 +1466,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
           std::collections::hash_map::Entry::Occupied(d) => d.get().clone(),
           std::collections::hash_map::Entry::Vacant(..) => {
             let ty = add_ty_var(bp).ty.clone();
-            add_annotations(output.var.annotations.iter(), &ty_lu, bp, ty.clone(), Default::default(), out_op);
+            add_op_constraints(output.var.annotations.iter(), &ty_lu, bp, ty.clone(), Default::default(), out_op);
             ty
           }
         };
@@ -1442,7 +1480,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
   // Add constraints
 }
 
-fn add_annotations(
+fn add_op_constraints(
   annotations: std::slice::Iter<'_, annotation_Value>,
   ty_lu: &HashMap<&str, Type>,
   bp: &mut BuildPack,
@@ -1512,10 +1550,9 @@ op: ROUTINE_PTR  => out [FN_PTR]
 op: CALC_AGG_SIZE prop [Prop] offset [Offset: Numeric] => offset [Offset]
 op: PROP  name [Name: agg] offset [Offset: Numeric] => out [PropData]
 
-op: COPY to [Base] from [Other] ctx [read_ctx] => out [Base] ctx[write_ctx]
-
 op: LOAD  ptr [ptr] ctx[read_ctx] => out [val: deref(ptr)]
 op: STORE  ptr [ptr] val [val: mut_deref(ptr)] ctx[read_ctx] =>  out [ptr] ctx[write_ctx]
+op: COPY to [Base] from [Other] ctx [read_ctx] => out [Base] ctx[write_ctx]
  
 op: CONVERT from[A] => to[B]
 op: MAPS_TO from[A] => to[B]
@@ -1523,20 +1560,20 @@ op: MAPS_TO from[A] => to[B]
 
 op: TY_EQ l [A]  r [B]  => out [C: bool]
 
-op: GE  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]
-op: LE  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]
-op: EQ  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]
-op: GR  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]
-op: LS  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]
-op: NE  l [A: Numeric]  r [B: converts(A)]  => out [C: bool]
+op: GE  l [A]  r [B]  => out [C: bool]
+op: LE  l [A]  r [B]  => out [C: bool]
+op: EQ  l [A]  r [B]  => out [C: bool]
+op: GR  l [A]  r [B]  => out [C: bool]
+op: LS  l [A]  r [B]  => out [C: bool]
+op: NE  l [A]  r [B]  => out [C: bool]
 
-op: MOD  l [A: Numeric]  r [B: converts(A)]  => out [A]
-op: POW  l [A: Numeric]  r [B: converts(A)]  => out [A]
+op: MOD  l [A]  r [B]  => out [C: numeric]
+op: POW  l [A]  r [B]  => out [C: numeric]
 
-op: MUL  l [A: Numeric]  r [B: converts(A)]  => out [A]
-op: DIV  l [A: Numeric]  r [B: converts(A)]  => out [A]
+op: MUL  l [A]  r [B]  => out [C: numeric]
+op: DIV  l [A]  r [B]  => out [C: numeric]
 
-op: SUB  l [A: Numeric]  r [B: converts(A)]  => out [A]
-op: ADD  l [A: Numeric]  r [B: converts(A)]  => out [A]
+op: SUB  l [A]  r [B]  => out [C: numeric]
+op: ADD  l [A]  r [B]  => out [C: numeric]
 
 "###;

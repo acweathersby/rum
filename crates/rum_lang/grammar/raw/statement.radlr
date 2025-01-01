@@ -1,6 +1,5 @@
 IGNORE { c:sp c:nl tk:cmt::comment ";" }
 IMPORT ./expression as expr
-IMPORT ./complex as complex
 IMPORT ./annotation as anno
 
 IMPORT type as ty

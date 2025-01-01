@@ -7,9 +7,13 @@ IMPORT ../common/comment as cmt
 
 IGNORE { c:sp c:nl }
 
-<> type > base_type | pointer_type
+<> type 
+  > base_type 
+  | pointer_type
+  | complex_type
+  | type_type
 
-<> pointer_type > anno::lifetime^ptr_type named_type^ty :ast { t_Type_Pointer, ptr_type, ty }
+<> pointer_type > "*" base_type^base_ty :ast { t_Type_Pointer, base_ty, tok }
 
 <> base_type 
 
@@ -17,11 +21,7 @@ IGNORE { c:sp c:nl }
 
   | named_type
 
-  | complex_type
-
   | generic_type
-
-  | type_type
 
 <> generic_type > "?" :ast { t_Type_Generic }
 
@@ -58,7 +58,6 @@ IGNORE { c:sp c:nl }
 
 <> structure_type
 
-
   > anno::lifetime?^heap "[" property(+",")^properties ","(*) "]"
 
     :ast { t_Type_Struct, properties, heap, tok }
@@ -74,4 +73,11 @@ IGNORE { c:sp c:nl }
   > anno::lifetime?^heap "[" type^base_type (";" prim::int :ast u32($2) )?^size "]"
 
     :ast { t_Type_Array, base_type, heap, size, tok }
+
+<> enum_type 
+
+  > prim::var(+"|")^names
+
+    :ast { t_Type_Enum, names, tok }
+
 

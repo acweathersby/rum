@@ -13,7 +13,15 @@ fn allocator_binding() {
   let global_constraints = add_module(
     &mut db,
     "
-    g => [ x: f32 ]
+    COLUMN1 <: u32 = { COLUMN2 + 1 }
+    COLUMN2 :> u32 = 2
+
+    unionA :> u32 
+       COLUMN1 = 2 
+     | COLUMN2
+
+
+    g => [ x: f32 = 0 ]
 
     AllocatorI => [
       allocate: (ctx: AllocatorI, size: u64, par: AllocatorI) => addr,
@@ -47,11 +55,11 @@ fn allocator_binding() {
 
 
     scope () => ? {
-      b = {       
+      b = { 
 
         test* => AppendOnlyAllocator(test*) 
         
-        b:g = test* :[x = 0]
+        b:f 256x2 = test* :[x = 0]
 
         b.x = 2
 
@@ -188,15 +196,13 @@ fn array_handling() {
         b[i] = 100 + i
         i = i + 1
       }
-
-      b // b is poisoned here
       
       b[0] + 2 + b.D()
     }
 
     D => (b: base) > u8 b[0] + 12
     
-    base => total* [u8; 3]
+    base => total* [u8; 8]
 
   "####,
   );
@@ -221,28 +227,59 @@ fn heap_handling_temp() {
     r####"
 
 
-    to_u32 => ( t: ? ) > f32 { 
-      d:f32 = t.val d
-    }
+    to_u32d 
+      => ( t: ? ) > f32 { 
+        d:f32 = t.val d
+      }
 
-    to_u32 => ( t: ? ) > f32 { 
-      d:f32 = t.tango d
-    }
+    to_u32 
+      => ( t: *f32 ) > f32 { 
+        t + 2
+      }
 
-
-    calls_method => () > ? {
+    calls_method 
+      => () > ? {
         r = 200
         b: base = :[ val = r ]
         v: base = :[ val = b.val + 300 ] // :[ val = 200 ]  :[ val = 200 ]
-        b.val = b.val + 2000       // :[ val = 2200 ] :[ val = 200 ]
+        b.val = b.val.join(2000)       // :[ val = 2200 ] :[ val = 200 ]
         b = v                      // :[ val = 2200 ] :[ val = 2200 ]
         b.val = 200000
+        
         v.val.to_u32()
       }
 
     
       base 
         => total* [ val: f32, tango: u32 ]
+  "####,
+  );
+
+  let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("calls_method".intern()) {
+    dbg!(&test);
+    let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
+
+    dbg!(val);
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn heap_handling_temp2() {
+  let mut db: Database = Database::default();
+
+  let global_constraints = add_module(
+    &mut db,
+    r####"
+    b => [u32;1]
+
+    calls_method 
+      => () > ? {
+        r:b = :[2] 
+        2 + r[0]
+      }
   "####,
   );
 

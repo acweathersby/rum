@@ -800,3 +800,35 @@ Goal 2
 DATA FLOW <-> OPERATIONAL FLOW
 
 R r rt => (op) A a ta  B b bt ... N n tn
+
+
+Foundational Database:
+  Holds base code for all objects encountered in a RUM build. 
+  Facilitates solution builds by providing a query system that can fulfill requests for function lookup by signature and data set resolutions
+
+Solve Database: 
+  Contains references or implementations of all functions and objects that required to by a solved program. Relies on the foundational database to
+  fulfill requests for objects, and stores cached or synthesized versions of these objects within its own domain. The interpreter and optimizer systems
+  rely on this database to produce their artifacts
+
+
+
+
+CLI / ABI Compiler system
+  CLI Commands
+    - Add Module
+    - Remove Module
+    - Add module member
+    - Remove module member
+    - Compile Root
+      - Debug 
+      - Release
+    - Test Root 
+    - Add Library
+    - Remove Library
+    - REPL
+    - Print 
+      - Database
+      - Function
+      - Binding
+      - Alias

@@ -208,7 +208,6 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
   if op.is_invalid() {
     return Value::Null;
   }
-  println!("{op}");
 
   let ScopeData { slice_start, slice_end, loop_old, loop_new } = scope_data;
   let scratch_index = slice_start + op.usize();
@@ -435,8 +434,6 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty.clone();
           let par_heap = super_node.type_vars[parent_heap_id].ty.clone();
 
-          dbg!((&new_heap, &par_heap));
-
           match (par_heap, new_heap) {
             (Type::Heap(par_heap), Type::Heap(new_heap_name)) => match op_ty {
               Type::Complex(_, heap_context_node) => {
@@ -467,7 +464,6 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           Value::u64(offset_base) => {
             let Value::Ptr(ptr, ty) = interprete_op(super_node, operands[0], scratch, ctx, scope_data) else { panic!("Cannot index a non-pointer value") };
 
-            dbg!(&ty);
             match &ty {
               Type::Complex(ptr_depth, v) => {
                 if *ptr_depth <= 1 {
@@ -549,7 +545,6 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
     };
     scratch[scratch_index].1 = loop_new;
 
-    println!("-- {op}");
     //println!("{:12x} : {op:3} => {:50} {:?}", super_node as *const _ as usize, format!("{:?}", super_node.operands.get(op.usize())), &scratch[scratch_index]);
   } else {
     //println!("{:12x} : {op:3} => {:50} {}", super_node as *const _ as usize, format!("{:?}", super_node.operands.get(op.usize())), "-----------------------");
@@ -581,8 +576,6 @@ fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: IString, size: u64) ->
       .get(&sig)
     {
       let mut scratch = Vec::new();
-
-      dbg!(&ctx.heaps);
 
       match interpret_node(allocate_method.get().unwrap(), &[heap.clone(), Value::u64(size), par_heap.clone()], &mut scratch, 0, ctx) {
         Value::Ptr(ptr, _) => ptr,

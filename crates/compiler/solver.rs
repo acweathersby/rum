@@ -10,6 +10,7 @@ use rum_lang::{
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
   hash::Hash,
+  thread::panicking,
   usize,
 };
 
@@ -516,6 +517,14 @@ pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> Solv
       if next_stage_constraints.len() > 0 {
         constraint_queue.extend(next_stage_constraints.drain(..));
       } else {
+        for i in 0..db.nodes.len() {
+          let node = db.nodes[i].clone();
+
+          if node.get().unwrap().solve_state() != SolveState::Solved {
+            solve_node_expressions(node);
+          }
+        }
+
         break;
       }
 
@@ -628,9 +637,32 @@ fn polyfill(node: NodeHandle, poly_db: &mut SolveDatabase) -> Vec<GlobalConstrai
   global_constraints
 }
 
+pub(crate) fn solve_node_expressions(node: NodeHandle) {
+  let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
+
+  for (index, op) in operands.iter().enumerate().rev() {
+    match op {
+      Operation::Op { op_name, operands } => match *op_name {
+        "ADD" => {
+          let op_ty = &type_vars[types[index].generic_id().unwrap()].ty;
+
+          if op_ty.is_generic() {
+            // 
+
+
+            todo!("Resolve {op}");
+          }
+        }
+        _ => {}
+      },
+      _ => {}
+    }
+  }
+}
+
 pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstraint]) {
   let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
-
+  dbg!(&node, &constraints);
   while let Some(constraint) = constraint_queue.pop_front() {
     let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
 
@@ -753,14 +785,21 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
 
         let out_op = OpId(operands.len() as u32);
         let mut operand = operands[src_op.usize()].clone();
+
         match &mut operand {
           Operation::Op { operands: ops, .. } => {
             let target_op = ops[arg_index];
+            let ty = types[target_op.usize()].clone();
+            let index = ty.generic_id().expect("Left ty should be generic");
+            let var = get_root_var_mut(index, type_vars);
+
+            if ptr_depth(&target_ty) > 0 || ptr_depth(&var.ty) > 0 {
+              panic!("Pointer types are not valid in expressions. Please dereference them")
+            }
 
             match operands[target_op.usize()] {
               Operation::Const(..) | Operation::Op { op_name: "ADD", .. } => {
                 let ops = &ops;
-                let ty = types[ops[arg_index].usize()].clone();
 
                 if target_ty.is_generic() {
                   constraint_queue.push_back(NodeConstraint::GenTyToGenTy(target_ty, ty));

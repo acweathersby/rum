@@ -12,6 +12,8 @@ IMPORT ../common/comment as cmt
 
   > bitwise
 
+  | aggregate_instantiation
+
 <> boolean 
 
   > boolean^left "||"{1}  boolean{0}^right
@@ -158,6 +160,9 @@ IMPORT ../common/comment as cmt
 
     :ast { t_MemberCompositeAccess, root, sub_members, tok }
 
+<> member_load > "[" member "]"
+
+
 <> indexed_member 
 
   >  "[" bitwise^expression "]"
@@ -190,14 +195,6 @@ IMPORT ../common/comment as cmt
 
   > primitive_number
 
-  | primitive_string  
-
-<> primitive_string  
-
-  >  prim::string
-
-    :ast { t_RawStr, val:str($1), tok  }
-
 <> primitive_number 
 
   > prim::sci_num
@@ -215,4 +212,23 @@ IMPORT ../common/comment as cmt
   > prim::int
 
     :ast { t_RawInt, val:i64($1), tok }
+
+
+<> aggregate_instantiation 
+
+  > ':[' aggregate_member_initializer(*",")^inits ","(*) "]"
+
+    :ast  { t_RawAggregateInstantiation, allocator_binding, inits, tok }
+
+  | prim::string^data
+
+    :ast  { t_RawCharacterInstantiation, allocator_binding, data: str($1<1,1>), tok }
+
+
+<> aggregate_member_initializer 
+
+  > (prim::var "=" :ast $1 )?^name expression
+
+    :ast  { t_RawAggregateMemberInit, name, expression, tok  }
+
 
