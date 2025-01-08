@@ -1,8 +1,6 @@
-use rum_lang::istring::IString;
+use super::{CMPLXId, TypeV};
 
-use super::Type;
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
   Uninitialized,
   Null,
@@ -18,7 +16,7 @@ pub enum Value {
   i8(i8),
   f64(f64),
   f32(f32),
-  Agg(*mut u8, Type),
-  Ptr(*mut u8, Type),
-  Heap(IString),
+  Agg(*mut u8, TypeV),
+  Ptr(*mut u8, TypeV),
+  Heap(CMPLXId),
 }

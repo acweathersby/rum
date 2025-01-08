@@ -1,12 +1,10 @@
 [package]
-name = "rum_lang"
+name = "rum_common"
 version = "0.0.0"
 edition = "2021"
 
-build = "./grammar/build.rs"
-
 [lib]
-path = "./src/lib.rs"
+path = "./lib.rs"
 
 [dependencies.radlr_rust_runtime]
 path = "../../../lib_radlr/crates/radlr-rust-runtime"
@@ -18,7 +16,6 @@ path = "../../../lib_radlr/crates/radlr-build"
 libc = "0.2.154"
 num-traits        = "0.2.17"
 once_cell         = "1.19.0"
-rum_common        = { path="../common" }
 
 [dependencies.iced-x86]
 version = "1.21.0"

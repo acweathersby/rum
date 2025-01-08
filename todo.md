@@ -832,3 +832,16 @@ CLI / ABI Compiler system
       - Function
       - Binding
       - Alias
+
+# 
+
+The only values that can be returned from functions are Complex and primitive values. Pointers cannot be returned from functions. 
+Complex values are "heap" allocated objects.
+
+
+DB ->
+  - NAMED CMPLX : NAME SIGNATURE LAYOUT
+  - ANONY CMPLX : SIGNATURE LAYOUT  
+  - NAMED DATA: NAME - TYPE - VAL
+  - ANONY DATA: TYPE - VAL
+  

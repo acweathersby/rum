@@ -1,10 +1,11 @@
+use rum_common::CachedString;
+
 use crate::{
   compiler::add_module,
   interpreter::{interpret, interpret_node},
   solver::solve,
-  types::{Database, GetResult, SolveDatabase, SolveState, Type, Value},
+  types::{ty_u8, Database, GetResult, SolveDatabase, SolveState, Value},
 };
-use rum_lang::istring::CachedString;
 
 #[test]
 fn allocator_binding() {
@@ -238,12 +239,12 @@ fn heap_handling_temp() {
       }
 
     calls_method 
-      => () > ? {
+      => () > u32 {
         r = 200
         b: base = :[ val = r ]
         v: base = :[ val = b.val + 300 ] // :[ val = 200 ]  :[ val = 200 ]
-        b.val = b.val.join(2000)       // :[ val = 2200 ] :[ val = 200 ]
-        b = v                      // :[ val = 2200 ] :[ val = 2200 ]
+        b.val = b.val.join(2000)        // :[ val = 2200 ] :[ val = 200 ]
+        b = v                          // :[ val = 2200 ] :[ val = 2200 ]
         b.val = 200000
         
         v.val.to_u32()
@@ -267,18 +268,23 @@ fn heap_handling_temp() {
 }
 
 #[test]
-fn heap_handling_temp2() {
+fn test_string() {
   let mut db: Database = Database::default();
 
   let global_constraints = add_module(
     &mut db,
     r####"
-    b => [u32;1]
+
+    str => [u8]
+
+    d => (b: str) {
+      b[0] = "d"
+    }
 
     calls_method 
-      => () > ? {
-        r:b = :[2] 
-        2 + r[0]
+      => () {
+        Alpha: str = :["a"] // [u8:1]
+        Alpha.d()
       }
   "####,
   );
@@ -286,7 +292,45 @@ fn heap_handling_temp2() {
   let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
   if let GetResult::Existing(test) = sdb.get_type_by_name_mut("calls_method".intern()) {
     dbg!(&test);
-    let val = interpret(test, &[Value::f32(11.0), Value::u32(2), Value::u32(3)], &sdb);
+    let mut d = 22u8;
+
+    let val = interpret(test, &[Value::Ptr(&mut d as *mut _, ty_u8.incr_ptr()), Value::u32(1), Value::u32(3)], &sdb);
+
+    dbg!(val);
+  } else {
+    panic!("routine test not found")
+  }
+}
+
+#[test]
+fn heap_handling_temp2() {
+  let mut db: Database = Database::default();
+
+  let global_constraints = add_module(
+    &mut db,
+    r####"
+    
+    b => test* [u32;1]
+
+    d =>  [r:u8]
+
+    calls_method 
+      => (Alpha: *u8, D: u32) > d {
+        Alpha = 44
+        
+        a = D * 2 + Alpha
+        
+        :[ r = a + a ]
+      }
+  "####,
+  );
+
+  let mut sdb: SolveDatabase<'_> = solve(&db, "calls_method".intern(), true);
+  if let GetResult::Existing(test) = sdb.get_type_by_name_mut("calls_method".intern()) {
+    dbg!(&test);
+    let mut d = 22u8;
+
+    let val = interpret(test, &[Value::Ptr(&mut d as *mut _, ty_u8.incr_ptr()), Value::u32(1), Value::u32(3)], &sdb);
 
     dbg!(val);
   } else {

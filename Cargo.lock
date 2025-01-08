@@ -100,6 +100,18 @@ name = "radlr_rust_runtime"
 version = "1.0.1-beta1"
 
 [[package]]
+name = "rum_common"
+version = "0.0.0"
+dependencies = [
+ "iced-x86",
+ "libc",
+ "num-traits",
+ "once_cell",
+ "radlr_build",
+ "radlr_rust_runtime",
+]
+
+[[package]]
 name = "rum_compiler"
 version = "0.0.0"
 dependencies = [
@@ -107,6 +119,7 @@ dependencies = [
  "num-traits",
  "radlr_build",
  "radlr_rust_runtime",
+ "rum_common",
  "rum_lang",
 ]
 
@@ -120,4 +133,5 @@ dependencies = [
  "once_cell",
  "radlr_build",
  "radlr_rust_runtime",
+ "rum_common",
 ]

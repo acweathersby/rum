@@ -3,6 +3,7 @@
 members = [
   "./crates/compiler",
   "./crates/core",
+  "./crates/common",
   "./crates/rum_lang"
 ]
 

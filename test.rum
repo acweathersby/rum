@@ -1,0 +1,6 @@
+str => [u8; 32]
+
+#test
+hello_world => () > u64 bingo(22)
+
+bingo => (v) > ?v v + 10001

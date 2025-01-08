@@ -1,17 +1,27 @@
 IGNORE { c:sp c:nl tk:cmt::comment }
 
+
+IMPORT ../common/primitive as prim
 IMPORT module as module
 IMPORT expression as expr
 IMPORT type as ty
 IMPORT routine as rt
+IMPORT annotation as anno
 IMPORT ../common/comment as cmt
 
 EXPORT raw_module as raw_module
 EXPORT raw_function_definition as raw_routine_def
 EXPORT expr::call as raw_call
 EXPORT ty::type as types
+EXPORT ty::type as types
+EXPORT prim::sci_num as sci_num
+EXPORT raw_entry_identifier as entry_id
 
 <> raw_module > module::module
 
 <> raw_function_definition > rt::routine_definition
+
+<> raw_entry_identifier > entry :ast { t_Entry, entry }
+
+<> entry > anno::annotation | rt::routine_definition | prim::var(+"|")^names :ast { t_NamedEntries, names }
 

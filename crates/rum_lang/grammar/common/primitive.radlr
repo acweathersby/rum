@@ -18,7 +18,9 @@
 
 <> sci_num 
 
-   > tk:( "-"? c:num(+) ( "." ( c:num(+) )? )? ( ("e" | "E") "-"? c:num(*) )? )
+   > int^int tk:( "." c:num(*) )?^dec tk:( ("e" | "E") int )?^exp
+
+    :ast { t_Num, int: str($int), dec:str($dec<1,0>), exp:str($exp<1,0>), tok  }
 
 <> int 
 

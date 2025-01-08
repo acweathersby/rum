@@ -1,8 +1,8 @@
+use radlr_rust_runtime::types::Token;
+use rum_common::{CachedString, IString};
+
 use super::*;
-use rum_lang::{
-  istring::{CachedString, IString},
-  Token,
-};
+
 use std::{
   alloc::Layout,
   default,
@@ -38,8 +38,7 @@ impl Default for NodeHandle {
 }
 impl Debug for NodeHandle {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(&Type::Complex(0, self.clone()), f)?;
-    f.write_str("\n")?;
+    f.write_fmt(format_args!("{:16X} => {:?}\n", self as *const _ as usize, self.get().unwrap()))?;
     let r = unsafe { self.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
     r.node.fmt(f)
   }
@@ -154,6 +153,7 @@ pub enum VarId {
   MatchActivation,
   LoopActivation,
   Return,
+  VoidReturn,
   GlobalContext,
   Generic,
   MemCTX,
@@ -234,8 +234,9 @@ pub(crate) enum Operation {
   OutputPort(u32, Vec<(u32, OpId)>),
   Op { op_name: &'static str, operands: [OpId; 3] },
   Const(ConstVal),
+  Data,
   Name(IString),
-  CallTarget(NodeHandle),
+  CallTarget(CMPLXId),
   IntrinsicCallTarget(IString),
   Allocate,
   Free,
@@ -250,7 +251,7 @@ impl Debug for Operation {
 impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Operation::CallTarget(target) => f.write_fmt(format_args!("Target [cmplx {}]", target.0 as usize)),
+      Operation::CallTarget(target) => f.write_fmt(format_args!("Target [cmplx {:?}]", target)),
       Operation::IntrinsicCallTarget(target) => f.write_fmt(format_args!("Target [{}]", target)),
       Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
@@ -265,6 +266,7 @@ impl Display for Operation {
         f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
       }
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
+      Operation::Data => f.write_fmt(format_args!("DATA",)),
       Operation::Allocate => f.write_fmt(format_args!("allocate",)),
       Operation::Free => f.write_fmt(format_args!("free",)),
     }
@@ -274,8 +276,9 @@ impl Display for Operation {
 #[derive(Clone)]
 pub(crate) struct RootNode {
   pub(crate) nodes:         Vec<Node>,
+  pub(crate) annotations:   Vec<IString>,
   pub(crate) operands:      Vec<Operation>,
-  pub(crate) types:         Vec<Type>,
+  pub(crate) types:         Vec<TypeV>,
   pub(crate) type_vars:     Vec<TypeVar>,
   pub(crate) heap_id:       Vec<usize>,
   pub(crate) source_tokens: Vec<rum_lang::parser::script_parser::ast::ASTNode<Token>>,
@@ -285,6 +288,7 @@ impl Default for RootNode {
   fn default() -> Self {
     RootNode {
       nodes:         Vec::with_capacity(8),
+      annotations:   Vec::with_capacity(8),
       operands:      Vec::with_capacity(8),
       types:         Vec::with_capacity(8),
       type_vars:     Vec::with_capacity(8),
@@ -322,11 +326,12 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
 }
 
 pub fn get_signature(node: &RootNode) -> Signature {
+  dbg!(node);
   get_internal_node_signature(node, 0)
 }
 
 pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
-  let RootNode { nodes, operands, types, type_vars, heap_id, source_tokens } = node;
+  let RootNode { nodes, operands, types, type_vars, heap_id, source_tokens, .. } = node;
   let call_node = &nodes[internal_node_index];
 
   let caller_sig = Signature::new(
@@ -334,8 +339,8 @@ pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) 
       .inputs
       .iter()
       .filter_map(|(op, i)| match i {
-        VarId::Param(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
-        VarId::Name(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
+        VarId::Param(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty)),
+        VarId::Name(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty)),
         _ => None,
       })
       .collect::<Vec<_>>(),
@@ -343,7 +348,8 @@ pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) 
       .outputs
       .iter()
       .filter_map(|(op, i)| match i {
-        VarId::Return => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty.clone())),
+        VarId::VoidReturn => Some((*op, TypeV::NoUse)),
+        VarId::Return => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty)),
         _ => None,
       })
       .collect::<Vec<_>>(),
@@ -416,7 +422,7 @@ impl Debug for RootNode {
     }
 
     for ((index, op), ty) in self.operands.iter().enumerate().zip(self.types.iter()) {
-      let ty = self.get_base_ty(ty.clone());
+      let ty = self.get_base_ty(*ty);
       let mut tok = self.source_tokens[index].token();
       let source = tok.to_string();
       let heap = self.heap_id.get(index).cloned().unwrap_or_default();
@@ -445,13 +451,13 @@ impl Debug for RootNode {
 }
 
 impl RootNode {
-  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> Type {
+  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> TypeV {
     self.get_base_ty(self.types[op.usize()].clone())
   }
 
-  pub(crate) fn get_base_ty(&self, ty: Type) -> Type {
+  pub(crate) fn get_base_ty(&self, ty: TypeV) -> TypeV {
     if let Some(index) = ty.generic_id() {
-      let r_ty = get_root_var(index, &self.type_vars).ty.clone();
+      let r_ty = get_root_var(index, &self.type_vars).ty;
       if r_ty.is_open() {
         ty
       } else {
@@ -505,18 +511,18 @@ impl Display for Node {
 
 #[derive(Debug)]
 pub struct Signature {
-  pub inputs:  Vec<(OpId, Type)>,
-  pub outputs: Vec<(OpId, Type)>,
+  pub inputs:  Vec<(OpId, TypeV)>,
+  pub outputs: Vec<(OpId, TypeV)>,
 }
 
 impl Signature {
-  pub fn new(inputs: &[(OpId, Type)], outputs: &[(OpId, Type)]) -> Self {
+  pub fn new(inputs: &[(OpId, TypeV)], outputs: &[(OpId, TypeV)]) -> Self {
     Self { inputs: inputs.to_vec(), outputs: outputs.to_vec() }
   }
 
   /// Changes the type of the givin paramater to `ty`, where index is
   /// a value in the range 0...(inputs.len + outputs.len)
-  pub fn set_param_ty(&mut self, index: usize, ty: Type) {
+  pub fn set_param_ty(&mut self, index: usize, ty: TypeV) {
     if index >= self.inputs.len() {
       let index = index - self.inputs.len();
       self.outputs[index].1 = ty;

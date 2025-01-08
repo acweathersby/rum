@@ -1,26 +1,9 @@
-use rum_lang::istring::{CachedString, IString};
 use std::{
   collections::{BTreeMap, HashMap},
   fmt::{Debug, Display},
 };
 
-use super::{NodeHandle, RootNode};
-
-#[derive(Clone)]
-pub struct EntryOffsetData {
-  pub ty:     Type,
-  pub name:   IString,
-  pub offset: usize,
-  pub size:   usize,
-}
-
-#[derive(Clone)]
-pub struct AggOffsetData {
-  pub byte_size:      usize,
-  pub alignment:      usize,
-  pub ele_count:      usize,
-  pub member_offsets: Vec<EntryOffsetData>,
-}
+use super::{CMPLXId, NodeHandle, RootNode};
 
 macro_rules! create_primitive {
   ($db:ident $index:ident) => { };
@@ -35,32 +18,6 @@ macro_rules! create_primitive {
     $db.types.push(TypeEntry { ty, node: None, offset_data:None, size: 0 });
     create_primitive!($db index $($name)+)
   };
-}
-
-pub struct Numeric {
-  // Indicates the log presence of decimal places if not zero
-  mantissa:    u8,
-  // Indicates the value can represent signed and unsigned values
-  signed:      bool,
-  // Indicates a complex component. Implies signed
-  complex:     bool,
-  // Indicates the number of bits needed to represent an integer value
-  significant: u8,
-  // Indicates the number of elements present in the value
-  elements:    u8,
-}
-
-impl std::ops::BitOr for Numeric {
-  type Output = Self;
-  fn bitor(self, rhs: Self) -> Self::Output {
-    Self {
-      mantissa:    self.mantissa.max(rhs.mantissa),
-      signed:      self.signed.max(rhs.signed),
-      complex:     self.complex.max(rhs.complex),
-      significant: self.significant.max(rhs.significant),
-      elements:    self.elements.max(rhs.elements),
-    }
-  }
 }
 
 pub const prim_ty_undefined: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 0, byte_size: 1, ele_count: 1 };
@@ -82,45 +39,273 @@ pub const prim_ty_f64: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseTyp
 pub const prim_ty_f128: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 16, byte_size: 8, ele_count: 1 };
 pub const prim_ty_addr: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Address, base_index: 17, byte_size: 8, ele_count: 1 };
 
-pub const ty_undefined: Type = Type::Primitive(0, prim_ty_undefined);
-pub const ty_poison: Type = Type::Primitive(0, prim_ty_poison);
-pub const ty_bool: Type = Type::Primitive(0, prim_ty_bool);
+pub const ty_undefined: TypeV = TypeV::prim(prim_ty_undefined);
+pub const ty_poison: TypeV = TypeV::prim(prim_ty_poison);
+pub const ty_bool: TypeV = TypeV::prim(prim_ty_bool);
 
-pub const ty_u8: Type = Type::Primitive(0, prim_ty_u8);
-pub const ty_u16: Type = Type::Primitive(0, prim_ty_u16);
-pub const ty_u64: Type = Type::Primitive(0, prim_ty_u64);
-pub const ty_u32: Type = Type::Primitive(0, prim_ty_u32);
-pub const ty_u128: Type = Type::Primitive(0, prim_ty_u128);
+pub const ty_u8: TypeV = TypeV::prim(prim_ty_u8);
+pub const ty_u16: TypeV = TypeV::prim(prim_ty_u16);
+pub const ty_u64: TypeV = TypeV::prim(prim_ty_u64);
+pub const ty_u32: TypeV = TypeV::prim(prim_ty_u32);
+pub const ty_u128: TypeV = TypeV::prim(prim_ty_u128);
 
-pub const ty_s8: Type = Type::Primitive(0, prim_ty_s8);
-pub const ty_s16: Type = Type::Primitive(0, prim_ty_s16);
-pub const ty_s32: Type = Type::Primitive(0, prim_ty_s32);
-pub const ty_s64: Type = Type::Primitive(0, prim_ty_s64);
-pub const ty_s128: Type = Type::Primitive(0, prim_ty_s128);
+pub const ty_s8: TypeV = TypeV::prim(prim_ty_s8);
+pub const ty_s16: TypeV = TypeV::prim(prim_ty_s16);
+pub const ty_s32: TypeV = TypeV::prim(prim_ty_s32);
+pub const ty_s64: TypeV = TypeV::prim(prim_ty_s64);
+pub const ty_s128: TypeV = TypeV::prim(prim_ty_s128);
 
-pub const ty_f16: Type = Type::Primitive(0, prim_ty_f16);
-pub const ty_f32: Type = Type::Primitive(0, prim_ty_f32);
-pub const ty_f64: Type = Type::Primitive(0, prim_ty_f64);
-pub const ty_f128: Type = Type::Primitive(0, prim_ty_f128);
+pub const ty_f16: TypeV = TypeV::prim(prim_ty_f16);
+pub const ty_f32: TypeV = TypeV::prim(prim_ty_f32);
+pub const ty_f64: TypeV = TypeV::prim(prim_ty_f64);
+pub const ty_f128: TypeV = TypeV::prim(prim_ty_f128);
 
-pub const ty_addr: Type = Type::Primitive(0, prim_ty_addr);
+pub const ty_addr: TypeV = TypeV::prim(prim_ty_addr);
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, Hash)]
+pub struct TypeV(u64);
+
+#[allow(non_upper_case_globals)]
+impl TypeV {
+  const BT_BITS: u64 = 0b111;
+  const BT_OFFSET: u64 = 0x00;
+
+  const PTR_BITS: u64 = 0b1111_1111;
+  const PTR_OFFSET: u64 = 0x03;
+
+  const ARRAY_FLAG_BITS: u64 = 0b1;
+  const ARRAY_OFFSET: u64 = 0x03 + 0x08;
+
+  const DATA_BITS: u64 = 0xFFFF_FFFF;
+  const DATA_OFFSET: u64 = 0x03 + 0x08 + 0x1;
+
+  pub const NoUse: TypeV = Self::no_use();
+  pub const Undefined: TypeV = Self::undefined();
+  pub const MemCtx: TypeV = Self::mem_ctx();
+
+  pub const fn undefined() -> TypeV {
+    Self(0)
+  }
+
+  pub const fn no_use() -> TypeV {
+    Self::create(BaseType::NoUse, 0, 0)
+  }
+
+  pub const fn mem_ctx() -> TypeV {
+    Self::create(BaseType::MemCtx, 0, 0)
+  }
+
+  pub const fn prim(base_prim: PrimitiveType) -> TypeV {
+    Self::create(BaseType::Primitive, 0, unsafe { std::mem::transmute(base_prim) })
+  }
+
+  pub fn generic(generic_id: u32) -> TypeV {
+    Self::create(BaseType::Generic, 0, unsafe { std::mem::transmute(generic_id) })
+  }
+
+  pub fn heap(heap_id: u32) -> TypeV {
+    Self::create(BaseType::Heap, 0, unsafe { std::mem::transmute(heap_id) })
+  }
+
+  pub fn base_ty(&self) -> BaseType {
+    match (self.0 >> Self::BT_OFFSET) & Self::BT_BITS {
+      1 => BaseType::Primitive,
+      2 => BaseType::Complex,
+      3 => BaseType::Generic,
+      4 => BaseType::Heap,
+      5 => BaseType::NoUse,
+      6 => BaseType::Poison,
+      7 => BaseType::MemCtx,
+      _ => BaseType::Undefined,
+    }
+  }
+
+  pub fn is_array(&self) -> bool {
+    ((self.0 >> Self::ARRAY_OFFSET) & Self::ARRAY_FLAG_BITS) > 0
+  }
+
+  pub fn is_generic(&self) -> bool {
+    self.base_ty() == BaseType::Generic
+  }
+
+  pub fn is_poison(&self) -> bool {
+    self.base_ty() == BaseType::Poison
+  }
+
+  pub fn is_undefined(&self) -> bool {
+    self.base_ty() == BaseType::Undefined
+  }
+
+  pub fn is_cmplx(&self) -> bool {
+    self.base_ty() == BaseType::Complex
+  }
+
+  pub fn is_open(&self) -> bool {
+    self.is_generic() || self.is_undefined()
+  }
+
+  pub fn generic_id(&self) -> Option<usize> {
+    match self.base_ty() {
+      BaseType::Generic => Some(unsafe { std::mem::transmute::<_, u32>(self.data()) as usize }),
+      _ => None,
+    }
+  }
+
+  pub fn prim_data(&self) -> Option<PrimitiveType> {
+    match self.base_ty() {
+      BaseType::Primitive => Some(unsafe { std::mem::transmute(self.data()) }),
+      _ => None,
+    }
+  }
+
+  pub fn cmplx_data(&self) -> Option<CMPLXId> {
+    match self.base_ty() {
+      BaseType::Complex => Some(unsafe { std::mem::transmute(self.data()) }),
+      _ => None,
+    }
+  }
+
+  pub fn type_data(&self) -> TypeData {
+    match self.base_ty() {
+      BaseType::Undefined => TypeData::Undefined,
+      BaseType::Primitive => TypeData::Primitive(self.prim_data().unwrap()),
+      BaseType::Complex => TypeData::Complex(self.cmplx_data().unwrap()),
+      BaseType::Generic => TypeData::Generic(self.generic_id().unwrap() as usize),
+      BaseType::Heap => TypeData::Heap(self.heap_id().unwrap()),
+      BaseType::NoUse => TypeData::NoUse,
+      BaseType::Poison => TypeData::Poison,
+      BaseType::MemCtx => TypeData::MemCtx,
+    }
+  }
+
+  pub fn heap_id(&self) -> Option<CMPLXId> {
+    match self.base_ty() {
+      BaseType::Heap => Some(unsafe { std::mem::transmute(self.data()) }),
+      _ => None,
+    }
+  }
+
+  pub fn cmplx(cmplx_id: CMPLXId) -> TypeV {
+    Self::create(BaseType::Complex, 0, unsafe { std::mem::transmute(cmplx_id) })
+  }
+
+  pub fn to_array(self: TypeV) -> TypeV {
+    Self(self.0 | (Self::ARRAY_FLAG_BITS << Self::ARRAY_OFFSET))
+  }
+
+  pub fn incr_ptr(&self) -> TypeV {
+    self.to_ptr(self.ptr_depth() + 1)
+  }
+
+  pub fn decr_ptr(&self) -> TypeV {
+    self.to_ptr(self.ptr_depth() - 1)
+  }
+
+  fn data(&self) -> u32 {
+    ((self.0 >> Self::DATA_OFFSET) & Self::DATA_BITS) as u32
+  }
+
+  pub fn ptr_depth(&self) -> i8 {
+    ((self.0 >> Self::PTR_OFFSET) & Self::PTR_BITS) as i8
+  }
+
+  fn to_ptr(&self, ptr_depth: i8) -> TypeV {
+    Self((self.0 & !(Self::PTR_BITS << Self::PTR_OFFSET)) | ((ptr_depth as u8 as u64) << Self::PTR_OFFSET))
+  }
+
+  fn to_base_ty(&self) -> TypeV {
+    Self(self.0 & !(Self::PTR_BITS << Self::PTR_OFFSET))
+  }
+
+  const fn create(bt: BaseType, ptr: u8, data: u32) -> TypeV {
+    Self((((bt as u64) & Self::BT_BITS) << Self::BT_OFFSET) | (((ptr as u64) & Self::PTR_BITS) << Self::PTR_OFFSET) | ((data as u64) << Self::DATA_OFFSET))
+  }
+}
+
+impl Debug for TypeV {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Display::fmt(&self, f)
+  }
+}
+
+impl Display for TypeV {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("{}", create_ptr_line(self.ptr_depth() as i8)))?;
+
+    if self.is_array() {
+      f.write_str("[")?;
+    }
+
+    match self.base_ty() {
+      BaseType::Primitive => {
+        Display::fmt(&self.prim_data().unwrap(), f)?;
+      }
+      BaseType::Complex => {
+        f.write_str("Π")?;
+        Debug::fmt(&self.cmplx_data().unwrap().0, f)?;
+      }
+      BaseType::Generic => {
+        f.write_str("∀")?;
+        Debug::fmt(&self.generic_id().unwrap(), f)?;
+      }
+      BaseType::Heap => {
+        f.write_str("Ω")?;
+        Debug::fmt(&self.heap_id().unwrap(), f)?;
+      }
+      BaseType::Undefined => {
+        f.write_str("?")?;
+      }
+      BaseType::NoUse => {
+        f.write_str("∅")?;
+      }
+      BaseType::Poison => {
+        f.write_str("xxx")?;
+      }
+      BaseType::MemCtx => {
+        f.write_str("mem")?;
+      }
+    }
+
+    if self.is_array() {
+      f.write_str("]")
+    } else {
+      Ok(())
+    }
+  }
+}
+
+#[test]
+fn test_typev() {
+  println!("{}", TypeV::undefined());
+  println!("{}", TypeV::no_use());
+  println!("{}", TypeV::prim(prim_ty_bool));
+  println!("{}", TypeV::prim(prim_ty_bool).to_array().to_ptr(1));
+  println!("{}", TypeV::cmplx(CMPLXId(2)).decr_ptr());
+  println!("{}", TypeV::cmplx(CMPLXId(2)).incr_ptr());
+}
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Default, Hash)]
-pub enum Type {
-  #[default]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+pub enum BaseType {
+  Undefined = 0,
+  Primitive = 1,
+  Complex   = 2,
+  Generic   = 3,
+  Heap      = 4,
+  NoUse     = 5,
+  Poison    = 6,
+  MemCtx    = 7,
+}
+
+pub enum TypeData {
   Undefined,
-  // Indicates a type that has no use in the type system
+  Primitive(PrimitiveType),
+  Complex(CMPLXId),
+  Generic(usize),
+  Heap(CMPLXId),
   NoUse,
-  Generic {
-    ptr_count: i8,
-    gen_index: u32,
-  },
-  Primitive(i8, PrimitiveType),
-  Complex(i8, NodeHandle),
-  Heap(IString),
-  Named(i8, IString),
-  MemContext,
+  Poison,
+  MemCtx,
 }
 
 #[repr(u8)]
@@ -185,109 +370,10 @@ impl Display for PrimitiveType {
   }
 }
 
-impl Type {
-  pub fn generic(ty_index: usize) -> Type {
-    Type::Generic { ptr_count: 0, gen_index: ty_index as u32 }
-  }
-
-  pub fn generic_id(&self) -> Option<usize> {
-    match *self {
-      Type::Generic { ptr_count, gen_index } => Some(gen_index as usize),
-      _ => None,
-    }
-  }
-
-  pub fn to_primitive(&self) -> Option<PrimitiveType> {
-    match self {
-      Type::Primitive(_, prim) => Some(*prim),
-      _ => None,
-    }
-  }
-
-  pub fn is_primitive(&self) -> bool {
-    matches!(self, Type::Primitive(..)) && !self.is_poison()
-  }
-
-  pub fn is_poison(&self) -> bool {
-    matches!(self, Type::Primitive(0, PrimitiveType { base_ty, .. }) if *base_ty == PrimitiveBaseType::Poison)
-  }
-
-  pub fn is_open(&self) -> bool {
-    self.is_generic() || self.is_undefined()
-  }
-
-  pub fn is_generic(&self) -> bool {
-    matches!(self, Type::Generic { .. })
-  }
-
-  pub fn is_undefined(&self) -> bool {
-    matches!(self, Type::Undefined)
-  }
-
-  pub fn is_not_valid(&self) -> bool {
-    matches!(self, Type::Undefined | Type::NoUse)
-  }
-}
-
-impl Debug for Type {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Display::fmt(self, f)
-  }
-}
-
-impl Display for Type {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    use Type::*;
-    match self {
-      Heap(name) => f.write_fmt(format_args!("*{name}")),
-      NoUse => f.write_fmt(format_args!("no-use")),
-      Named(count, name) => f.write_fmt(format_args!("{}{name}", create_ptr_line(*count))),
-      Undefined => f.write_str("und"),
-      Generic { ptr_count: count, gen_index } => f.write_fmt(format_args!("{}∀{}", create_ptr_line(*count), gen_index)),
-      Primitive(count, prim) => f.write_fmt(format_args!("{}{prim}", create_ptr_line(*count))),
-      Complex(count, node) => f.write_fmt(format_args!("{}cplx@[{:?}]", create_ptr_line(*count), node.get().unwrap() as *const _ as usize)),
-      MemContext => f.write_fmt(format_args!("mem_ctx")),
-    }
-  }
-}
-
 fn create_ptr_line(count: i8) -> String {
   if count >= 0 {
     "*".repeat(count as usize)
   } else {
     "-".repeat((-count) as usize)
-  }
-}
-
-pub fn to_ptr(ty: Type) -> Option<Type> {
-  match ty {
-    Type::NoUse => Some(Type::Undefined),
-    Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count + 1, gen_index }),
-    Type::Complex(count, data) => Some(Type::Complex(count + 1, data)),
-    Type::Primitive(count, prim) => Some(Type::Primitive(count + 1, prim)),
-    Type::Named(count, prim) => Some(Type::Named(count + 1, prim)),
-    _ => Some(Type::Undefined),
-  }
-}
-
-pub fn ptr_depth(ty: &Type) -> i8 {
-  match ty {
-    Type::NoUse => 0,
-    Type::Generic { ptr_count, gen_index } => *ptr_count,
-    Type::Complex(count, data) => *count,
-    Type::Primitive(count, prim) => *count,
-    Type::Named(count, prim) => *count,
-    _ => 0,
-  }
-}
-
-pub fn from_ptr(ty: Type) -> Option<Type> {
-  match ty {
-    Type::NoUse => Some(Type::Undefined),
-    Type::Generic { ptr_count, gen_index } => Some(Type::Generic { ptr_count: ptr_count - 1, gen_index }),
-    Type::Complex(count, data) => Some(Type::Complex(count - 1, data)),
-    Type::Primitive(count, prim) => Some(Type::Primitive(count - 1, prim)),
-    Type::Named(count, prim) => Some(Type::Named(count - 1, prim)),
-    _ => Some(Type::Undefined),
   }
 }

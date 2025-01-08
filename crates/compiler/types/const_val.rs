@@ -10,14 +10,14 @@ use crate::types::*;
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 #[repr(align(4))]
 pub struct ConstVal {
-  pub(crate) val: [u8; 8],
+  pub(crate) val: [u8; 16],
   pub(crate) ty:  PrimitiveType,
 }
 
 impl Display for ConstVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     fn fmt_val<T: Display + Default>(val: &ConstVal, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-      f.write_fmt(format_args!("{} = [{}]", val.ty, val.load::<T>()))
+      f.write_fmt(format_args!("const_{}:[{}]", val.ty, val.load::<T>()))
     }
 
     match self.ty.base_ty {
@@ -31,7 +31,7 @@ impl Display for ConstVal {
         16 => fmt_val::<i16>(self, f),
         32 => fmt_val::<i32>(self, f),
         64 => fmt_val::<i64>(self, f),
-        //128 => fmt_val::<i128>(self, f),
+        128 => fmt_val::<i128>(self, f),
         //_ => fmt_val::<i128>(self, f),
         _ => unreachable!(),
       },
@@ -84,7 +84,7 @@ impl ConstVal {
 
   pub fn store<T>(mut self, val: T) -> Self {
     let byte_size = std::mem::size_of::<T>();
-    let mut bytes: [u8; 8] = Default::default();
+    let mut bytes: [u8; 16] = Default::default();
 
     unsafe { std::ptr::copy(&val as *const _ as *const u8, bytes.as_mut_ptr(), byte_size) };
 
@@ -255,26 +255,28 @@ impl Debug for ConstVal {
   }
 }
 
-pub fn from_uint(val: ConstVal) -> u64 {
+pub fn from_uint(val: ConstVal) -> u128 {
   let info = val.ty;
   debug_assert!(info.base_ty == PrimitiveBaseType::Unsigned);
   match info.byte_size * 8 {
-    8 => val.load::<u8>() as u64,
-    16 => val.load::<u16>() as u64,
-    32 => val.load::<u32>() as u64,
-    64 => val.load::<u64>() as u64,
+    8 => val.load::<u8>() as u128,
+    16 => val.load::<u16>() as u128,
+    32 => val.load::<u32>() as u128,
+    64 => val.load::<u64>() as u128,
+    128 => val.load::<u128>() as u128,
     val => unreachable!("{val:?}"),
   }
 }
 
-pub fn from_int(val: ConstVal) -> i64 {
+pub fn from_int(val: ConstVal) -> i128 {
   let info = val.ty;
   debug_assert!(info.base_ty == PrimitiveBaseType::Signed, "{:?} {}", info.base_ty, info);
   match info.byte_size * 8 {
-    8 => val.load::<i8>() as i64,
-    16 => val.load::<i16>() as i64,
-    32 => val.load::<i32>() as i64,
-    64 => val.load::<i64>() as i64,
+    8 => val.load::<i8>() as i128,
+    16 => val.load::<i16>() as i128,
+    32 => val.load::<i32>() as i128,
+    64 => val.load::<i64>() as i128,
+    128 => val.load::<i128>() as i128,
     val => unreachable!("{val:?}"),
   }
 }

@@ -1,7 +1,9 @@
 #![feature(box_as_ptr)]
 
-mod compiler;
-mod interpreter;
-mod solver;
-mod test;
-mod types;
+pub mod compiler;
+
+pub mod interpreter;
+
+pub mod solver;
+pub mod test;
+pub mod types;

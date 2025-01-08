@@ -21,10 +21,6 @@ IGNORE { c:sp c:nl }
 
   | named_type
 
-  | generic_type
-
-<> generic_type > "?" :ast { t_Type_Generic }
-
 <> named_type > prim::var^name :ast { t_Type_Variable, name }
 
 <> type_type > "ty" :ast { t_Type_Type }

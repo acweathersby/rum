@@ -3,12 +3,18 @@ name = "rum_compiler"
 version = "0.0.0"
 edition = "2021"
 
+
+[[bin]]
+name = "rum"
+path = "./bin.rs"
+
 [lib]
 path = "./lib.rs"
 
 [dependencies]
-rum_lang    = { path="../rum_lang" }
-core_lang       = { path="../core" }
+core_lang         = { path="../core" }
+rum_common        = { path="../common" }
+rum_lang          = { path="../rum_lang" }
 num-traits        = "0.2.17"
 
 [dependencies.radlr_rust_runtime]

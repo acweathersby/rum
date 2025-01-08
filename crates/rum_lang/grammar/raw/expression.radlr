@@ -199,8 +199,6 @@ IMPORT ../common/comment as cmt
 
   > prim::sci_num
 
-    :ast { t_RawNum, val:f64($1), tok }
-
 <> primitive_unsigned_integer 
 
   > prim::uint

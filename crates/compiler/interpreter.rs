@@ -1,18 +1,13 @@
-use std::{collections::HashMap, thread::Scope};
-
 use crate::{
   compiler::{add_module, CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS, ROUTINE_ID},
   types::*,
 };
 use core_lang::parser::ast::Var;
 use radlr_rust_runtime::types::BlameColor;
-use rum_lang::{
-  container::get_aligned_value,
-  istring::{CachedString, IString},
-  Token,
-};
+use rum_common::{get_aligned_value, CachedString, IString};
+use std::{collections::HashMap, thread::Scope};
 
-type HeapList = Vec<(IString, NodeHandle, *mut u8, Type)>;
+type HeapList = Vec<(IString, NodeHandle, *mut u8, TypeV)>;
 
 macro_rules! op_match {
   ($sym: tt, $l: ident, $r: ident) => {
@@ -109,21 +104,24 @@ pub fn get_agg_offset(super_node: &RootNode, name: IString, ctx: &mut RuntimeSys
   0
 }
 
-pub fn interpret(node: NodeHandle, args: &[Value], db: &SolveDatabase) -> Value {
+pub fn interpret(node: CMPLXId, args: &[Value], db: &SolveDatabase) -> Value {
+  let node = NodeHandle::from((node, db));
+
   if node.get().unwrap().solve_state() == SolveState::Solved {
-    let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: Type::Undefined };
+    let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
 
     if let GetResult::Existing(allocate_interface) = ctx.db.get_type_by_name("AllocatorI".intern()) {
       if let GetResult::Existing(global_heap) = ctx.db.get_type_by_name("__root_allocator__".intern()) {
-        ctx.allocator_interface = Type::Complex(0, allocate_interface);
-        let global_heap_stack = ctx.heaps.entry("global".intern()).or_default();
-        let heap_ptr = Value::Ptr(std::ptr::null_mut(), Type::Complex(0, global_heap));
+        ctx.allocator_interface = TypeV::cmplx(allocate_interface);
+        let global_heap_stack = ctx.heaps.entry(CMPLXId(0)).or_default();
+        let heap_ptr = Value::Ptr(std::ptr::null_mut(), TypeV::cmplx(global_heap));
         global_heap_stack.push((heap_ptr.clone(), heap_ptr));
       }
     }
 
     let mut scratch = Default::default();
-    interpret_node(node.get().unwrap(), args, &mut scratch, 0, &mut ctx)
+    let val = interpret_node(node.get().unwrap(), args, &mut scratch, 0, &mut ctx);
+    val
   } else {
     panic!("test is a template and cannot be directly interpreted {node:?}")
   }
@@ -174,8 +172,8 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
 
 pub struct RuntimeSystem<'a, 'b: 'a> {
   db:                  &'a SolveDatabase<'b>,
-  heaps:               HashMap<IString, Vec<(Value, Value)>>,
-  allocator_interface: Type,
+  heaps:               HashMap<CMPLXId, Vec<(Value, Value)>>,
+  allocator_interface: TypeV,
 }
 
 #[derive(Clone, Copy)]
@@ -218,33 +216,33 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
   if scratch[scratch_index] == (Value::Uninitialized, 0) || scratch[scratch_index].1 == loop_old {
     scratch[scratch_index].0 = match &super_node.operands[op.usize()] {
-      Operation::Param(..) => scratch[scratch_index].0.clone(),
-      Operation::Const(cst) => match op_ty {
-        Type::Primitive(_, prim) => match prim.base_ty {
+      Operation::Param(..) => scratch[scratch_index].0,
+      Operation::Const(cst) => match op_ty.prim_data() {
+        Some(prim) => match prim.base_ty {
           PrimitiveBaseType::Signed => match prim.byte_size {
-            8 => Value::i64(cst.convert(*prim).load()),
-            4 => Value::i32(cst.convert(*prim).load()),
-            2 => Value::i16(cst.convert(*prim).load()),
-            1 => Value::i8(cst.convert(*prim).load()),
+            8 => Value::i64(cst.convert(prim).load()),
+            4 => Value::i32(cst.convert(prim).load()),
+            2 => Value::i16(cst.convert(prim).load()),
+            1 => Value::i8(cst.convert(prim).load()),
             _ => unreachable!(),
           },
           PrimitiveBaseType::Unsigned => match prim.byte_size {
-            8 => Value::u64(cst.convert(*prim).load()),
-            4 => Value::u32(cst.convert(*prim).load()),
-            2 => Value::u16(cst.convert(*prim).load()),
-            1 => Value::u8(cst.convert(*prim).load()),
+            8 => Value::u64(cst.convert(prim).load()),
+            4 => Value::u32(cst.convert(prim).load()),
+            2 => Value::u16(cst.convert(prim).load()),
+            1 => Value::u8(cst.convert(prim).load()),
             _ => unreachable!(),
           },
           PrimitiveBaseType::Float => match prim.byte_size {
-            8 => Value::f64(cst.convert(*prim).load()),
-            4 => Value::f32(cst.convert(*prim).load()),
+            8 => Value::f64(cst.convert(prim).load()),
+            4 => Value::f32(cst.convert(prim).load()),
             _ => unreachable!(),
           },
-          PrimitiveBaseType::Address => Value::u64(cst.convert(*prim).load()),
-          PrimitiveBaseType::Poison => Value::u64(cst.convert(*prim).load()),
+          PrimitiveBaseType::Address => Value::u64(cst.convert(prim).load()),
+          PrimitiveBaseType::Poison => Value::u64(cst.convert(prim).load()),
           ty => panic!("could not create value from {ty:?}"),
         },
-        ty => panic!("unexpected node type {ty}"),
+        _ => panic!("unexpected node type {op_ty}"),
       },
       Operation::OutputPort(..) => interprete_port(super_node, op, scratch, ctx, scope_data),
       Operation::Op { op_name, operands } => match *op_name {
@@ -252,8 +250,8 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 
           match val {
-            Value::i32(v) => match op_ty {
-              Type::Primitive(_, prim_ty) => match *prim_ty {
+            Value::i32(v) => match op_ty.prim_data() {
+              Some(prim_ty) => match prim_ty {
                 prim_ty_u32 => Value::u32(v as u32),
                 prim_ty_s32 => val,
                 prim_ty_u8 => Value::u8(v as u8),
@@ -261,8 +259,8 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               },
               _ => unreachable!(),
             },
-            Value::f32(v) => match op_ty {
-              Type::Primitive(_, prim_ty) => match *prim_ty {
+            Value::f32(v) => match op_ty.prim_data() {
+              Some(prim_ty) => match prim_ty {
                 prim_ty_u32 => Value::u32(v as u32),
                 prim_ty_f32 => val,
                 prim_ty_u8 => Value::u8(v as u8),
@@ -270,16 +268,16 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               },
               _ => unreachable!(),
             },
-            Value::f64(v) => match op_ty {
-              Type::Primitive(_, prim_ty) => match *prim_ty {
+            Value::f64(v) => match op_ty.prim_data() {
+              Some(prim_ty) => match prim_ty {
                 prim_ty_u64 => Value::f64(v as f64),
                 prim_ty_f64 => val,
                 dd_ => unreachable!("{dd_}"),
               },
               _ => unreachable!(),
             },
-            Value::u64(v) => match op_ty {
-              Type::Primitive(_, prim_ty) => match *prim_ty {
+            Value::u64(v) => match op_ty.prim_data() {
+              Some(prim_ty) => match prim_ty {
                 prim_ty_u64 => val,
                 prim_ty_addr => val,
                 prim_ty_u8 => Value::u8(v as u8),
@@ -287,16 +285,16 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               },
               _ => unreachable!(),
             },
-            Value::u32(v) => match op_ty {
-              Type::Primitive(_, prim_ty) => match *prim_ty {
+            Value::u32(v) => match op_ty.prim_data() {
+              Some(prim_ty) => match prim_ty {
                 prim_ty_u32 => val,
                 prim_ty_u8 => Value::u8(v as u8),
                 dd_ => unreachable!("{dd_}"),
               },
               _ => unreachable!(),
             },
-            Value::u8(v) => match op_ty {
-              Type::Primitive(_, prim_ty) => match *prim_ty {
+            Value::u8(v) => match op_ty.prim_data() {
+              Some(prim_ty) => match prim_ty {
                 prim_ty_u8 => val,
                 dd_ => unreachable!("{dd_}"),
               },
@@ -314,21 +312,22 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             (Value::Ptr(l_ptr, l_ty), Value::Ptr(r_ptr, r_ty)) => {
               debug_assert_eq!(l_ty, r_ty);
 
-              let Type::Complex(_, node) = l_ty.clone() else { panic!("Can only copy complex values") };
+              let Some(node) = l_ty.cmplx_data() else { panic!("Can only copy complex values") };
 
-              let size = get_agg_size(node.get().unwrap(), ctx);
+              let size = get_agg_size(NodeHandle::from((node, ctx.db)).get().unwrap(), ctx);
 
               unsafe { std::ptr::copy(r_ptr, l_ptr, size as usize) };
 
               Value::Ptr(l_ptr, l_ty)
             }
-            (_, r) => r.clone(),
+            (_, r) => r,
           }
         }
         "POISON" => Value::Ptr(0 as *mut _, ty_poison),
         "DECL" => interprete_op(super_node, operands[0], scratch, ctx, scope_data),
         "ADD" | "SUB" | "DIV" | "MUL" => {
           let (l_val, r_val) = interprete_binary_args(super_node, op, operands, scratch, ctx, scope_data);
+
           match *op_name {
             "ADD" => op_match!(+, l_val, r_val),
             "SUB" => op_match!(-, l_val, r_val),
@@ -355,19 +354,23 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
         "MAPS_TO" => {
           let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           match l {
-            Value::Ptr(ptr, _) => Value::Ptr(ptr, op_ty.clone()),
+            Value::Ptr(ptr, _) => Value::Ptr(ptr, *op_ty),
             _ => unreachable!("MAPS_TO can only be applied to complex types"),
           }
         }
 
         "TY_EQ" => {
           let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
-          let r = super_node.get_base_ty(super_node.types[operands[1].usize()].clone());
+          let r = super_node.get_base_ty(super_node.types[operands[1].usize()]);
 
           match l {
             Value::Ptr(_, ty) => Value::Bool(ty == r),
             _ => Value::Bool(false),
           }
+        }
+        "RET" => {
+          let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+          val
         }
         "SEL" => {
           if Value::Bool(true) == interprete_op(super_node, operands[0], scratch, ctx, scope_data) {
@@ -380,7 +383,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           // Calculates the offset of the current type.
           let curr_offset = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
-          let size = get_ty_size(op_ty.clone(), ctx);
+          let size = get_ty_size(*op_ty, ctx);
 
           if size == 0 {
             Value::u64(curr_offset)
@@ -393,7 +396,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           // Calculates the new offset
           let curr_offset = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
-          let size = get_ty_size(super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone(), ctx);
+          let size = get_ty_size(super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty, ctx);
 
           if size == 0 {
             Value::u64(curr_offset)
@@ -410,44 +413,44 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           }
 
           // Create heap object
-          match &op_ty {
-            Type::Complex(_, agg) => {
-              let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty.clone();
-              let node = agg.get().unwrap();
+          match op_ty.cmplx_data() {
+            Some(agg) => {
+              let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty;
+              let node = NodeHandle::from((agg, ctx.db));
+              let node = node.get().unwrap();
 
-              match new_heap {
-                Type::Heap(new_heap) => {
-                  let size = get_agg_size(node, ctx);
+              if let Some(heap_id) = new_heap.heap_id() {
+                let size = get_agg_size(node, ctx);
 
-                  let heap_ctx_ptr = allocate_from_heap(ctx, new_heap, size);
+                let heap_ctx_ptr = allocate_from_heap(ctx, heap_id, size);
 
-                  Value::Ptr(heap_ctx_ptr as _, op_ty.clone())
-                }
-                _ => unreachable!(),
+                Value::Ptr(heap_ctx_ptr as _, *op_ty)
+              } else {
+                unreachable!()
               }
             }
-            ty => unreachable!("Could not resolve type from op {op} {ty} in {super_node:#?}"),
+            _ => unreachable!("Could not resolve type from op {op} {op_ty} in {super_node:#?}"),
           }
         }
         "REGISTER_HEAP" => {
           let parent_heap_id = operands[1].usize();
-          let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty.clone();
-          let par_heap = super_node.type_vars[parent_heap_id].ty.clone();
+          let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty;
+          let par_heap = super_node.type_vars[parent_heap_id].ty;
 
-          match (par_heap, new_heap) {
-            (Type::Heap(par_heap), Type::Heap(new_heap_name)) => match op_ty {
-              Type::Complex(_, heap_context_node) => {
-                if let Some(global) = ctx.heaps.get(&"global".to_token()) {
+          match (par_heap.heap_id(), new_heap.heap_id()) {
+            (Some(par_heap), Some(new_heap_name)) => match op_ty.cmplx_data() {
+              Some(heap_context_node) => {
+                if let Some(global) = ctx.heaps.get(&CMPLXId(0)) {
                   let (global_root, _) = global.last().cloned().unwrap();
 
                   if let Some((par_heap, _)) = ctx.heaps.entry(par_heap).or_default().last().cloned() {
                     let target_heap = ctx.heaps.entry(new_heap_name).or_default();
                     // Todo, instantiate heap instance
-                    target_heap.push((Value::Ptr(std::ptr::null_mut(), Type::Complex(0, heap_context_node.clone())), par_heap));
+                    target_heap.push((Value::Ptr(std::ptr::null_mut(), TypeV::cmplx(heap_context_node.clone())), par_heap));
                   } else {
                     let target_heap = ctx.heaps.entry(new_heap_name).or_default();
                     // Todo, instantiate heap instance
-                    target_heap.push((Value::Ptr(std::ptr::null_mut(), Type::Complex(0, heap_context_node.clone())), global_root));
+                    target_heap.push((Value::Ptr(std::ptr::null_mut(), TypeV::cmplx(heap_context_node.clone())), global_root));
                   }
 
                   Value::Heap(new_heap_name)
@@ -464,10 +467,11 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           Value::u64(offset_base) => {
             let Value::Ptr(ptr, ty) = interprete_op(super_node, operands[0], scratch, ctx, scope_data) else { panic!("Cannot index a non-pointer value") };
 
-            match &ty {
-              Type::Complex(ptr_depth, v) => {
-                if *ptr_depth <= 1 {
-                  let len = get_element_count(v.get().unwrap(), ctx);
+            match ty.cmplx_data() {
+              Some(v) => {
+                let ptr_depth = ty.ptr_depth();
+                if ptr_depth <= 1 {
+                  let len = get_element_count(NodeHandle::from((v, ctx.db)).get().unwrap(), ctx);
                   if offset_base >= len {
                     let tok = super_node.source_tokens[op.usize()].clone();
                     let msg = tok.token().blame(1, 1, &format!("Index [{offset_base}] is out of bounds"), BlameColor::RED);
@@ -476,16 +480,16 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
                   }
                 }
 
-                let stride_size = match &op_ty {
-                  Type::Primitive(0, primr) => primr.byte_size as u64,
-                  Type::Complex(0, v) => get_agg_size(v.get().unwrap(), ctx),
-                  Type::Complex(..) | Type::Primitive(..) => 8,
+                let stride_size = match &op_ty.type_data() {
+                  TypeData::Primitive(primr) if op_ty.ptr_depth() == 0 => primr.byte_size as u64,
+                  TypeData::Complex(v) if op_ty.ptr_depth() == 0 => get_agg_size(NodeHandle::from((*v, ctx.db)).get().unwrap(), ctx),
+                  TypeData::Complex(..) | TypeData::Primitive(..) => 8,
                   _ => unreachable!(),
                 };
 
                 let offset = offset_base * stride_size;
 
-                Value::Ptr(unsafe { ptr.offset(offset as isize) }, op_ty.clone())
+                Value::Ptr(unsafe { ptr.offset(offset as isize) }, *op_ty)
               }
               _ => panic!("Ty {ty} cannot be indexed with {offset_base}"),
             }
@@ -499,11 +503,57 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           };
 
           match interprete_op(super_node, operands[0], scratch, ctx, scope_data) {
-            Value::Ptr(ptr, Type::Complex(_, cmplx_ty)) => {
-              let offset = get_agg_offset(cmplx_ty.get().unwrap(), name, ctx);
-              Value::Ptr(unsafe { ptr.offset(offset as isize) }, op_ty.clone())
+            Value::Ptr(ptr, ty) if ty.is_cmplx() => {
+              let cmplx_id = ty.cmplx_data().unwrap();
+              let offset = get_agg_offset(NodeHandle::from((cmplx_id, ctx.db)).get().unwrap(), name, ctx);
+              Value::Ptr(unsafe { ptr.offset(offset as isize) }, *op_ty)
             }
             un => unreachable!("unexpected value {un:?} at {}", operands[0]),
+          }
+        }
+        "SEED" => {
+          let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+          interprete_op(super_node, operands[1], scratch, ctx, scope_data);
+
+          match val {
+            Value::Ptr(ptr, ty) => match ty.prim_data() {
+              Some(prim_ty) => {
+                let ptr_count = ty.ptr_depth();
+                while ptr_count > 1 {
+                  todo!("Dereference multi level pointer")
+                }
+
+                println!("ASD {op} {val:?}");
+
+                match prim_ty {
+                  prim_ty_u32 => unsafe { Value::u32(*(ptr as *mut u32)) },
+                  prim_ty_f32 => unsafe { Value::f32(*(ptr as *mut f32)) },
+                  prim_ty_f64 => unsafe { Value::f64(*(ptr as *mut f64)) },
+                  prim_ty_u64 => unsafe { Value::u64(*(ptr as *mut u64)) },
+                  prim_ty_u8 => unsafe { Value::u8(*(ptr as *mut u8)) },
+                  v => unreachable!("load {v:?}"),
+                }
+              }
+
+              _ => panic!("Type {ty} not supported in SEED operations"),
+            },
+            val => val,
+          }
+        }
+        "SINK" => {
+          let dst = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
+          let src: Value = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
+          interprete_op(super_node, operands[2], scratch, ctx, scope_data);
+
+          match src {
+            Value::u8(val) => match dst {
+              Value::Ptr(ptr, ty) if ty.prim_data().unwrap() == prim_ty_u8 => {
+                unsafe { *ptr = val };
+                dst
+              }
+              _ => unreachable!(),
+            },
+            _ => unreachable!(),
           }
         }
         "LOAD" => {
@@ -511,11 +561,16 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
           match ptr {
-            Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_u32 => unsafe { Value::u32(*(ptr as *mut u32)) },
-            Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_f32 => unsafe { Value::f32(*(ptr as *mut f32)) },
-            Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_f64 => unsafe { Value::f64(*(ptr as *mut f64)) },
-            Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_u64 => unsafe { Value::u64(*(ptr as *mut u64)) },
-            Value::Ptr(ptr, Type::Primitive(1, v)) if v == prim_ty_u8 => unsafe { Value::u8(*(ptr as *mut u8)) },
+            Value::Ptr(ptr, ty) => {
+              assert!(ty.ptr_depth() == 1);
+              match ty.prim_data() {
+                Some(prim_ty_f32) => unsafe { Value::f32(*(ptr as *mut f32)) },
+                Some(prim_ty_f64) => unsafe { Value::f64(*(ptr as *mut f64)) },
+                Some(prim_ty_u64) => unsafe { Value::u64(*(ptr as *mut u64)) },
+                Some(prim_ty_u8) => unsafe { Value::u8(*(ptr as *mut u8)) },
+                ty => todo!("Load {ty:?}"),
+              }
+            }
             v => unreachable!("load {v:?}"),
           }
         }
@@ -528,13 +583,19 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
           interprete_op(super_node, operands[2], scratch, ctx, scope_data);
 
-          match (ptr.clone(), val) {
-            (Value::Ptr(ptr, Type::Primitive(1, v)), Value::u32(val)) if v == prim_ty_u32 => unsafe { *(ptr as *mut u32) = val },
-            (Value::Ptr(ptr, Type::Primitive(1, v)), Value::f32(val)) if v == prim_ty_f32 => unsafe { *(ptr as *mut f32) = val },
-            (Value::Ptr(ptr, Type::Primitive(1, v)), Value::f64(val)) if v == prim_ty_f64 => unsafe { *(ptr as *mut f64) = val },
-            (Value::Ptr(ptr, Type::Primitive(1, v)), Value::u8(val)) if v == prim_ty_u8 => unsafe { *(ptr as *mut u8) = val },
-            (Value::Ptr(ptr, Type::Primitive(1, v)), Value::i8(val)) if v == prim_ty_s8 => unsafe { *(ptr as *mut i8) = val },
-            (ptr, val) => todo!("Store {val:?} into {ptr:?} at {op}"),
+          match ptr {
+            Value::Ptr(ptr, ty) => {
+              assert!(ty.ptr_depth() == 1);
+              match (ty.prim_data(), val) {
+                (Some(prim_ty_u32), Value::u32(val)) => unsafe { *(ptr as *mut u32) = val },
+                (Some(prim_ty_f32), Value::f32(val)) => unsafe { *(ptr as *mut f32) = val },
+                (Some(prim_ty_f64), Value::f64(val)) => unsafe { *(ptr as *mut f64) = val },
+                (Some(prim_ty_u8), Value::u8(val)) => unsafe { *(ptr as *mut u8) = val },
+                (Some(prim_ty_s8), Value::i8(val)) => unsafe { *(ptr as *mut i8) = val },
+                (ptr, val) => todo!("Store {val:?} into {ptr:?} at {op}"),
+              }
+            }
+            v => unreachable!("load {v:?}"),
           }
 
           ptr
@@ -553,8 +614,8 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
   scratch[scratch_index].0.clone()
 }
 
-fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: IString, size: u64) -> *mut u8 {
-  if let Some(target_heap) = ctx.heaps.get(&heap_name).or_else(|| ctx.heaps.get(&"global".to_token())) {
+fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: CMPLXId, size: u64) -> *mut u8 {
+  if let Some(target_heap) = ctx.heaps.get(&heap_name).or_else(|| Default::default()) {
     let (heap, par_heap) = target_heap.last().unwrap();
     let allocator_i = ctx.allocator_interface.clone();
 
@@ -566,7 +627,7 @@ fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: IString, size: u64) ->
     )])
     .hash();
 
-    if let Some(allocate_method) = ctx
+    if let Some(allocate_method_id) = ctx
       .db
       .interface_instances
       .get(&allocator_i)
@@ -575,6 +636,7 @@ fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: IString, size: u64) ->
       .expect("Could not find interface for heap")
       .get(&sig)
     {
+      let allocate_method = NodeHandle::from((*allocate_method_id, ctx.db));
       let mut scratch = Vec::new();
 
       match interpret_node(allocate_method.get().unwrap(), &[heap.clone(), Value::u64(size), par_heap.clone()], &mut scratch, 0, ctx) {
@@ -590,12 +652,17 @@ fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: IString, size: u64) ->
   }
 }
 
-fn get_ty_size(ty: Type, ctx: &mut RuntimeSystem) -> u64 {
-  match ty {
-    Type::Primitive(0, prim) => prim.byte_size as u64,
-    Type::Primitive(..) => 8,
-    crate::types::Type::Complex(0, node) => get_agg_size(node.get().unwrap(), ctx),
-    ty => todo!("Calculate size of {ty}"),
+fn get_ty_size(ty: TypeV, ctx: &mut RuntimeSystem) -> u64 {
+  if ty.ptr_depth() > 0 {
+    8
+  } else if ty.is_array() {
+    todo!("Get array size from {ty}")
+  } else {
+    match ty.base_ty() {
+      BaseType::Primitive => ty.prim_data().unwrap().byte_size as u64,
+      BaseType::Complex => get_agg_size(NodeHandle::from((ty.cmplx_data().unwrap(), ctx.db)).get().unwrap(), ctx),
+      _ => todo!("Calculate size of {ty}"),
+    }
   }
 }
 
@@ -643,7 +710,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
             Value::Heap(heap_name) => {
               let heap = ctx.heaps.get_mut(&heap_name).expect("Heap should have been created here");
               let top = heap.last().unwrap();
-              println!("TODO: call free on heap {heap_name} => {top:?} before remove from stack");
+              println!("TODO: call free on heap {heap_name:?} => {top:?} before remove from stack");
               heap.pop();
             }
             _ => unreachable!(),
@@ -799,6 +866,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
           if scratch[ret_val_index] == (Value::Uninitialized, 0) || scratch[ret_val_index].1 == loop_old {
             match &super_node.operands[call_ref_op.usize()] {
               Operation::CallTarget(call_target) => {
+                let call_target = NodeHandle::from((*call_target, ctx.db));
                 let call_target = call_target.get().unwrap();
 
                 let ret = {
@@ -815,7 +883,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
 
                   assert_ne!(size, 0, "Cannot allocate zero sized memory region");
 
-                  scratch[ret_val_index] = (Value::Ptr(intrinsic_allocate(size), Type::Undefined), loop_new);
+                  scratch[ret_val_index] = (Value::Ptr(intrinsic_allocate(size), TypeV::Undefined), loop_new);
                 }
                 "__free__" => {
                   todo!("Free")
@@ -866,13 +934,13 @@ fn interprete_binary_args(
   ctx: &mut RuntimeSystem,
   scope_data: ScopeData,
 ) -> (Value, Value) {
-  let ty = super_node.type_vars[super_node.types[op.usize()].generic_id().unwrap()].ty.clone();
+  let ty = super_node.type_vars[super_node.types[op.usize()].generic_id().unwrap()].ty;
 
   let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
   let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
-  let l_val = convert_primitive_types(ty.to_primitive().unwrap(), l);
-  let r_val: Value = convert_primitive_types(ty.to_primitive().unwrap(), r);
+  let l_val = convert_primitive_types(ty.prim_data().unwrap(), l);
+  let r_val: Value = convert_primitive_types(ty.prim_data().unwrap(), r);
   (l_val, r_val)
 }
 
@@ -885,13 +953,13 @@ fn interprete_binary_cmp_args(
   ctx: &mut RuntimeSystem,
   scope_data: ScopeData,
 ) -> (Value, Value) {
-  let ty = super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty.clone();
+  let ty = super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty;
 
   let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
   let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
-  let l_val = convert_primitive_types(ty.to_primitive().unwrap(), l);
-  let r_val: Value = convert_primitive_types(ty.to_primitive().unwrap(), r);
+  let l_val = convert_primitive_types(ty.prim_data().unwrap(), l);
+  let r_val: Value = convert_primitive_types(ty.prim_data().unwrap(), r);
   (l_val, r_val)
 }
 

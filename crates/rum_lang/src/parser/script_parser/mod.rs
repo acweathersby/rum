@@ -91,3 +91,38 @@ pub fn parse_raw_routine_def(input: &str) -> Result<Arc<RawRoutineDefinition<Tok
     Ok(node) => Ok(node.into_RawRoutineDefinition().unwrap()),
   }
 }
+
+pub fn parse_raw_number(input: &str) -> Result<Arc<Num<Token>>, String> {
+  let parser_db = parser::ParserDB::new();
+  match parser_db.build_ast(
+    &mut StringInput::from(input),
+    parser_db.get_entry_data_from_name("sci_num").unwrap(),
+    ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
+  ) {
+    Err(err) => {
+      println!("{err:?}");
+      Err("Failed to parse input".to_string())
+    }
+    Ok(node) => Ok(node.into_Num().unwrap()),
+  }
+}
+
+pub fn parse_entry(input: &str) -> Result<Arc<Entry<Token>>, String> {
+  let parser_db = parser::ParserDB::new();
+  match parser_db.build_ast(
+    &mut StringInput::from(input),
+    parser_db.get_entry_data_from_name("entry_id").unwrap(),
+    ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
+  ) {
+    Err(err) => {
+      println!("{err:?}");
+      Err("Failed to parse input".to_string())
+    }
+    Ok(node) => Ok(node.into_Entry().unwrap()),
+  }
+}
+
+#[test]
+fn parse_num() {
+  parse_raw_number("num").is_ok();
+}
