@@ -4,7 +4,8 @@ use rum_lang::parser::{self, script_parser::entry_Value};
 use super::RootNode;
 use crate::{
   compiler::{compile_struct, OPS},
-  solver::{solve, solve2, GlobalConstraint},
+  optimizer::optimize,
+  solver::{solve, GlobalConstraint},
   types::*,
 };
 use std::{
@@ -50,7 +51,7 @@ impl<'a> From<(CMPLXId, &'a SolveDatabase<'a>)> for NodeHandle {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SolveDatabase<'a> {
   // Used to lookup
   pub db:                  &'a Database,
@@ -61,6 +62,13 @@ pub struct SolveDatabase<'a> {
   pub interface_instances: BTreeMap<TypeV, BTreeMap<TypeV, BTreeMap<u64, CMPLXId>>>,
   pub heap_map:            HashMap<IString, u32>,
   pub heap_count:          usize,
+}
+
+pub enum OptimizeLevel {
+  MemoryOperations_01,
+  ExpressionOptimization_02,
+  LoopOptimization_03,
+  FunctionInlining_04,
 }
 
 pub enum GetResult {
@@ -114,9 +122,13 @@ impl<'a> SolveDatabase<'a> {
       _ => unreachable!(),
     }
 
-    solve2(&mut solver_db, global_constraints, false);
+    solve(&mut solver_db, global_constraints, false);
 
     solver_db
+  }
+
+  pub fn optimize(&self, optimize_level: OptimizeLevel) -> SolveDatabase {
+    optimize(self, optimize_level)
   }
 
   pub fn get<'b>(&'b self, solve_ty: &str) -> impl Iterator<Item = CMPLXId> + 'b {

@@ -12,8 +12,6 @@ IMPORT ../common/comment as cmt
 
   > bitwise
 
-  | aggregate_instantiation
-
 <> boolean 
 
   > boolean^left "||"{1}  boolean{0}^right
@@ -156,9 +154,9 @@ IMPORT ../common/comment as cmt
 
 <> member 
 
-  > member_root{1}^root ( indexed_member | named_member )(*)^sub_members{2}
+  > member_root{1}^root ( indexed_member | named_member )(*)^sub_members{2} tk:("#" prim::id )?^meta{2}
 
-    :ast { t_MemberCompositeAccess, root, sub_members, tok }
+    :ast { t_MemberCompositeAccess, root, sub_members, meta: str($meta<1,0>), tok }
 
 <> member_load > "[" member "]"
 
@@ -214,7 +212,7 @@ IMPORT ../common/comment as cmt
 
 <> aggregate_instantiation 
 
-  > ':[' aggregate_member_initializer(*",")^inits ","(*) "]"
+  > '[' aggregate_member_initializer(*",")^inits ","(*) "]"
 
     :ast  { t_RawAggregateInstantiation, allocator_binding, inits, tok }
 

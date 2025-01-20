@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Display};
+
 use super::{CMPLXId, TypeV};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,7 +18,12 @@ pub enum Value {
   i8(i8),
   f64(f64),
   f32(f32),
-  Agg(*mut u8, TypeV),
   Ptr(*mut u8, TypeV),
   Heap(CMPLXId),
+}
+
+impl Display for Value {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Debug::fmt(&self, f)
+  }
 }

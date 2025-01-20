@@ -193,6 +193,10 @@ impl TypeV {
     Self(self.0 | (Self::ARRAY_FLAG_BITS << Self::ARRAY_OFFSET))
   }
 
+  pub fn remove_array(self: TypeV) -> TypeV {
+    Self(self.0 & (!(Self::ARRAY_FLAG_BITS << Self::ARRAY_OFFSET)))
+  }
+
   pub fn incr_ptr(&self) -> TypeV {
     self.to_ptr(self.ptr_depth() + 1)
   }
@@ -209,11 +213,11 @@ impl TypeV {
     ((self.0 >> Self::PTR_OFFSET) & Self::PTR_BITS) as i8
   }
 
-  fn to_ptr(&self, ptr_depth: i8) -> TypeV {
+  pub fn to_ptr(&self, ptr_depth: i8) -> TypeV {
     Self((self.0 & !(Self::PTR_BITS << Self::PTR_OFFSET)) | ((ptr_depth as u8 as u64) << Self::PTR_OFFSET))
   }
 
-  fn to_base_ty(&self) -> TypeV {
+  pub fn to_base_ty(&self) -> TypeV {
     Self(self.0 & !(Self::PTR_BITS << Self::PTR_OFFSET))
   }
 

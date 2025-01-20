@@ -9,8 +9,10 @@ IMPORT ../common/comment as cmt
 <> statement 
   > loop_statement 
   | assignment_statement 
+  | move_statement 
   | expression_statement
   | iterator_definition
+  | asm_statement
 
 <> expression_statement > expr::expression
 
@@ -36,19 +38,26 @@ IMPORT ../common/comment as cmt
 
 <> assignment_statement 
 
-  > assignment_var^var "=" expr::expression{2}^expression
+  > assignment_var^var "=" ( expr::expression | expr::aggregate_instantiation ){2}^expression
 
     :ast { t_RawAssignment, var, expression, tok  }
 
-  | expr::member^to "<:" expr::member^from
+
+<> move_statement 
+  
+  > expr::member^to "<:" expr::member^from
 
     :ast { t_RawMove, to, from, tok  }
 
 <> assignment_var 
 
-  > prim::var^var ":" ty::type
+  > prim::var^var ":" ty::non_array_type
 
     :ast { t_RawAssignmentDeclaration, var:$1, ty:$3, tok  }
+
+  | prim::var^var ":" anno::lifetime?^heap "[" ty::non_array_type^base_type (";" expr::expression)?^size_expression "]"
+
+    :ast { t_RawArrayDeclaration, var, base_type, heap, size_expression, tok }
 
   | expr::member
 
@@ -113,3 +122,21 @@ IMPORT ../common/comment as cmt
   > prim::var^var "in" expr::call^iter block_expression^block
 
     :ast { t_RawIterStatement, var, iter, block, tok }
+
+
+<> asm_statement > "ASM" "{" asm_input(+",")^inputs ":" asm_data ( ":" asm_output(+","))?^outputs "}"
+
+  :ast { t_ASM, parser_type: str($parser_type), inputs, outputs, asm_data }
+
+<> asm_input > prim::var "=" expr::expression^expr 
+
+  :ast { t_ASM_Input, mem_name:$1, expr }
+
+<> asm_output > prim::var "=" prim::var 
+  
+  :ast { t_ASM_Output, mem_name:$1, scope_name:$3 }
+
+<> asm_data > c:any+ 
+            | "{" asm_data "}"
+            | "(" asm_data ")"
+            | "[" asm_data "]"

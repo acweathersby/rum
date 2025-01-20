@@ -11,9 +11,10 @@ IMPORT ../common/comment as cmt
 
   :ast { t_RawRoutineDefinition, ty: $routine_type, expression  }
 
++> ty::type > routine_type
 <> routine_type 
 
-  > params ( ">" param_type )?^return_type
+  > params (":" ty::type)?^return_type
 
     :ast { t_RawRoutineType, params, return_type  }
 
@@ -23,20 +24,9 @@ IMPORT ../common/comment as cmt
 
     :ast { t_Params, params: $2 }
 
-+> ty::type > routine_type
-
 <> param_binding 
 
-  > prim::var^var (":" param_type)?^ty
+  > prim::var^var (":" ty::type)?^ty
 
     :ast { t_RawParamBinding, var, ty, tok }
-
-<> param_type 
-
-  > ty::type
-
-  | tk:( "?" prim::var )
-
-    :ast { t_ParamVar, name: str($1<1,0>), tok }
-
 

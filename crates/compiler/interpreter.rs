@@ -1,5 +1,6 @@
 use crate::{
-  compiler::{add_module, CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS, ROUTINE_ID},
+  compiler::{add_module, ASM_ID, CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS, ROUTINE_ID},
+  target::x86::print_instructions,
   types::*,
 };
 use core_lang::parser::ast::Var;
@@ -107,6 +108,8 @@ pub fn get_agg_offset(super_node: &RootNode, name: IString, ctx: &mut RuntimeSys
 pub fn interpret(node: CMPLXId, args: &[Value], db: &SolveDatabase) -> Value {
   let node = NodeHandle::from((node, db));
 
+  dbg!(&node);
+
   if node.get().unwrap().solve_state() == SolveState::Solved {
     let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
 
@@ -174,6 +177,8 @@ pub struct RuntimeSystem<'a, 'b: 'a> {
   db:                  &'a SolveDatabase<'b>,
   heaps:               HashMap<CMPLXId, Vec<(Value, Value)>>,
   allocator_interface: TypeV,
+  //interpreter_buffer:  *mut u8,
+  //interpreter_size:    usize,
 }
 
 #[derive(Clone, Copy)]
@@ -323,6 +328,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             (_, r) => r,
           }
         }
+
         "POISON" => Value::Ptr(0 as *mut _, ty_poison),
         "DECL" => interprete_op(super_node, operands[0], scratch, ctx, scope_data),
         "ADD" | "SUB" | "DIV" | "MUL" => {
@@ -403,6 +409,35 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           } else {
             let new_offset = get_aligned_value(curr_offset, size);
             Value::u64(new_offset + size)
+          }
+        }
+        "ARR_DECL" => {
+          let len = match interprete_op(super_node, operands[0], scratch, ctx, scope_data) {
+            Value::u8(len) => len as usize,
+            val => todo!("Get length value from {val}"),
+          };
+
+          let ele_size = match op_ty.remove_array().to_base_ty() {
+            ty_u8 => 1,
+            ty_u32 => ty_u32.prim_data().unwrap().byte_size as _,
+            ty_u64 => ty_u64.prim_data().unwrap().byte_size as _,
+            ty => todo!("Get byte size from  {ty}"),
+          };
+
+          let size = ele_size * len + 8;
+
+          let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty;
+
+          if let Some(heap_id) = new_heap.heap_id() {
+            let heap_ctx_ptr = allocate_from_heap(ctx, heap_id, size as u64);
+
+            unsafe { *(heap_ctx_ptr as *mut u64) = len as u64 };
+
+            dbg!(Value::Ptr(unsafe { heap_ctx_ptr.offset(8) } as _, *op_ty));
+
+            Value::Ptr(unsafe { heap_ctx_ptr.offset(8) } as _, *op_ty)
+          } else {
+            unreachable!()
           }
         }
         "AGG_DECL" => {
@@ -491,7 +526,27 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
                 Value::Ptr(unsafe { ptr.offset(offset as isize) }, *op_ty)
               }
-              _ => panic!("Ty {ty} cannot be indexed with {offset_base}"),
+              None => {
+                if ty.is_array() {
+                  let ptr_depth = ty.ptr_depth();
+                  if ptr_depth > 0 {
+                    panic!("Pointer offset on array must be off array base");
+                  }
+
+                  let ele_size = match op_ty.remove_array().to_base_ty() {
+                    ty_u8 => 1,
+                    ty_u32 => ty_u32.prim_data().unwrap().byte_size as _,
+                    ty_u64 => ty_u64.prim_data().unwrap().byte_size as _,
+                    ty => todo!("Get byte size from  {ty}"),
+                  };
+
+                  let offset = offset_base * ele_size;
+
+                  Value::Ptr(unsafe { ptr.offset(offset as isize) }, *op_ty)
+                } else {
+                  panic!("Ty {ty} cannot be indexed with {offset_base}")
+                }
+              }
             }
           }
           _ => unreachable!(),
@@ -580,8 +635,9 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
           let ptr = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let val = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
-
           interprete_op(super_node, operands[2], scratch, ctx, scope_data);
+
+          dbg!(ptr);
 
           match ptr {
             Value::Ptr(ptr, ty) => {
@@ -842,6 +898,77 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
         other => unreachable!("{other:#?}"),
       }
     }
+    ASM_ID => {
+      let mut instructions = Vec::new();
+
+      let mut post_instruction = Vec::new();
+      // Create instruction buffer
+
+      use crate::target::x86::{x86_encoder::*, x86_eval::*, x86_instructions::*, x86_types::*};
+
+      for (op, var_id) in host_node.inputs.iter() {
+        if *var_id == VarId::MemCTX {
+          interprete_op(super_node, *op, scratch, ctx, scope_data);
+        }
+      }
+
+      for (op, var_id) in host_node.inputs.iter() {
+        if let VarId::Name(reg_name) = var_id {
+          let reg_index = match reg_name.to_str().as_str() {
+            "RAX" | "rax" => RAX,
+            "RDI" | "rdi" => RDI,
+            "RSI" | "rsi" => RSI,
+            "RDX" | "rdx" => RDX,
+            reg => panic!("Invalid register {reg}"),
+          };
+
+          let val: i64 = unsafe {
+            match interprete_op(super_node, *op, scratch, ctx, scope_data) {
+              Value::Ptr(ptr, ..) => {
+                let slice = std::slice::from_raw_parts(ptr, 7);
+                dbg!(slice);
+
+                std::mem::transmute(ptr)
+              }
+              Value::u8(val) => val as _,
+              Value::u16(val) => val as _,
+              Value::u32(val) => val as _,
+              Value::u64(val) => val as _,
+              Value::i8(val) => val as _,
+              Value::i16(val) => val as _,
+              Value::i32(val) => val as _,
+              Value::i64(val) => val as _,
+              Value::Bool(val) => val as _,
+              val => unreachable!("Cannot load {val} into a register"),
+            }
+          };
+
+          // MOV RAX, VALUE
+          dbg!((reg_index, val));
+          // encode(&mut instructions, &push, 64, Arg::Reg(reg_index), Arg::None, Arg::None);
+          encode(&mut instructions, &mov, 64, Arg::Reg(reg_index), Arg::Imm_Int(val), Arg::None);
+          post_instruction.push(Arg::Reg(reg_index));
+        }
+      }
+
+      println!("TODO: Evaluate ASM expression");
+      instructions.push(0x0F);
+      instructions.push(0x05);
+
+      for reg in post_instruction.into_iter().rev() {
+        //   encode(&mut instructions, &pop, 64, reg, Arg::None, Arg::None);
+      }
+
+      encode(&mut instructions, &ret, 64, Arg::None, Arg::None, Arg::None);
+
+      print_instructions(instructions.as_slice(), 0);
+
+      let instr = x86Function::new(&instructions, 0);
+      instr.access_as_call::<fn()>()();
+
+      todo!("ASM")
+    }
+
     CALL_ID => {
       let (call_ref_op, _) = host_node.inputs.iter().find(|(_, var)| *var == VarId::CallRef).unwrap();
 
@@ -868,6 +995,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
               Operation::CallTarget(call_target) => {
                 let call_target = NodeHandle::from((*call_target, ctx.db));
                 let call_target = call_target.get().unwrap();
+                dbg!(call_target);
 
                 let ret = {
                   let mut scratch = Vec::new();
@@ -913,7 +1041,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
 }
 
 fn intrinsic_allocate(size: u64) -> *mut u8 {
-  let alignment = 8;
+  let alignment = 16;
   let layout = std::alloc::Layout::array::<u8>(size as usize).expect("Could not create bit field").align_to(alignment).unwrap();
   let ptr = unsafe { std::alloc::alloc(layout) };
   ptr
@@ -1086,5 +1214,16 @@ fn convert_primitive_types(prim: PrimitiveType, in_op: Value) -> Value {
     ((PrimitiveBaseType::Float, 8), Value::i16(val)) => Value::f64(val as f64),
     ((PrimitiveBaseType::Float, 8), Value::i8(val)) => Value::f64(val as f64),
     val => todo!("convert {val:#?}"),
+  }
+}
+
+fn syscall(ty: &str, vals: &[Value]) {
+  match ty {
+    "write" => {
+      let Value::u64(rsi) = vals[0] else { unreachable!() };
+      let Value::Ptr(rdi, ..) = vals[1] else { unreachable!() };
+      let Value::u64(rdi, ..) = vals[2] else { unreachable!() };
+    }
+    _ => {}
   }
 }

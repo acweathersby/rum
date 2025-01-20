@@ -127,7 +127,7 @@ The problem:
 
 Aliasing, Object Lifetime, and Safety
 
-Memory safety is best summed as thus: Mutation of an object to a certain value should persist that value until the next mutation. Any intermediate non-mutating access of such an object between mutations should always yield the same value. In a trivial, sequential code sequence this mutation semantic is maintained. This becomes more complicated when two elements are added to the mix, pointer/reference aliasing and concurrent access. 
+Memory safety is best summed as thus: Mutation of an object to a certain value should persist that value until the next mutation. Any intermediate non-mutating access of such an object should always yield the same value. In a trivial, sequential code sequence this mutation semantic is maintained. This becomes more complicated when two elements are added to the mix, pointer/reference aliasing and concurrent access. 
 
 The former can occur if a mutable reference to an object can be assigned to two or more variables simultaneously. Within a code sequence, it can be quite simple to detect these types of assignments and forbid them from occurring. This is how Rust operates, allowing only a single mutable reference to persists in a code sequence, and invalidate all other references until the mutable reference goes out of scope. This works well for the most part, and most aliasing issues are prevented by this invariant. This starts breaking down when the programmer desires to obtain mutable references to independent members of an object. In which case the the first mutable access of an object X member, we'll call it X.a, creates a total mutable reference over X, preventing further mutable access of X until the reference bound to X.a goes out of scope. This prevents the programmer from simultaneously obtaining a reference to an independent member of X, let's call it X.b, the mutation of which would have no bearing on the reference to X.a. ( This may be complicated if both X.a X.b and are themselves pointers of the same type, which then can be assigned to the same object address, thus creating an alias that could cause safety violations. )
 
@@ -706,7 +706,7 @@ ASSEMBLY_STYLE
   Hello World
 
 mov RDI, 0       # Standard out file descriptor
-mov RDI, [#DATA] # Address of byte buffer
+mov RSI, [#DATA] # Address of byte buffer
 mov RDX, 11      # Number of bytes in buffer
 mov RAX,         # Call number for write
 call 0
@@ -845,3 +845,13 @@ DB ->
   - NAMED DATA: NAME - TYPE - VAL
   - ANONY DATA: TYPE - VAL
   
+
+Arrays: 
+
+  There are two types of arrays in rum. 
+    - Generic arrays - They have a runtime defined length and are generic in the sense that there is no backing type object storing information about them. In memory they are stored
+      as length buffer pair, and require extra instructions to query length information, so end up having an implicit overhead when used in iterative code.
+
+    - Object arrays - Arrays that are defined `[Type; Len]` and are a special hybrid between Tuples (structs) and implicit arrays. They have a compile time known length, a fixed size, and have a dedicated object entry to track this information. They are a distinct type.
+
+    

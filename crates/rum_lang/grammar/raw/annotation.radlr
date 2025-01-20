@@ -17,9 +17,9 @@ IGNORE { c:sp c:nl }
 
   | bindable_name
 
-<> annotation >  tk:( "#" bindable_name )
+<> annotation >  tk:( "#" bindable_name ) ("("  bindable_name  ")" :ast $2 )?^meta
 
-  :ast { t_Annotation, args, val: str($1<1,0>) }
+  :ast { t_Annotation, args, val: str($1<1,0>), meta: str($meta) }
 
 <> lifetime_variable > lifetime "=>" prim::var(+"+")^args
 

@@ -13,6 +13,7 @@ path = "./lib.rs"
 
 [dependencies]
 core_lang         = { path="../core" }
+libc = "0.2.154"
 rum_common        = { path="../common" }
 rum_lang          = { path="../rum_lang" }
 num-traits        = "0.2.17"
@@ -23,3 +24,8 @@ path = "../../../lib_radlr/crates/radlr-rust-runtime"
 [build-dependencies.radlr_build]
 path = "../../../lib_radlr/crates/radlr-build"
 
+[dependencies.iced-x86]
+version = "1.21.0"
+default-features = false
+# See below for all features
+features = ["std", "decoder", "masm", "code_asm"]

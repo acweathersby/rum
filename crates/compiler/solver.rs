@@ -95,11 +95,7 @@ fn get_closed_type_or_none(routine: &RootNode, op: &OpId) -> Option<TypeV> {
   (!ty.is_generic()).then_some(*ty)
 }
 
-pub(crate) fn solve(db: &Database, entry: IString, allow_polyfill: bool) -> SolveDatabase {
-  todo!("Deprecated")
-}
-
-pub(crate) fn solve2(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstraint>, allow_poly_fill: bool) {
+pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstraint>, allow_poly_fill: bool) {
   let mut errors: Vec<String> = vec![];
 
   //let mut dependency_links = HashMap::<NodeHandle, Vec<DependencyBinding>>::new();
@@ -312,8 +308,6 @@ pub(crate) fn solve2(db: &mut SolveDatabase, global_constraints: Vec<GlobalConst
                 // Comparing the two
                 let mut caller_constraints = vec![];
                 let mut callee_constraints = vec![];
-
-                dbg!((&callee_sig, &caller_sig));
 
                 if callee_sig.inputs.len() == caller_sig.inputs.len() && callee_sig.outputs.len() == caller_sig.outputs.len() {
                   for ((callee_op, callee_ty), (_, caller_ty)) in
@@ -680,10 +674,8 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
         }
 
         if !var_ptr.ty.is_open() {
-          dbg!(NodeConstraint::GenTyToTy(val_ty, var_ptr.ty.decr_ptr()));
           constraint_queue.push_back(NodeConstraint::GenTyToTy(val_ty, var_ptr.ty.decr_ptr()));
         } else if !var_val.ty.is_open() {
-          dbg!(NodeConstraint::GenTyToTy(val_ty, var_ptr.ty.decr_ptr()));
           constraint_queue.push_back(NodeConstraint::GenTyToTy(ptr_ty, var_val.ty.incr_ptr()));
         } else {
           let mem_op = VarAttribute::MemOp { ptr_ty, val_ty };
@@ -706,6 +698,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
           continue;
         } else if var_a.id < var_b.id {
           var_b.id = var_a.id;
+          var_b.num |= var_a.num;
 
           let mut constraints = var_a.attributes.clone();
           constraints.extend_unique(var_b.attributes.iter().cloned());
@@ -721,6 +714,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
           }
         } else {
           var_a.id = var_b.id;
+          var_a.num |= var_b.num;
 
           let mut constraints = var_a.attributes.clone();
           constraints.extend_unique(var_b.attributes.iter().cloned());
@@ -767,9 +761,6 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
         let heap_ty = heap_id[op.usize()];
         if heap_ty != usize::MAX {
           let heap_id = TypeV::generic(heap_ty as u32);
-
-          dbg!(heap);
-          dbg!(NodeConstraint::GenTyToTy(heap_id, heap));
 
           constraint_queue.push_back(NodeConstraint::GenTyToTy(heap_id, heap));
         } else {
@@ -953,8 +944,21 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>,
                 }
               }
             }
-          } else {
-            panic!("Expected type to be an aggregate type {ty}")
+          } else if ty.is_array() {
+            let base_ty = ty.remove_array().to_base_ty();
+            let mut base_mem = None;
+
+            for member in members.iter() {
+              if let Some(base_id) = base_mem {
+                queue.push_back(NodeConstraint::GenTyToGenTy(member.ty, base_id));
+              } else {
+                base_mem = Some(member.ty);
+              }
+            }
+
+            if let Some(s) = base_mem {
+              queue.push_back(NodeConstraint::GenTyToTy(s, base_ty));
+            }
           }
         }
         _ => {}

@@ -144,6 +144,7 @@ pub enum VarId {
   #[default]
   Undefined,
   Name(IString),
+  ASM(IString),
   MemName(usize, IString),
   ArrayMem(usize),
   SideEffect(usize),
@@ -326,7 +327,6 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
 }
 
 pub fn get_signature(node: &RootNode) -> Signature {
-  dbg!(node);
   get_internal_node_signature(node, 0)
 }
 

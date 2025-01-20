@@ -24,8 +24,10 @@ fn main() {
 
       let sdb: SolveDatabase<'_> = SolveDatabase::solve_for("#test", &db);
 
-      for item in sdb.get("#test") {
-        let val = interpret(item, &[], &sdb);
+      let sdb_opt = sdb.optimize(types::OptimizeLevel::MemoryOperations_01);
+
+      for item in sdb_opt.get("#test") {
+        let val = interpret(item, &[], &sdb_opt);
 
         println!("{item:?} = {val:?}");
       }
@@ -34,3 +36,4 @@ fn main() {
     }
   }
 }
+                                                                                                       

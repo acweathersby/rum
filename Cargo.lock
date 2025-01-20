@@ -116,6 +116,8 @@ name = "rum_compiler"
 version = "0.0.0"
 dependencies = [
  "core_lang",
+ "iced-x86",
+ "libc",
  "num-traits",
  "radlr_build",
  "radlr_rust_runtime",

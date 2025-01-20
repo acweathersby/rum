@@ -8,10 +8,14 @@ IMPORT ../common/comment as cmt
 IGNORE { c:sp c:nl }
 
 <> type 
-  > base_type 
+  > non_array_type 
+  | array_type
+
+<> non_array_type > base_type 
   | pointer_type
-  | complex_type
+  | structure_type
   | type_type
+  | var_type
 
 <> pointer_type > "*" base_type^base_ty :ast { t_Type_Pointer, base_ty, tok }
 
@@ -21,9 +25,14 @@ IGNORE { c:sp c:nl }
 
   | named_type
 
+
+<> complex_type > array_type | structure_type
+
 <> named_type > prim::var^name :ast { t_Type_Variable, name }
 
 <> type_type > "ty" :ast { t_Type_Type }
+
+<> var_type > tk:( "^" prim::var^name )^name  :ast { t_Var_Type, name: str($name<1,0>) }
 
 <> primitive_type
   > primitive_uint
@@ -50,7 +59,12 @@ IGNORE { c:sp c:nl }
   | "u32"   :ast { t_Type_u32 }
   | "u64"   :ast { t_Type_u64 }
 
-<> complex_type > structure_type | array_type 
+<> array_type 
+  
+  > anno::lifetime?^heap "[" non_array_type^base_type ( ";"  ( prim::uint :ast u32($1) )(+) )?^dimensions   "]"
+
+    :ast { t_Type_Array, base_type, heap, dimensions, tok }
+
 
 <> structure_type
 
@@ -63,12 +77,6 @@ IGNORE { c:sp c:nl }
   > prim::var^name ":" type^ty
 
       :ast  { t_Property, name, ty, tok  }
-
-<> array_type
-
-  > anno::lifetime?^heap "[" type^base_type (";" prim::int :ast u32($2) )?^size "]"
-
-    :ast { t_Type_Array, base_type, heap, size, tok }
 
 <> enum_type 
 

@@ -37,25 +37,25 @@ IMPORT ../common/comment as cmt
 
 <> binding 
 
-  > prim::var^name "=>" ty::complex_type^ty
+  > prim::var^name "::" ty::complex_type^ty
 
     :ast { t_RawBoundType, name, ty, tok }
 
-  | prim::var^name "=>" rt::routine_definition^ty
+  | prim::var^name "::" rt::routine_definition^ty
 
     :ast { t_RawBoundType, name, ty, tok }
 
 <> binding_union 
 
-  > prim::var^name "=>" prim::var(+"|")^names
+  > prim::var^name "::" prim::var(+"|")^names
 
     :ast { t_RawBoundUnion, name, names, ty, tok }
 
 <> alias
 
-  > prim::var^name "<:" ty::type^ty "=" expr::expression^expr
+  > ":>" ( stmt::assignment_statement |  stmt::assignment_var )^stmt
 
-   :ast { t_RawAlias, name, ty, expr, tok }
+   :ast { t_RawAlias, stmt, tok }
 
 
 <> alias_union
