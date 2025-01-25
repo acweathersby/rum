@@ -336,7 +336,7 @@ impl Numeric {
 
     let int_bits = required_bits(int_num) + is_neg as u8;
     let sig_bits = required_bits(flt_num);
-    let exp_bits = required_bits(exp_bits) + is_neg as u8;
+    let exp_bits = required_bits(exp_bits) as u8;
 
     Ok((Numeric::init(1, exp_bits, sig_bits, is_fractional, is_neg), val))
   }

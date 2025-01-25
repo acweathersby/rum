@@ -16,6 +16,7 @@ EXPORT ty::type as types
 EXPORT ty::type as types
 EXPORT prim::sci_num as sci_num
 EXPORT raw_entry_identifier as entry_id
+EXPORT raw_binary as bin
 
 <> raw_module > module::module
 
@@ -25,3 +26,10 @@ EXPORT raw_entry_identifier as entry_id
 
 <> entry > anno::annotation | rt::routine_definition | prim::var(+"|")^names :ast { t_NamedEntries, names }
 
+
+
+<> raw_binary > hexal(+) 
+
+<> hexal > tk:(octal octal) :ast str($1)
+
+<> octal > c:num | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F"

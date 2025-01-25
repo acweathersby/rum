@@ -1,25 +1,14 @@
-double => [ 
-  C: u16
-]
-
-test_array => [ u32; 2 ]
-
-StringData =>  [ u8; ? ]
-
-String => [
-  data: *strings StringData
-  len: 
-]
 
 
 
+#test
+entry :: () : [u64]  {
 
+  d = 2
 
-entry (d:?) => ?  {
+  a: [u64] = [ 22 + d, 2 ]
 
-  a:test_array = :[ 22 + d, 2 ]
-
-  b:? = :[ 20, 1 ]
+  b: [u64] = [ 20, 1 ]
 
   a[1] = 32 + a[0] + 128 + b[0]
 

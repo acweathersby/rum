@@ -11,4 +11,4 @@ pub mod solver;
 
 pub mod types;
 
-mod target;
+pub mod target;

@@ -1,0 +1,19 @@
+d :: [ test:u32 ]
+
+#test
+fib :: () : u64 {
+  a: u64 = 0
+  b = 1 
+  n = 10
+
+  d:d = [test = 22]
+  
+  loop if n > 0 {
+    t = a
+    a = a + b
+    b = t
+    n = n - 1
+  }
+
+  a
+}

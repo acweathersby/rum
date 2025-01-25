@@ -154,9 +154,9 @@ IMPORT ../common/comment as cmt
 
 <> member 
 
-  > member_root{1}^root ( indexed_member | named_member )(*)^sub_members{2} tk:("#" prim::id )?^meta{2}
+  > member_root^root ( indexed_member | named_member )(*){1}^sub_members (".#" prim::id)?{1}^meta
 
-    :ast { t_MemberCompositeAccess, root, sub_members, meta: str($meta<1,0>), tok }
+    :ast { t_MemberCompositeAccess, root, sub_members, meta, tok }
 
 <> member_load > "[" member "]"
 

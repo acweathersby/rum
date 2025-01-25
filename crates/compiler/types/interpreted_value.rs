@@ -18,7 +18,7 @@ pub enum Value {
   i8(i8),
   f64(f64),
   f32(f32),
-  Ptr(*mut u8, TypeV),
+  Ptr(*mut u8, TypeV, usize),
   Heap(CMPLXId),
 }
 

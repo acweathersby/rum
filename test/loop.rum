@@ -1,4 +1,7 @@
-loop_test (t: i32, b: u32) => ? {
+#test
+loop_test :: () : u32 {
+  t: i32 = 2
+  b: u32 = 4
   loop if t
     > 0 {
       b = b + 1
@@ -12,4 +15,5 @@ loop_test (t: i32, b: u32) => ? {
   b
 }
 
-// #test loop_test(4, 2) == 2
+
+

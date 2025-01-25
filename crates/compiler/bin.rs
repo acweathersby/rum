@@ -3,6 +3,7 @@ use compiler::add_module;
 use interpreter::interpret;
 use rum_compiler::*;
 use types::{Database, SolveDatabase};
+
 // Stage 0 - Compiles single file and runs all "#test" annotated functions, which should have this signature `#test name => () `
 
 fn main() {
@@ -26,6 +27,8 @@ fn main() {
 
       let sdb_opt = sdb.optimize(types::OptimizeLevel::MemoryOperations_01);
 
+      target::x86::compile(&sdb_opt);
+
       for item in sdb_opt.get("#test") {
         let val = interpret(item, &[], &sdb_opt);
 
@@ -36,4 +39,3 @@ fn main() {
     }
   }
 }
-                                                                                                       

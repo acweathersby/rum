@@ -3,7 +3,7 @@ use std::{
   fmt::{Debug, Display},
 };
 
-use super::{CMPLXId, NodeHandle, RootNode};
+use super::{CMPLXId, NodeHandle, Numeric, RootNode, *};
 
 macro_rules! create_primitive {
   ($db:ident $index:ident) => { };
@@ -175,6 +175,33 @@ impl TypeV {
       BaseType::NoUse => TypeData::NoUse,
       BaseType::Poison => TypeData::Poison,
       BaseType::MemCtx => TypeData::MemCtx,
+    }
+  }
+
+  pub fn numeric(&self) -> Numeric {
+    match self.prim_data() {
+      Some(prim) => match prim {
+        prim_ty_u8 => u8_numeric,
+        prim_ty_u16 => u16_numeric,
+        prim_ty_u64 => u64_numeric,
+        prim_ty_u32 => u32_numeric,
+        prim_ty_u128 => u128_numeric,
+        prim_ty_s8 => s8_numeric,
+        prim_ty_s16 => s16_numeric,
+        prim_ty_s32 => s32_numeric,
+        prim_ty_s64 => s64_numeric,
+        prim_ty_s128 => s128_numeric,
+        prim_ty_f32 => f32_numeric,
+        prim_ty_f64 => f64_numeric,
+        _ => Default::default(),
+      },
+      _ => {
+        if self.is_array() || self.ptr_depth() > 0 {
+          u64_numeric
+        } else {
+          Numeric::default()
+        }
+      }
     }
   }
 

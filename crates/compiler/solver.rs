@@ -560,11 +560,16 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               }
             }
 
+            dbg!(&node);
+
+            let RootNode { nodes, operands, types, type_vars, heap_id, source_tokens, .. } = node;
+
             for var in type_vars {
               if var.has(VarAttribute::HeapType) {
                 var.ty = TypeV::heap(Default::default());
               } else if var.has(VarAttribute::Delta) && var.ty.is_open() {
                 let num = var.num;
+
                 // select best candidate for type
                 if num.exp_bits > 0 || num.is_fractional() {
                   // Floating point
@@ -694,11 +699,13 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
           var_b.ty = ty_poison;
         }
 
+        var_a.num |= var_b.num;
+
         if var_a.id == var_b.id {
           continue;
         } else if var_a.id < var_b.id {
           var_b.id = var_a.id;
-          var_b.num |= var_a.num;
+          var_a.num |= var_b.num;
 
           let mut constraints = var_a.attributes.clone();
           constraints.extend_unique(var_b.attributes.iter().cloned());
@@ -714,7 +721,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
           }
         } else {
           var_a.id = var_b.id;
-          var_a.num |= var_b.num;
+          var_b.num |= var_a.num;
 
           let mut constraints = var_a.attributes.clone();
           constraints.extend_unique(var_b.attributes.iter().cloned());
@@ -746,6 +753,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
 
         if var.ty.is_open() {
           var.ty = ty_b;
+          var.num |= ty_b.numeric();
           process_variable(var, &mut constraint_queue, db);
         } else if var.ty == TypeV::NoUse {
         } else if var.ty != ty_b {

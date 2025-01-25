@@ -1,0 +1,3 @@
+# Testing 
+
+ - Annotated tests strategy - Allow tests to be defined as an annotation with a set of input values and output values, where the annotated function is called with the input values, and the return values are compared in some way with annotations output set. Such tests need only be run once per successful instantiation of the function or annotation and whenever the signature of the function or the signature of the types within the annotation output/input sets change.

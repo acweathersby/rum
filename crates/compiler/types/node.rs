@@ -240,7 +240,6 @@ pub(crate) enum Operation {
   CallTarget(CMPLXId),
   IntrinsicCallTarget(IString),
   Allocate,
-  Free,
 }
 
 impl Debug for Operation {
@@ -269,7 +268,6 @@ impl Display for Operation {
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
       Operation::Data => f.write_fmt(format_args!("DATA",)),
       Operation::Allocate => f.write_fmt(format_args!("allocate",)),
-      Operation::Free => f.write_fmt(format_args!("free",)),
     }
   }
 }

@@ -122,6 +122,21 @@ pub fn parse_entry(input: &str) -> Result<Arc<Entry<Token>>, String> {
   }
 }
 
+pub fn parse_bin(input: &str) -> Result<Vec<String>, String> {
+  let parser_db = parser::ParserDB::new();
+  match parser_db.build_ast(
+    &mut StringInput::from(input),
+    parser_db.get_entry_data_from_name("bin").unwrap(),
+    ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
+  ) {
+    Err(err) => {
+      println!("{err:?}");
+      Err("Failed to parse input".to_string())
+    }
+    Ok(node) => Ok(node.into_vec_String().unwrap()),
+  }
+}
+
 #[test]
 fn parse_num() {
   parse_raw_number("num").is_ok();
