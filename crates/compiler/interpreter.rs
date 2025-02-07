@@ -1,6 +1,6 @@
 use crate::{
   compiler::{add_module, ASM_ID, CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS, ROUTINE_ID, STRUCT_ID},
-  target::x86::print_instructions,
+  targets::x86::print_instructions,
   types::*,
 };
 use core_lang::parser::ast::Var;
@@ -364,7 +364,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
         "TY_EQ" => {
           let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
-          let r = super_node.get_base_ty(super_node.types[operands[1].usize()]);
+          let r = super_node.get_base_ty(super_node.op_types[operands[1].usize()]);
 
           match l {
             Value::Ptr(_, ty, _) => Value::Bool(ty == r),
@@ -400,7 +400,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           // Calculates the new offset
           let curr_offset = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
-          let size = get_ty_size(super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty, ctx);
+          let size = get_ty_size(super_node.type_vars[super_node.op_types[operands[0].usize()].generic_id().unwrap()].ty, ctx);
 
           if size == 0 {
             Value::u64(curr_offset)
@@ -754,7 +754,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 }
 
 pub fn get_op_type(super_node: &RootNode, op: OpId) -> TypeV {
-  let base_ty = &super_node.types[op.usize()];
+  let base_ty = &super_node.op_types[op.usize()];
   let op_ty = if let Some(offset) = base_ty.generic_id() { &super_node.type_vars[offset].ty } else { base_ty };
   *op_ty
 }
@@ -984,7 +984,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       let mut binary = Vec::new();
 
       // Create instruction buffer
-      use crate::target::x86::{x86_encoder::*, x86_eval::*, x86_instructions::*, x86_types::*};
+      use crate::targets::x86::{x86_encoder::*, x86_eval::*, x86_instructions::*, x86_types::*};
 
       for (op, var_id) in host_node.inputs.iter() {
         if *var_id == VarId::MemCTX {
@@ -1036,13 +1036,13 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
             }
           };
 
-          encode(&mut instructions, &mov, 64, Arg::Reg(reg_index), Arg::Imm_Int(val), Arg::None);
+          encode_x86(&mut instructions, &mov, 64, Arg::Reg(reg_index), Arg::Imm_Int(val), Arg::None);
         }
       }
 
       instructions.extend(binary);
 
-      encode(&mut instructions, &ret, 64, Arg::None, Arg::None, Arg::None);
+      encode_x86(&mut instructions, &ret, 64, Arg::None, Arg::None, Arg::None);
 
       //print_instructions(instructions.as_slice(), 0);
 
@@ -1155,7 +1155,7 @@ fn interprete_binary_args(
   ctx: &mut RuntimeSystem,
   scope_data: ScopeData,
 ) -> (Value, Value) {
-  let ty = super_node.type_vars[super_node.types[op.usize()].generic_id().unwrap()].ty;
+  let ty = super_node.type_vars[super_node.op_types[op.usize()].generic_id().unwrap()].ty;
 
   let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
   let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
@@ -1174,7 +1174,7 @@ fn interprete_binary_cmp_args(
   ctx: &mut RuntimeSystem,
   scope_data: ScopeData,
 ) -> (Value, Value) {
-  let ty = super_node.type_vars[super_node.types[operands[0].usize()].generic_id().unwrap()].ty;
+  let ty = super_node.type_vars[super_node.op_types[operands[0].usize()].generic_id().unwrap()].ty;
 
   let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
   let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);

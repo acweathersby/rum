@@ -78,6 +78,8 @@ pub fn add_module(db: &mut Database, module: &str) {
               }
             }
 
+            dbg!(&node);
+
             db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
           }
           routine_definition_Value::Type_Struct(strct) => {
@@ -440,7 +442,7 @@ fn add_delta_var<'a>(bp: &'a mut BuildPack<'_>) -> &'a mut TypeVar {
   var
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Var {
   id:                VarId,
   ori_op:            OpId,
@@ -614,7 +616,7 @@ fn add_op(bp: &mut BuildPack, operation: Operation, ty: TypeV, node: rum_lang::p
   debug_assert!(ty.is_open() || ty.is_poison() || ty == TypeV::NoUse, "incompatible base type {ty}");
   let op_id = OpId(bp.super_node.operands.len() as u32);
   bp.super_node.operands.push(operation);
-  bp.super_node.types.push(ty);
+  bp.super_node.op_types.push(ty);
   bp.super_node.source_tokens.push(node);
   bp.super_node.heap_id.push(usize::MAX);
   op_id
@@ -1447,7 +1449,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
     }
 
     clauses_input_ty.push(known_type);
-    clauses.push(pop_node(bp, false));
+    clauses.push(pop_node(bp, true));
   }
 
   if match_.default_clause.is_none() {
@@ -1456,7 +1458,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
 
     let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), u32::MAX)), activation_ty.clone(), Default::default());
     update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
-    clauses.push(pop_node(bp, false));
+    clauses.push(pop_node(bp, true));
   }
 
   join_nodes(clauses, bp);
@@ -1506,10 +1508,10 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
   join_nodes(clauses, bp);
 
   let act = get_var(bp, VarId::MatchActivation).unwrap();
-  add_output(bp, act.0, VarId::MatchActivation);
+  //add_output(bp, act.0, VarId::MatchActivation);
 
   let out = get_var(bp, VarId::OutputVal).unwrap();
-  add_output(bp, out.0, VarId::OutputVal);
+  //add_output(bp, out.0, VarId::OutputVal);
 
   join_nodes(vec![pop_node(bp, false)], bp);
 
@@ -1524,9 +1526,6 @@ fn pop_node(bp: &mut BuildPack, port_outputs: bool) -> NodeScope {
     let node_index = node.node_index as u32;
 
     for (var_id, var_index) in node.var_lu.iter() {
-      if matches!(var_id, VarId::MemName(..)) {
-        continue;
-      }
       if let Some(var) = node.vars.get_mut(*var_index) {
         if var.origin_node_index >= node_index as usize {
           continue;
@@ -1544,12 +1543,14 @@ fn pop_node(bp: &mut BuildPack, port_outputs: bool) -> NodeScope {
 
 fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
   let current_node: &NodeScope = bp.node_stack.last().unwrap();
-
   let current_node_index = current_node.node_index;
 
-  let mut outgoing_vars: HashMap<VarId, Vec<(usize, Var)>> = HashMap::new();
+  let mut outgoing_vars: HashMap<VarId, _> = HashMap::new();
+  let nodes_len = outgoing_nodes.len();
 
-  for outgoing_node in outgoing_nodes {
+  let node_index_mappings = outgoing_nodes.iter().map(|n| n.node_index).collect::<Vec<_>>();
+
+  for (node_index, outgoing_node) in outgoing_nodes.into_iter().enumerate() {
     for var in outgoing_node.var_lu {
       let out_var = &outgoing_node.vars[var.1];
 
@@ -1559,25 +1560,41 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
       }
 
       match outgoing_vars.entry(var.0) {
-        std::collections::hash_map::Entry::Occupied(mut e) => {
-          e.get_mut().push((outgoing_node.node_index, out_var.clone()));
-        }
         std::collections::hash_map::Entry::Vacant(e) => {
-          e.insert(vec![(outgoing_node.node_index, out_var.clone())]);
+          let var = get_var_data(bp, var.0).unwrap();
+          let ori_op = var.val_op;
+
+          let mut vec = vec![ori_op; nodes_len];
+
+          dbg!(&vec);
+
+          vec[node_index] = out_var.val_op;
+
+          if var.origin_node_index < current_node_index {
+            e.insert((ori_op, vec));
+          } else {
+            e.insert((Default::default(), vec));
+          }
+        }
+        std::collections::hash_map::Entry::Occupied(mut e) => {
+          e.get_mut().1[node_index] = out_var.val_op;
         }
       }
     }
   }
 
-  for (var_id, vars) in outgoing_vars {
+  for (var_id, (ori_op, vars)) in outgoing_vars {
     if let Some((op, ty)) = get_var(bp, var_id) {
-      let vars = vars.iter().filter(|(_, v)| v.val_op != op).collect::<Vec<_>>();
+      //let mut vars = vars.iter().filter(|(_, v)| v.val_op != op).map(|(a, b)| (*a, b.val_op)).collect::<Vec<_>>();
 
       if vars.len() > 0 {
-        let ty_a = if op.is_valid() { bp.super_node.types[op.0 as usize].clone() } else { vars[0].1.ty };
+        let ty_a = if op.is_valid() { bp.super_node.op_types[op.0 as usize] } else { bp.super_node.op_types[vars[0].usize()] };
 
         for out_var in &vars {
-          let ty_b = bp.super_node.types[out_var.1.val_op.0 as usize].clone();
+          if out_var.is_invalid() {
+            continue;
+          }
+          let ty_b = bp.super_node.op_types[out_var.usize()];
           if ty_a != ty_b {
             if var_id == VarId::MemCTX {
             } else {
@@ -1586,13 +1603,20 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
           }
         }
 
-        let iter = vars.iter().map(|(i, v)| (*i as u32, v.val_op));
+        dbg!(var_id);
+
+        let iter = vars.iter().enumerate().map(|(i, v)| (node_index_mappings[i] as u32, *v));
         match &mut bp.super_node.operands.get_mut(op.0 as usize) {
           Some(Operation::OutputPort(_, port_vars)) => {
+            panic!("AA");
             port_vars.extend(iter);
           }
           _ => {
             let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty, Default::default());
+            if ori_op.is_valid() {
+              add_input(bp, ori_op, var_id);
+            }
+            add_output(bp, port_op, var_id);
             update_var(bp, var_id, port_op, ty);
           }
         }
@@ -1633,7 +1657,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
 
         let op_id = operands[port_index];
 
-        let ty = if op_id.is_valid() { bp.super_node.types[op_id.usize()].clone() } else { add_ty_var(bp).ty };
+        let ty = if op_id.is_valid() { bp.super_node.op_types[op_id.usize()].clone() } else { add_ty_var(bp).ty };
 
         match ty_lu.entry(type_ref_name) {
           std::collections::hash_map::Entry::Occupied(d) => {
@@ -1686,7 +1710,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
     }
   }
 
-  bp.super_node.types[op_id.0 as usize] = ty;
+  bp.super_node.op_types[op_id.0 as usize] = ty;
 
   (op_id, ty)
   // Add constraints

@@ -277,7 +277,7 @@ pub(crate) struct RootNode {
   pub(crate) nodes:         Vec<Node>,
   pub(crate) annotations:   Vec<IString>,
   pub(crate) operands:      Vec<Operation>,
-  pub(crate) types:         Vec<TypeV>,
+  pub(crate) op_types:      Vec<TypeV>,
   pub(crate) type_vars:     Vec<TypeVar>,
   pub(crate) heap_id:       Vec<usize>,
   pub(crate) source_tokens: Vec<rum_lang::parser::script_parser::ast::ASTNode<Token>>,
@@ -289,7 +289,7 @@ impl Default for RootNode {
       nodes:         Vec::with_capacity(8),
       annotations:   Vec::with_capacity(8),
       operands:      Vec::with_capacity(8),
-      types:         Vec::with_capacity(8),
+      op_types:      Vec::with_capacity(8),
       type_vars:     Vec::with_capacity(8),
       source_tokens: Vec::with_capacity(8),
       heap_id:       Vec::with_capacity(8),
@@ -329,7 +329,7 @@ pub fn get_signature(node: &RootNode) -> Signature {
 }
 
 pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
-  let RootNode { nodes, operands, types, type_vars, heap_id, source_tokens, .. } = node;
+  let RootNode { nodes, operands, op_types: types, type_vars, heap_id, source_tokens, .. } = node;
   let call_node = &nodes[internal_node_index];
 
   let caller_sig = Signature::new(
@@ -391,7 +391,7 @@ impl Debug for RootNode {
           .iter()
           .map(|input| {
             if input.0.is_valid() {
-              let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
+              let ty = self.get_base_ty(self.op_types[input.0 .0 as usize].clone());
               format!("{}: {ty}", input.1)
             } else {
               format!("{}: --", input.1)
@@ -404,7 +404,7 @@ impl Debug for RootNode {
       f.write_str(" => ")?;
       for input in sig_node.outputs.iter() {
         if input.0.is_valid() {
-          let ty = self.get_base_ty(self.types[input.0 .0 as usize].clone());
+          let ty = self.get_base_ty(self.op_types[input.0 .0 as usize].clone());
 
           if input.1 == VarId::Return {
             f.write_fmt(format_args!(" {ty}"))?;
@@ -419,7 +419,7 @@ impl Debug for RootNode {
       f.write_str("\n###################### \n")?;
     }
 
-    for ((index, op), ty) in self.operands.iter().enumerate().zip(self.types.iter()) {
+    for ((index, op), ty) in self.operands.iter().enumerate().zip(self.op_types.iter()) {
       let ty = self.get_base_ty(*ty);
       let mut tok = self.source_tokens[index].token();
       let source = tok.to_string();
@@ -450,7 +450,7 @@ impl Debug for RootNode {
 
 impl RootNode {
   pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> TypeV {
-    self.get_base_ty(self.types[op.usize()].clone())
+    self.get_base_ty(self.op_types[op.usize()].clone())
   }
 
   pub(crate) fn get_base_ty(&self, ty: TypeV) -> TypeV {

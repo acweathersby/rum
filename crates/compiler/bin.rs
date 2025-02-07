@@ -27,7 +27,7 @@ fn main() {
 
       let sdb_opt = sdb.optimize(types::OptimizeLevel::MemoryOperations_01);
 
-      target::x86::compile(&sdb_opt);
+      targets::x86::compile(&sdb_opt);
 
       for item in sdb_opt.get("#test") {
         let val = interpret(item, &[], &sdb_opt);

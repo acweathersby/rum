@@ -65,7 +65,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
 
               let new_mem_op = OpId(node.operands.len() as u32);
               node.operands.push(crate::types::Operation::Op { op_name: "FREE", operands: [*op, mem_op, Default::default()] });
-              node.types.push(TypeV::mem_ctx());
+              node.op_types.push(TypeV::mem_ctx());
               node.source_tokens.push(Default::default());
               node.heap_id.push(node.heap_id[op.usize()]);
 

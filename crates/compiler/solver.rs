@@ -83,7 +83,7 @@ pub fn get_routine_type_or_none(routine: NodeHandle, arg_index: CallArgType) -> 
 }
 
 fn get_closed_type_or_none(routine: &RootNode, op: &OpId) -> Option<TypeV> {
-  let ty = &routine.types[op.usize()];
+  let ty = &routine.op_types[op.usize()];
 
   let ty = if let Some(index) = ty.generic_id() {
     let var = &routine.type_vars[index];
@@ -145,7 +145,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
             let mut interface_methods = BTreeMap::new();
 
             for (op, interface_param_id) in interface_node.nodes[0].outputs.iter().filter(|(_, var)| matches!(var, VarId::Name(_))) {
-              let gen_ty = &interface_node.types[op.usize()];
+              let gen_ty = &interface_node.op_types[op.usize()];
               let ty_var_index = gen_ty.generic_id().unwrap();
               let ty_var = &interface_node.type_vars[ty_var_index];
               let ty = &ty_var.ty;
@@ -242,7 +242,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                   match ty.base_ty() {
                     BaseType::Generic => {
                       if let Some((op, id)) = implementation_node.nodes[0].outputs.iter().find(|(_, v)| *v == *interface_param_id) {
-                        let struct_ty = implementation_node.get_base_ty(implementation_node.types[op.usize()].clone());
+                        let struct_ty = implementation_node.get_base_ty(implementation_node.op_types[op.usize()].clone());
 
                         if struct_ty == *ty {
                           // Alls good in this path.
@@ -268,7 +268,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
             let host_node = NodeHandle::from((*host_node_id, &*db));
 
             if let Some(host_node_ref) = host_node.get() {
-              let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. } = host_node_ref;
+              let RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, .. } = host_node_ref;
               let call_node = &nodes[*call_node_id];
 
               let Some((function_name, call_op)) = call_node.inputs.iter().find_map(|(op_id, var_id)| match var_id {
@@ -345,7 +345,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                               {
                                 // Reset the type
                                 let new_type = callee_node.get_mut().unwrap();
-                                let index = new_type.types[callee_op.usize()].generic_id().unwrap();
+                                let index = new_type.op_types[callee_op.usize()].generic_id().unwrap();
                                 new_type.type_vars[index].ty = TypeV::generic(index as u32);
                                 callee_constraints.push(NodeConstraint::GenTyToTy(TypeV::generic(index as u32), caller_ty.clone()));
 
@@ -434,7 +434,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
               for (op, var_id) in routine_inner_node.outputs.iter() {
                 if let VarId::Heap = var_id {
-                  let ty = routine_node.type_vars[routine_node.types[op.usize()].generic_id().unwrap()].ty;
+                  let ty = routine_node.type_vars[routine_node.op_types[op.usize()].generic_id().unwrap()].ty;
                   match ty.cmplx_data() {
                     Some(cmplx_id) => {
                       let node = NodeHandle::from((cmplx_id, &*db));
@@ -463,7 +463,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
           GlobalConstraint::ExtractGlobals { node_id } => {
             let mut intrinsic_constraints = vec![];
             let node = NodeHandle::from((*node_id, &*db));
-            if let Some(RootNode { nodes: nodes, operands, types, type_vars, source_tokens, .. }) = node.get_mut() {
+            if let Some(RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, .. }) = node.get_mut() {
               for (index, node) in nodes.iter().enumerate() {
                 match node.type_str {
                   CALL_ID => {
@@ -544,7 +544,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             let node = node.get_mut().unwrap();
 
-            let RootNode { nodes, operands, types, type_vars, heap_id, source_tokens, .. } = node;
+            let RootNode { nodes, operands, op_types: types, type_vars, heap_id, source_tokens, .. } = node;
 
             for (i, op) in operands.iter().enumerate() {
               match op {
@@ -562,7 +562,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             dbg!(&node);
 
-            let RootNode { nodes, operands, types, type_vars, heap_id, source_tokens, .. } = node;
+            let RootNode { nodes, operands, op_types: types, type_vars, heap_id, source_tokens, .. } = node;
 
             for var in type_vars {
               if var.has(VarAttribute::HeapType) {
@@ -639,7 +639,7 @@ fn get_node(db: &mut SolveDatabase<'_>, node_name: IString, constraint_queue: &m
 }
 
 pub(crate) fn solve_node_expressions(node: NodeHandle) {
-  let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
+  let RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
 
   for (index, op) in operands.iter().enumerate().rev() {
     match op {
@@ -664,7 +664,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
   let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
 
   while let Some(constraint) = constraint_queue.pop_front() {
-    let RootNode { nodes: nodes, operands, types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
+    let RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
 
     match constraint.clone() {
       NodeConstraint::Deref { ptr_ty, val_ty, mutable } => {
@@ -797,7 +797,7 @@ pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstra
     out_map[index] = TypeV::generic(get_root_var(index, &node_ref.type_vars).ref_id as u32);
   }
 
-  for var_ty in node_ref.types.iter_mut() {
+  for var_ty in node_ref.op_types.iter_mut() {
     if var_ty.is_generic() {
       let index = var_ty.generic_id().expect("Type is not generic");
       *var_ty = out_map[index].clone();
@@ -941,7 +941,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>,
                   }
                   _ => false,
                 }) {
-                  let ty = node.types[op_id.usize()].clone();
+                  let ty = node.op_types[op_id.usize()].clone();
                   let ty = if let Some(ty_index) = ty.generic_id() { node.type_vars[ty_index].ty } else { ty };
 
                   if !ty.is_open() {
