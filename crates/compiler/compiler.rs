@@ -815,6 +815,9 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
               assignment_statement_group_Value::RawAggregateInstantiation(agg_instantiation) => compile_aggregate_instantiation(bp, agg_instantiation),
               _ => unreachable!(),
             };
+
+            assert!(expr_op.is_valid(), "{:#?}", assign.expression);
+
             let new_var = !has_var(bp, mem);
 
             if new_var {
@@ -840,6 +843,9 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
                 VarLookup::Var(var_op, ty, var_name) => {
                   println!("TODO: Free old version of variable");
                   let (ctx_op, _) = get_mem_context(bp);
+
+                  assert!(var_op.is_valid(), "{:?}", bp);
+
                   let sink_op = add_op(bp, Operation::Op { op_name: "SINK", operands: [var_op, expr_op, ctx_op] }, ty, assign.clone().into());
                   update_mem_context(bp, sink_op);
                   clone_op_heap(bp, var_op, sink_op);
@@ -1387,9 +1393,10 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
   } else {
     let activation_ty = add_ty_var(bp).ty;
     bp.constraints.push(NodeConstraint::GenTyToTy(activation_ty.clone(), ty_u32));
-    declare_top_scope_var(bp, VarId::MatchActivation, Default::default(), activation_ty.clone());
     activation_ty
   };
+
+  declare_top_scope_var(bp, VarId::MatchActivation, Default::default(), activation_ty.clone());
 
   let mut clauses = Vec::new();
   let mut clauses_input_ty = Vec::new();
@@ -1424,7 +1431,6 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
           let (bool_op, _) = process_op(cmp_op_name, &[input_op.0, expr_op], bp, expr.clone().into());
 
           let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
-
           update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
         }
         match_condition_Value::RawTypeMatchExpr(ty_match) => {
@@ -1488,9 +1494,11 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
     let (op, output_ty, _) = compile_scope(&clause.scope, bp);
 
     if op.is_valid() {
+      dbg!(op);
       update_var(bp, VarId::OutputVal, op, output_ty);
     } else {
       let (poison_op, output_ty) = process_op("POISON", &[], bp, Default::default());
+
       update_var(bp, VarId::OutputVal, poison_op, output_ty);
     }
 
@@ -1504,7 +1512,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
     update_var(bp, VarId::OutputVal, poison_op, output_ty);
     clauses.push(pop_node(bp, true));
   }
-
+  dbg!(&clauses);
   join_nodes(clauses, bp);
 
   let act = get_var(bp, VarId::MatchActivation).unwrap();
@@ -1513,7 +1521,14 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
   let out = get_var(bp, VarId::OutputVal).unwrap();
   //add_output(bp, out.0, VarId::OutputVal);
 
-  join_nodes(vec![pop_node(bp, false)], bp);
+  dbg!(act, out);
+  let node = pop_node(bp, false);
+
+  dbg!(&node);
+
+  join_nodes(vec![node], bp);
+
+  assert!(out.0.is_valid());
 
   (out, act)
 }
@@ -1566,8 +1581,6 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
 
           let mut vec = vec![ori_op; nodes_len];
 
-          dbg!(&vec);
-
           vec[node_index] = out_var.val_op;
 
           if var.origin_node_index < current_node_index {
@@ -1583,9 +1596,20 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
     }
   }
 
+  dbg!(&outgoing_vars);
+
   for (var_id, (ori_op, vars)) in outgoing_vars {
     if let Some((op, ty)) = get_var(bp, var_id) {
-      //let mut vars = vars.iter().filter(|(_, v)| v.val_op != op).map(|(a, b)| (*a, b.val_op)).collect::<Vec<_>>();
+      let all_invalid_assignments = vars.iter().all(|v| v.is_invalid());
+      //let has_valid_assignments = !has_invalid_assignment;
+      let has_same_assignments_as_initial = vars.iter().all(|v| *v == op);
+
+      let is_single_op = vars.len() == 1;
+
+      if all_invalid_assignments || has_same_assignments_as_initial {
+        // All ops are invalid and therefore no changes have been observed on this var.
+        continue;
+      }
 
       if vars.len() > 0 {
         let ty_a = if op.is_valid() { bp.super_node.op_types[op.0 as usize] } else { bp.super_node.op_types[vars[0].usize()] };
@@ -1594,6 +1618,7 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
           if out_var.is_invalid() {
             continue;
           }
+
           let ty_b = bp.super_node.op_types[out_var.usize()];
           if ty_a != ty_b {
             if var_id == VarId::MemCTX {
@@ -1603,21 +1628,27 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
           }
         }
 
-        dbg!(var_id);
-
         let iter = vars.iter().enumerate().map(|(i, v)| (node_index_mappings[i] as u32, *v));
         match &mut bp.super_node.operands.get_mut(op.0 as usize) {
           Some(Operation::OutputPort(_, port_vars)) => {
-            panic!("AA");
-            port_vars.extend(iter);
+            panic!(
+              "Should not be the case that we we need to merge more ops into an existing port. Ports should be closed to modification once a 
+              node has been popped and sealed."
+            );
           }
           _ => {
-            let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty, Default::default());
-            if ori_op.is_valid() {
-              add_input(bp, ori_op, var_id);
+            if is_single_op {
+              update_var(bp, var_id, iter.into_iter().next().unwrap().1, ty);
+            } else {
+              dbg!(all_invalid_assignments, has_same_assignments_as_initial, is_single_op);
+              assert_ne!(current_node_index, 0, "{:?}", iter.collect::<Vec<_>>());
+              let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty, Default::default());
+              if ori_op.is_valid() {
+                //  add_input(bp, ori_op, var_id);
+              }
+              add_output(bp, port_op, var_id);
+              update_var(bp, var_id, port_op, ty);
             }
-            add_output(bp, port_op, var_id);
-            update_var(bp, var_id, port_op, ty);
           }
         }
       }

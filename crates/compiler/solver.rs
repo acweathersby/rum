@@ -560,8 +560,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               }
             }
 
-            dbg!(&node);
-
             let RootNode { nodes, operands, op_types: types, type_vars, heap_id, source_tokens, .. } = node;
 
             for var in type_vars {

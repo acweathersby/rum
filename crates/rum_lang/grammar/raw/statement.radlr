@@ -90,14 +90,14 @@ IMPORT ../common/comment as cmt
 
 <> match_expression 
 
-  > "if" expr::l_val^expression ( ( "as" | "=>"  ) prim::var )?^binding_name match_clause(+)^clauses default_clause?
+  > ( "if" | "?:" ) expr::l_val^expression ( ( "as" | "=>"  ) prim::var )?^binding_name match_clause(+)^clauses default_clause?
 
     :ast { t_RawMatch, expression, clauses, default_clause, binding_name, tok  }
 
 
 <> default_clause 
 
-  >  ( "or" | "else" | "otherwise" ) block_expression
+  >  ( "or" | "else" | "otherwise" | "||" ) block_expression
 
     :ast { t_RawMatchClause, default: true, scope: $2, tok }
 
@@ -109,7 +109,7 @@ IMPORT ../common/comment as cmt
 
 <> match_condition
  
-  > "is" prim::var^var
+  > ( "is") prim::var^var
 
     :ast { t_RawTypeMatchExpr, name: $var, tok  }
 
@@ -119,7 +119,7 @@ IMPORT ../common/comment as cmt
 
 <> iter_statement 
 
-  > prim::var^var "in" expr::call^iter block_expression^block
+  > prim::var^var ( "in" | "=>" ) expr::call^iter block_expression^block
 
     :ast { t_RawIterStatement, var, iter, block, tok }
 
