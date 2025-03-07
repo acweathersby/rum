@@ -740,7 +740,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
           let (mem_op, _) = get_mem_context(bp);
 
-          let ((match_op, _), (active_op, _)) = process_match(match_, bp, None);
+          let ((match_op, _), (active_op, _)) = process_match(match_, bp);
 
           add_output(bp, match_op, VarId::OutputVal);
           add_output(bp, active_op, VarId::MatchActivation);
@@ -1364,7 +1364,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
     expression_Value::Mul(mul) => algebraic_op!(bp, "MUL", mul, delta_ty),
     expression_Value::Pow(pow) => algebraic_op!(bp, "POW", pow, delta_ty),
     expression_Value::RawMatch(match_) => {
-      let (op, ty) = process_match(match_, bp, None).0;
+      let (op, ty) = process_match(match_, bp).0;
       (op, ty, None)
     }
     expression_Value::RawCall(call) => {
@@ -1383,16 +1383,14 @@ fn current_node_index(bp: &BuildPack) -> usize {
   bp.node_stack.last().unwrap().node_index
 }
 
-fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_ty: Option<TypeV>) -> ((OpId, TypeV), (OpId, TypeV)) {
+fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, TypeV), (OpId, TypeV)) {
   let input_op = compile_expression(&expression_Value::MemberCompositeAccess(match_.expression.clone()), bp, None);
 
   push_node(bp, MATCH_ID);
 
-  let activation_ty = if let Some(activation_ty) = activation_ty {
-    activation_ty
-  } else {
+  let activation_ty = {
     let activation_ty = add_ty_var(bp).ty;
-    bp.constraints.push(NodeConstraint::GenTyToTy(activation_ty.clone(), ty_u32));
+    bp.constraints.push(NodeConstraint::GenTyToTy(activation_ty.clone(), ty_bool));
     activation_ty
   };
 
@@ -1408,7 +1406,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
     push_node(bp, CLAUSE_SELECTOR_ID);
     get_var(bp, VarId::MatchActivation);
 
-    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), index as u32)), activation_ty.clone(), Default::default());
+    //let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), index as u32)), activation_ty.clone(), Default::default());
     let mut known_type = TypeV::default();
 
     if let Some(expr) = &clause.expr {
@@ -1428,10 +1426,10 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
             _ => todo!(),
           };
 
-          let (bool_op, _) = process_op(cmp_op_name, &[input_op.0, expr_op], bp, expr.clone().into());
+          let (bool_op, activation_ty_new) = process_op(cmp_op_name, &[input_op.0, expr_op], bp, expr.clone().into());
 
-          let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
-          update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
+          //let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
+          update_var(bp, VarId::MatchActivation, bool_op, activation_ty_new);
         }
         match_condition_Value::RawTypeMatchExpr(ty_match) => {
           let name = ty_match.name.id.intern();
@@ -1442,16 +1440,19 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
 
           let prop_name_op = add_op(bp, Operation::Name(name), ty, ty_match.name.clone().into());
 
-          let (bool_op, _) = process_op("TY_EQ", &[input_op.0, prop_name_op], bp, ty_match.clone().into());
+          let (bool_op, activation_ty_new) = process_op("TY_EQ", &[input_op.0, prop_name_op], bp, ty_match.clone().into());
 
-          let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
+          //let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
 
-          update_var(bp, VarId::MatchActivation, out_op, activation_ty_new);
+          update_var(bp, VarId::MatchActivation, bool_op, activation_ty_new);
         }
         _ => {}
       }
     } else {
-      update_var(bp, VarId::MatchActivation, sel_op, activation_ty.clone());
+      let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), 1)), activation_ty.clone(), Default::default());
+      update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
+      //unreachable!("All match clauses, save for the default clause, should have a match expression")
+      //update_var(bp, VarId::MatchActivation, sel_op, activation_ty.clone());
     }
 
     clauses_input_ty.push(known_type);
@@ -1462,7 +1463,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack, activation_t
     push_node(bp, CLAUSE_SELECTOR_ID);
     get_var(bp, VarId::MatchActivation);
 
-    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), u32::MAX)), activation_ty.clone(), Default::default());
+    let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), 1)), activation_ty.clone(), Default::default());
     update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
     clauses.push(pop_node(bp, true));
   }
@@ -1799,8 +1800,6 @@ pub(crate) const OPS: &'static str = r###"
 
 op: PARAM
 x [A: Input] => out [A]
-
-op: SEL  l [A: bool]  r [B: Numeric]  => out [B]
 
 op: POISON  => out [B: poison]
 

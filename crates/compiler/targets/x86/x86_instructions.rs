@@ -695,10 +695,10 @@ op_table!(sub [
   ((32, OT::MEM, OT::REG, OT::NONE), (0x0029, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
   ((64, OT::MEM, OT::REG, OT::NONE), (0x0029, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
   //
-  ((08, OT::REG, OT::REG, OT::NONE), (0x002A, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
-  ((16, OT::REG, OT::REG, OT::NONE), (0x002B, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
-  ((32, OT::REG, OT::REG, OT::NONE), (0x002B, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
-  ((64, OT::REG, OT::REG, OT::NONE), (0x002B, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+  ((08, OT::REG, OT::REG, OT::NONE), (0x002A, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((16, OT::REG, OT::REG, OT::NONE), (0x002B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::REG, OT::NONE), (0x002B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((64, OT::REG, OT::REG, OT::NONE), (0x002B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   //
   ((08, OT::REG, OT::MEM, OT::NONE), (0x002A, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((16, OT::REG, OT::MEM, OT::NONE), (0x002B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
@@ -717,6 +717,7 @@ op_table!(mul [  //
   ((16, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
   ((32, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
   ((64, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
+
   ((08, OT::MEM, OT::NONE, OT::NONE), (0x00F6, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
   ((16, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
   ((32, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),

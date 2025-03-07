@@ -3,23 +3,19 @@ use std::collections::{HashSet, VecDeque};
 use crate::{
   compiler::{MATCH_ID, ROUTINE_ID},
   interpreter::get_op_type,
-  targets::{
-    reg::Reg,
-    x86::{print_instruction, x86_types::RDI},
-  },
-  types::{OpId, Operation, PrimitiveBaseType, RootNode, SolveDatabase, TypeV, VarId},
+  targets::{reg::Reg, x86::x86_types::RDI},
+  types::{ty_bool, OpId, Operation, RootNode, SolveDatabase, TypeV, VarId},
 };
 
 use super::{
   print_instructions,
   x86_encoder::encode_x86,
-  x86_instructions::{add, mov},
   x86_types::{Arg, *},
 };
 
 pub fn compile(db: &SolveDatabase) {
   for node in db.nodes.iter() {
-    let mut binary = Vec::new();
+    let binary = Vec::new();
 
     let super_node = node.get_mut().unwrap();
 
@@ -29,7 +25,7 @@ pub fn compile(db: &SolveDatabase) {
 
     seen.insert(0);
 
-    create_op_groups(super_node);
+    encode(super_node);
 
     panic!("Finished?");
   }
@@ -62,7 +58,7 @@ struct Block {
   fail: isize,
 }
 
-fn create_op_groups(sn: &mut RootNode) {
+fn encode(sn: &mut RootNode) {
   let mut op_dependencies = vec![vec![]; sn.operands.len()];
   let mut op_data = vec![OpData::new(); sn.operands.len()];
   let mut block_set = vec![(false, -1, -1); sn.nodes.len()];
@@ -119,162 +115,16 @@ fn create_op_groups(sn: &mut RootNode) {
       } else {
         println!("RET")
       }
+      // Sort ops into dependency groups
+      block.ops.sort_by(|a, b| op_data[*a].dep_rank.cmp(&op_data[*b].dep_rank));
+
       blocks.push(block);
     }
   }
 
-  assign_registers(sn, op_dependencies, op_data, head, &mut blocks);
-}
+  let (op_registers, scratch_register) = assign_registers(sn, &op_dependencies, &op_data, head, &mut blocks);
 
-fn assign_registers(sn: &mut RootNode, op_dependencies: Vec<Vec<OpId>>, op_data: Vec<OpData>, head: usize, blocks: &mut [Block]) {
-  struct RegisterAllocator {
-    register_bitmap: u64,
-  }
-
-  // Encode blocks
-
-  let mut op_registers = vec![-1; sn.operands.len()];
-
-  const REGISTERS: [Reg; 8] = [RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI];
-
-  // First pass assigns required registers. This a bottom up pass.
-
-  for block in blocks.iter_mut().rev() {
-    // Sort ops into dependency groups
-    block.ops.sort_by(|a, b| op_data[*a].dep_rank.cmp(&op_data[*b].dep_rank));
-
-    for op in block.ops.iter().rev().cloned() {
-      match &sn.operands[op] {
-        Operation::OutputPort(_, operands) => {
-          let used_reg = op_registers[op];
-          for (index, (_, op)) in operands.iter().cloned().enumerate() {
-            if op.is_valid() {
-              if used_reg >= 0 {
-                op_registers[op.usize()] = used_reg
-              }
-            }
-          }
-        }
-        Operation::Op { op_name, operands } => {
-          let mut used_reg = op_registers[op];
-
-          if *op_name == "RET" {
-            used_reg = 0; // Set to RAX
-          }
-
-          if used_reg >= 0 {
-            op_registers[op] = used_reg;
-          }
-
-          if *op_name == "SINK" {
-            for (index, op) in operands.iter().cloned().enumerate() {
-              if op.is_valid() {
-                if used_reg >= 0 {
-                  op_registers[op.usize()] = used_reg
-                }
-              }
-            }
-          } else {
-            for (index, op) in operands.iter().cloned().enumerate() {
-              if op.is_valid() {
-                if index == 0 && used_reg >= 0 {
-                  op_registers[op.usize()] = used_reg
-                }
-              }
-            }
-          }
-
-          let max_dist = operands.iter().filter(|op| op.is_valid()).fold(0usize, |a, o| {
-            a.max({
-              let val = ((op_data[o.usize()].block as isize) - (head as isize)) - (block.id as isize);
-              val.abs() as usize
-            })
-          });
-          let deb_count = op_dependencies[op].len();
-
-          println!("{op} - {max_dist}, {deb_count}")
-        }
-        _ => {}
-      }
-    }
-  }
-
-  // The top down passes assign registers and possible spills to v-registers that not yet been assigned
-  let mut reg_lu: u32 = 0;
-  let mut active_ops = vec![];
-  for mut block in blocks.iter() {
-    for op in block.ops.iter().cloned() {
-      match &sn.operands[op] {
-        Operation::OutputPort(_, operands) => {}
-        Operation::Op { op_name, operands } => {
-          for c_op in operands {
-            if c_op.is_valid() {
-              if let Some(dep_op) = op_dependencies[c_op.usize()].last() {
-                if dep_op.usize() == op {
-                  if let Ok(index) = active_ops.binary_search(&c_op.usize()) {
-                    active_ops.remove(index);
-                    let reg = op_registers[c_op.usize()];
-                    reg_lu ^= 1 << reg;
-                    println!("Removing {c_op} assignment on {reg}")
-                  } else {
-                    panic!("{c_op} not found in active_ops, even though it should have been assigned");
-                  }
-                }
-              }
-            }
-          }
-        }
-        _ => {}
-      }
-
-      println!("----------------");
-      let reg = op_registers[op];
-
-      if reg < 0 {
-        if active_ops.len() < 8 {
-          let reversed = (!reg_lu) & 0xFF;
-
-          let mask = reversed >> 1;
-          let mask = mask | (mask >> 2);
-          let mask = mask | (mask >> 4);
-          let mask = mask | (mask >> 8);
-          //let mask = mask | (mask >> 16);
-
-          let bit_set = !mask & reversed;
-          println!("{bit_set} {bit_set:08b} {mask:08b}");
-          let bit_set = bit_set.trailing_zeros();
-
-          let reg: i32 = bit_set as i32;
-          reg_lu |= 1 << reg;
-
-          if let Err(index) = active_ops.binary_search(&op) {
-            reg_lu |= 1 << reg;
-            active_ops.insert(index, op);
-            op_registers[op] = reg;
-          } else {
-            panic!("Op is already inserted into active ops")
-          }
-
-          println!("Need to set register {reg_lu:08b} {bit_set}");
-        } else {
-          panic!("Need to spill!")
-        }
-      } else {
-        match active_ops.binary_search(&op) {
-          Ok(_) => {
-            panic!("Fill out op")
-          }
-          Err(index) => {
-            reg_lu |= 1 << reg;
-            active_ops.insert(index, op);
-          }
-        }
-      }
-      // Remove any ops and their associated register if we've reached the last op that consumes it.
-    }
-  }
-
-  for mut block in blocks.iter() {
+  for block in blocks.iter() {
     println!("\n\nBLOCK - {}", block.id);
     let mut ops = block.ops.clone();
     ops.sort_by(|a, b| op_data[*a].dep_rank.cmp(&op_data[*b].dep_rank));
@@ -297,7 +147,7 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: Vec<Vec<OpId>>, op_data:
     }
   }
 
-  panic!("TODO");
+  encode_routine(sn, &op_data, &blocks, &op_registers, &scratch_register);
 }
 
 fn process_block_ops(
@@ -382,7 +232,7 @@ fn process_node_ops(
 
   let new_block_id = if node_id == 0 { sn.nodes.len() } else { node_id };
 
-  let mut curr_tails = vec![new_block_id];
+  let curr_tails = vec![new_block_id];
   let mut curr_head = new_block_id;
 
   while let Some(op) = op_queue.pop_back() {
@@ -466,59 +316,469 @@ fn process_node_ops(
   (curr_head, curr_tails)
 }
 
-fn encode_op(super_node: &RootNode, op: OpId, binary: &mut Vec<u8>, target_reg: Reg) {
-  if op.is_invalid() {
-    return;
+const REGISTERS: [Reg; 8] = [RAX, RCX, RDX, RBX, R8, R9, R10, RDI];
+
+fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData], head: usize, blocks: &mut [Block]) -> (Vec<i32>, Vec<i32>) {
+  // Encode blocks
+
+  let mut op_registers = vec![-1; sn.operands.len()];
+  let mut scratch_registers = vec![-1; sn.operands.len()];
+
+  // First pass assigns required registers. This a bottom up pass.
+
+  for block in blocks.iter_mut().rev() {
+    for op in block.ops.iter().rev().cloned() {
+      match &sn.operands[op] {
+        Operation::OutputPort(_, operands) => {
+          if get_op_type(sn, OpId(op as u32)) != TypeV::MemCtx {
+            let mut used_reg = op_registers[op];
+
+            if used_reg == -1 {
+              used_reg = -1 - op as i32;
+              println!("used_reg {used_reg} {op}");
+            }
+
+            for (_, (_, op)) in operands.iter().cloned().enumerate() {
+              if op.is_valid() {
+                if used_reg != -1 {
+                  op_registers[op.usize()] = used_reg
+                }
+              }
+            }
+          }
+        }
+        Operation::Op { op_name, operands } => {
+          let mut used_reg = op_registers[op];
+
+          if *op_name == "RET" {
+            used_reg = 0; // Set to RAX
+          }
+
+          if used_reg >= 0 {
+            op_registers[op] = used_reg;
+          }
+
+          if *op_name == "SINK" {
+            for (index, op) in operands.iter().cloned().enumerate() {
+              if op.is_valid() {
+                if used_reg >= 0 {
+                  op_registers[op.usize()] = used_reg
+                }
+              }
+            }
+          } else {
+            for (index, op) in operands.iter().cloned().enumerate() {
+              if op.is_valid() {
+                if index == 0 && used_reg >= 0 {
+                  op_registers[op.usize()] = used_reg
+                }
+              }
+            }
+          }
+
+          let max_dist = operands.iter().filter(|op| op.is_valid()).fold(0usize, |a, o| {
+            a.max({
+              let val = ((op_data[o.usize()].block as isize) - (head as isize)) - (block.id as isize);
+              val.abs() as usize
+            })
+          });
+          let deb_count = op_dependencies[op].len();
+
+          println!("{op} - {max_dist}, {deb_count}")
+        }
+        _ => {}
+      }
+    }
   }
 
-  let op_ty = get_op_type(super_node, op);
+  // The top down passes assign registers and possible spills to v-registers that not yet been assigned
+  let mut reg_lu: u32 = 0;
+  let mut reg_lu_cache: u32 = reg_lu;
+  let mut active_ops = vec![];
+  for block in blocks.iter() {
+    for op in block.ops.iter().cloned() {
+      let reg = op_registers[op];
+      match &sn.operands[op] {
+        Operation::Const(..) => {
+          if reg >= -1 {
+            continue;
+          }
+        }
+        Operation::OutputPort(_, operands) => {
+          for (_, c_op) in operands {
+            if c_op.is_valid() {
+              if let Operation::Const(..) = sn.operands[c_op.usize()] {
+                // assign a scratch register
+                scratch_registers[op] = get_free_reg(&mut reg_lu_cache, false);
+              }
 
-  match &super_node.operands[op.usize()] {
-    Operation::Const(cst) => {
-      match op_ty.prim_data() {
-        Some(prim) => match prim.base_ty {
-          PrimitiveBaseType::Signed => match prim.byte_size {
-            8 => encode_x86(binary, &mov, 64, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            4 => encode_x86(binary, &mov, 32, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            2 => encode_x86(binary, &mov, 16, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            1 => encode_x86(binary, &mov, 8, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            _ => unreachable!(),
-          },
-          PrimitiveBaseType::Unsigned => match prim.byte_size {
-            8 => encode_x86(binary, &mov, 64, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            4 => encode_x86(binary, &mov, 32, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            2 => encode_x86(binary, &mov, 16, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            1 => encode_x86(binary, &mov, 8, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            _ => unreachable!(),
-          },
-          PrimitiveBaseType::Float => match prim.byte_size {
-            8 => encode_x86(binary, &mov, 64, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            4 => encode_x86(binary, &mov, 32, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-            _ => unreachable!(),
-          },
-          PrimitiveBaseType::Address => encode_x86(binary, &mov, 64, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-          PrimitiveBaseType::Poison => encode_x86(binary, &mov, 64, target_reg.as_reg_op(), Arg::Imm_Int(cst.convert(prim).load()), Arg::None),
-          ty => panic!("could not create value from {ty:?}"),
+              if let Some(dep_op) = op_dependencies[c_op.usize()].last() {
+                if dep_op.usize() == op {
+                  if let Ok(index) = active_ops.binary_search(&c_op.usize()) {
+                    active_ops.remove(index);
+                    let reg = op_registers[c_op.usize()];
+                    reg_lu ^= 1 << reg;
+                  } else {
+                    // panic!("{c_op} not found in active_ops, even though it should have been assigned");
+                  }
+                }
+              }
+            }
+          }
+          if get_op_type(sn, OpId(op as u32)) != TypeV::MemCtx {
+            continue;
+          }
+        }
+        Operation::Op { op_name, operands } => {
+          for c_op in operands {
+            if c_op.is_valid() {
+              if let Operation::Const(..) = sn.operands[c_op.usize()] {
+                // assign a scratch register
+                scratch_registers[op] = get_free_reg(&mut reg_lu_cache, false);
+              }
+
+              if let Some(dep_op) = op_dependencies[c_op.usize()].last() {
+                if dep_op.usize() == op {
+                  if let Ok(index) = active_ops.binary_search(&c_op.usize()) {
+                    active_ops.remove(index);
+                    let reg = op_registers[c_op.usize()];
+                    reg_lu ^= 1 << reg;
+                  } else {
+                    // panic!("{c_op} not found in active_ops, even though it should have been assigned");
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => {}
+      }
+
+      if reg < -1 {
+        let target_slot = (-reg - 1) as usize;
+        let reg: i32 = op_registers[target_slot];
+
+        if reg < 0 {
+          if active_ops.len() < 8 {
+            let reg = get_free_reg(&mut reg_lu, true);
+
+            if let Err(index) = active_ops.binary_search(&op) {
+              reg_lu |= 1 << reg;
+              active_ops.insert(index, target_slot);
+              op_registers[op] = reg;
+              op_registers[target_slot] = reg;
+            } else {
+              panic!("Op is already inserted into active ops")
+            }
+
+            println!("Need to set register {reg_lu:08b}");
+          } else {
+            panic!("Need to spill!")
+          }
+        } else if (reg_lu & (1 << reg as u32)) > 0 {
+          op_registers[op] = reg;
+          if active_ops.binary_search(&target_slot).is_err() {
+            // Need to spill this register
+            panic!("Need to spill from preserved! {target_slot} {reg} {op} {active_ops:?}")
+          }
+        }
+      } else if reg < 0 {
+        if active_ops.len() < 8 {
+          let reg = get_free_reg(&mut reg_lu, true);
+
+          if let Err(index) = active_ops.binary_search(&op) {
+            reg_lu |= 1 << reg;
+            active_ops.insert(index, op);
+            op_registers[op] = reg;
+          } else {
+            panic!("Op is already inserted into active ops")
+          }
+
+          println!("Need to set register {reg_lu:08b}");
+        } else {
+          panic!("Need to spill!")
+        }
+      } else {
+        match active_ops.binary_search(&op) {
+          Ok(_) => {
+            //panic!("Fill out op")
+          }
+          Err(index) => {
+            reg_lu |= 1 << reg;
+            active_ops.insert(index, op);
+          }
+        }
+      }
+      // Remove any ops and their associated register if we've reached the last op that consumes it.
+    }
+  }
+
+  dbg!(&op_registers, &scratch_registers);
+
+  (op_registers, scratch_registers)
+}
+
+fn get_free_reg(reg_lu: &mut u32, update_register: bool) -> i32 {
+  let reversed = (!*reg_lu) & 0xFF;
+
+  let mask = reversed >> 1;
+  let mask = mask | (mask >> 2);
+  let mask = mask | (mask >> 4);
+  let mask = mask | (mask >> 8);
+  //let mask = mask | (mask >> 16);
+
+  let bit_set = !mask & reversed;
+
+  println!("{bit_set} {bit_set:08b} {mask:08b}");
+
+  let bit_set = bit_set.trailing_zeros();
+
+  let reg: i32 = bit_set as i32;
+
+  if update_register {
+    *reg_lu |= 1 << reg;
+  }
+
+  reg
+}
+
+#[derive(Debug)]
+struct JumpResolution {
+  /// The binary offset the first instruction of each block.
+  block_offset: Vec<usize>,
+  /// The binary offset and block id target of jump instructions.
+  jump_points:  Vec<(usize, usize)>,
+}
+
+impl JumpResolution {
+  fn add_jump(&mut self, binary: &mut Vec<u8>, block_id: usize) {
+    self.jump_points.push((binary.len(), block_id));
+  }
+}
+
+fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], registers: &[i32], scratch_register: &[i32]) {
+  use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
+
+  let mut binary_data = vec![];
+  let mut jmp_resolver = JumpResolution { block_offset: Default::default(), jump_points: Default::default() };
+  let binary = &mut binary_data;
+
+  for block in blocks {
+    jmp_resolver.block_offset.push(binary.len());
+    let block_number = block.id;
+    let mut need_jump_resolution = true;
+
+    for (i, op) in block.ops.iter().enumerate() {
+      println!("{block_number} {op}");
+
+      let is_last_op = i == block.ops.len() - 1;
+
+      match &sn.operands[*op] {
+        Operation::Const(c) => {
+          let reg = registers[*op];
+          if reg >= 0 {
+            let ty = get_op_type(sn, OpId(*op as u32));
+            if let Some(prim) = ty.prim_data() {
+              // Load const
+              let c_reg = REGISTERS[reg as usize];
+              encode_x86(binary, &mov, (prim.byte_size as u64) * 8, c_reg.as_reg_op(), Arg::Imm_Int(c.convert(prim).load()), Arg::None);
+            }
+          }
+        }
+        Operation::Op { op_name, operands: [a, b, ..] } => match *op_name {
+          "SEL" => {
+            println!(
+              "TODO: Compare the given bool value at op_a to zero, jump to fail if equal, otherwise jump to success. (Ideally success is the fall through branch.)"
+            );
+          }
+          "ADD" | "SUB" => {
+            let ty = get_op_type(sn, OpId(*op as u32));
+            if let Some(prim) = ty.prim_data() {
+              let reg = registers[*op];
+              let mut l = registers[a.usize()];
+
+              if l != reg {
+                match &sn.operands[a.usize()] {
+                  Operation::Const(c) => {
+                    if l < 0 {
+                      l = reg;
+                      let l_reg = REGISTERS[l as usize];
+                      encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::Imm_Int(c.convert(prim).load()), Arg::None);
+                    } else {
+                      let l_reg = REGISTERS[l as usize];
+                      let r_reg = REGISTERS[reg as usize];
+                      encode_x86(binary, &mov, (prim.byte_size as u64) * 8, r_reg.as_reg_op(), l_reg.as_reg_op(), Arg::None);
+                      l = reg;
+                    }
+                  }
+                  _ => unreachable!("Expected to have a constant value at this position"),
+                }
+              }
+
+              let mut r: i32 = registers[b.usize()];
+              if r < 0 {
+                match &sn.operands[b.usize()] {
+                  Operation::Const(c) => {
+                    // Load const
+                    r = scratch_register[*op];
+                    encode_x86(binary, &mov, (prim.byte_size as u64) * 8, REGISTERS[r as usize].as_reg_op(), Arg::Imm_Int(c.convert(prim).load()), Arg::None);
+                  }
+                  _ => unreachable!(),
+                }
+              }
+
+              let l_reg = REGISTERS[l as usize];
+              let r_reg = REGISTERS[r as usize];
+
+              match *op_name {
+                "SUB" => {
+                  dbg!((l_reg, r_reg));
+                  encode_x86(binary, &sub, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+                }
+                "ADD" => {
+                  encode_x86(binary, &add, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+                }
+                _ => {}
+              }
+            }
+          }
+          "GR" | "LS" => {
+            let ty = get_op_type(sn, OpId(*op as u32));
+            let operand_ty = get_op_type(sn, *a);
+
+            // If both ops are bools then we simply use and operations
+
+            // here we are presented with an opportunity to save a jump and precomputed the comparison
+            // value into a temp register. More correctly, this is the only option available to this compiler
+            // when dealing with complex boolean expressions, as the block creation closely follows the base
+            // IR block structures, and blocks do not conform to the more fundamental structures of block based control
+            // flow.
+            // Thus, unless this expression is the last expression in the given block,
+            // the results of the expression MUST be stored in the register pre-allocated for this op.
+            // In the case this op IS the last expression in the current block, then we resort to the typical
+            // cmp jump structures used in regular x86 encoding.
+
+            debug_assert_eq!(ty, ty_bool, "Expected output of this operand to be a bool type.");
+
+            if is_last_op {
+              if let Some(prim) = operand_ty.prim_data() {
+                let reg = registers[*op];
+                let mut l = registers[a.usize()];
+                let mut r = registers[b.usize()];
+
+                if l < 0 {
+                  panic!("Need an assignment")
+                }
+
+                if r < 0 {
+                  match &sn.operands[b.usize()] {
+                    Operation::Const(c) => {
+                      // Load const
+                      r = registers[*op];
+                      let c_reg = REGISTERS[r as usize];
+                      encode_x86(binary, &mov, (prim.byte_size as u64) * 8, c_reg.as_reg_op(), Arg::Imm_Int(c.convert(prim).load()), Arg::None);
+                    }
+                    _ => unreachable!(),
+                  }
+                }
+
+                let l_reg = REGISTERS[l as usize];
+                let r_reg = REGISTERS[r as usize];
+
+                encode_x86(binary, &cmp, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+
+                assert!(block.fail >= 0 && block.pass >= 0);
+
+                match *op_name {
+                  "GR" => {
+                    if block.fail == block.id as isize + 1 {
+                      encode_x86(binary, &jg, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
+                      jmp_resolver.add_jump(binary, block.pass as usize);
+                    } else if block.pass == block.id as isize + 1 {
+                      encode_x86(binary, &jle, 32, Arg::Imm_Int(block.fail as i64), Arg::None, Arg::None);
+                      jmp_resolver.add_jump(binary, block.fail as usize);
+                    } else {
+                      encode_x86(binary, &jg, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
+                      jmp_resolver.add_jump(binary, block.pass as usize);
+                      encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.fail as i64), Arg::None, Arg::None);
+                      jmp_resolver.add_jump(binary, block.fail as usize);
+                    }
+                  }
+                  d => {
+                    todo!(" Handle jump case {d}")
+                  }
+                }
+
+                need_jump_resolution = false;
+              } else {
+                panic!("Expected primitive base type");
+              }
+            } else {
+              if let Some(prim) = operand_ty.prim_data() {
+                let reg = registers[*op];
+                let mut l = registers[a.usize()];
+                let mut r = registers[b.usize()];
+
+                if l < 0 {
+                  panic!("Need an assignment")
+                }
+
+                if r < 0 {
+                  match &sn.operands[b.usize()] {
+                    Operation::Const(c) => {
+                      // Load const
+                      r = registers[*op];
+                      let c_reg = REGISTERS[r as usize];
+                      encode_x86(binary, &mov, (prim.byte_size as u64) * 8, c_reg.as_reg_op(), Arg::Imm_Int(c.convert(prim).load()), Arg::None);
+                    }
+                    _ => unreachable!(),
+                  }
+                }
+
+                let l_reg = REGISTERS[l as usize];
+                let r_reg = REGISTERS[r as usize];
+
+                encode_x86(binary, &cmp, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+              } else {
+                panic!("Expected primitive base type");
+              }
+            }
+          }
+          _ => {}
         },
-        _ => panic!("unexpected node type {op_ty}"),
-      };
+        _ => {}
+      }
     }
 
-    Operation::Op { op_name: "ADD", operands } => {
-      encode_op(super_node, operands[0], binary, RAX);
-      encode_op(super_node, operands[1], binary, RDX);
+    if need_jump_resolution {
+      if block.fail > 0 {
+        if block.pass != (block_number + 1) as isize {
+          encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
+          jmp_resolver.add_jump(binary, block.pass as usize);
+        }
 
-      match op_ty.prim_data().unwrap().byte_size {
-        1 => encode_x86(binary, &add, 8, RAX.as_reg_op(), RDX.as_reg_op(), Arg::None),
-        2 => encode_x86(binary, &add, 16, RAX.as_reg_op(), RDX.as_reg_op(), Arg::None),
-        4 => encode_x86(binary, &add, 32, RAX.as_reg_op(), RDX.as_reg_op(), Arg::None),
-        8 => encode_x86(binary, &add, 64, RAX.as_reg_op(), RDX.as_reg_op(), Arg::None),
-        _ => unreachable!(),
-      };
+        if block.fail != (block_number + 1) as isize {
+          encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.fail as i64), Arg::None, Arg::None);
+          jmp_resolver.add_jump(binary, block.fail as usize);
+        }
+      } else if block.pass > 0 && block.pass != (block_number + 1) as isize {
+        dbg!(block, block_number, block.pass);
+        encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
+        jmp_resolver.add_jump(binary, block.pass as usize);
+      } else if block.pass < 0 {
+        encode_x86(binary, &ret, 32, Arg::None, Arg::None, Arg::None);
+      }
     }
-    Operation::Op { op_name: "RET", operands } => {
-      encode_op(super_node, operands[0], binary, RAX);
-    }
-    op => todo!("encode OP {op:?}"),
   }
+
+  dbg!(&jmp_resolver);
+  for (instruction_index, block_id) in &jmp_resolver.jump_points {
+    let block_address = jmp_resolver.block_offset[*block_id];
+    let instruction_end_point = *instruction_index;
+    let relative_offset = block_address as i32 - instruction_end_point as i32;
+    let ptr = binary[instruction_end_point - 4..].as_mut_ptr();
+    unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
+  }
+
+  print_instructions(binary, 0);
 }
