@@ -1,9 +1,17 @@
-use std::collections::{HashSet, VecDeque};
+use std::{
+  cmp::Ordering,
+  collections::{HashSet, VecDeque},
+};
+
+use num_traits::ToPrimitive;
 
 use crate::{
-  compiler::{MATCH_ID, ROUTINE_ID},
+  compiler::{CLAUSE_ID, LOOP_ID, MATCH_ID, ROUTINE_ID},
   interpreter::get_op_type,
-  targets::{reg::Reg, x86::x86_types::RDI},
+  targets::{
+    reg::{self, Reg},
+    x86::x86_types::RDI,
+  },
   types::{ty_bool, OpId, Operation, RootNode, SolveDatabase, TypeV, VarId},
 };
 
@@ -58,12 +66,75 @@ struct Block {
   fail: isize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BlockInfo {
+  set:       bool,
+  pass:      i32,
+  fail:      i32,
+  dominator: i32,
+}
+
 fn encode(sn: &mut RootNode) {
   let mut op_dependencies = vec![vec![]; sn.operands.len()];
   let mut op_data = vec![OpData::new(); sn.operands.len()];
-  let mut block_set = vec![(false, -1, -1); sn.nodes.len()];
+  let mut block_set = vec![BlockInfo { set: false, pass: -1, fail: -1, dominator: 0 }; 1];
 
-  let (head, tails) = process_block_ops(0, sn, &mut op_dependencies, &mut op_data, &mut block_set);
+  process_routine_node(sn, &mut op_dependencies, &mut op_data, &mut block_set);
+
+  // Locate head block. It's the only block that is not referenced by other blocks.
+  let mut dominant_block_id: i32 = -1;
+  for (i, block) in block_set.iter().enumerate() {
+    if block.dominator == i as _ {
+      debug_assert!(dominant_block_id == -1);
+      dominant_block_id = i as _;
+      #[cfg(not(debug_assertions))]
+      break;
+    }
+  }
+
+  assert!(dominant_block_id != -1);
+
+  // Organize blocks, breadth first, starting with the dominant block
+
+  let mut organized_blocks = vec![BlockInfo { set: false, pass: -1, fail: -1, dominator: -1 }; block_set.len()];
+  let mut block_rename = vec![-1i32; block_set.len()];
+  let mut block_seq = VecDeque::from_iter([dominant_block_id]);
+
+  let mut index = 0;
+
+  while let Some(block_id) = block_seq.pop_front() {
+    if block_id >= 0 && block_rename[block_id as usize] < 0 {
+      let mut block = block_set[block_id as usize];
+      block.set = true;
+      organized_blocks[index] = block;
+      block_rename[block_id as usize] = index as _;
+      index += 1;
+      block_seq.push_back(block.pass);
+      block_seq.push_back(block.fail);
+    }
+  }
+
+  // Update block labels.
+
+  for block in &mut organized_blocks {
+    if block.pass >= 0 {
+      block.pass = block_rename[block.pass as usize];
+    }
+    if block.fail >= 0 {
+      block.fail = block_rename[block.fail as usize];
+    }
+    if block.dominator >= 0 {
+      block.dominator = block_rename[block.dominator as usize];
+    }
+  }
+
+  for op in &mut op_data {
+    if op.block >= 0 {
+      op.block = block_rename[op.block as usize]
+    }
+  }
+
+  block_set = organized_blocks;
 
   let mut max = 0;
 
@@ -80,49 +151,18 @@ fn encode(sn: &mut RootNode) {
 
   let mut blocks = vec![];
 
-  for block_id in 0..(sn.nodes.len() + 1) {
-    let mut block = Option::None;
+  for (id, BlockInfo { pass, fail, .. }) in block_set.iter().enumerate() {
+    blocks.push(Block { id, fail: *fail as isize, pass: *pass as isize, ops: vec![] });
+  }
 
-    let mut declared_block = false;
-
-    for op_id in 0..sn.operands.len() {
-      let data = op_data[op_id];
-      if data.block == block_id as i32 {
-        let block = block.get_or_insert(Block { id: block_id - head, fail: -1, pass: -1, ops: vec![] });
-        block.ops.push(op_id);
-
-        if (!declared_block) {
-          declared_block = true;
-          println!("\n\n BLOCK {} ---- ", block_id - head);
-        }
-        let dep = &op_dependencies[op_id];
-        println!("`{op_id:<3} : {}", sn.operands[op_id]);
-        println!("     {data:?}| {dep:?} ");
-      }
-    }
-    if let Some(mut block) = block {
-      if (block_id as usize) < sn.nodes.len() {
-        let (_, pass, fail) = block_set[block_id as usize];
-
-        block.fail = fail as isize - head as isize;
-        block.pass = pass as isize - head as isize;
-
-        if fail < 0 {
-          println!("GOTO {}", pass as usize - head);
-        } else {
-          println!("PASS {} FAIL {}", pass as usize - head, fail as usize - head);
-        };
-      } else {
-        println!("RET")
-      }
-      // Sort ops into dependency groups
-      block.ops.sort_by(|a, b| op_data[*a].dep_rank.cmp(&op_data[*b].dep_rank));
-
-      blocks.push(block);
+  for op_id in 0..sn.operands.len() {
+    let data = op_data[op_id];
+    if data.block >= 0 {
+      blocks[data.block as usize].ops.push(op_id);
     }
   }
 
-  let (op_registers, scratch_register) = assign_registers(sn, &op_dependencies, &op_data, head, &mut blocks);
+  let (op_registers, scratch_register) = assign_registers(sn, &op_dependencies, &op_data, &mut blocks);
 
   for block in blocks.iter() {
     println!("\n\nBLOCK - {}", block.id);
@@ -133,39 +173,124 @@ fn encode(sn: &mut RootNode) {
     for op_id in ops {
       let block_input: i32 = op_data[op_id].dep_rank;
       if block_input != rank {
-        println!("Rank {block_input}");
         rank = block_input;
       }
 
       let dep = &op_dependencies[op_id];
-      let data = op_data[op_id];
+      let op_reg = op_registers[op_id];
 
       let reg_index = op_registers[op_id];
       let register = if reg_index >= 0 { format!("{}", REGISTERS[reg_index as usize]) } else { Default::default() };
 
-      println!("`{op_id:<3} - {:3}  {:23} {:?} : {} {}", op_registers[op_id], format!("{dep:?}"), sn.op_types[op_id], sn.operands[op_id], register);
+      println!("`{op_id:<3} - {op_reg} {:3}  {:23} {:?} : {} {}", op_registers[op_id], format!("{dep:?}"), sn.op_types[op_id], sn.operands[op_id], register);
     }
   }
 
   encode_routine(sn, &op_data, &blocks, &op_registers, &scratch_register);
 }
 
+fn process_routine_node(sn: &RootNode, op_dependencies: &mut Vec<Vec<OpId>>, op_data: &mut Vec<OpData>, block_set: &mut Vec<BlockInfo>) {
+  let node = &sn.nodes[0];
+  let mut node_set = vec![false; sn.nodes.len()];
+
+  for (output_op, _) in node.outputs.iter() {
+    process_op(*output_op, 0, 0, sn, op_dependencies, op_data, block_set, &mut node_set);
+  }
+}
+
+/**
+ * Maps ops to blocks. An operation that has already been assigned to a block may be assigned to a new block if the incoming block is ordered before the
+ * outgoing block. In this case, all dependency ops will also be assigned to lower order block recursively
+ */
+fn process_op(
+  op_id: OpId,
+  dominator_block: i32,
+  mut curr_block: i32,
+  sn: &RootNode,
+  op_dependencies: &mut Vec<Vec<OpId>>,
+  op_data: &mut Vec<OpData>,
+  block_set: &mut Vec<BlockInfo>,
+  node_set: &mut [bool],
+) {
+  if op_id.is_invalid() {
+    return;
+  }
+
+  let op_index = op_id.usize();
+  let op = &sn.operands[op_index];
+  let existing_block = op_data[op_index].block;
+  let ty = &sn.type_vars[sn.op_types[op_index].generic_id().unwrap()].ty;
+
+  if *ty == TypeV::MemCtx {
+    return;
+  }
+
+  if ty.is_poison() {
+    return;
+  }
+
+  if existing_block >= 0 {
+    if existing_block == dominator_block || existing_block == curr_block {
+      return;
+    } else {
+      let mut block = &block_set[dominator_block as usize];
+      let mut dominator_block = dominator_block;
+
+      while dominator_block != block.dominator {
+        dominator_block = block.dominator;
+        block = &block_set[dominator_block as usize];
+      }
+
+      op_data[op_index].block = dominator_block;
+      curr_block = dominator_block;
+    }
+  } else {
+    op_data[op_index].block = curr_block;
+  }
+
+  match op {
+    Operation::Op { operands, .. } => {
+      for c_op in operands.iter().cloned() {
+        if c_op.is_valid() {
+          if !op_dependencies[c_op.usize()].contains(&op_id) {
+            op_dependencies[c_op.usize()].push(op_id);
+          }
+          process_op(c_op, dominator_block, curr_block, sn, op_dependencies, op_data, block_set, node_set);
+        }
+      }
+    }
+    Operation::OutputPort(block_id, operands) => {
+      process_block_ops(curr_block, dominator_block, *block_id as usize, sn, op_dependencies, op_data, block_set, node_set);
+    }
+    _ => {}
+  }
+}
+
 fn process_block_ops(
+  tail_block: i32,
+  dominator_block: i32,
   node_id: usize,
   sn: &RootNode,
   op_dependencies: &mut Vec<Vec<OpId>>,
   op_data: &mut Vec<OpData>,
-  block_set: &mut Vec<(bool, i32, i32)>,
+  block_set: &mut Vec<BlockInfo>,
+  node_set: &mut [bool],
 ) -> (usize, Vec<usize>) {
-  if block_set[node_id].0 {
+  if node_set[node_id] {
     return (0, vec![]);
   }
-
-  block_set[node_id].0 = true;
+  node_set[node_id] = true;
 
   let node = &sn.nodes[node_id];
 
   match node.type_str {
+    CLAUSE_ID => {
+      for (output_op, _) in node.outputs.iter() {
+        process_op(*output_op, dominator_block, tail_block, sn, op_dependencies, op_data, block_set, node_set);
+      }
+      return (tail_block as usize, vec![tail_block as usize]);
+    }
+
     MATCH_ID => {
       // Create blocks for each output
 
@@ -175,150 +300,93 @@ fn process_block_ops(
       let Operation::OutputPort(.., act_ops) = &sn.operands[activation_op_id.usize()] else { unreachable!() };
       let Operation::OutputPort(.., out_ops) = &sn.operands[output_op_id.usize()] else { unreachable!() };
 
-      let head = act_ops.first().unwrap().0 as usize;
+      assert_eq!(act_ops.len(), out_ops.len());
 
-      let mut heads = vec![];
+      let head_block = BlockInfo { dominator: block_set.len() as _, pass: -1, set: false, fail: -1 };
+      let head_block_id = block_set.len();
+      block_set.push(head_block);
 
-      let mut curr_tails = vec![];
+      let mut tail_blocks = vec![];
 
-      let initial_block_id = act_ops.first().unwrap().0 as i32;
+      let mut curr_select_block_id = head_block_id as i32;
+      let dominator = head_block_id as i32;
 
-      node.inputs.iter().for_each(|(op, var_id)| {
-        op_data[op.usize()].block = initial_block_id;
-      });
+      for (index, ((_, select_op), (clause_node, _))) in act_ops.iter().zip(out_ops).enumerate() {
+        if index < (act_ops.len() - 1) {
+          process_op(*select_op, dominator, curr_select_block_id, sn, op_dependencies, op_data, block_set, node_set);
 
-      for (block_id, c_op) in out_ops {
-        if let Err(index) = op_dependencies[c_op.usize()].binary_search(output_op_id) {
-          op_dependencies[c_op.usize()].insert(index, *output_op_id);
+          let clause_block = BlockInfo { dominator, pass: tail_block, set: false, fail: -1 };
+          let clause_id = block_set.len();
+          block_set.push(clause_block);
+          tail_blocks.push(clause_id);
+
+          block_set[curr_select_block_id as usize].pass = clause_id as _;
+
+          process_block_ops(clause_id as _, dominator, *clause_node as _, sn, op_dependencies, op_data, block_set, node_set);
+
+          let next_select_block = BlockInfo { dominator, pass: -1, set: false, fail: -1 };
+          let next_select_id = block_set.len();
+          block_set.push(next_select_block);
+
+          block_set[curr_select_block_id as usize].fail = next_select_id as _;
+          curr_select_block_id = next_select_id as _;
+        } else {
+          process_block_ops(curr_select_block_id as _, dominator, *clause_node as _, sn, op_dependencies, op_data, block_set, node_set);
+          block_set[curr_select_block_id as usize].pass = tail_block as _;
+          tail_blocks.push(curr_select_block_id as _);
         }
-
-        let (head, tails) = process_node_ops(*block_id as usize, initial_block_id, sn, op_dependencies, op_data, block_set);
-        heads.push(head);
-        curr_tails.extend(tails);
       }
 
-      for (index, (block_id, c_op)) in act_ops.iter().enumerate() {
-        if let Err(index) = op_dependencies[c_op.usize()].binary_search(activation_op_id) {
-          op_dependencies[c_op.usize()].insert(index, *activation_op_id);
-        }
+      block_set[tail_block as usize].dominator = head_block_id as _;
 
-        process_node_ops(*block_id as usize, initial_block_id, sn, op_dependencies, op_data, block_set);
-
-        block_set[*block_id as usize].1 = heads[index] as i32; //out_ops[index].0 as i32;
-
-        if (index + 1) < act_ops.len() {
-          block_set[*block_id as usize].2 = act_ops[index + 1].0 as i32;
-        }
-      }
-
-      (head, curr_tails)
+      return (head_block_id, tail_blocks);
     }
-    ROUTINE_ID => process_node_ops(node_id, -1, sn, op_dependencies, op_data, block_set),
+    LOOP_ID => {
+      //note: inputs in a loop node are PHI nodes.
+
+      // Create the dominator block for this node.
+
+      let loop_head_block = BlockInfo { dominator: block_set.len() as _, pass: -1, set: false, fail: -1 };
+      let loop_head_block_id = block_set.len();
+      block_set.push(loop_head_block);
+      block_set[tail_block as usize].dominator = loop_head_block_id as _;
+
+      let curr_block_data = &mut block_set[tail_block as usize];
+      curr_block_data.dominator = loop_head_block_id as _;
+
+      for input in &node.inputs {
+        let Operation::OutputPort(_, act_ops) = &sn.operands[input.0.usize()] else { unreachable!() };
+        let (_, root_op) = act_ops[0];
+
+        process_op(root_op, loop_head_block_id as _, loop_head_block_id as _, sn, op_dependencies, op_data, block_set, node_set);
+      }
+
+      let output = node.outputs[0];
+      let Operation::OutputPort(node_id, act_ops) = &sn.operands[output.0.usize()] else { unreachable!() };
+
+      let (head, tails) = process_block_ops(tail_block as _, loop_head_block_id as _, *node_id as _, sn, op_dependencies, op_data, block_set, node_set);
+
+      let tail_len = tails.len();
+
+      for (count, tail_block_id) in tails.iter().enumerate() {
+        if count < tail_len - 1 {
+          block_set[*tail_block_id].pass = head as _;
+        }
+      }
+
+      block_set[head as usize].dominator = loop_head_block_id as _;
+
+      block_set[loop_head_block_id as usize].pass = head as _;
+
+      return (loop_head_block_id as _, tails);
+    }
     ty => todo!("Handle node ty {ty:?}"),
   }
 }
 
-fn process_node_ops(
-  node_id: usize,
-  dominating_block_id: i32,
-  sn: &RootNode,
-  op_dependencies: &mut Vec<Vec<OpId>>,
-  op_data: &mut Vec<OpData>,
-  block_set: &mut Vec<(bool, i32, i32)>,
-) -> (usize, Vec<usize>) {
-  let node = &sn.nodes[node_id];
-  let set = node.outputs.iter().map(|(a, _)| (*a)).collect::<HashSet<_>>();
-  let mut op_queue = VecDeque::from_iter(set);
-
-  let new_block_id = if node_id == 0 { sn.nodes.len() } else { node_id };
-
-  let curr_tails = vec![new_block_id];
-  let mut curr_head = new_block_id;
-
-  while let Some(op) = op_queue.pop_back() {
-    let operand = &sn.operands[op.usize()];
-
-    let ty = &sn.op_types[op.usize()];
-
-    if *ty == TypeV::MemCtx || ty.is_poison() {
-      continue;
-    }
-
-    let curr_block = op_data[op.usize()].block;
-
-    if curr_block >= 0 && (curr_block > new_block_id as i32 || curr_block > dominating_block_id) {
-    } else if op_data[op.usize()].seen > 0 {
-      continue;
-    }
-
-    op_data[op.usize()].seen = 1;
-
-    if curr_block >= 0 {
-      if dominating_block_id >= 0 && (dominating_block_id as i32) < curr_block as i32 {
-        op_data[op.usize()].block = dominating_block_id as i32;
-      } else if (new_block_id as i32) < curr_block as i32 {
-        op_data[op.usize()].block = new_block_id as i32;
-      }
-    } else {
-      op_data[op.usize()].block = new_block_id as i32;
-    }
-
-    if ty.is_poison() || *ty == TypeV::MemCtx {
-      continue;
-    }
-
-    match operand {
-      Operation::Op { op_name, operands } => {
-        for c_op in operands.iter().cloned() {
-          if c_op.is_valid() {
-            if !op_dependencies[c_op.usize()].contains(&op) {
-              op_dependencies[c_op.usize()].push(op);
-            }
-            op_queue.push_back(c_op);
-          }
-        }
-      }
-      Operation::OutputPort(port_node_id, operands) => {
-        if *port_node_id as usize == node_id {
-          for (_, c_op) in operands.iter().cloned() {
-            if c_op.is_valid() {
-              if !op_dependencies[c_op.usize()].contains(&op) {
-                op_dependencies[c_op.usize()].push(op);
-              }
-              op_queue.push_back(c_op);
-            }
-          }
-        } else {
-          for (_, c_op) in operands.iter().cloned() {
-            if c_op.is_valid() {
-              if !op_dependencies[c_op.usize()].contains(&op) {
-                op_dependencies[c_op.usize()].push(op);
-              }
-            }
-          }
-
-          if !block_set[*port_node_id as usize].0 {
-            let (head, tails) = process_block_ops(*port_node_id as usize, sn, op_dependencies, op_data, block_set);
-
-            for tail in tails {
-              block_set[tail].1 = curr_head as i32;
-            }
-
-            curr_head = head;
-          }
-        }
-      }
-      Operation::Const(..) => {}
-      op => todo!("Handle operation {op:?}"),
-    }
-  }
-
-  (curr_head, curr_tails)
-}
-
 const REGISTERS: [Reg; 8] = [RAX, RCX, RDX, RBX, R8, R9, R10, RDI];
 
-fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData], head: usize, blocks: &mut [Block]) -> (Vec<i32>, Vec<i32>) {
+fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData], blocks: &mut [Block]) -> (Vec<i32>, Vec<i32>) {
   // Encode blocks
 
   let mut op_registers = vec![-1; sn.operands.len()];
@@ -326,68 +394,71 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
 
   // First pass assigns required registers. This a bottom up pass.
 
-  for block in blocks.iter_mut().rev() {
-    for op in block.ops.iter().rev().cloned() {
-      match &sn.operands[op] {
-        Operation::OutputPort(_, operands) => {
-          if get_op_type(sn, OpId(op as u32)) != TypeV::MemCtx {
-            let mut used_reg = op_registers[op];
-
-            if used_reg == -1 {
-              used_reg = -1 - op as i32;
-              println!("used_reg {used_reg} {op}");
-            }
-
-            for (_, (_, op)) in operands.iter().cloned().enumerate() {
-              if op.is_valid() {
-                if used_reg != -1 {
-                  op_registers[op.usize()] = used_reg
-                }
-              }
-            }
-          }
-        }
+  let mut td_dep = VecDeque::new();
+  if let Some(last_block) = blocks.last() {
+    if let Some(op) = last_block.ops.last() {
+      let reg_id = 0; // Set to RAX -
+                      // This should only be the case of we are dealing with a function, and not a routine.
+      op_registers[*op] = reg_id;
+      match sn.operands[*op] {
         Operation::Op { op_name, operands } => {
-          let mut used_reg = op_registers[op];
-
-          if *op_name == "RET" {
-            used_reg = 0; // Set to RAX
-          }
-
-          if used_reg >= 0 {
-            op_registers[op] = used_reg;
-          }
-
-          if *op_name == "SINK" {
-            for (index, op) in operands.iter().cloned().enumerate() {
-              if op.is_valid() {
-                if used_reg >= 0 {
-                  op_registers[op.usize()] = used_reg
-                }
-              }
-            }
-          } else {
-            for (index, op) in operands.iter().cloned().enumerate() {
-              if op.is_valid() {
-                if index == 0 && used_reg >= 0 {
-                  op_registers[op.usize()] = used_reg
-                }
-              }
-            }
-          }
-
-          let max_dist = operands.iter().filter(|op| op.is_valid()).fold(0usize, |a, o| {
-            a.max({
-              let val = ((op_data[o.usize()].block as isize) - (head as isize)) - (block.id as isize);
-              val.abs() as usize
-            })
-          });
-          let deb_count = op_dependencies[op].len();
-
-          println!("{op} - {max_dist}, {deb_count}")
+          assert_eq!(op_name, "RET");
+          td_dep.push_back((operands[0], reg_id));
         }
         _ => {}
       }
+    }
+  }
+
+  while let Some((op, reg_id)) = td_dep.pop_front() {
+    let op_id = op.usize();
+
+    if op_registers[op_id] != -1 {
+      continue;
+    }
+
+    op_registers[op_id] = reg_id;
+
+    match &sn.operands[op_id] {
+      Operation::OutputPort(_, operands) => {
+        if get_op_type(sn, OpId(op_id as u32)) != TypeV::MemCtx {
+          for (_, (_, op)) in operands.iter().cloned().enumerate() {
+            if op.is_valid() {
+              td_dep.push_back((op, reg_id));
+            }
+          }
+        }
+      }
+      Operation::Op { op_name, operands } => {
+        let mut used_reg = op_registers[op_id];
+
+        if *op_name == "RET" {
+          used_reg = 0; // Set to RAX
+        }
+
+        if *op_name == "SINK" {
+          if used_reg >= 0 {
+            for op in operands.iter() {
+              if op.is_valid() {
+                op_registers[op.usize()] = used_reg
+              }
+            }
+          }
+        } else {
+          let op_1 = operands[0];
+
+          if op_1.is_valid() {
+            td_dep.push_back((op_1, reg_id));
+          }
+
+          for op in operands[1..].iter() {
+            if op.is_valid() {
+              td_dep.push_back((*op, -1 - op.usize() as i32));
+            }
+          }
+        }
+      }
+      _ => {}
     }
   }
 
@@ -398,6 +469,72 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
   for block in blocks.iter() {
     for op in block.ops.iter().cloned() {
       let reg = op_registers[op];
+      match &sn.operands[op] {
+        Operation::Const(..) => {
+          if reg > -1 {
+            continue;
+          }
+        }
+        _ => {}
+      }
+
+      if reg < -1 {
+        let target_slot = (-reg - 1) as usize;
+        let reg: i32 = op_registers[target_slot];
+
+        if reg < 0 {
+          if active_ops.len() < 8 {
+            let reg = get_free_reg(&mut reg_lu, true);
+
+            if let Err(index) = active_ops.binary_search(&op) {
+              reg_lu |= 1 << reg;
+              active_ops.insert(index, target_slot);
+              op_registers[op] = reg;
+              op_registers[target_slot] = reg;
+            } else {
+              panic!("Op is already inserted into active ops")
+            }
+
+            //println!("Need to set register {reg_lu:08b}");
+          } else {
+            panic!("Need to spill!")
+          }
+        } else if (reg_lu & (1 << reg as u32)) > 0 {
+          op_registers[op] = reg;
+          if active_ops.binary_search(&target_slot).is_err() {
+            // Need to spill this register
+            panic!("Need to spill from preserved! {target_slot} {reg} {op} {active_ops:?}")
+          }
+        }
+      } else if reg < 0 {
+        if active_ops.len() < 8 {
+          let reg = get_free_reg(&mut reg_lu, true);
+
+          if let Err(index) = active_ops.binary_search(&op) {
+            reg_lu |= 1 << reg;
+            active_ops.insert(index, op);
+            op_registers[op] = reg;
+          } else {
+            panic!("Op is already inserted into active ops")
+          }
+
+          //println!("Need to set register {reg_lu:08b}");
+        } else {
+          panic!("Need to spill!")
+        }
+      } else {
+        match active_ops.binary_search(&op) {
+          Ok(_) => {
+            //panic!("Fill out op")
+          }
+          Err(index) => {
+            reg_lu |= 1 << reg;
+            active_ops.insert(index, op);
+          }
+        }
+      }
+
+      // Remove any ops and their associated register if we've reached the last op that consumes it.
       match &sn.operands[op] {
         Operation::Const(..) => {
           if reg >= -1 {
@@ -453,67 +590,8 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
         }
         _ => {}
       }
-
-      if reg < -1 {
-        let target_slot = (-reg - 1) as usize;
-        let reg: i32 = op_registers[target_slot];
-
-        if reg < 0 {
-          if active_ops.len() < 8 {
-            let reg = get_free_reg(&mut reg_lu, true);
-
-            if let Err(index) = active_ops.binary_search(&op) {
-              reg_lu |= 1 << reg;
-              active_ops.insert(index, target_slot);
-              op_registers[op] = reg;
-              op_registers[target_slot] = reg;
-            } else {
-              panic!("Op is already inserted into active ops")
-            }
-
-            println!("Need to set register {reg_lu:08b}");
-          } else {
-            panic!("Need to spill!")
-          }
-        } else if (reg_lu & (1 << reg as u32)) > 0 {
-          op_registers[op] = reg;
-          if active_ops.binary_search(&target_slot).is_err() {
-            // Need to spill this register
-            panic!("Need to spill from preserved! {target_slot} {reg} {op} {active_ops:?}")
-          }
-        }
-      } else if reg < 0 {
-        if active_ops.len() < 8 {
-          let reg = get_free_reg(&mut reg_lu, true);
-
-          if let Err(index) = active_ops.binary_search(&op) {
-            reg_lu |= 1 << reg;
-            active_ops.insert(index, op);
-            op_registers[op] = reg;
-          } else {
-            panic!("Op is already inserted into active ops")
-          }
-
-          println!("Need to set register {reg_lu:08b}");
-        } else {
-          panic!("Need to spill!")
-        }
-      } else {
-        match active_ops.binary_search(&op) {
-          Ok(_) => {
-            //panic!("Fill out op")
-          }
-          Err(index) => {
-            reg_lu |= 1 << reg;
-            active_ops.insert(index, op);
-          }
-        }
-      }
-      // Remove any ops and their associated register if we've reached the last op that consumes it.
     }
   }
-
-  dbg!(&op_registers, &scratch_registers);
 
   (op_registers, scratch_registers)
 }
@@ -528,8 +606,6 @@ fn get_free_reg(reg_lu: &mut u32, update_register: bool) -> i32 {
   //let mask = mask | (mask >> 16);
 
   let bit_set = !mask & reversed;
-
-  println!("{bit_set} {bit_set:08b} {mask:08b}");
 
   let bit_set = bit_set.trailing_zeros();
 
@@ -569,8 +645,6 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
     let mut need_jump_resolution = true;
 
     for (i, op) in block.ops.iter().enumerate() {
-      println!("{block_number} {op}");
-
       let is_last_op = i == block.ops.len() - 1;
 
       match &sn.operands[*op] {
@@ -586,11 +660,6 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
           }
         }
         Operation::Op { op_name, operands: [a, b, ..] } => match *op_name {
-          "SEL" => {
-            println!(
-              "TODO: Compare the given bool value at op_a to zero, jump to fail if equal, otherwise jump to success. (Ideally success is the fall through branch.)"
-            );
-          }
           "ADD" | "SUB" => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
@@ -611,7 +680,13 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
                       l = reg;
                     }
                   }
-                  _ => unreachable!("Expected to have a constant value at this position"),
+                  Operation::Op { .. } | Operation::OutputPort(..) => {
+                    let l_reg = REGISTERS[reg as usize];
+                    let r_reg = REGISTERS[l as usize];
+                    l = reg;
+                    encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+                  }
+                  _ => unreachable!("Expected to have a constant value at this position \n{:?}", sn.operands[a.usize()]),
                 }
               }
 
@@ -762,7 +837,6 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
           jmp_resolver.add_jump(binary, block.fail as usize);
         }
       } else if block.pass > 0 && block.pass != (block_number + 1) as isize {
-        dbg!(block, block_number, block.pass);
         encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
         jmp_resolver.add_jump(binary, block.pass as usize);
       } else if block.pass < 0 {
@@ -771,7 +845,6 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
     }
   }
 
-  dbg!(&jmp_resolver);
   for (instruction_index, block_id) in &jmp_resolver.jump_points {
     let block_address = jmp_resolver.block_offset[*block_id];
     let instruction_end_point = *instruction_index;

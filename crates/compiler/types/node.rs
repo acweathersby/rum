@@ -474,12 +474,22 @@ impl RootNode {
     }
   }
 }
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LoopType {
+  #[default]
+  None,
+  Head(u16),
+  Break(u16),
+}
+
 #[derive(Clone)]
 pub(crate) struct Node {
-  pub(crate) index:    usize,
-  pub(crate) type_str: &'static str,
-  pub(crate) inputs:   Vec<(OpId, VarId)>,
-  pub(crate) outputs:  Vec<(OpId, VarId)>,
+  pub(crate) index:     usize,
+  pub(crate) type_str:  &'static str,
+  pub(crate) inputs:    Vec<(OpId, VarId)>,
+  pub(crate) outputs:   Vec<(OpId, VarId)>,
+  pub(crate) loop_type: LoopType,
 }
 
 impl Debug for Node {
@@ -490,7 +500,7 @@ impl Debug for Node {
 
 impl Display for Node {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("[{}] {}\n", self.index, self.type_str))?;
+    f.write_fmt(format_args!("[{}] {} {:?}\n", self.index, self.type_str, self.loop_type))?;
 
     f.write_str("inputs:\n")?;
     for (op, id) in self.inputs.iter() {

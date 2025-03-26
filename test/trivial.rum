@@ -3,9 +3,8 @@ trivial :: () : u32 {
   y = 2
   b = 2
 
-  b = ?: y 
-      > 2 { y = y - b 22 } 
-      ||  { 24 + b }
+  loop 
+  if y > 2 { y = y + 8 + b } 
   
   y + b
 }

@@ -470,9 +470,21 @@ struct BuildPack<'a> {
 
 fn push_node(bp: &mut BuildPack, id: &'static str) -> usize {
   let node_index = bp.super_node.nodes.len();
-  bp.super_node.nodes.push(Node { index: node_index, type_str: id, inputs: Default::default(), outputs: Default::default() });
+  bp.super_node.nodes.push(Node {
+    index:     node_index,
+    type_str:  id,
+    inputs:    Default::default(),
+    outputs:   Default::default(),
+    loop_type: Default::default(),
+  });
   bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), heap_lu: Default::default(), id });
   bp.node_stack.len() - 1
+}
+
+fn push_node_with_loop(bp: &mut BuildPack, id: &'static str, loop_type: LoopType) -> usize {
+  let id = push_node(bp, id);
+  bp.super_node.nodes[bp.node_stack[id].node_index].loop_type = loop_type;
+  id
 }
 
 fn declare_top_scope_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: TypeV) -> &'a mut Var {
@@ -503,7 +515,7 @@ fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option
     let node = &mut bp.node_stack[node_stack_index];
     if let Some(var) = node.var_lu.get(&var_id) {
       return Some((node.vars[*var].clone(), node_stack_index));
-    } else if bp.super_node.nodes[bp.node_stack[node_stack_index].node_index].type_str == LOOP_ID {
+    } else if matches!(bp.super_node.nodes[bp.node_stack[node_stack_index].node_index].loop_type, LoopType::Head(..)) {
       if matches!(var_id, VarId::MemName(..)) {
         return None;
       }
@@ -736,10 +748,9 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
           todo!("handle block loop exit")
         }
         loop_statement_group_1_Value::RawMatch(match_) => {
-          push_node(bp, LOOP_ID);
+          push_node_with_loop(bp, LOOP_ID, LoopType::Head(0));
 
           let (mem_op, _) = get_mem_context(bp);
-
           let ((match_op, _), (active_op, _)) = process_match(match_, bp);
 
           add_output(bp, match_op, VarId::OutputVal);
@@ -752,6 +763,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
           }
 
           join_nodes(vec![pop_node(bp, false)], bp);
+
           output = Default::default()
         }
         loop_statement_group_1_Value::RawIterStatement(iter) => {
@@ -1406,7 +1418,6 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     push_node(bp, CLAUSE_SELECTOR_ID);
     get_var(bp, VarId::MatchActivation);
 
-    //let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), index as u32)), activation_ty.clone(), Default::default());
     let mut known_type = TypeV::default();
 
     if let Some(expr) = &clause.expr {
@@ -1428,7 +1439,6 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 
           let (bool_op, activation_ty_new) = process_op(cmp_op_name, &[input_op.0, expr_op], bp, expr.clone().into());
 
-          //let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
           update_var(bp, VarId::MatchActivation, bool_op, activation_ty_new);
         }
         match_condition_Value::RawTypeMatchExpr(ty_match) => {
@@ -1442,8 +1452,6 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 
           let (bool_op, activation_ty_new) = process_op("TY_EQ", &[input_op.0, prop_name_op], bp, ty_match.clone().into());
 
-          //let (out_op, activation_ty_new) = process_op("SEL", &[bool_op, sel_op], bp, Default::default());
-
           update_var(bp, VarId::MatchActivation, bool_op, activation_ty_new);
         }
         _ => {}
@@ -1451,8 +1459,6 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     } else {
       let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), 1)), activation_ty.clone(), Default::default());
       update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
-      //unreachable!("All match clauses, save for the default clause, should have a match expression")
-      //update_var(bp, VarId::MatchActivation, sel_op, activation_ty.clone());
     }
 
     clauses_input_ty.push(known_type);
@@ -1507,25 +1513,20 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
   }
 
   if match_.default_clause.is_none() {
-    push_node(bp, CLAUSE_ID);
+    push_node_with_loop(bp, CLAUSE_ID, LoopType::Break(0));
     get_var(bp, VarId::OutputVal);
     let (poison_op, output_ty) = process_op("POISON", &[], bp, Default::default());
     update_var(bp, VarId::OutputVal, poison_op, output_ty);
     clauses.push(pop_node(bp, true));
   }
-  dbg!(&clauses);
+
   join_nodes(clauses, bp);
 
   let act = get_var(bp, VarId::MatchActivation).unwrap();
-  //add_output(bp, act.0, VarId::MatchActivation);
 
   let out = get_var(bp, VarId::OutputVal).unwrap();
-  //add_output(bp, out.0, VarId::OutputVal);
 
-  dbg!(act, out);
   let node = pop_node(bp, false);
-
-  dbg!(&node);
 
   join_nodes(vec![node], bp);
 
@@ -1632,16 +1633,19 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
         let iter = vars.iter().enumerate().map(|(i, v)| (node_index_mappings[i] as u32, *v));
         match &mut bp.super_node.operands.get_mut(op.0 as usize) {
           Some(Operation::OutputPort(_, port_vars)) => {
-            panic!(
-              "Should not be the case that we we need to merge more ops into an existing port. Ports should be closed to modification once a 
-              node has been popped and sealed."
-            );
+            if is_single_op {
+              panic!(
+                "Should not be the case that we need to merge more ops into an existing port. Ports should be closed to modification once a
+                node has been popped and sealed."
+              );
+            } else {
+              port_vars.extend(iter.filter(|i| i.1 != op));
+            }
           }
           _ => {
             if is_single_op {
               update_var(bp, var_id, iter.into_iter().next().unwrap().1, ty);
             } else {
-              dbg!(all_invalid_assignments, has_same_assignments_as_initial, is_single_op);
               assert_ne!(current_node_index, 0, "{:?}", iter.collect::<Vec<_>>());
               let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty, Default::default());
               if ori_op.is_valid() {

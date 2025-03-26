@@ -129,7 +129,7 @@ impl TypeV {
   }
 
   pub fn is_poison(&self) -> bool {
-    self.base_ty() == BaseType::Poison
+    self.prim_data().is_some_and(|t| t.base_ty == PrimitiveBaseType::Poison) || self.base_ty() == BaseType::Poison
   }
 
   pub fn is_undefined(&self) -> bool {
