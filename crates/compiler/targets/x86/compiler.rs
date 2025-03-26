@@ -164,6 +164,12 @@ fn encode(sn: &mut RootNode) {
 
   let (op_registers, scratch_register) = assign_registers(sn, &op_dependencies, &op_data, &mut blocks);
 
+  print_blocks(sn, op_dependencies.as_slice(), &op_data, &blocks, &op_registers);
+
+  encode_routine(sn, &op_data, &blocks, &op_registers, &scratch_register);
+}
+
+fn print_blocks(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData], blocks: &[Block], op_registers: &[i32]) {
   for block in blocks.iter() {
     println!("\n\nBLOCK - {}", block.id);
     let mut ops = block.ops.clone();
@@ -185,8 +191,6 @@ fn encode(sn: &mut RootNode) {
       println!("`{op_id:<3} - {op_reg} {:3}  {:23} {:?} : {} {}", op_registers[op_id], format!("{dep:?}"), sn.op_types[op_id], sn.operands[op_id], register);
     }
   }
-
-  encode_routine(sn, &op_data, &blocks, &op_registers, &scratch_register);
 }
 
 fn process_routine_node(sn: &RootNode, op_dependencies: &mut Vec<Vec<OpId>>, op_data: &mut Vec<OpData>, block_set: &mut Vec<BlockInfo>) {
@@ -461,6 +465,8 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
       _ => {}
     }
   }
+
+  print_blocks(sn, op_dependencies, &op_data, &blocks, &op_registers);
 
   // The top down passes assign registers and possible spills to v-registers that not yet been assigned
   let mut reg_lu: u32 = 0;

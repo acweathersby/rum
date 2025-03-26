@@ -78,8 +78,6 @@ pub fn add_module(db: &mut Database, module: &str) {
               }
             }
 
-            dbg!(&node);
-
             db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
           }
           routine_definition_Value::Type_Struct(strct) => {
@@ -843,7 +841,10 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
                   _ => unreachable!(),
                 }
               } else {
-                declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), expr_op, expr_ty);
+                let sink_op =
+                  add_op(bp, Operation::Op { op_name: "SINK", operands: [Default::default(), expr_op, Default::default()] }, expr_ty, assign.clone().into());
+
+                declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), sink_op, expr_ty);
               }
             } else {
               match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone()) {
@@ -1501,7 +1502,6 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     let (op, output_ty, _) = compile_scope(&clause.scope, bp);
 
     if op.is_valid() {
-      dbg!(op);
       update_var(bp, VarId::OutputVal, op, output_ty);
     } else {
       let (poison_op, output_ty) = process_op("POISON", &[], bp, Default::default());
@@ -1597,8 +1597,6 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
       }
     }
   }
-
-  dbg!(&outgoing_vars);
 
   for (var_id, (ori_op, vars)) in outgoing_vars {
     if let Some((op, ty)) = get_var(bp, var_id) {

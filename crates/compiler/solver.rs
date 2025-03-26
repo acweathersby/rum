@@ -549,10 +549,12 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
             for (i, op) in operands.iter().enumerate() {
               match op {
                 Operation::Op { op_name: a @ "SINK", operands: [op1, op2, _] } => {
-                  let var_src = get_root_var_mut(types[op1.usize()].generic_id().unwrap(), type_vars);
-                  let var_dst = get_root_var_mut(types[op2.usize()].generic_id().unwrap(), type_vars);
+                  if op1.is_valid() {
+                    let var_src = get_root_var_mut(types[op1.usize()].generic_id().unwrap(), type_vars);
+                    let var_dst = get_root_var_mut(types[op2.usize()].generic_id().unwrap(), type_vars);
 
-                  var_dst.num |= var_src.num;
+                    var_dst.num |= var_src.num;
+                  }
                 }
                 Operation::Op { op_name: "SEED", operands: [op1, op2, _] } => {}
                 Operation::Heap(VarId::Heap) => {}
