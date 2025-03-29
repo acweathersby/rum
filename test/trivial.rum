@@ -1,10 +1,15 @@
 #test 
 trivial :: () : u32 { 
-  y = 2
-  b = 2
-
-  loop 
-  if y > 2 { y = y + 8 + b } 
+  a = 10 
+  x1 = 0 
+  x2 = 1 
   
-  y + b
+  loop if a > 0 { 
+    r = x1   
+    x1 = x1 + x2  
+    x2 = r
+    a = a - 1 
+  }
+  
+  x1 
 }

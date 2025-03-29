@@ -841,10 +841,11 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
                   _ => unreachable!(),
                 }
               } else {
-                let sink_op =
+                /*              let sink_op =
                   add_op(bp, Operation::Op { op_name: "SINK", operands: [Default::default(), expr_op, Default::default()] }, expr_ty, assign.clone().into());
 
-                declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), sink_op, expr_ty);
+                let var = declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), sink_op, expr_ty); */
+                declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), expr_op, expr_ty);
               }
             } else {
               match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone()) {

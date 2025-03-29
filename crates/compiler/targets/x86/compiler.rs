@@ -1,8 +1,10 @@
 use std::{
   cmp::Ordering,
   collections::{HashSet, VecDeque},
+  process::Output,
 };
 
+use core_lang::parser::ast::Var;
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -264,6 +266,11 @@ fn process_op(
       }
     }
     Operation::OutputPort(block_id, operands) => {
+      for (_, c_op) in operands {
+        if !op_dependencies[c_op.usize()].contains(&op_id) {
+          op_dependencies[c_op.usize()].push(op_id);
+        }
+      }
       process_block_ops(curr_block, dominator_block, *block_id as usize, sn, op_dependencies, op_data, block_set, node_set);
     }
     _ => {}
@@ -399,7 +406,8 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
   // First pass assigns required registers. This a bottom up pass.
 
   let mut td_dep = VecDeque::new();
-  if let Some(last_block) = blocks.last() {
+
+  /*   if let Some(last_block) = blocks.last() {
     if let Some(op) = last_block.ops.last() {
       let reg_id = 0; // Set to RAX -
                       // This should only be the case of we are dealing with a function, and not a routine.
@@ -412,6 +420,16 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
         _ => {}
       }
     }
+  } */
+
+  for node in sn.nodes.iter().rev() {
+    for (op, var) in node.outputs.iter() {
+      if *var == VarId::Return {
+        td_dep.push_back((*op, 0));
+      } else {
+        td_dep.push_back((*op, -1 - op.usize() as i32));
+      }
+    }
   }
 
   while let Some((op, reg_id)) = td_dep.pop_front() {
@@ -420,7 +438,6 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
     if op_registers[op_id] != -1 {
       continue;
     }
-
     op_registers[op_id] = reg_id;
 
     match &sn.operands[op_id] {
@@ -428,7 +445,7 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
         if get_op_type(sn, OpId(op_id as u32)) != TypeV::MemCtx {
           for (_, (_, op)) in operands.iter().cloned().enumerate() {
             if op.is_valid() {
-              td_dep.push_back((op, reg_id));
+              td_dep.push_front((op, reg_id));
             }
           }
         }
@@ -441,23 +458,24 @@ fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &
         }
 
         if *op_name == "SINK" {
-          if used_reg >= 0 {
-            for op in operands.iter() {
-              if op.is_valid() {
-                op_registers[op.usize()] = used_reg
-              }
-            }
-          }
+          let [dst, src, ..] = operands;
+
+          //td_dep.push_front((*src, -1 - src.usize() as i32));
+          td_dep.push_front((*src, used_reg));
+
+          //if dst.is_valid() {
+          //  td_dep.push_front((*dst, used_reg));
+          //}
         } else {
           let op_1 = operands[0];
 
           if op_1.is_valid() {
-            td_dep.push_back((op_1, reg_id));
+            td_dep.push_front((op_1, reg_id));
           }
 
           for op in operands[1..].iter() {
             if op.is_valid() {
-              td_dep.push_back((*op, -1 - op.usize() as i32));
+              td_dep.push_front((*op, -1 - op.usize() as i32));
             }
           }
         }
@@ -666,6 +684,19 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
           }
         }
         Operation::Op { op_name, operands: [a, b, ..] } => match *op_name {
+          "SINK" => {
+            let ty = get_op_type(sn, OpId(*op as u32));
+            if let Some(prim) = ty.prim_data() {
+              let reg = registers[*op];
+              let l = registers[b.usize()];
+
+              if l != reg {
+                let l_reg = REGISTERS[reg as usize];
+                let r_reg = REGISTERS[l as usize];
+                encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+              }
+            }
+          }
           "ADD" | "SUB" => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
