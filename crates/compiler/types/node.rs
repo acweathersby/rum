@@ -227,12 +227,18 @@ impl OpId {
   }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PortType {
+  Phi,
+  Output,
+}
+
 #[derive(Clone)]
 pub(crate) enum Operation {
   Param(VarId, u32),
   Heap(VarId),
   MemCheck(OpId),
-  OutputPort(u32, Vec<(u32, OpId)>),
+  Port { node_id: u32, ty: PortType, ops: Vec<(u32, OpId)> },
   Op { op_name: &'static str, operands: [OpId; 3] },
   Const(ConstVal),
   Data,
@@ -255,9 +261,9 @@ impl Display for Operation {
       Operation::IntrinsicCallTarget(target) => f.write_fmt(format_args!("Target [{}]", target)),
       Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
-      Operation::OutputPort(root, ops) => f.write_fmt(format_args!(
-        "{:12}  {}",
-        format!("PORT@{root}"),
+      Operation::Port { node_id: block_id, ty, ops, .. } => f.write_fmt(format_args!(
+        "{ty:?} :> {:12} {}",
+        format!("from: {block_id}"),
         ops.iter().map(|(a, b)| { format!("{:5}", format!("{b}@{a}")) }).collect::<Vec<String>>().join("  ")
       )),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),

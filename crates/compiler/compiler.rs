@@ -523,7 +523,7 @@ fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option
       if let Some((var, _)) = get_var_internal(bp, var_id, node_stack_index - 1) {
         let Var { val_op: op, ty, .. } = var;
 
-        let op = add_op(bp, Operation::OutputPort(index as u32, vec![(0, op)]), ty, Default::default());
+        let op = add_op(bp, Operation::Port { node_id: index as u32, ty: PortType::Phi, ops: vec![(0, op)] }, ty, Default::default());
 
         bp.super_node.nodes[index].inputs.push((op, var_id));
 
@@ -760,7 +760,9 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
             add_output(bp, mem_op2, VarId::MemCTX);
           }
 
-          join_nodes(vec![pop_node(bp, false)], bp);
+          let node = pop_node(bp, false);
+
+          join_nodes(vec![node], bp);
 
           output = Default::default()
         }
@@ -804,12 +806,18 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
         for output in asm.outputs.iter() {
           let ASM_Output { mem_name, scope_name } = output.as_ref();
 
-          let out_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), Default::default(), Default::default());
+          let out_op = add_op(
+            bp,
+            Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() },
+            Default::default(),
+            Default::default(),
+          );
           add_output(bp, out_op, VarId::Name(mem_name.id.intern()));
           update_var(bp, VarId::Name(scope_name.id.intern()), out_op, Default::default());
         }
 
-        let mem_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), heap_ty, Default::default());
+        let mem_op =
+          add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() }, heap_ty, Default::default());
 
         add_output(bp, mem_op, VarId::Heap);
 
@@ -904,7 +912,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
             let arr_var_ty = arr_var.ty;
             add_constraint(bp, NodeConstraint::GenTyToTy(arr_var_ty, ty.to_array()));
 
-            let (size_expr_op) = if let Some(expr) = array_decl.size_expression.as_ref() {
+            let size_expr_op = if let Some(expr) = array_decl.size_expression.as_ref() {
               compile_expression(&expr.expr, bp, None).0
             } else {
               match &assign.expression {
@@ -977,7 +985,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
       }
       if let Some(var) = node.vars.get_mut(*var_index) {
         if var.val_op.is_valid() {
-          let mem_op = add_op(bp, Operation::OutputPort(node_index as u32, vec![(0, var.val_op)]), var.ty, Default::default());
+          let mem_op = add_op(bp, Operation::Port { node_id: node_index as u32, ty: PortType::Output, ops: vec![(0, var.val_op)] }, var.ty, Default::default());
           clone_op_heap(bp, var.val_op, mem_op);
           bp.super_node.nodes[node_index as usize].outputs.push((var.val_op, *var_id));
           var.val_op = mem_op;
@@ -1042,10 +1050,12 @@ fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (OpId, TypeV)
   var.add(VarAttribute::ForeignType);
   let ret_ty = var.ty;
 
-  let ret_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), ret_ty.clone(), call.clone().into());
+  let ret_op =
+    add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() }, ret_ty.clone(), call.clone().into());
   declare_top_scope_var(bp, VarId::Return, ret_op, ret_ty.clone());
 
-  let mem_op = add_op(bp, Operation::OutputPort(current_node_index(bp) as u32, Default::default()), heap_ty, call.clone().into());
+  let mem_op =
+    add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() }, heap_ty, call.clone().into());
   update_mem_context(bp, mem_op);
 
   add_output(bp, ret_op, VarId::Return);
@@ -1631,7 +1641,7 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
 
         let iter = vars.iter().enumerate().map(|(i, v)| (node_index_mappings[i] as u32, *v));
         match &mut bp.super_node.operands.get_mut(op.0 as usize) {
-          Some(Operation::OutputPort(_, port_vars)) => {
+          Some(Operation::Port { ops: port_vars, .. }) => {
             if is_single_op {
               panic!(
                 "Should not be the case that we need to merge more ops into an existing port. Ports should be closed to modification once a
@@ -1646,7 +1656,8 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
               update_var(bp, var_id, iter.into_iter().next().unwrap().1, ty);
             } else {
               assert_ne!(current_node_index, 0, "{:?}", iter.collect::<Vec<_>>());
-              let port_op = add_op(bp, Operation::OutputPort(current_node_index as u32, iter.collect()), ty, Default::default());
+              let port_op =
+                add_op(bp, Operation::Port { node_id: current_node_index as u32, ty: PortType::Output, ops: iter.collect() }, ty, Default::default());
               if ori_op.is_valid() {
                 //  add_input(bp, ori_op, var_id);
               }

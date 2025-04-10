@@ -245,7 +245,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
         },
         _ => panic!("unexpected node type {op_ty}"),
       },
-      Operation::OutputPort(..) => interprete_port(super_node, op, scratch, ctx, scope_data),
+      Operation::Port { .. } => interprete_port(super_node, op, scratch, ctx, scope_data),
       Operation::Op { op_name, operands } => match *op_name {
         "CONVERT" => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
@@ -813,7 +813,7 @@ fn get_ty_size(ty: TypeV, ctx: &mut RuntimeSystem) -> u64 {
 pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(Value, u32)>, ctx: &mut RuntimeSystem, scope_data: ScopeData) -> Value {
   let ScopeData { slice_start, slice_end, loop_old, loop_new } = scope_data;
   let scratch_index = slice_start + port_op.usize();
-  let Operation::OutputPort(host_index, port_inputs) = &super_node.operands[port_op.usize()] else { unreachable!() };
+  let Operation::Port { node_id: host_index, ops: port_inputs, .. } = &super_node.operands[port_op.usize()] else { unreachable!() };
 
   let host_node = &super_node.nodes[*host_index as usize];
 
@@ -888,7 +888,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
           }
           let scratch_index = phi_op.usize() + slice_start;
 
-          if let Operation::OutputPort(_, ports) = &super_node.operands[phi_op.usize()] {
+          if let Operation::Port { ops: ports, .. } = &super_node.operands[phi_op.usize()] {
             let mut temp_scope = new_scope;
             temp_scope.loop_old = loop_new;
             scratch[scratch_index] = (interprete_op(super_node, ports[0].1, scratch, ctx, temp_scope), temp_scope.loop_new);
@@ -899,7 +899,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
           match interprete_op(super_node, *activation_op_id, scratch, ctx, new_scope) {
             Value::u32(index) => {
               for (val, (phi_op, _)) in host_node.inputs.iter().enumerate() {
-                if let Operation::OutputPort(_, ports) = &super_node.operands[phi_op.usize()] {
+                if let Operation::Port { ops: ports, .. } = &super_node.operands[phi_op.usize()] {
                   for (_, op) in ports.iter().rev() {
                     let op_index = op.usize() + slice_start;
                     if scratch[op_index] != (Value::Uninitialized, 0) {
@@ -927,7 +927,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
             _ => break,
           }
         }
-      } else if let Operation::OutputPort(_, ports) = &super_node.operands[port_op.usize()] {
+      } else if let Operation::Port { ops: ports, .. } = &super_node.operands[port_op.usize()] {
         for (_, op) in ports.iter().rev() {
           //scratch[scratch_index] = interprete_op(super_node, *op, scratch, slice_start, slice_end);
           if scratch[scratch_index].0 != Value::Uninitialized {
@@ -949,7 +949,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       let value_index = output_op_id.usize() + slice_start;
 
       match (act_op, out_op) {
-        (Operation::OutputPort(h, activator), Operation::OutputPort(b, ports)) => {
+        (Operation::Port { node_id: h, ops: activator, .. }, Operation::Port { node_id: b, ops: ports, .. }) => {
           debug_assert_eq!(*h, *b);
           debug_assert_eq!(*h, *host_index);
 
