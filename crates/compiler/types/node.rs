@@ -235,11 +235,20 @@ pub enum PortType {
 
 #[derive(Clone)]
 pub(crate) enum Operation {
+  /// - VarId - Variable representing the param value.
+  /// - u32   - List index position of the parameter
   Param(VarId, u32),
   Heap(VarId),
   MemCheck(OpId),
-  Port { node_id: u32, ty: PortType, ops: Vec<(u32, OpId)> },
-  Op { op_name: &'static str, operands: [OpId; 3] },
+  Port {
+    node_id: u32,
+    ty:      PortType,
+    ops:     Vec<(u32, OpId)>,
+  },
+  Op {
+    op_name:  &'static str,
+    operands: [OpId; 3],
+  },
   Const(ConstVal),
   Data,
   Name(IString),

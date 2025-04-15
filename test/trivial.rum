@@ -1,15 +1,8 @@
 #test 
-trivial :: () : u32 { 
-  a = 10 
-  x1 = 0 
-  x2 = 1 
+trivial :: (  test: u32, rest: u32  ) : u32 { 
+  a = 1 b = 2 
+  c = 3 d = 4
+  e = 5 g = 6
   
-  loop if a > 0 { 
-    r = x1   
-    x1 = x1 + x2  
-    x2 = r
-    a = a - 1 
-  }
-  
-  x1 
+  a + b + (c + d) + rest  + (e + 0 ) + test
 }

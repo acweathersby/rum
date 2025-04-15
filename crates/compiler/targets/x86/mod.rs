@@ -9,6 +9,7 @@ pub mod x86_instructions;
 pub mod x86_types;
 pub use compiler::*;
 
+
 #[inline]
 /// Pushes an arbitrary number of bytes to into a binary buffer.
 pub fn push_bytes<T: Sized>(binary: &mut Vec<u8>, data: T) {
