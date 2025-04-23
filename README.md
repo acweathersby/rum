@@ -16,3 +16,37 @@ fib ( n: u32 ) => u32
   
   // type sig: <∀3 => {x: u32, y: u32}>(x: u32, y: u32)[HeapCTX: mem_ctx] =>  ∀3 [HeapCTX: mem_ctx]
 ```
+
+
+# Major Concepts
+
+## Database as Code
+  Using database techniques to store and manipulate code fragments as inter connected parts to form 
+  software. Instead of treating code as series of lines that may contain differences, code is tracked
+  at the primitive level, allowing versioning on structure contracts, deep histories at the function level, 
+  (etc). 
+
+  Database concepts are central in Rum, with a built in query language and syntax binders that make interact with relational datastores natural and the correct choice in the course of developing software.
+
+
+## Intimate Modularity
+  All elements are modular and are designed to be interchangeable. For example, a addition routine can
+  be hand coded at one point, and then swapped to use a ML model (poor example)
+
+## Confident Testing 
+  Incorporates testing tools: 
+    - Test polyfills
+    - Fuzz tools
+    - Scenario testing tools 
+
+## Unified interface
+  The same rum code is used to program shaders, drivers, GUI's and all manner of programable components. With some restrictions and exceptions, a single syntax is all that is necessary to program in 90% of programmable domains.
+
+## Inspired Inquisitiveness
+  Code that is design to be inspected, queried, analyzed, tested, and dissected at all times. Supporting automatic polyfilling, convenient test mechanisms
+
+## Adaptable Interface 
+
+## Deep Program Insights
+  Utilizing a built UI framework and first class editor, Rum functions and data can be presented in arbitrary, to
+  best meet the visualization demands of the problem domain. Cross domain representations can be stitched together to provide insightful 

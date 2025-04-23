@@ -1,8 +1,5 @@
-#test 
-trivial :: (  test: u32, rest: u32  ) : u32 { 
-  a = 1 b = 2 
-  c = 3 d = 4
-  e = 5 g = 6
-  
-  a + b + (c + d) + rest  + (e + 0 ) + test
+#test
+trivial :: () : u32 { 
+  1920 / 2
 }
+
