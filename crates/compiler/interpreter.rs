@@ -1,5 +1,5 @@
 use crate::{
-  compiler::{add_module, ASM_ID, CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, OPS, ROUTINE_ID, STRUCT_ID},
+  ir_compiler::{add_module, ASM_ID, CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, MEMORY_REGION_ID, ROUTINE_ID, STRUCT_ID},
   targets::x86::print_instructions,
   types::*,
 };
@@ -246,8 +246,8 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
         _ => panic!("unexpected node type {op_ty}"),
       },
       Operation::Port { .. } => interprete_port(super_node, op, scratch, ctx, scope_data),
-      Operation::Op { op_name, operands } => match *op_name {
-        "CONVERT" => {
+      Operation::Op { op_id: op_name, operands } => match *op_name {
+        Op::CONVERT => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 
           match val {
@@ -304,7 +304,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => unreachable!(),
           }
         }
-        "COPY" => {
+        Op::COPY => {
           let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
           interprete_op(super_node, operands[2], scratch, ctx, scope_data);
@@ -326,35 +326,35 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           }
         }
 
-        "POISON" => Value::Ptr(0 as *mut _, ty_poison, 0),
-        "DECL" => interprete_op(super_node, operands[0], scratch, ctx, scope_data),
-        "ADD" | "SUB" | "DIV" | "MUL" => {
+        Op::POISON => Value::Ptr(0 as *mut _, ty_poison, 0),
+        Op::DECL => interprete_op(super_node, operands[0], scratch, ctx, scope_data),
+        Op::ADD | Op::SUB | Op::DIV | Op::MUL => {
           let (l_val, r_val) = interprete_binary_args(super_node, op, operands, scratch, ctx, scope_data);
 
           match *op_name {
-            "ADD" => op_match!(+, l_val, r_val),
-            "SUB" => op_match!(-, l_val, r_val),
-            "DIV" => op_match!(/, l_val, r_val),
-            "MUL" => op_match!(*, l_val, r_val),
-            "EQ" => cmp_match!(==, l_val, r_val),
-            "NEQ" => cmp_match!(==, l_val, r_val),
+            Op::ADD => op_match!(+, l_val, r_val),
+            Op::SUB => op_match!(-, l_val, r_val),
+            Op::DIV => op_match!(/, l_val, r_val),
+            Op::MUL => op_match!(*, l_val, r_val),
+            Op::EQ => cmp_match!(==, l_val, r_val),
+            Op::NEQ => cmp_match!(==, l_val, r_val),
             _ => Value::Null,
           }
         }
-        "EQ" | "NEQ" | "GR" | "LS" | "GE" | "LE" => {
+        Op::EQ | Op::NEQ | Op::GR | Op::LS | Op::GE | Op::LE => {
           let (l_val, r_val) = interprete_binary_cmp_args(super_node, op, operands, scratch, ctx, scope_data);
           match *op_name {
-            "GE" => cmp_match!(>=, l_val, r_val),
-            "LE" => cmp_match!(<=, l_val, r_val),
-            "LS" => cmp_match!(<, l_val, r_val),
-            "GR" => cmp_match!(>, l_val, r_val),
-            "EQ" => cmp_match!(==, l_val, r_val),
-            "NEQ" => cmp_match!(==, l_val, r_val),
+            Op::GE => cmp_match!(>=, l_val, r_val),
+            Op::LE => cmp_match!(<=, l_val, r_val),
+            Op::LS => cmp_match!(<, l_val, r_val),
+            Op::GR => cmp_match!(>, l_val, r_val),
+            Op::EQ => cmp_match!(==, l_val, r_val),
+            Op::NEQ => cmp_match!(==, l_val, r_val),
             _ => Value::Null,
           }
         }
 
-        "MAPS_TO" => {
+        Op::MAPS_TO => {
           let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           match l {
             Value::Ptr(ptr, ..) => Value::Ptr(ptr, op_ty, 1),
@@ -362,7 +362,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           }
         }
 
-        "TY_EQ" => {
+        Op::TY_EQ => {
           let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let r = super_node.get_base_ty(super_node.op_types[operands[1].usize()]);
 
@@ -371,19 +371,19 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => Value::Bool(false),
           }
         }
-        "RET" => {
+        Op::RET => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           interprete_op(super_node, operands[1], scratch, ctx, scope_data);
           val
         }
-        "SEL" => {
+        Op::SEL => {
           if Value::Bool(true) == interprete_op(super_node, operands[0], scratch, ctx, scope_data) {
             interprete_op(super_node, operands[1], scratch, ctx, scope_data)
           } else {
             Value::Null
           }
         }
-        "PROP" => {
+        Op::PROP => {
           // Calculates the offset of the current type.
           let curr_offset = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
@@ -396,7 +396,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             Value::u64(new_offset)
           }
         }
-        "CALC_AGG_SIZE" => {
+        Op::CALC_AGG_SIZE => {
           // Calculates the new offset
           let curr_offset = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
@@ -409,7 +409,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             Value::u64(new_offset + size)
           }
         }
-        "LEN" => {
+        Op::LEN => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 
           let val: u64 = match val {
@@ -419,7 +419,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
           convert_primitive_types(op_ty.prim_data().unwrap(), Value::u64(val))
         }
-        "FREE" => {
+        Op::FREE => {
           let ptr_val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
@@ -446,7 +446,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
           Value::Null
         }
-        "ARR_DECL" => {
+        Op::ARR_DECL => {
           let len = match interprete_op(super_node, operands[0], scratch, ctx, scope_data) {
             Value::u8(len) => len as usize,
             val => todo!("Get length value from {val}"),
@@ -471,7 +471,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             unreachable!()
           }
         }
-        "AGG_DECL" => {
+        Op::AGG_DECL => {
           // Calculate context side effects
 
           if operands[0].is_valid() {
@@ -497,7 +497,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => unreachable!("Could not resolve type from op {op} {op_ty} in {super_node:#?}"),
           }
         }
-        "REGISTER_HEAP" => {
+        Op::REGISTER_HEAP => {
           let parent_heap_id = operands[1].usize();
           let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty;
           let par_heap = super_node.type_vars[parent_heap_id].ty;
@@ -528,7 +528,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => unreachable!(),
           }
         }
-        "OFFSET_PTR" => match interprete_op(super_node, operands[1], scratch, ctx, scope_data) {
+        Op::OFFSET_PTR => match interprete_op(super_node, operands[1], scratch, ctx, scope_data) {
           Value::u64(offset_base) => {
             let Value::Ptr(ptr, ty, _) = interprete_op(super_node, operands[0], scratch, ctx, scope_data) else { panic!("Cannot index a non-pointer value") };
 
@@ -581,7 +581,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           }
           _ => unreachable!(),
         },
-        "NAMED_PTR" => {
+        Op::NAMED_PTR => {
           let name = match super_node.operands[operands[1].usize()] {
             Operation::Name(name) => name,
             _ => unreachable!(),
@@ -596,7 +596,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             un => unreachable!("unexpected value {un:?} at {}", operands[0]),
           }
         }
-        "SEED" => {
+        Op::SEED => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
@@ -623,7 +623,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             val => val,
           }
         }
-        "SINK" => {
+        Op::SINK => {
           let dst = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let src: Value = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
           interprete_op(super_node, operands[2], scratch, ctx, scope_data);
@@ -696,7 +696,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => unreachable!(),
           }
         }
-        "LOAD" => {
+        Op::LOAD => {
           let ptr = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
@@ -714,7 +714,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             v => unreachable!("load {v:?}"),
           }
         }
-        "STORE" => {
+        Op::STORE => {
           // Calculate context side effects
           //interprete_op(super_node, operands[2], scratch, ctx, scope_data);
 

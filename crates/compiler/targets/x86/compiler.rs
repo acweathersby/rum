@@ -7,8 +7,8 @@ use std::{
 use rum_common::get_aligned_value;
 
 use crate::{
-  compiler::{CLAUSE_ID, LOOP_ID, MATCH_ID},
   interpreter::get_op_type,
+  ir_compiler::{CLAUSE_ID, LOOP_ID, MATCH_ID},
   targets::{
     reg::Reg,
     x86::{
@@ -16,7 +16,7 @@ use crate::{
       x86_eval::x86Function,
     },
   },
-  types::{ty_bool, BaseType, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{ty_bool, BaseType, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 
 use super::{
@@ -41,7 +41,7 @@ pub fn compile(db: &SolveDatabase) {
 
     let func = x86Function::new(&binary, 0);
 
-    let val = func.access_as_call::<fn(u32, u32) -> u32>()(22, 2);
+    let val = func.access_as_call::<fn(u32) -> u32>()(2);
 
     dbg!(val);
 
@@ -298,7 +298,13 @@ fn process_op(
   let op_index = op_id.usize();
   let op = &sn.operands[op_index];
   let existing_block = op_data[op_index].block;
-  let ty = &sn.type_vars[sn.op_types[op_index].generic_id().unwrap()].ty;
+  let op_ty = sn.op_types[op_index];
+
+  if op_ty.is_nouse() || op_ty.is_mem() {
+    return;
+  }
+
+  let ty = &sn.type_vars[op_ty.generic_id().expect("Could not unwrap")].ty;
 
   if *ty == TypeV::MemCtx {
     return;
@@ -328,9 +334,9 @@ fn process_op(
   }
 
   match op {
-    Operation::Op { operands, op_name, .. } => {
+    Operation::Op { operands, op_id: op_name, .. } => {
       match *op_name {
-        "GR" => op_data[op_index].dep_rank |= 1 << 11,
+        Op::GR => op_data[op_index].dep_rank |= 1 << 11,
         //"SINK" => op_data[op_index].dep_rank |= 1 << 10,
         _ => {}
       }
@@ -341,7 +347,7 @@ fn process_op(
             continue;
           }
 
-          if index < 2 || !matches!(*op_name, "SINK") {
+          if index < 2 || !matches!(*op_name, Op::SINK) {
             if !op_dependencies[c_op.usize()].contains(&op_id) {
               op_dependencies[c_op.usize()].push(op_id);
             }
@@ -502,7 +508,7 @@ fn process_block_ops(
   }
 }
 
-const REGISTERS: [Reg; 12] = [RAX, RDI, RSI, R11, R8, R9, R10, R11, R12, R13, R14, R15];
+const REGISTERS: [Reg; 12] = [RAX, RDI, RSI, R11, R8, R9, R10, R11, R12, R13, R14, RDX];
 
 type X86registers<'r> = RegisterSet<'r, 12, Reg>;
 
@@ -611,12 +617,23 @@ fn top_down_register_assign_pass(
           // have active variables, or we need to assign a temporary variable to load spilled values.
 
           for (index, c_op) in operands.iter().enumerate() {
-            if c_op.is_invalid() || get_op_type(sn, *c_op).base_ty() == BaseType::MemCtx {
+            if c_op.is_invalid() {
+              continue;
+            }
+
+            let op_ty = get_op_type(sn, *c_op);
+
+            if op_ty.base_ty() == BaseType::MemCtx || op_ty.is_mem() || op_ty.is_nouse() {
               continue;
             }
 
             match op_registers[c_op.usize()].own {
               RegisterAssignment::None => {
+                // Allocate free register. Handle spilled.
+                op_registers[op].ops[index] =
+                  get_temp_reg(sn, op_registers, &mut register_set, &mut temp_reg_set, &mut active_register_assignments, None, &mut stack_offsets);
+              }
+              RegisterAssignment::Var(var) => {
                 // Allocate free register. Handle spilled.
                 op_registers[op].ops[index] =
                   get_temp_reg(sn, op_registers, &mut register_set, &mut temp_reg_set, &mut active_register_assignments, None, &mut stack_offsets);
@@ -630,7 +647,7 @@ fn top_down_register_assign_pass(
               }
               _ => {
                 print_blocks(sn, op_dependencies, op_data, blocks, op_registers, op_logical_rank);
-                unreachable!()
+                unreachable!("Op {op} is invalid");
               }
             }
           }
@@ -647,9 +664,16 @@ fn top_down_register_assign_pass(
             if op.is_invalid() {
               continue;
             }
+
+            let op_ty = get_op_type(sn, *op);
+
+            if op_ty.base_ty() == BaseType::MemCtx || op_ty.is_mem() || op_ty.is_nouse() {
+              continue;
+            }
+
             let dependencies = &op_dependencies[op.usize()];
 
-            if !matches!(sn.operands[op.usize()], Operation::Op { op_name: "SINK", .. })
+            if !matches!(sn.operands[op.usize()], Operation::Op { op_id: Op::SINK, .. })
               && !dependencies.iter().any(|d| op_logical_rank[d.usize()] > curr_op_l_rank)
             {
               match op_registers[op.usize()].own {
@@ -851,8 +875,8 @@ fn bottom_up_register_assign_pass(sn: &mut RootNode, op_dependencies: &[Vec<OpId
           }
         }
       },
-      Operation::Op { op_name, operands } => {
-        if *op_name == "SINK" {
+      Operation::Op { op_id: op_name, operands } => {
+        if *op_name == Op::SINK {
           // Sinks require different considerations ... TBD
 
           let [dst, src, ..] = operands;
@@ -863,6 +887,15 @@ fn bottom_up_register_assign_pass(sn: &mut RootNode, op_dependencies: &[Vec<OpId
           }
 
           td_dep.push_front((*src, reg_id));
+        } else if *op_name == Op::DIV {
+          // x86 DIV and IDIV requires the first argument (both the divisor and the output) to be RAX register, so
+          // if we are working uint or int values, we must make sure that op 1 is assigned to RAX.
+
+          // Set to RAX
+          reg_id = RegisterAssignment::VarReg(op_id as u16, 0);
+
+          td_dep.push_front((operands[0], reg_id));
+          td_dep.push_front((operands[1], RegisterAssignment::Var(operands[1].usize() as u16)));
         } else {
           if op_dependencies[op_id].len() > 1 {
             reg_id = RegisterAssignment::Var(op_id as u16)
@@ -916,6 +949,8 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
   let mut jmp_resolver = JumpResolution { block_offset: Default::default(), jump_points: Default::default() };
   let binary = &mut binary_data;
 
+  encode_x86(binary, &push, 64, RDX.as_reg_op(), Arg::None, Arg::None);
+
   for block in blocks {
     jmp_resolver.block_offset.push(binary.len());
     let block_number = block.id;
@@ -930,8 +965,17 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
         Operation::Const(c) => {
           continue;
         }
-        Operation::Op { op_name, operands } => match *op_name {
-          "SEED" => {
+        Operation::Op { op_id: op_name, operands } => match *op_name {
+          Op::AGG_DECL => {
+            todo!("AGG_DECL");
+          }
+          Op::NAMED_PTR => {
+            todo!("NAMED_PTR");
+          }
+          Op::STORE => {
+            todo!("STORE");
+          }
+          Op::SEED => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
               let to = registers[*op].own.reg_id().unwrap();
@@ -951,7 +995,7 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
               }
             }
           }
-          "SINK" => {
+          Op::SINK => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
               let reg = registers[*op].own.reg_id().unwrap();
@@ -964,7 +1008,7 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
               }
             }
           }
-          "ADD" | "SUB" | "MUL" | "DIV" => {
+          Op::ADD | Op::SUB | Op::MUL | Op::DIV => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
               let reg = registers[*op].own.reg_id().unwrap();
@@ -977,46 +1021,61 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
 
               type OpTable = (&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]);
 
-              let (op_table, commutable): (&OpTable, bool) = match *op_name {
-                "ADD" => (&add, true),
-                "MUL" => (&imul, true),
-                //"DIV" => (&div, false),
-                "SUB" => (&sub, false),
+              let (op_table, commutable, is_m_instruction): (&OpTable, bool, bool) = match *op_name {
+                Op::ADD => (&add, true, false),
+                Op::MUL => (&imul, true, false),
+                Op::DIV => {
+                  println!("HACK: NEED a permanent solution to clearing RDX when using the IDIV/DIV instructions");
+                  encode_x86(binary, &mov, 64, RDX.as_reg_op(), Arg::Imm_Int(0), Arg::None);
+                  (&div, false, true)
+                }
+                Op::SUB => (&sub, false, false),
                 _ => unreachable!(),
               };
 
-              match (&sn.operands[operands[0].usize()], &sn.operands[operands[1].usize()]) {
+              let (l_op, r_op) = match (&sn.operands[operands[0].usize()], &sn.operands[operands[1].usize()]) {
                 (Operation::Const(l_const), Operation::Const(r_const)) => {
                   encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::Imm_Int(l_const.convert(prim).load()), Arg::None);
-                  encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::Imm_Int(r_const.convert(prim).load()), Arg::None);
+                  (l_reg.as_reg_op(), Arg::Imm_Int(r_const.convert(prim).load()))
                 }
-                (_, Operation::Const(r_const)) => {
-                  encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::Imm_Int(r_const.convert(prim).load()), Arg::None);
-                }
+                (_, Operation::Const(r_const)) => (l_reg.as_reg_op(), Arg::Imm_Int(r_const.convert(prim).load())),
                 (Operation::Const(l_const), _) => {
                   if commutable {
                     if o_reg != r_reg {
                       encode_x86(binary, &mov, (prim.byte_size as u64) * 8, o_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
                     }
-                    encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, o_reg.as_reg_op(), Arg::Imm_Int(l_const.convert(prim).load()), Arg::None);
+
                     l_reg = o_reg;
+                    (l_reg.as_reg_op(), Arg::Imm_Int(l_const.convert(prim).load()))
                   } else {
                     encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::Imm_Int(l_const.convert(prim).load()), Arg::None);
-                    encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+                    (l_reg.as_reg_op(), r_reg.as_reg_op())
                   }
                 }
                 _ => {
                   if commutable {
                     if r_reg == o_reg {
-                      encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, r_reg.as_reg_op(), l_reg.as_reg_op(), Arg::None);
+                      let l_cached_reg = l_reg;
                       l_reg = r_reg;
+                      (l_cached_reg.as_reg_op(), r_reg.as_reg_op())
                     } else {
-                      encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+                      (l_reg.as_reg_op(), r_reg.as_reg_op())
                     }
                   } else {
-                    encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
+                    (l_reg.as_reg_op(), r_reg.as_reg_op())
                   }
                 }
+              };
+
+              if is_m_instruction {
+                if matches!(r_op, Arg::Imm_Int(..)) {
+                  encode_x86(binary, &mov, (prim.byte_size as u64) * 8, r_reg.as_reg_op(), r_op, Arg::None);
+                  encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, r_reg.as_reg_op(), Arg::None, Arg::None);
+                } else {
+                  encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, r_op, Arg::None, Arg::None);
+                }
+              } else {
+                encode_x86(binary, &op_table, (prim.byte_size as u64) * 8, l_op, r_op, Arg::None);
               }
 
               if l_reg != o_reg {
@@ -1024,7 +1083,7 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
               }
             }
           }
-          "GR" | "LS" => {
+          Op::GR | Op::LS => {
             let ty = get_op_type(sn, OpId(*op as u32));
             let operand_ty = get_op_type(sn, operands[0]);
 
@@ -1069,7 +1128,7 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
                 assert!(block.fail >= 0 && block.pass >= 0);
 
                 match *op_name {
-                  "GR" => {
+                  Op::GR => {
                     if block.fail == block.id as isize + 1 {
                       encode_x86(binary, &jg, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
                       jmp_resolver.add_jump(binary, block.pass as usize);
@@ -1171,6 +1230,8 @@ fn encode_routine(sn: &mut RootNode, op_data: &[OpData], blocks: &[Block], regis
         encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
         jmp_resolver.add_jump(binary, block.pass as usize);
       } else if block.pass < 0 {
+        encode_x86(binary, &pop, 64, RDX.as_reg_op(), Arg::None, Arg::None);
+
         encode_x86(binary, &ret, 32, Arg::None, Arg::None, Arg::None);
       }
     }

@@ -155,7 +155,7 @@ pub(crate) fn compile_struct(
 fn add_properties(db: &Database, properties: &[(IString, Option<type_Value<Token>>)], bp: &mut BuildPack<'_>, offset_op: &mut OpId) {
   for (prop_name, src_ty) in properties.iter() {
     let prop_name_op = add_op(bp, Operation::Name(*prop_name), Default::default(), Default::default());
-    let (prop_op, prop_ty) = process_op("PROP", &[prop_name_op, *offset_op], bp, Default::default());
+    let (prop_op, prop_ty) = process_op(Op::PROP, &[prop_name_op, *offset_op], bp, Default::default());
 
     if let Some(src_ty) = src_ty {
       match src_ty {
@@ -192,7 +192,7 @@ fn add_properties(db: &Database, properties: &[(IString, Option<type_Value<Token
       };
     }
 
-    let (prop_offset_op, _) = process_op("CALC_AGG_SIZE", &[prop_op, *offset_op], bp, Default::default());
+    let (prop_offset_op, _) = process_op(Op::CALC_AGG_SIZE, &[prop_op, *offset_op], bp, Default::default());
     *offset_op = prop_offset_op;
     add_output(bp, prop_op, VarId::Name(*prop_name));
   }
@@ -321,7 +321,7 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
   if let Some((ret_ty, node)) = ret_data {
     if out_op.is_valid() {
       let (ctx_op, _) = get_mem_context(&mut bp);
-      let ret_op = add_op(&mut bp, Operation::Op { op_name: "RET", operands: [out_op, ctx_op, Default::default()] }, ret_ty.clone(), node);
+      let ret_op = add_op(&mut bp, Operation::Op { op_id: Op::RET, operands: [out_op, ctx_op, Default::default()] }, ret_ty.clone(), node);
       bp.super_node.nodes[0].outputs.push((ret_op, VarId::Return));
       add_constraint(&mut bp, NodeConstraint::GenTyToGenTy(ret_ty, out_gen_ty));
       add_constraint(&mut bp, NodeConstraint::OpConvertTo { src_op: ret_op, trg_op_index: 1 });
@@ -720,7 +720,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
         let name_op = add_op(bp, Operation::Name(heap_binding), TypeV::NoUse, binding.allocator_name.clone().into());
 
-        let (op, ty) = process_op("REGISTER_HEAP", &[name_op, OpId(parent_heap_id as u32)], bp, binding.clone().into());
+        let (op, ty) = process_op(Op::REGISTER_HEAP, &[name_op, OpId(parent_heap_id as u32)], bp, binding.clone().into());
         add_constraint(bp, NodeConstraint::GlobalNameReference(ty, heap_binding, binding.tok.clone()));
 
         let heap_ty = create_node_heap(bp, get_heap_name_from_lt(Some(&binding.binding_name)), binding.tok.clone());
@@ -842,7 +842,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
               if mem.sub_members.len() > 0 {
                 match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone()) {
                   VarLookup::Ptr { mem_ptr_op, mem_ptr_ty: mem_ty, mem_var_id, root_par_id } => {
-                    let (op, ty) = process_op("STORE", &[mem_ptr_op, expr_op], bp, mem.clone().into());
+                    let (op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, mem.clone().into());
                     println!("TODO: Free old version of member variable");
                     clone_op_heap(bp, mem_ptr_op, op);
                   }
@@ -858,7 +858,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
             } else {
               match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone()) {
                 VarLookup::Ptr { mem_ptr_op, mem_ptr_ty: mem_ty, mem_var_id, root_par_id } => {
-                  let (op, ty) = process_op("STORE", &[mem_ptr_op, expr_op], bp, mem.clone().into());
+                  let (op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, mem.clone().into());
                   println!("TODO: Free old version of member variable");
                   clone_op_heap(bp, mem_ptr_op, op);
                 }
@@ -868,7 +868,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
                   assert!(var_op.is_valid(), "{:?}", bp);
 
-                  let sink_op = add_op(bp, Operation::Op { op_name: "SINK", operands: [var_op, expr_op, ctx_op] }, ty, assign.clone().into());
+                  let sink_op = add_op(bp, Operation::Op { op_id: Op::SINK, operands: [var_op, expr_op, ctx_op] }, ty, assign.clone().into());
                   update_mem_context(bp, sink_op);
                   clone_op_heap(bp, var_op, sink_op);
                   update_var(bp, VarId::Name(var_name), sink_op, ty);
@@ -932,7 +932,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
             let (ctx_op, _) = get_mem_context(bp);
 
             let arr_init_op =
-              add_op(bp, Operation::Op { op_name: "ARR_DECL", operands: [size_expr_op, ctx_op, Default::default()] }, arr_var_ty, array_decl.clone().into());
+              add_op(bp, Operation::Op { op_id: Op::ARR_DECL, operands: [size_expr_op, ctx_op, Default::default()] }, arr_var_ty, array_decl.clone().into());
 
             set_op_heap(bp, arr_init_op, heap.generic_id().unwrap());
 
@@ -1078,7 +1078,7 @@ fn compile_aggregate_instantiation(
   heap_var.add(VarAttribute::HeapType);
   let heap = heap_var.ty;
 
-  let (agg_ptr_op, agg_ty) = process_op("AGG_DECL", &[], bp, agg_decl.clone().into());
+  let (agg_ptr_op, agg_ty) = process_op(Op::AGG_DECL, &[], bp, agg_decl.clone().into());
 
   let agg_var_index = agg_ty.generic_id().unwrap();
 
@@ -1105,7 +1105,7 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
       let name = name_var.id.intern();
 
       let name_op = add_op(bp, Operation::Name(name), TypeV::NoUse, name_var.clone().into());
-      let (mem_ptr_op, ref_ty) = process_op("NAMED_PTR", &[agg_ptr_op, name_op], bp, name_var.clone().into());
+      let (mem_ptr_op, ref_ty) = process_op(Op::NAMED_PTR, &[agg_ptr_op, name_op], bp, name_var.clone().into());
       clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
 
       let mem_ty = add_ty_var(bp);
@@ -1118,13 +1118,13 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
 
       add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty.clone(), mutable: false });
 
-      let (store_op, ty) = process_op("STORE", &[mem_ptr_op, expr_op], bp, init.clone().into());
+      let (store_op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, init.clone().into());
       clone_op_heap(bp, agg_ptr_op, store_op);
       update_var(bp, var_id, store_op, ty);
     } else {
       let offset_op = add_op(bp, Operation::Const(ConstVal::new(ty_u64.prim_data().unwrap(), index as u64)), addr_ty.clone(), Default::default());
 
-      let (mem_ptr_op, ref_ty) = process_op("OFFSET_PTR", &[agg_ptr_op, offset_op], bp, init.clone().into());
+      let (mem_ptr_op, ref_ty) = process_op(Op::OFFSET_PTR, &[agg_ptr_op, offset_op], bp, init.clone().into());
       clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
 
       let candidate_mem_ty = if let Some(ty) = indexed_mem_type {
@@ -1143,7 +1143,7 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
 
       add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: candidate_mem_ty.clone(), mutable: false });
 
-      let (store_op, ty) = process_op("STORE", &[mem_ptr_op, expr_op], bp, init.clone().into());
+      let (store_op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, init.clone().into());
       clone_op_heap(bp, agg_ptr_op, store_op);
 
       update_var(bp, VarId::ArrayMem(agg_var_index), store_op, ty);
@@ -1209,7 +1209,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
             //let array_ty_name = IString::default();
             mem_var_id = VarId::ArrayMem(agg_ty_index);
 
-            let (ref_op, ref_ty) = process_op("OFFSET_PTR", &[mem_ptr_op, expr_op], bp, index.clone().into());
+            let (ref_op, ref_ty) = process_op(Op::OFFSET_PTR, &[mem_ptr_op, expr_op], bp, index.clone().into());
             clone_op_heap(bp, mem_ptr_op, ref_op);
 
             mem_ptr_ty = candidate_mem_ty.clone();
@@ -1249,7 +1249,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
               mem_ptr_ty = candidate_mem_ty;
             } else {
               let name_op = add_op(bp, Operation::Name(name), TypeV::NoUse, name_node.clone().into());
-              let (ref_op, ref_ty) = process_op("NAMED_PTR", &[mem_ptr_op, name_op], bp, name_node.clone().into());
+              let (ref_op, ref_ty) = process_op(Op::NAMED_PTR, &[mem_ptr_op, name_op], bp, name_node.clone().into());
 
               clone_op_heap(bp, mem_ptr_op, ref_op);
 
@@ -1268,7 +1268,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
 
         if index != mem.sub_members.len() - 1 {
           // load the value of the pointer
-          let (loaded_val_op, loaded_val_ty) = process_op("LOAD", &[mem_ptr_op], bp, Default::default());
+          let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
           clone_op_heap(bp, mem_ptr_op, loaded_val_op);
           mem_ptr_op = loaded_val_op;
           mem_ptr_ty = loaded_val_ty;
@@ -1298,7 +1298,7 @@ enum TypeOrigin {
 }
 
 macro_rules! algebraic_op {
-  ($bp: ident, $op_name:literal, $node:ident, $delta_ty:ident) => {{
+  ($bp: ident, $op_id:expr, $node:ident, $delta_ty:ident) => {{
     let (mut left, lty, ldty) = compile_expression(&$node.left, $bp, $delta_ty);
     let (mut right, rty, rdty) = compile_expression(&$node.right, $bp, ldty.clone());
 
@@ -1310,7 +1310,7 @@ macro_rules! algebraic_op {
       let num = get_var_from_gen_ty($bp, lty).num;
       get_var_from_gen_ty($bp, out_ty).num |= num;
       let old = left;
-      left = add_op($bp, Operation::Op { op_name: "SEED", operands: [left, ctx_op, Default::default()] }, out_ty.clone(), $node.left.clone().into());
+      left = add_op($bp, Operation::Op { op_id: Op::SEED, operands: [left, ctx_op, Default::default()] }, out_ty.clone(), $node.left.clone().into());
       clone_op_heap($bp, old, left);
     }
 
@@ -1318,7 +1318,7 @@ macro_rules! algebraic_op {
       let num = get_var_from_gen_ty($bp, rty).num;
       get_var_from_gen_ty($bp, out_ty).num |= num;
       let old = right;
-      right = add_op($bp, Operation::Op { op_name: "SEED", operands: [right, ctx_op, Default::default()] }, out_ty.clone(), $node.right.clone().into());
+      right = add_op($bp, Operation::Op { op_id: Op::SEED, operands: [right, ctx_op, Default::default()] }, out_ty.clone(), $node.right.clone().into());
       clone_op_heap($bp, old, right);
     }
 
@@ -1326,7 +1326,7 @@ macro_rules! algebraic_op {
       add_constraint($bp, NodeConstraint::GenTyToGenTy(ldty.unwrap(), rdty.unwrap()))
     }
 
-    let op = add_op($bp, Operation::Op { op_name: $op_name, operands: [left, right, Default::default()] }, out_ty.clone(), $node.clone().into());
+    let op = add_op($bp, Operation::Op { op_id: $op_id, operands: [left, right, Default::default()] }, out_ty.clone(), $node.clone().into());
 
     (op, out_ty.clone(), Some(out_ty))
   }};
@@ -1352,7 +1352,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
             ty_var.num = u32_numeric;
             ty_var.add(VarAttribute::Delta);
             let out_ty = ty_var.ty;
-            let right = add_op(bp, Operation::Op { op_name: "LEN", operands: [out.0, Default::default(), Default::default()] }, out_ty, Default::default());
+            let right = add_op(bp, Operation::Op { op_id: Op::LEN, operands: [out.0, Default::default(), Default::default()] }, out_ty, Default::default());
             (right, out_ty, Some(out_ty))
           }
           _ => unreachable!(),
@@ -1375,18 +1375,18 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
         panic!("{msg}");
       }
     },
-    expression_Value::Add(add) => algebraic_op!(bp, "ADD", add, delta_ty),
+    expression_Value::Add(add) => algebraic_op!(bp, Op::ADD, add, delta_ty),
     expression_Value::Sub(sub) => {
-      let val = { algebraic_op!(bp, "SUB", sub, delta_ty) };
+      let val = { algebraic_op!(bp, Op::SUB, sub, delta_ty) };
 
       if let Some(var) = val.2 {
         get_var_from_gen_ty(bp, var).num |= s8_numeric;
       }
       val
     }
-    expression_Value::Div(div) => algebraic_op!(bp, "DIV", div, delta_ty),
-    expression_Value::Mul(mul) => algebraic_op!(bp, "MUL", mul, delta_ty),
-    expression_Value::Pow(pow) => algebraic_op!(bp, "POW", pow, delta_ty),
+    expression_Value::Div(div) => algebraic_op!(bp, Op::DIV, div, delta_ty),
+    expression_Value::Mul(mul) => algebraic_op!(bp, Op::MUL, mul, delta_ty),
+    expression_Value::Pow(pow) => algebraic_op!(bp, Op::POW, pow, delta_ty),
     expression_Value::RawMatch(match_) => {
       let (op, ty) = process_match(match_, bp).0;
       (op, ty, None)
@@ -1440,12 +1440,12 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
           let (expr_op, ..) = compile_expression(&expr.expr.clone().to_ast().into_bitwise_Value().unwrap(), bp, None);
 
           let cmp_op_name = match expr.op.as_str() {
-            ">" => "GR",
-            "<" => "LS",
-            ">=" => "GE",
-            "<=" => "LE",
-            "==" => "EQ",
-            "!=" => "NE",
+            ">" => Op::GR,
+            "<" => Op::LS,
+            ">=" => Op::GE,
+            "<=" => Op::LE,
+            "==" => Op::EQ,
+            "!=" => Op::NE,
             _ => todo!(),
           };
 
@@ -1462,7 +1462,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 
           let prop_name_op = add_op(bp, Operation::Name(name), ty, ty_match.name.clone().into());
 
-          let (bool_op, activation_ty_new) = process_op("TY_EQ", &[input_op.0, prop_name_op], bp, ty_match.clone().into());
+          let (bool_op, activation_ty_new) = process_op(Op::TY_EQ, &[input_op.0, prop_name_op], bp, ty_match.clone().into());
 
           update_var(bp, VarId::MatchActivation, bool_op, activation_ty_new);
         }
@@ -1502,7 +1502,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
       let known_ty = &clauses_input_ty[index];
       if known_ty.is_generic() {
         // Add port for this type
-        let (mapped_op, mapped_ty) = process_op("MAPS_TO", &[input_op.0], bp, Default::default());
+        let (mapped_op, mapped_ty) = process_op(Op::MAPS_TO, &[input_op.0], bp, Default::default());
         add_constraint(bp, NodeConstraint::GenTyToGenTy(mapped_ty, known_ty.clone()));
         update_var(bp, VarId::Name(name), mapped_op, known_ty.clone());
       } else {
@@ -1515,7 +1515,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     if op.is_valid() {
       update_var(bp, VarId::OutputVal, op, output_ty);
     } else {
-      let (poison_op, output_ty) = process_op("POISON", &[], bp, Default::default());
+      let (poison_op, output_ty) = process_op(Op::POISON, &[], bp, Default::default());
 
       update_var(bp, VarId::OutputVal, poison_op, output_ty);
     }
@@ -1526,7 +1526,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
   if match_.default_clause.is_none() {
     push_node_with_loop(bp, CLAUSE_ID, LoopType::Break(0));
     get_var(bp, VarId::OutputVal);
-    let (poison_op, output_ty) = process_op("POISON", &[], bp, Default::default());
+    let (poison_op, output_ty) = process_op(Op::POISON, &[], bp, Default::default());
     update_var(bp, VarId::OutputVal, poison_op, output_ty);
     clauses.push(pop_node(bp, true));
   }
@@ -1671,8 +1671,8 @@ fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
   }
 }
 
-fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> (OpId, TypeV) {
-  let op_def = get_op_from_db(&bp.db, op_name).expect(&format!("{op_name} op not loaded"));
+fn process_op(op_id: Op, inputs: &[OpId], bp: &mut BuildPack, node: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> (OpId, TypeV) {
+  let op_def = get_op_from_db(&bp.db, op_id).expect(&format!("{op_id} op not loaded"));
 
   let mut operands = [OpId::default(); 3];
   let mut ty_lu: HashMap<&str, TypeV> = HashMap::new();
@@ -1729,7 +1729,7 @@ fn process_op(op_name: &'static str, inputs: &[OpId], bp: &mut BuildPack, node: 
     }
   }
 
-  let op_id = add_op(bp, Operation::Op { op_name, operands }, Default::default(), node);
+  let op_id = add_op(bp, Operation::Op { op_id, operands }, Default::default(), node);
   let mut ty = Default::default();
 
   let mut have_output = false;
@@ -1809,51 +1809,3 @@ fn add_op_constraints(
     }
   }
 }
-
-pub(crate) const OPS: &'static str = r###"
-
-op: PARAM
-x [A: Input] => out [A]
-
-op: POISON  => out [B: poison]
-
-op: REGISTER_HEAP name [HeapName] par_heap_id[meta] ctx[read_ctx] => out[HeapType] ctx[write_ctx]
-op: DELETE_HEAP heap [HeapType]
-
-op: AGG_DECL  ctx [read_ctx] => agg_ptr [Agg: agg] ctx[write_ctx]
-
-op: OFFSET_PTR  b [Base: agg]  n [Offset: Numeric]  => out [MemPtr]
-op: NAMED_PTR  b [Base: agg]  n [MemName: label]  => out [MemPtr]
-op: ROUTINE_PTR  => out [FN_PTR]
-
-op: CALC_AGG_SIZE prop [Prop] offset [Offset: Numeric] => offset [Offset]
-op: PROP  name [Name: agg] offset [Offset: Numeric] => out [PropData]
-
-
-op: STORE  ptr [ptr] val [val: deref(ptr)] ctx[read_ctx] => ptr [ptr] ctx[write_ctx]
-op: LOAD  ptr [ptr] ctx[read_ctx] => out [val: deref(ptr)]
-op: COPY to [Base] from [Other] ctx [read_ctx] => out [Base] ctx[write_ctx]
- 
-op: CONVERT from[A] => to[B]
-op: MAPS_TO from[A] => to[B]
-
-
-op: TY_EQ l [A]  r [B]  => out [C: bool]
-
-op: GE  l [A]  r [B]  => out [C: bool]
-op: LE  l [A]  r [B]  => out [C: bool]
-op: EQ  l [A]  r [B]  => out [C: bool]
-op: GR  l [A]  r [B]  => out [C: bool]
-op: LS  l [A]  r [B]  => out [C: bool]
-op: NE  l [A]  r [B]  => out [C: bool]
-
-op: MOD  l [A]  r [B]  => out [C: numeric]
-op: POW  l [A]  r [B]  => out [C: numeric]
-
-op: MUL  l [A]  r [B]  => out [C: numeric]
-op: DIV  l [A]  r [B]  => out [C: numeric]
-
-op: SUB  l [A]  r [B]  => out [C: numeric]
-op: ADD  l [A]  r [B]  => out [C: numeric]
-
-"###;

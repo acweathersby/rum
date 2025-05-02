@@ -3,7 +3,7 @@ use rum_lang::parser::{self, script_parser::entry_Value};
 
 use super::RootNode;
 use crate::{
-  compiler::{compile_struct, OPS},
+  ir_compiler::compile_struct,
   optimizer::optimize,
   solver::{solve, GlobalConstraint},
   types::*,
@@ -253,7 +253,7 @@ impl Default for Database {
       parent:   std::ptr::null(),
       name_map: Default::default(),
     };
-    add_ops_to_db(&mut core, &OPS);
+    add_ops_to_db(&mut core, &OP_DEFINITIONS);
     Self(Arc::new(Mutex::new(core)))
   }
 }
@@ -312,9 +312,10 @@ pub fn add_ops_to_db(db: &mut DatabaseCore, ops: &str) {
   }
 }
 
-pub fn get_op_from_db(db: &Database, name: &str) -> Option<Arc<core_lang::parser::ast::Op>> {
+pub fn get_op_from_db(db: &Database, op: Op) -> Option<Arc<core_lang::parser::ast::Op>> {
+  let op_name = op.get_name();
   for op in &db.get_ref().ops {
-    if op.name == name {
+    if op.name == op_name {
       return Some(op.clone());
     }
   }

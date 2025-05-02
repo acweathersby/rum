@@ -1,6 +1,6 @@
 use crate::{
   interpreter::get_op_type,
-  types::{OpId, OptimizeLevel, SolveDatabase, TypeV, VarId},
+  types::{Op, OpId, OptimizeLevel, SolveDatabase, TypeV, VarId},
 };
 
 pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDatabase<'a> {
@@ -12,7 +12,8 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
         // Add free instructions for all memory operations that do not exit this scope.
 
         // Identify all memory allocations that fail invariants and report errors.
-        // Memory Invariants:
+        //
+        // ### Memory Invariants:
         // - A memory object cannot persist pass the scope of its memory allocator context
         // - Any pointer in a memory object must have the same or shorter lifetime than that of
         //   of it's host memory object.
@@ -56,7 +57,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
             let ty = get_op_type(node, *op);
 
             // Do not insert free if type is not a memory type.
-            node_escapes |= (!ty.is_array() && !ty.is_cmplx() && ty.ptr_depth() == 0);
+            node_escapes |= !ty.is_array() && !ty.is_cmplx() && ty.ptr_depth() == 0;
 
             if !node_escapes {
               // Insert free
@@ -64,7 +65,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
               let (_, mem_op) = mem_context;
 
               let new_mem_op = OpId(node.operands.len() as u32);
-              node.operands.push(crate::types::Operation::Op { op_name: "FREE", operands: [*op, mem_op, Default::default()] });
+              node.operands.push(crate::types::Operation::Op { op_id: Op::FREE, operands: [*op, mem_op, Default::default()] });
               node.op_types.push(TypeV::mem_ctx());
               node.source_tokens.push(Default::default());
               node.heap_id.push(node.heap_id[op.usize()]);
@@ -87,6 +88,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
       }
     }
     OptimizeLevel::ExpressionOptimization_02 => {
+      // Computes any intermediate constant expressions
       //println!("TODO: O2")
     }
     OptimizeLevel::LoopOptimization_03 => {

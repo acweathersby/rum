@@ -1,5 +1,5 @@
 #![allow(unused_variables, dead_code)]
-use compiler::add_module;
+use ir_compiler::add_module;
 use interpreter::interpret;
 use rum_compiler::*;
 use types::{Database, SolveDatabase};

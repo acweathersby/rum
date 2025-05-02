@@ -1,5 +1,14 @@
-#test
-trivial :: () : u32 { 
-  1920 / 2
-}
+test_struct :: [
+  A: u32, 
+  B: u32,
+  C: u32
+]
 
+
+#test
+trivial :: (input: u32, allocator_table) : u32 { 
+    dave: test_struct = [A = 22, B = 23, C = 44] 
+
+
+    dave.B
+}

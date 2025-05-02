@@ -246,7 +246,7 @@ pub(crate) enum Operation {
     ops:     Vec<(u32, OpId)>,
   },
   Op {
-    op_name:  &'static str,
+    op_id:    Op,
     operands: [OpId; 3],
   },
   Const(ConstVal),
@@ -277,7 +277,7 @@ impl Display for Operation {
       )),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
-      Operation::Op { op_name, operands } => {
+      Operation::Op { op_id: op_name, operands } => {
         f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
       }
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),

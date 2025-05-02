@@ -1,5 +1,5 @@
 use crate::{
-  compiler::{CALL_ID, INTERFACE_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
+  ir_compiler::{CALL_ID, INTERFACE_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
   types::*,
 };
 use radlr_rust_runtime::types::BlameColor;
@@ -548,7 +548,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             for (i, op) in operands.iter().enumerate() {
               match op {
-                Operation::Op { op_name: a @ "SINK", operands: [op1, op2, _] } => {
+                Operation::Op { op_id: a @ Op::SINK, operands: [op1, op2, _] } => {
                   if op1.is_valid() {
                     let var_src = get_root_var_mut(types[op1.usize()].generic_id().unwrap(), type_vars);
                     let var_dst = get_root_var_mut(types[op2.usize()].generic_id().unwrap(), type_vars);
@@ -556,7 +556,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                     var_dst.num |= var_src.num;
                   }
                 }
-                Operation::Op { op_name: "SEED", operands: [op1, op2, _] } => {}
+                Operation::Op { op_id: Op::SEED, operands: [op1, op2, _] } => {}
                 Operation::Heap(VarId::Heap) => {}
                 _ => {}
               }
@@ -643,8 +643,8 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
 
   for (index, op) in operands.iter().enumerate().rev() {
     match op {
-      Operation::Op { op_name, operands } => match *op_name {
-        "ADD" => {
+      Operation::Op { op_id: op_name, operands } => match *op_name {
+        Op::ADD => {
           let op_ty = &type_vars[types[index].generic_id().unwrap()].ty;
 
           if op_ty.is_generic() {

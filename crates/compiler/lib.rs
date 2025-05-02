@@ -1,7 +1,7 @@
 #![feature(box_as_ptr)]
 #![feature(unsized_tuple_coercion)]
 
-pub mod compiler;
+pub mod ir_compiler;
 
 pub mod interpreter;
 

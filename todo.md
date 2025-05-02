@@ -1,3 +1,9 @@
+# Optimizer level one
+  - Convert STORES and LOADS to Either passthroughs, 
+    in cases of storing primitive data, or 
+
+
+
 
 # Types Database as hierarchy
 

@@ -7,7 +7,7 @@ use super::{CMPLXId, NodeHandle, Numeric, RootNode, *};
 
 macro_rules! create_primitive {
   ($db:ident $index:ident) => { };
-  ($db:ident $index:ident $name:literal $($rest:literal)*) => {
+  ($db:ident $index:ident $name:literal $($z:literal)*) => {
     let n = $name.intern();
     $db.name_to_entry.insert(n, $index);
     create_primitive!($db $index $($rest)*)
@@ -138,6 +138,14 @@ impl TypeV {
 
   pub fn is_cmplx(&self) -> bool {
     self.base_ty() == BaseType::Complex
+  }
+
+  pub fn is_nouse(&self) -> bool {
+    self.base_ty() == BaseType::NoUse
+  }
+
+  pub fn is_mem(&self) -> bool {
+    self.base_ty() == BaseType::MemCtx
   }
 
   pub fn is_open(&self) -> bool {

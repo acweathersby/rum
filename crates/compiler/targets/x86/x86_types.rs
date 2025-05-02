@@ -1,5 +1,4 @@
-use crate::{targets::reg::Reg, types::ConstVal};
-use std::collections::BTreeMap;
+use crate::targets::reg::Reg;
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub(crate) enum OpEncoding {

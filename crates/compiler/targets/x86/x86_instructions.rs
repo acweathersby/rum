@@ -16,13 +16,13 @@ macro_rules! op_table {
 /// https://www.felixcloutier.com/x86/call
 op_table!(
   syscall [
-    ((8, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+    ((8, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder)),
     //
-    ((16, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+    ((16, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder)),
     //
-    ((32, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+    ((32, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder)),
     //
-    ((64, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder as *const OpEncoder)),
+    ((64, OT::NONE, OT::NONE, OT::NONE), (0x0F05, 0x00, OpEncoding::Zero, gen_zero_op as *const OpEncoder)),
   ]
 );
 
@@ -36,11 +36,11 @@ fn test_syscall() {
 
 /// https://www.felixcloutier.com/x86/call
 op_table!(call [
-((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x00E8, 0x00, OpEncoding::D, gen_unary_op as *const OpEncoder as *const OpEncoder)),
+((32, OT::IMM_INT, OT::NONE, OT::NONE), (0x00E8, 0x00, OpEncoding::D, gen_unary_op as *const OpEncoder)),
 //
-((64, OT::MEM, OT::NONE, OT::NONE), (0x00FF, 0x02, OpEncoding::M, gen_unary_op as *const OpEncoder as *const OpEncoder)),
+((64, OT::MEM, OT::NONE, OT::NONE), (0x00FF, 0x02, OpEncoding::M, gen_unary_op as *const OpEncoder)),
 //
-((64, OT::REG, OT::NONE, OT::NONE), (0x00FF, 0x02, OpEncoding::M, gen_unary_op as *const OpEncoder as *const OpEncoder)),
+((64, OT::REG, OT::NONE, OT::NONE), (0x00FF, 0x02, OpEncoding::M, gen_unary_op as *const OpEncoder)),
 ]);
 
 #[test]
@@ -713,16 +713,35 @@ op_table!(sub [
 
 /// https://www.felixcloutier.com/x86/mul
 op_table!(mul [  //
-  ((08, OT::REG, OT::NONE, OT::NONE), (0x00F6, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
-  ((16, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
-  ((32, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
-  ((64, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
+  ((08, OT::REG, OT::NONE, OT::NONE), (0x00F6, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((16, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((32, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((64, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
 
-  ((08, OT::MEM, OT::NONE, OT::NONE), (0x00F6, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
-  ((16, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
-  ((32, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
-  ((64, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_multi_op as *const OpEncoder)),
+  ((08, OT::MEM, OT::NONE, OT::NONE), (0x00F6, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((16, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((32, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((64, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x04, OpEncoding::M, gen_unary_op as *const OpEncoder)),
 ]);
+
+/// https://www.felixcloutier.com/x86/div
+op_table!(div [  //
+  ((08, OT::REG, OT::NONE, OT::NONE), (0x00F6, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((16, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((32, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((64, OT::REG, OT::NONE, OT::NONE), (0x00F7, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+
+  ((08, OT::MEM, OT::NONE, OT::NONE), (0x00F6, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((16, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((32, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+  ((64, OT::MEM, OT::NONE, OT::NONE), (0x00F7, 0x06, OpEncoding::M, gen_unary_op as *const OpEncoder)),
+]);
+
+#[test]
+fn test_div() {
+  assert_eq!("div r8", test_enc_uno(&div, 64, R8.as_reg_op()));
+  assert_eq!("div rax", test_enc_uno(&div, 64, RAX.as_reg_op()));
+}
 
 /// https://www.felixcloutier.com/x86/imul
 op_table!(imul [  //

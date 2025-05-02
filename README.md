@@ -29,6 +29,14 @@ fib ( n: u32 ) => u32
   Database concepts are central in Rum, with a built in query language and syntax binders that make interact with relational datastores natural and the correct choice in the course of developing software.
 
 
+## Node / Dependency Graph As First Class Architecture
+
+## Data first
+  Built in relational database syntax
+  Restricted object oriented features
+  Focus on structural program paradigms
+
+
 ## Intimate Modularity
   All elements are modular and are designed to be interchangeable. For example, a addition routine can
   be hand coded at one point, and then swapped to use a ML model (poor example)

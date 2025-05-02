@@ -231,6 +231,7 @@ pub(crate) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
       insert_op_code_bytes(props.bin, op_code);
       encode_mod_rm_reg(props, op1, op2);
     }
+
     MR => {
       encode_rex(props, bit_size, op1, op2);
       insert_op_code_bytes(props.bin, op_code);
@@ -282,7 +283,7 @@ pub(crate) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
       }
       imm => panic!("Invalid immediate arg op2 of {imm:?} for MI encoding"),
     },
-    enc => panic!("{enc:?} not valid for binary operations on {op1:?} on {op2:?}"),
+    enc => panic!("{enc:?} not valid for binary operations on 1:{op1:?} 2:{op2:?}"),
   }
 }
 
