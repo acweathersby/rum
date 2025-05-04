@@ -192,7 +192,7 @@ fn add_properties(db: &Database, properties: &[(IString, Option<type_Value<Token
       };
     }
 
-    let (prop_offset_op, _) = process_op(Op::CALC_AGG_SIZE, &[prop_op, *offset_op], bp, Default::default());
+    let (prop_offset_op, _) = process_op(Op::CAS, &[prop_op, *offset_op], bp, Default::default());
     *offset_op = prop_offset_op;
     add_output(bp, prop_op, VarId::Name(*prop_name));
   }
@@ -720,7 +720,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
         let name_op = add_op(bp, Operation::Name(heap_binding), TypeV::NoUse, binding.allocator_name.clone().into());
 
-        let (op, ty) = process_op(Op::REGISTER_HEAP, &[name_op, OpId(parent_heap_id as u32)], bp, binding.clone().into());
+        let (op, ty) = process_op(Op::REGHEAP, &[name_op, OpId(parent_heap_id as u32)], bp, binding.clone().into());
         add_constraint(bp, NodeConstraint::GlobalNameReference(ty, heap_binding, binding.tok.clone()));
 
         let heap_ty = create_node_heap(bp, get_heap_name_from_lt(Some(&binding.binding_name)), binding.tok.clone());
@@ -1087,6 +1087,7 @@ fn compile_aggregate_instantiation(
   set_op_heap(bp, agg_ptr_op, heap.generic_id().unwrap());
 
   let agg_var_index = agg_var_index as usize;
+
   agg_init(bp, agg_decl, agg_ptr_op, agg_var_index);
 
   (agg_ptr_op, agg_ty, None)
@@ -1105,7 +1106,7 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
       let name = name_var.id.intern();
 
       let name_op = add_op(bp, Operation::Name(name), TypeV::NoUse, name_var.clone().into());
-      let (mem_ptr_op, ref_ty) = process_op(Op::NAMED_PTR, &[agg_ptr_op, name_op], bp, name_var.clone().into());
+      let (mem_ptr_op, ref_ty) = process_op(Op::NPTR, &[agg_ptr_op, name_op], bp, name_var.clone().into());
       clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
 
       let mem_ty = add_ty_var(bp);
@@ -1124,7 +1125,7 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
     } else {
       let offset_op = add_op(bp, Operation::Const(ConstVal::new(ty_u64.prim_data().unwrap(), index as u64)), addr_ty.clone(), Default::default());
 
-      let (mem_ptr_op, ref_ty) = process_op(Op::OFFSET_PTR, &[agg_ptr_op, offset_op], bp, init.clone().into());
+      let (mem_ptr_op, ref_ty) = process_op(Op::OPTR, &[agg_ptr_op, offset_op], bp, init.clone().into());
       clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
 
       let candidate_mem_ty = if let Some(ty) = indexed_mem_type {
@@ -1170,7 +1171,12 @@ fn has_var(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>) -> bool {
 }
 
 /// Returns either the underlying value assigned to a variable name, or the caclulated pointer to the value.
-fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, local_only: bool, source_token: Token) -> VarLookup {
+fn get_or_create_mem_op(
+  bp: &mut BuildPack,
+  mem: &MemberCompositeAccess<Token>,
+  local_only: bool,
+  source_token: Token, /* , get_pointer: bool */
+) -> VarLookup {
   let var_name = mem.root.name.id.intern();
   if let Some(var) = get_var_data(bp, VarId::Name(var_name)) {
     if mem.sub_members.is_empty() {
@@ -1209,7 +1215,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
             //let array_ty_name = IString::default();
             mem_var_id = VarId::ArrayMem(agg_ty_index);
 
-            let (ref_op, ref_ty) = process_op(Op::OFFSET_PTR, &[mem_ptr_op, expr_op], bp, index.clone().into());
+            let (ref_op, ref_ty) = process_op(Op::OPTR, &[mem_ptr_op, expr_op], bp, index.clone().into());
             clone_op_heap(bp, mem_ptr_op, ref_op);
 
             mem_ptr_ty = candidate_mem_ty.clone();
@@ -1249,7 +1255,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
               mem_ptr_ty = candidate_mem_ty;
             } else {
               let name_op = add_op(bp, Operation::Name(name), TypeV::NoUse, name_node.clone().into());
-              let (ref_op, ref_ty) = process_op(Op::NAMED_PTR, &[mem_ptr_op, name_op], bp, name_node.clone().into());
+              let (ref_op, ref_ty) = process_op(Op::NPTR, &[mem_ptr_op, name_op], bp, name_node.clone().into());
 
               clone_op_heap(bp, mem_ptr_op, ref_op);
 
@@ -1266,13 +1272,13 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
 
         agg_ty_index = var.ty.generic_id().unwrap();
 
-        if index != mem.sub_members.len() - 1 {
-          // load the value of the pointer
-          let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
-          clone_op_heap(bp, mem_ptr_op, loaded_val_op);
-          mem_ptr_op = loaded_val_op;
-          mem_ptr_ty = loaded_val_ty;
-        }
+        //  if index != mem.sub_members.len() - 1 {
+        // load the value of the pointer
+        let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
+        clone_op_heap(bp, mem_ptr_op, loaded_val_op);
+        mem_ptr_op = loaded_val_op;
+        mem_ptr_ty = loaded_val_ty;
+        //}
       }
 
       VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, mem_var_id, root_par_id }
@@ -1502,7 +1508,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
       let known_ty = &clauses_input_ty[index];
       if known_ty.is_generic() {
         // Add port for this type
-        let (mapped_op, mapped_ty) = process_op(Op::MAPS_TO, &[input_op.0], bp, Default::default());
+        let (mapped_op, mapped_ty) = process_op(Op::MAP_TO, &[input_op.0], bp, Default::default());
         add_constraint(bp, NodeConstraint::GenTyToGenTy(mapped_ty, known_ty.clone()));
         update_var(bp, VarId::Name(name), mapped_op, known_ty.clone());
       } else {

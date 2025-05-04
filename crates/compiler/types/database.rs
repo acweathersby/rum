@@ -274,6 +274,7 @@ impl Database {
   }
 
   pub fn add_object(&self, name: IString, node: NodeHandle, constraints: Vec<NodeConstraint>) {
+    dbg!(&node);
     let mut db = self.get_mut_ref();
     let obj = node.get().unwrap();
 

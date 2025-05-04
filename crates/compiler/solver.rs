@@ -661,6 +661,8 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
 }
 
 pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstraint], db: &SolveDatabase) {
+  dbg!(&node, constraints);
+
   let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
 
   while let Some(constraint) = constraint_queue.pop_front() {
@@ -923,6 +925,8 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>,
         VarAttribute::Agg => {
           let members = var.members.as_slice();
 
+          dbg!(members);
+
           if let Some(node) = ty.cmplx_data() {
             let node = NodeHandle::from((node, db));
             let node = node.get().unwrap();
@@ -945,6 +949,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>,
                   let ty = if let Some(ty_index) = ty.generic_id() { node.type_vars[ty_index].ty } else { ty };
 
                   if !ty.is_open() {
+                    dbg!(member.ty);
                     queue.push_back(NodeConstraint::GenTyToTy(member.ty, ty));
                   }
                 } else {

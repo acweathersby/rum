@@ -24,6 +24,8 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
 
         let mut mem_context = (0, Default::default());
 
+        let mut new_nodes = vec![];
+
         for (i, (op, var_id)) in node.nodes[0].outputs.iter().enumerate() {
           if let VarId::MemCTX = var_id {
             mem_context = (i, *op);
@@ -66,11 +68,13 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
 
               let new_mem_op = OpId(node.operands.len() as u32);
               node.operands.push(crate::types::Operation::Op { op_id: Op::FREE, operands: [*op, mem_op, Default::default()] });
-              node.op_types.push(TypeV::mem_ctx());
+              node.op_types.push(TypeV::util());
               node.source_tokens.push(Default::default());
               node.heap_id.push(node.heap_id[op.usize()]);
 
               mem_context.1 = new_mem_op;
+
+              new_nodes.push((new_mem_op, VarId::Freed));
             } else {
               println!("TODO: Check that we are not in the entry process entry function, and ");
             }
@@ -83,6 +87,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
 
         // remove Freed entries
         node.nodes[0].outputs = node.nodes[0].outputs.iter().filter(|(_, v)| VarId::Freed != *v).cloned().collect();
+        node.nodes[0].outputs.extend(new_nodes);
 
         dbg!(&node);
       }

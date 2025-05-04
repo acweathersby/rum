@@ -6,16 +6,16 @@ op: PARAM x [A: Input] => out [A]
 
 op: POISON  => out [B: poison]
 
-op: REGISTER_HEAP name [HeapName] par_heap_id[meta] ctx[read_ctx] => out[HeapType] ctx[write_ctx]
-op: DELETE_HEAP heap [HeapType]
+op: REGHEAP name [HeapName] par_heap_id[meta] ctx[read_ctx] => out[HeapType] ctx[write_ctx]
+op: DELHEAP heap [HeapType]
 
 op: AGG_DECL  ctx [read_ctx] => agg_ptr [Agg: agg] ctx[write_ctx]
 
-op: OFFSET_PTR  b [Base: agg]  n [Offset: Numeric]  => out [MemPtr]
-op: NAMED_PTR  b [Base: agg]  n [MemName: label]  => out [MemPtr]
-op: ROUTINE_PTR  => out [FN_PTR]
+op: OPTR  b [Base: agg]  n [Offset: Numeric]  => out [MemPtr]
+op: NPTR  b [Base: agg]  n [MemName: label]  => out [MemPtr]
+op: RPTR  => out [FN_PTR]
 
-op: CALC_AGG_SIZE prop [Prop] offset [Offset: Numeric] => offset [Offset]
+op: CAS prop [Prop] offset [Offset: Numeric] => offset [Offset]
 op: PROP  name [Name: agg] offset [Offset: Numeric] => out [PropData]
 
 
@@ -118,42 +118,6 @@ impl Op {
 }
 
 inter_op_gen!(
-  None,
-  PARAM,
-  POISON,
-  REGISTER_HEAP,
-  DELETE_HEAP,
-  AGG_DECL,
-  ARR_DECL,
-  DECL,
-  OFFSET_PTR,
-  NAMED_PTR,
-  ROUTINE_PTR,
-  CALC_AGG_SIZE,
-  PROP,
-  STORE,
-  LOAD,
-  COPY,
-  CONVERT,
-  MAPS_TO,
-  TY_EQ,
-  GE,
-  LE,
-  EQ,
-  NEQ,
-  GR,
-  LS,
-  NE,
-  MOD,
-  POW,
-  MUL,
-  DIV,
-  SUB,
-  ADD,
-  RET,
-  SEL,
-  SEED,
-  SINK,
-  FREE,
-  LEN
+  None, PARAM, POISON, REGHEAP, DELHEAP, AGG_DECL, ARR_DECL, DECL, OPTR, NPTR, RPTR, CAS, PROP, STORE, LOAD, COPY, CONVERT, MAP_TO, TY_EQ, GE, LE, EQ, NEQ, GR,
+  LS, NE, MOD, POW, MUL, DIV, SUB, ADD, RET, SEL, SEED, SINK, FREE, LEN
 );

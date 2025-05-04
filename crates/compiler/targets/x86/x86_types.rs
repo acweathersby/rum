@@ -245,8 +245,9 @@ pub(crate) enum OperandType {
 pub(crate) enum Arg {
   Reg(Reg),
   Mem(Reg),
-  RSP_REL(u64),
-  RIP_REL(u64),
+  RSP_REL(i64),
+  RIP_REL(i64),
+  MemRel(Reg, i64),
   Imm_Int(i64),
   OpExt(u8),
   None,
@@ -258,6 +259,7 @@ impl Arg {
       Arg::Imm_Int(..) => OperandType::IMM_INT,
       Arg::Reg(..) => OperandType::REG,
       Arg::Mem(..) => OperandType::MEM,
+      Arg::MemRel(..) => OperandType::MEM,
       Arg::RSP_REL(..) => OperandType::MEM,
       Arg::RIP_REL(..) => OperandType::MEM,
       _ => OperandType::NONE,
@@ -282,7 +284,7 @@ impl Arg {
     match self {
       Arg::RIP_REL(_) => 0x5,
       Arg::RSP_REL(_) => 0x4,
-      Arg::Reg(reg) | Arg::Mem(reg) => (reg.0 & 7) as u8,
+      Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, ..) => (reg.0 & 7) as u8,
       Self::OpExt(index) => *index,
 
       arg => unreachable!("{arg:?}"),

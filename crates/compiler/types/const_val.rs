@@ -1,6 +1,7 @@
 use std::{
   self,
   fmt::{Debug, Display},
+  u32,
 };
 
 use num_traits::{Num, NumCast};
@@ -88,6 +89,15 @@ impl ConstVal {
 
     unsafe { std::ptr::copy(&val as *const _ as *const u8, bytes.as_mut_ptr(), byte_size) };
 
+    if self.ty.base_ty == PrimitiveBaseType::Signed {
+      // Signed extend the most significant byte
+      if bytes[byte_size - 1] > 127 {
+        for byte in bytes[byte_size..].iter_mut() {
+          *byte = 0xFF;
+        }
+      }
+    }
+
     self.val = bytes;
 
     self
@@ -103,6 +113,52 @@ impl ConstVal {
       (PrimitiveBaseType::Signed, 16) => self.clone().store(-self.load::<i16>()),
       (PrimitiveBaseType::Signed, 8) => self.clone().store(-self.load::<i8>()),
       _ => *self,
+    }
+  }
+
+  // Returns the minimum number of bits need to represent this value.
+  pub fn significant_bits(&self) -> u32 {
+    match self.ty.base_ty {
+      PrimitiveBaseType::Float => self.ty.byte_size as u32 * 8,
+      PrimitiveBaseType::Signed => {
+        let mut sig_bits = 0;
+        let mostsig_byte = self.val[15];
+
+        if mostsig_byte > 127 {
+          for (index, byte) in self.val.iter().rev().enumerate() {
+            let leading_ones = byte.leading_ones();
+            if leading_ones < 8 {
+              sig_bits = (120 - (index as u32) * 8) + 8 - leading_ones + 1;
+              break;
+            }
+          }
+        } else {
+          for (index, byte) in self.val.iter().rev().enumerate() {
+            let leading_zeros = byte.leading_zeros();
+            if leading_zeros < 8 {
+              dbg!(leading_zeros, index, byte);
+              sig_bits = (120 - (index as u32) * 8) + 8 - leading_zeros;
+              break;
+            }
+          }
+        }
+        sig_bits
+      }
+      PrimitiveBaseType::Unsigned => {
+        let mut sig_bits = 0;
+        for (index, byte) in self.val.iter().rev().enumerate() {
+          if *byte != 0 {
+            let leading_zeros = byte.leading_zeros();
+            if leading_zeros < 8 {
+              dbg!(leading_zeros, index, byte);
+              sig_bits = (120 - (index as u32) * 8) + 8 - leading_zeros;
+              break;
+            }
+          }
+        }
+        sig_bits
+      }
+      _ => 0,
     }
   }
 
@@ -320,4 +376,20 @@ fn to_uint<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
     64 => l_val.store(val.to_u64().unwrap()),
     val => unreachable!("{val:?}"),
   }
+}
+
+#[test]
+fn test_const_significant_bits() {
+  assert_eq!(ConstVal::new(prim_ty_u32, u32::MAX).significant_bits(), 32);
+  assert_eq!(ConstVal::new(prim_ty_u32, 2).significant_bits(), 2);
+  assert_eq!(ConstVal::new(prim_ty_u32, 3).significant_bits(), 2);
+  assert_eq!(ConstVal::new(prim_ty_u32, 255).significant_bits(), 8);
+
+  assert_eq!(ConstVal::new(prim_ty_s32, -128i32).significant_bits(), 8);
+  assert_eq!(ConstVal::new(prim_ty_s32, i32::MAX).significant_bits(), 31);
+  assert_eq!(ConstVal::new(prim_ty_s32, i32::MIN).significant_bits(), 32);
+  assert_eq!(ConstVal::new(prim_ty_s32, 2i32).significant_bits(), 2);
+  assert_eq!(ConstVal::new(prim_ty_s32, -2i32).significant_bits(), 2);
+  assert_eq!(ConstVal::new(prim_ty_s32, 3i32).significant_bits(), 2);
+  assert_eq!(ConstVal::new(prim_ty_s32, -3i32).significant_bits(), 3);
 }

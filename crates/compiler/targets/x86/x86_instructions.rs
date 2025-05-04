@@ -591,19 +591,21 @@ op_table!(mov [
   ((64, OT::MEM, OT::IMM_INT, OT::NONE), (0x00C7, 0x00, OpEncoding::MI, gen_multi_op as *const OpEncoder)),
 ]);
 
-/// https://www.felixcloutier.com/x86/mov
+/// https://www.felixcloutier.com/x86/lea
 op_table!(lea [
   ((08, OT::REG, OT::MEM, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((16, OT::REG, OT::MEM, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((32, OT::REG, OT::MEM, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((64, OT::REG, OT::MEM, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
 
+
 ]);
 
 #[test]
 fn test_lea() {
   assert_eq!("lea r8d,[r11]", test_enc_dos(&lea, 32, R8.as_reg_op(), R11.as_reg_op().to_mem()));
-  assert_eq!("cmovg r8,r11", test_enc_dos(&lea, 64, R8.as_reg_op(), Arg::RSP_REL(128)));
+  assert_eq!("lea r8,[rsp-128]", test_enc_dos(&lea, 64, R8.as_reg_op(), Arg::RSP_REL(-128)));
+  assert_eq!("lea r8,[rax+45]", test_enc_dos(&lea, 64, R8.as_reg_op(), Arg::MemRel(RAX, 45)), "Relative to register");
 }
 
 /// https://www.felixcloutier.com/x86/mov
@@ -759,4 +761,5 @@ op_table!(imul [  //
 fn test_imul() {
   assert_eq!("imul r8,r8", test_enc_dos(&imul, 64, R8.as_reg_op(), R8.as_reg_op()));
   assert_eq!("imul rax,r15", test_enc_dos(&imul, 64, RAX.as_reg_op(), R15.as_reg_op()));
+  assert_eq!("imul r15,rax,22", test_enc_tres(&imul, 64, RSI.as_reg_op(), RSI.as_reg_op(), Arg::Imm_Int(22)));
 }

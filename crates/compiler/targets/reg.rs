@@ -15,7 +15,7 @@ impl Debug for Reg {
 impl Display for Reg {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.is_valid() {
-      f.write_fmt(format_args!("r{:03}:{:03}", self.real_index(), self.unique_index()))
+      f.write_fmt(format_args!("r{:03}", self.unique_index()))
     } else {
       f.write_str("rXXX")
     }

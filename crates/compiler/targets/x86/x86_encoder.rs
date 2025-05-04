@@ -296,8 +296,8 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
   const SIB_RIP_BASE: u8 = 0b101;
 
   let mut mem_encoding = 0b00;
-  let mut displace_val = 0 as u64;
-  let mut rm_index = r_m.reg_index();
+  let mut displace_val = 0 as i64;
+  let rm_index = r_m.reg_index();
 
   let sib = match rm_index {
     4 => match r_m {
@@ -306,7 +306,7 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
         (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
       }
 
-      Arg::RSP_REL(val) => {
+      Arg::RSP_REL(val) | Arg::MemRel(_, val) => {
         if (val & !0xFF) > 0 {
           mem_encoding = 0b10
         } else {
@@ -317,14 +317,11 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
 
         (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
       }
-      _ => {
-        ///
-        0
-      }
+      _ => 0,
       arg => unreachable!("{arg:?}"),
     },
     5 => match r_m {
-      Arg::RIP_REL(val) => {
+      Arg::RIP_REL(val) | Arg::MemRel(_, val) => {
         displace_val = val;
         0
       }
@@ -334,19 +331,34 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
         (SIB_NO_INDEX_SCALE | (0b000 << 3) | 0b000) as u8
       }
       Arg::Reg(RBP) | Arg::Reg(R13) => {
-        // use sib index to access the RSP register
+        // use sib index to access the RBP register
         0
       }
       _ => unreachable!(),
     },
-    _ => 0,
+    _ => match r_m {
+      Arg::MemRel(_, val) => {
+        if (val & !0xFF) > 0 {
+          mem_encoding = 0b10
+        } else {
+          mem_encoding = 0b01;
+        }
+
+        displace_val = val;
+
+        0
+      }
+      _ => 0,
+    },
   };
 
   let mod_bits = match r_m {
-    Arg::RSP_REL(_) | Arg::RIP_REL(_) | Arg::Mem(_) => mem_encoding,
+    Arg::RSP_REL(_) | Arg::RIP_REL(_) | Arg::Mem(_) | Arg::MemRel(..) => mem_encoding,
     Arg::Reg(_) => 0b11,
     op => panic!("Invalid r_m operand {op:?}"),
   };
+
+  dbg!(rm_index);
 
   props.bin.push(((mod_bits & 0b11) << 6) | ((reg.reg_index() & 0x7) << 3) | (rm_index & 0x7));
 
@@ -358,17 +370,17 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
     0b01 => {
       props.displacement_index = props.bin.len();
       props.displacement_bit_size = 8;
-      push_bytes(props.bin, displace_val as u8);
+      push_bytes(props.bin, displace_val as u64 as u8);
     }
     0b00 if rm_index == DISPLACEMENT_INDEX => {
       props.displacement_index = props.bin.len();
       props.displacement_bit_size = 32;
-      push_bytes(props.bin, displace_val as u32);
+      push_bytes(props.bin, displace_val as u64 as u32);
     }
     0b10 => {
       props.displacement_index = props.bin.len();
       props.displacement_bit_size = 32;
-      push_bytes(props.bin, displace_val as u32);
+      push_bytes(props.bin, displace_val as u64 as u32);
     }
     _ => {}
   }

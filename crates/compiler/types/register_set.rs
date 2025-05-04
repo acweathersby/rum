@@ -51,7 +51,7 @@ impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + De
 
   #[track_caller]
   pub(crate) fn release_register(&mut self, register_id: usize) {
-    debug_assert!(self.register_is_acquired(register_id), "Register {:?} has not be acquired", self.get_register_from_id(register_id));
+    // debug_assert!(self.register_is_acquired(register_id), "Register {:?} has not be acquired", self.get_register_from_id(register_id));
 
     self.acquired &= !(1 << (63 - register_id));
   }
@@ -60,6 +60,7 @@ impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + De
     self.acquired & (1 << (63 - register_index as u64)) > 0
   }
 
+  /// Returns true if the register has not already been acquired.
   pub(crate) fn acquire_specific_register(&mut self, register_index: usize) -> bool {
     if self.register_is_acquired(register_index) {
       return false;

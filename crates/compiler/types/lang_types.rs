@@ -25,8 +25,8 @@ pub const prim_ty_poison: PrimitiveType = PrimitiveType { base_ty: PrimitiveBase
 pub const prim_ty_bool: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Bool, base_index: 2, byte_size: 1, ele_count: 1 };
 pub const prim_ty_u8: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 3, byte_size: 1, ele_count: 1 };
 pub const prim_ty_u16: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 4, byte_size: 2, ele_count: 1 };
-pub const prim_ty_u64: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 6, byte_size: 8, ele_count: 1 };
 pub const prim_ty_u32: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 5, byte_size: 4, ele_count: 1 };
+pub const prim_ty_u64: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 6, byte_size: 8, ele_count: 1 };
 pub const prim_ty_u128: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 7, byte_size: 16, ele_count: 1 };
 pub const prim_ty_s8: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 8, byte_size: 1, ele_count: 1 };
 pub const prim_ty_s16: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 9, byte_size: 2, ele_count: 1 };
@@ -93,6 +93,10 @@ impl TypeV {
 
   pub const fn mem_ctx() -> TypeV {
     Self::create(BaseType::MemCtx, 0, 0)
+  }
+
+  pub const fn util() -> TypeV {
+    Self::create(BaseType::Util, 0, 0)
   }
 
   pub const fn prim(base_prim: PrimitiveType) -> TypeV {
@@ -183,6 +187,7 @@ impl TypeV {
       BaseType::NoUse => TypeData::NoUse,
       BaseType::Poison => TypeData::Poison,
       BaseType::MemCtx => TypeData::MemCtx,
+      BaseType::Util => TypeData::Util,
     }
   }
 
@@ -303,6 +308,9 @@ impl Display for TypeV {
       BaseType::MemCtx => {
         f.write_str("mem")?;
       }
+      BaseType::Util => {
+        f.write_str("utl")?;
+      }
     }
 
     if self.is_array() {
@@ -334,6 +342,7 @@ pub enum BaseType {
   NoUse     = 5,
   Poison    = 6,
   MemCtx    = 7,
+  Util      = 8,
 }
 
 pub enum TypeData {
@@ -345,6 +354,7 @@ pub enum TypeData {
   NoUse,
   Poison,
   MemCtx,
+  Util,
 }
 
 #[repr(u8)]

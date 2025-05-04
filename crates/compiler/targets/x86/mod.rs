@@ -2,12 +2,12 @@ use crate::types::SolveDatabase;
 
 //pub(crate) mod x86_compiler;
 //pub use x86_compiler::compile_from_ssa_fn;
-mod compiler;
+mod x86_compiler;
 pub mod x86_encoder;
 pub mod x86_eval;
 pub mod x86_instructions;
 pub mod x86_types;
-pub use compiler::*;
+pub use x86_compiler::*;
 
 
 #[inline]

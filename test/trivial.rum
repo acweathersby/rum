@@ -1,14 +1,13 @@
 test_struct :: [
-  A: u32, 
-  B: u32,
-  C: u32
+  C: u32, B: u32,
+  A: u64, 
 ]
 
 
 #test
-trivial :: (input: u32, allocator_table) : u32 { 
-    dave: test_struct = [A = 22, B = 23, C = 44] 
+trivial :: (input: u64) : u32 { 
+    dave: test_struct = [A = 88, C = 44, B = 121] 
 
 
-    dave.B
+    dave.C + dave.B * 3
 }

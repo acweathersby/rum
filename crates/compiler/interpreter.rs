@@ -173,9 +173,9 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
 }
 
 pub struct RuntimeSystem<'a, 'b: 'a> {
-  db:                  &'a SolveDatabase<'b>,
-  heaps:               HashMap<CMPLXId, Vec<(Value, Value)>>,
-  allocator_interface: TypeV,
+  pub db:                  &'a SolveDatabase<'b>,
+  pub heaps:               HashMap<CMPLXId, Vec<(Value, Value)>>,
+  pub allocator_interface: TypeV,
   //interpreter_buffer:  *mut u8,
   //interpreter_size:    usize,
 }
@@ -354,7 +354,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           }
         }
 
-        Op::MAPS_TO => {
+        Op::MAP_TO => {
           let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           match l {
             Value::Ptr(ptr, ..) => Value::Ptr(ptr, op_ty, 1),
@@ -396,7 +396,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             Value::u64(new_offset)
           }
         }
-        Op::CALC_AGG_SIZE => {
+        Op::CAS => {
           // Calculates the new offset
           let curr_offset = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
           let Value::u64(curr_offset) = curr_offset else { unreachable!() };
@@ -497,7 +497,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => unreachable!("Could not resolve type from op {op} {op_ty} in {super_node:#?}"),
           }
         }
-        Op::REGISTER_HEAP => {
+        Op::REGHEAP => {
           let parent_heap_id = operands[1].usize();
           let new_heap = super_node.type_vars[super_node.heap_id[op.usize()]].ty;
           let par_heap = super_node.type_vars[parent_heap_id].ty;
@@ -528,7 +528,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => unreachable!(),
           }
         }
-        Op::OFFSET_PTR => match interprete_op(super_node, operands[1], scratch, ctx, scope_data) {
+        Op::OPTR => match interprete_op(super_node, operands[1], scratch, ctx, scope_data) {
           Value::u64(offset_base) => {
             let Value::Ptr(ptr, ty, _) = interprete_op(super_node, operands[0], scratch, ctx, scope_data) else { panic!("Cannot index a non-pointer value") };
 
@@ -581,7 +581,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
           }
           _ => unreachable!(),
         },
-        Op::NAMED_PTR => {
+        Op::NPTR => {
           let name = match super_node.operands[operands[1].usize()] {
             Operation::Name(name) => name,
             _ => unreachable!(),
