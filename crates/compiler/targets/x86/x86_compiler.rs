@@ -16,7 +16,7 @@ use crate::{
       x86_eval::x86Function,
     },
   },
-  types::{ty_bool, BaseType, NodeHandle, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{prim_ty_addr, ty_bool, BaseType, NodeHandle, Op, OpId, Operation, PortType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 
 use super::{
@@ -35,15 +35,10 @@ extern "C" fn allocate(size: u64, alignment: u64, allocator_slot: u64) -> *mut u
   unsafe { ptr }
 }
 
-extern "C" fn free(size: u64, alignment: u64, allocator_slot: u64) -> *mut u8 {
-  panic!("Need to free");
-  dbg!(size, alignment, allocator_slot);
-  let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment as _).expect("");
-  let ptr = unsafe { std::alloc::alloc(layout) };
-
-  dbg!(ptr);
-
-  unsafe { ptr }
+extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
+  dbg!(size, ptr, allocator_slot);
+  let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(8 as _).expect("");
+  unsafe { std::alloc::dealloc(ptr, layout) };
 }
 
 pub fn compile(db: &SolveDatabase) {
@@ -564,10 +559,10 @@ impl Display for RegisterAssignment {
           f.write_fmt(format_args!("v{v: <3}:{}", REGISTERS[*reg as usize]))?
         }
       }
-      RegisterAssignment::Spilled(_, reg) => f.write_fmt(format_args!("[]      "))?,
+      RegisterAssignment::Spilled(_, reg) => f.write_fmt(format_args!("[{}]      ", REGISTERS[*reg as usize]))?,
       RegisterAssignment::Reg(reg) => f.write_fmt(format_args!("{:8}", REGISTERS[*reg as usize]))?,
-      RegisterAssignment::Var(v) => f.write_fmt(format_args!("v{v:6}"))?,
-      _ => f.write_str("    ")?,
+      RegisterAssignment::Var(v) => f.write_fmt(format_args!("v{v: <8}"))?,
+      _ => f.write_str("         ")?,
     };
 
     Ok(())
@@ -669,19 +664,19 @@ fn top_down_register_assign_pass(
           }
           use ApplicationType::*;
 
-          let action = select_op_row(*op_id, &[
+          let (action, clear_for_call) = select_op_row(*op_id, &[
             // ---------------
-            (Op::AGG_DECL, [Inline, Inline, Inline]),
-            (Op::FREE, [Existing, Inline, Inline]),
-            (Op::LOAD, [Existing, Ignore, Ignore]),
-            (Op::STORE, [Existing, Existing, Ignore]),
-            (Op::ADD, [Existing, Existing, Ignore]),
-            (Op::NPTR, [Existing, Ignore, Ignore]),
-            (Op::RET, [Existing, Ignore, Ignore]),
-            (Op::MUL, [Existing, Existing, Ignore]),
-            (Op::SEED, [Existing, Ignore, Ignore]),
+            (Op::AGG_DECL, ([Inline, Inline, Inline], false)),
+            (Op::FREE, ([Existing, Inline, Inline], true)),
+            (Op::LOAD, ([Existing, Ignore, Ignore], false)),
+            (Op::STORE, ([Existing, Existing, Ignore], false)),
+            (Op::ADD, ([Existing, Existing, Ignore], false)),
+            (Op::NPTR, ([Existing, Ignore, Ignore], false)),
+            (Op::RET, ([Existing, Ignore, Ignore], false)),
+            (Op::MUL, ([Existing, Existing, Ignore], false)),
+            (Op::SEED, ([Existing, Ignore, Ignore], false)),
           ])
-          .unwrap_or(&[Ignore, Ignore, Ignore]);
+          .unwrap_or(&([Ignore, Ignore, Ignore], false));
 
           for ((index, op_id), action) in operands.iter().enumerate().zip(action) {
             match action {
@@ -690,8 +685,6 @@ fn top_down_register_assign_pass(
                   get_temp_reg(sn, op_registers, &mut register_set, &mut temp_reg_set, &mut active_register_assignments, None, &mut stack_offsets);
               }
               Existing => {
-                let own = op_registers[op_id.usize()].own;
-
                 if op_id.is_invalid() {
                   continue;
                 }
@@ -702,7 +695,9 @@ fn top_down_register_assign_pass(
                   continue;
                 }
 
-                match op_registers[op_id.usize()].own {
+                let existing_register = op_registers[op_id.usize()].own;
+
+                match existing_register {
                   RegisterAssignment::None => {
                     // Allocate free register. Handle spilled.
                     op_registers[op].ops[index] =
@@ -742,6 +737,14 @@ fn top_down_register_assign_pass(
               Ignore => {}
             }
             if op_id.is_valid() {}
+          }
+
+          if *clear_for_call {
+            // Spill any registers that are not callee saved
+
+            if !temp_reg_set.acquire_specific_register(0 as usize) {
+              spill_specific_register(0 as usize, sn, op_registers, &mut register_set, &mut active_register_assignments, &mut stack_offsets);
+            }
           }
         }
         _ => {}
@@ -800,20 +803,17 @@ fn top_down_register_assign_pass(
             let active_assignment = active_register_assignments[reg as usize];
 
             if active_assignment.is_valid() && active_assignment != OpId(op as _) {
-              active_register_assignments[reg as usize] = OpId(op as _);
-
               match op_registers[active_assignment.usize()].own {
-                RegisterAssignment::VarReg(var, _) => {
+                RegisterAssignment::VarReg(var, r) => {
                   if var != curr_var {
-                    print_blocks(sn, op_dependencies, op_data, blocks, op_registers, op_logical_rank);
                     spill_specific_register(reg as usize, sn, op_registers, &mut register_set, &mut active_register_assignments, &mut stack_offsets);
                     register_set.acquire_specific_register(reg as _);
-
-                    //panic!("Existing assignment on different var, need to store this assignment at {op}")
                   }
                 }
                 _ => {}
               }
+
+              active_register_assignments[reg as usize] = OpId(op as _);
             }
           } else {
             register_set.acquire_specific_register(reg as _);
@@ -858,7 +858,9 @@ fn top_down_register_assign_pass(
           op_registers[op].own = RegisterAssignment::VarReg(curr_var, reg as u8);
           active_register_assignments[reg as usize] = OpId(op as u32);
         }
-        _ => {}
+        _ => {
+          unreachable!()
+        }
       }
     }
   }
@@ -1061,15 +1063,24 @@ fn spill_specific_register(
       let ty = get_op_type(sn, *op);
 
       if let Some(prim) = ty.prim_data() {
-        *stack_offsets = get_aligned_value(*stack_offsets + (prim.byte_size as u64), prim.byte_size as _);
+        let offset = get_aligned_value(*stack_offsets, prim.byte_size as _);
+        *stack_offsets = offset + (prim.byte_size as u64);
 
         op_registers[op.usize()].stashed = true;
-        op_registers[op.usize()].own = RegisterAssignment::Spilled(*stack_offsets as _, op_registers[op.usize()].own.reg_id().unwrap_or_default() as _);
+        op_registers[op.usize()].own = RegisterAssignment::Spilled(offset as _, op_registers[op.usize()].own.reg_id().unwrap_or_default() as _);
         active_register_assignments[reg_index] = Default::default();
 
         reg_set.release_register(reg_index);
       } else {
-        unreachable!("Could not get type {op}:{ty}");
+        // Pointer value
+        let offset = get_aligned_value(*stack_offsets, 8 as _);
+        *stack_offsets = offset + (8 as u64);
+
+        op_registers[op.usize()].stashed = true;
+        op_registers[op.usize()].own = RegisterAssignment::Spilled(offset as _, op_registers[op.usize()].own.reg_id().unwrap_or_default() as _);
+        active_register_assignments[reg_index] = Default::default();
+
+        reg_set.release_register(reg_index);
       }
       break;
     }
@@ -1132,6 +1143,10 @@ fn encode_routine(
   let binary = &mut binary_data;
 
   encode_x86(binary, &push, 64, RDX.as_reg_op(), Arg::None, Arg::None);
+  encode_x86(binary, &push, 64, RBP.as_reg_op(), Arg::None, Arg::None);
+  encode_x86(binary, &mov, 64, RBP.as_reg_op(), RSP.as_reg_op(), Arg::None);
+  encode_x86(binary, &and, 64, RSP.as_reg_op(), Arg::Imm_Int(0xFFFF_FFF0), Arg::None);
+  encode_x86(binary, &sub, 64, RSP.as_reg_op(), Arg::Imm_Int(128), Arg::None);
 
   for block in blocks {
     jmp_resolver.block_offset.push(binary.len());
@@ -1181,8 +1196,7 @@ fn encode_routine(
                 let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
                 let size = get_agg_size(node.get().unwrap(), &mut ctx);
 
-                encode_x86(binary, &mov, 8 * 8, ptr_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None);
-                encode_x86(binary, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(8), Arg::None);
+                encode_x86(binary, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None);
                 encode_x86(binary, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None);
 
                 // Load Rax with the location for the allocator pointer.
@@ -1300,7 +1314,7 @@ fn encode_routine(
               match registers[*op].ops[0] {
                 RegisterAssignment::Spilled(offset, from_reg) => {
                   let l_reg = REGISTERS[to as usize];
-                  encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::RSP_REL(-(offset as i64) as _), Arg::None);
+                  encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::RSP_REL((offset as i64) as _), Arg::None);
                 }
                 RegisterAssignment::VarReg(_, from) => {
                   if to != from as usize {
@@ -1534,12 +1548,11 @@ fn encode_routine(
       match reg_assign.own {
         RegisterAssignment::Spilled(offset, reg) => {
           let ty = get_op_type(sn, OpId(*op as u32));
-          if let Some(prim) = ty.prim_data() {
-            let reg = REGISTERS[reg as usize];
-            encode_x86(binary, &mov, (prim.byte_size as u64) * 8, Arg::RSP_REL(-(offset as i64)), reg.as_reg_op(), Arg::None);
+          let prim = ty.prim_data().unwrap_or(prim_ty_addr);
+          let reg = REGISTERS[reg as usize];
+          encode_x86(binary, &mov, (prim.byte_size as u64) * 8, Arg::RSP_REL((offset as i64)), reg.as_reg_op(), Arg::None);
 
-            // Stash the value into the
-          }
+          // Stash the value into the
         }
         _ => {}
       }
@@ -1574,8 +1587,9 @@ fn encode_routine(
         encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
         jmp_resolver.add_jump(binary, block.pass as usize);
       } else if block.pass < 0 {
+        encode_x86(binary, &mov, 64, RSP.as_reg_op(), RBP.as_reg_op(), Arg::None);
+        encode_x86(binary, &pop, 64, RBP.as_reg_op(), Arg::None, Arg::None);
         encode_x86(binary, &pop, 64, RDX.as_reg_op(), Arg::None, Arg::None);
-
         encode_x86(binary, &ret, 32, Arg::None, Arg::None, Arg::None);
       }
     }
@@ -1601,8 +1615,8 @@ fn get_arg_register(sn: &RootNode, registers: &[RegisterData], root_op: OpId, op
     RegisterAssignment::Spilled(offset, reg_id) => {
       let ty = get_op_type(sn, OpId(op.usize() as u32));
       let reg = REGISTERS[reg_id as usize];
-      let Some(prim) = ty.prim_data() else { unreachable!() };
-      encode_x86(binary, &mov, (prim.byte_size as u64) * 8, reg.as_reg_op(), Arg::RSP_REL(-(offset as i64) as _), Arg::None);
+      let prim = ty.prim_data().unwrap_or(prim_ty_addr);
+      encode_x86(binary, &mov, (prim.byte_size as u64) * 8, reg.as_reg_op(), Arg::RSP_REL((offset as i64) as _), Arg::None);
       reg_id
     }
     RegisterAssignment::Reg(reg) => reg,

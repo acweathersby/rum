@@ -358,8 +358,6 @@ pub(crate) fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg
     op => panic!("Invalid r_m operand {op:?}"),
   };
 
-  dbg!(rm_index);
-
   props.bin.push(((mod_bits & 0b11) << 6) | ((reg.reg_index() & 0x7) << 3) | (rm_index & 0x7));
 
   if sib != 0 {

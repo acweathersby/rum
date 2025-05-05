@@ -6,8 +6,6 @@ test_struct :: [
 
 #test
 trivial :: (input: u64) : u32 { 
-    dave: test_struct = [A = 88, C = 44, B = 121] 
-
-
-    dave.C + dave.B * 3
+    dave: test_struct = [A = 88, C = 2, B = 3] 
+    dave.C + dave.B * 4
 }
