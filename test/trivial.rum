@@ -3,9 +3,21 @@ test_struct :: [
   A: u64, 
 ]
 
-
 #test
-trivial :: (input: u64) : u32 { 
-    dave: test_struct = [A = 88, C = 2, B = 3] 
-    dave.C + dave.B * 4
-}
+trivial :: (input: u32) : u32 { 
+  // --------------------------------------
+    dave: test_struct = [A = 88, C = 2, B = 3]
+    a = 2
+    if input == 22 {
+      // --------------------------------------
+      dave.B = dave.B
+      a = 3
+    } else {
+      // --------------------------------------
+      dave.B = 21
+      dave.C = 22 + dave.B
+      a = 4 + dave.C
+    }
+    // --------------------------------------
+    ( dave.C + dave.B * 10 ) / 2 + a + input
+} 

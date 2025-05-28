@@ -88,8 +88,6 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
         // remove Freed entries
         node.nodes[0].outputs = node.nodes[0].outputs.iter().filter(|(_, v)| VarId::Freed != *v).cloned().collect();
         node.nodes[0].outputs.extend(new_nodes);
-
-        dbg!(&node);
       }
     }
     OptimizeLevel::ExpressionOptimization_02 => {

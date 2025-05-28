@@ -1,11 +1,8 @@
-use std::{
-  collections::{HashMap, HashSet, VecDeque},
-  fmt::Display,
-  u16,
+use super::{
+  print_instructions,
+  x86_encoder::encode_x86,
+  x86_types::{Arg, *},
 };
-
-use rum_common::get_aligned_value;
-
 use crate::{
   interpreter::{get_agg_offset, get_agg_size, get_op_type, RuntimeSystem},
   ir_compiler::{CLAUSE_ID, LOOP_ID, MATCH_ID},
@@ -16,13 +13,16 @@ use crate::{
       x86_eval::x86Function,
     },
   },
-  types::{prim_ty_addr, ty_bool, BaseType, NodeHandle, Op, OpId, Operation, PortType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{prim_ty_addr, ty_bool, BaseType, NodeHandle, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
-
-use super::{
-  print_instructions,
-  x86_encoder::encode_x86,
-  x86_types::{Arg, *},
+use core_lang::parser::ast::Var;
+use rum_common::get_aligned_value;
+use std::{
+  collections::{btree_map::Entry, BTreeMap, HashMap, HashSet, VecDeque},
+  fmt::{Debug, Display},
+  u16,
+  u32,
+  usize,
 };
 
 extern "C" fn allocate(size: u64, alignment: u64, allocator_slot: u64) -> *mut u8 {
@@ -31,8 +31,7 @@ extern "C" fn allocate(size: u64, alignment: u64, allocator_slot: u64) -> *mut u
   let ptr = unsafe { std::alloc::alloc(layout) };
 
   dbg!(ptr);
-
-  unsafe { ptr }
+  ptr
 }
 
 extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
@@ -43,6 +42,7 @@ extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
 
 pub fn compile(db: &SolveDatabase) {
   for node in db.nodes.iter() {
+    dbg!(node);
     let binary = Vec::new();
 
     let super_node = node.get_mut().unwrap();
@@ -166,34 +166,6 @@ fn encode(sn: &mut RootNode, db: &SolveDatabase, allocator_address: usize, alloc
 
   block_set = organized_blocks;
 
-  let mut max = 0;
-  let mut dep_update = true;
-
-  while dep_update {
-    dep_update = false;
-
-    for (index, dependencies) in op_dependencies.iter().enumerate() {
-      let diffuse_number = op_data[index].dep_rank;
-
-      for dependency in dependencies {
-        let local_number = op_data[dependency.usize()].dep_rank;
-
-        let val = local_number.max(diffuse_number);
-
-        let changed = op_data[dependency.usize()].dep_rank != val;
-        dep_update |= changed;
-
-        if changed {
-          op_data[dependency.usize()].dep_rank = val + 1;
-        }
-
-        max = max.max(val);
-
-        // TODO: check for back diffusion
-      }
-    }
-  }
-
   let mut blocks = vec![];
 
   for (id, BlockInfo { original_id, pass, fail, .. }) in block_set.iter().enumerate() {
@@ -209,6 +181,9 @@ fn encode(sn: &mut RootNode, db: &SolveDatabase, allocator_address: usize, alloc
 
   for block in &mut blocks {
     let Block { ops: block_ops, resolve_ops, .. } = block;
+
+    block_ops.sort_by(|a, b| op_data[*b].dep_rank.cmp(&op_data[*a].dep_rank));
+
     if let Some(node_id) = loop_reset_blocks.get(&block_set[block.id].original_id) {
       let node = &sn.nodes[*node_id];
       for (t_op, _) in node.inputs.iter() {
@@ -227,12 +202,61 @@ fn encode(sn: &mut RootNode, db: &SolveDatabase, allocator_address: usize, alloc
   binary
 }
 
-fn print_blocks(sn: &RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData], blocks: &[Block], op_registers: &[RegisterData], op_logical_rank: &[u32]) {
+fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData], blocks: &mut [Block]) -> (Vec<RegisterData>) {
+  // Sort operation and give them logical indices
+
+  let mut op_logical_rank = vec![0u32; sn.operands.len()];
+  let mut logical_counter = 0;
+
+  for block in blocks.iter_mut() {
+    let ops = &mut block.ops;
+
+    for op in ops {
+      op_logical_rank[*op] = logical_counter;
+      logical_counter += 1;
+    }
+  }
+
+  let mut op_registers = vec![usize::MAX; sn.operands.len()];
+
+  // First pass assigns required registers. This a bottom up pass.
+
+  //bottom_up_register_assign_pass(sn, op_dependencies, &op_logical_rank, &mut op_registers);
+
+  // The top down passes assign registers and possible spills to v-registers that not yet been assigned
+
+  // Create basic block groups;
+
+  // Sort blocks based on "cardinal" path and
+
+  // Process each block in reverse starting with end blocks.
+  // - Assign variables and default registers in bottom up pass, using data
+  //   retrieved from successors
+  // - Assign remaining registers
+  // - Produce a register allocation signature to be used by sibling and predecessor blocks.
+  //
+
+  virtual_register_assign(sn, op_dependencies, op_data, &blocks, &op_logical_rank, &mut op_registers);
+
+  panic!("Bottom Up Performed");
+
+  //top_down_register_assign_pass(sn, op_dependencies, op_data, blocks, &op_logical_rank, &mut op_registers);
+
+  //op_registers
+}
+
+fn print_blocks(
+  sn: &RootNode,
+  op_dependencies: &[Vec<OpId>],
+  op_data: &[OpData],
+  blocks: &[Block],
+  op_registers: &[usize],
+  op_logical_rank: &[u32],
+  virt_registers: &[VirtualRegister],
+) {
   for block in blocks.iter() {
     println!("\n\nBLOCK - {}", block.id);
     let mut ops = block.ops.clone();
-
-    ops.sort_by(|a, b| op_data[*a].dep_rank.cmp(&op_data[*b].dep_rank));
 
     let mut rank = 0;
 
@@ -245,11 +269,16 @@ fn print_blocks(sn: &RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData]
       let dep = op_dependencies[op_id].iter().map(|i| op_logical_rank[i.usize()]).collect::<Vec<_>>();
 
       println!(
-        "`{op_id:<3}:[{:03}] - {: <4} {:30} | {:45} : {}",
+        "`{op_id:<3}:[{:03}] - <{:04}> {: <4} {:30} | {:30} : {}",
         op_logical_rank[op_id],
+        0, //op_data[op_id].dep_rank,
         format!("{}", sn.op_types[op_id]),
         format!("{:#}", sn.operands[op_id]),
-        format!("{}", op_registers[op_id]),
+        if op_registers[op_id] != usize::MAX && virt_registers[op_registers[op_id]].start < virt_registers[op_registers[op_id]].end {
+          format!("{:#04} ?{:?}", op_registers[op_id], virt_registers[op_registers[op_id]])
+        } else {
+          "XXXX".to_string()
+        },
         format!("{dep:?}"),
       );
     }
@@ -280,8 +309,9 @@ fn process_routine_node(
   let node = &sn.nodes[0];
   let mut node_set = vec![false; sn.nodes.len()];
 
-  for (output_op, _) in node.outputs.iter() {
-    process_op(*output_op, 0, 0, sn, op_dependencies, op_data, block_set, &mut node_set, loop_block_reset);
+  for (output_op, var_id) in node.outputs.iter() {
+    let dep_rank = if *var_id == VarId::Freed { 2 } else { 1 };
+    process_op(*output_op, 0, 0, sn, op_dependencies, op_data, block_set, &mut node_set, loop_block_reset, (dep_rank + (1 << 16)));
   }
 }
 
@@ -299,6 +329,7 @@ fn process_op(
   block_set: &mut Vec<BlockInfo>,
   node_set: &mut [bool],
   loop_block_reset: &mut HashMap<usize, usize>,
+  dependency_rank: i32,
 ) {
   if op_id.is_invalid() {
     return;
@@ -313,10 +344,12 @@ fn process_op(
     return;
   }
 
+  op_data[op_index].dep_rank = op_data[op_index].dep_rank.max(dependency_rank);
+
   let ty = get_op_type(sn, op_id);
 
   if ty == TypeV::MemCtx {
-    return;
+    //return;
   }
 
   if ty.is_poison() {
@@ -344,29 +377,42 @@ fn process_op(
 
   match op {
     Operation::Op { operands, op_id: op_name, .. } => {
-      match *op_name {
-        Op::GR => op_data[op_index].dep_rank |= 1 << 11,
-        Op::FREE => op_data[op_index].dep_rank |= 1 << 11,
-        Op::RET => op_data[op_index].dep_rank |= 200 << 11,
-        //"SINK" => op_data[op_index].dep_rank |= 1 << 10,
-        _ => {}
-      }
+      let Some(dependency_map) = select_op_row(*op_name, &[
+        (Op::AGG_DECL, [false, false, false]),
+        (Op::RET, [true, false, false]),
+        (Op::ADD, [true, true, false]),
+        (Op::MUL, [true, true, false]),
+        (Op::DIV, [true, true, false]),
+        (Op::SUB, [true, true, false]),
+        (Op::SEED, [true, false, false]),
+        (Op::SINK, [true, true, false]),
+        (Op::LOAD, [true, false, false]),
+        (Op::STORE, [true, true, false]),
+        (Op::NPTR, [true, true, false]),
+        (Op::FREE, [true, false, false]),
+        (Op::EQ, [true, true, false]),
+      ]) else {
+        panic!("Could not get dependency map for {op_id}: {op}")
+      };
 
-      for (index, c_op) in operands.iter().cloned().enumerate() {
+      for (index, (c_op, is_register_dependency)) in operands.iter().cloned().zip(dependency_map).enumerate() {
         if c_op.is_valid() {
           if get_op_type(sn, c_op).base_ty() == BaseType::MemCtx {
-            continue;
+            // continue;
           }
 
-          if index < 2 || !matches!(*op_name, Op::SINK) {
+          if *is_register_dependency && !matches!(*op_name, Op::SINK) {
             if !op_dependencies[c_op.usize()].contains(&op_id) {
               op_dependencies[c_op.usize()].push(op_id);
             }
           }
 
-          process_op(c_op, dominator_block, curr_block, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+          process_op(c_op, dominator_block, curr_block, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset, dependency_rank + 65536);
         }
       }
+    }
+    Operation::Param(..) => {
+      op_data[op_index].dep_rank |= 1 << 28;
     }
     Operation::Port { node_id: block_id, ops: operands, .. } => {
       for (_, c_op) in operands {
@@ -374,7 +420,18 @@ fn process_op(
           op_dependencies[c_op.usize()].push(op_id);
         }
       }
-      process_block_ops(curr_block, dominator_block, *block_id as usize, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+      process_block_ops(
+        curr_block,
+        dominator_block,
+        *block_id as usize,
+        sn,
+        op_dependencies,
+        op_data,
+        block_set,
+        node_set,
+        loop_block_reset,
+        dependency_rank + 65536,
+      );
     }
     _ => {}
   }
@@ -390,6 +447,7 @@ fn process_block_ops(
   block_set: &mut Vec<BlockInfo>,
   node_set: &mut [bool],
   loop_block_reset: &mut HashMap<usize, usize>,
+  dependency_rank: i32,
 ) -> (usize, Vec<usize>) {
   if node_set[node_id] {
     return (0, vec![]);
@@ -401,7 +459,7 @@ fn process_block_ops(
   match node.type_str {
     CLAUSE_ID => {
       for (output_op, _) in node.outputs.iter() {
-        process_op(*output_op, dominator_block, tail_block, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+        process_op(*output_op, dominator_block, tail_block, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset, dependency_rank + 65536);
       }
       return (tail_block as usize, vec![tail_block as usize]);
     }
@@ -434,7 +492,7 @@ fn process_block_ops(
 
       for (index, ((_, select_op), (clause_node, _))) in act_ops.iter().zip(out_ops).enumerate() {
         if index < (act_ops.len() - 1) {
-          process_op(*select_op, dominator, curr_select_block_id, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+          process_op(*select_op, dominator, curr_select_block_id, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset, dependency_rank + 65536);
 
           let clause_block = BlockInfo { dominator, pass: tail_block, set: false, fail: -1, original_id: block_set.len() };
           let clause_id = block_set.len();
@@ -443,7 +501,18 @@ fn process_block_ops(
 
           block_set[curr_select_block_id as usize].pass = clause_id as _;
 
-          process_block_ops(clause_id as _, dominator, *clause_node as _, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+          process_block_ops(
+            clause_id as _,
+            dominator,
+            *clause_node as _,
+            sn,
+            op_dependencies,
+            op_data,
+            block_set,
+            node_set,
+            loop_block_reset,
+            dependency_rank + 65536,
+          );
 
           let next_select_block = BlockInfo { dominator, pass: -1, set: false, fail: -1, original_id: block_set.len() };
           let next_select_id = block_set.len();
@@ -452,7 +521,18 @@ fn process_block_ops(
           block_set[curr_select_block_id as usize].fail = next_select_id as _;
           curr_select_block_id = next_select_id as _;
         } else {
-          process_block_ops(curr_select_block_id as _, dominator, *clause_node as _, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+          process_block_ops(
+            curr_select_block_id as _,
+            dominator,
+            *clause_node as _,
+            sn,
+            op_dependencies,
+            op_data,
+            block_set,
+            node_set,
+            loop_block_reset,
+            dependency_rank + 65536,
+          );
           block_set[curr_select_block_id as usize].pass = tail_block as _;
           tail_blocks.push(curr_select_block_id as _);
         }
@@ -491,14 +571,35 @@ fn process_block_ops(
         let Operation::Port { ops: act_ops, .. } = &sn.operands[input.0.usize()] else { unreachable!() };
         let (_, root_op) = act_ops[0];
 
-        process_op(root_op, loop_head_block_id as _, loop_head_block_id as _, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+        process_op(
+          root_op,
+          loop_head_block_id as _,
+          loop_head_block_id as _,
+          sn,
+          op_dependencies,
+          op_data,
+          block_set,
+          node_set,
+          loop_block_reset,
+          dependency_rank + 65536,
+        );
       }
 
       let output = node.outputs[0];
       let Operation::Port { node_id: output_node_id, ops: act_ops, .. } = &sn.operands[output.0.usize()] else { unreachable!() };
 
-      let (head, tails) =
-        process_block_ops(tail_block as _, loop_head_block_id as _, *output_node_id as _, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset);
+      let (head, tails) = process_block_ops(
+        tail_block as _,
+        loop_head_block_id as _,
+        *output_node_id as _,
+        sn,
+        op_dependencies,
+        op_data,
+        block_set,
+        node_set,
+        loop_block_reset,
+        dependency_rank + 65536,
+      );
 
       let tail_len = tails.len();
 
@@ -523,16 +624,104 @@ const REGISTERS: [Reg; 12] = [RAX, RDI, RSI, R11, R8, R9, R10, R11, R12, R13, R1
 
 type X86registers<'r> = RegisterSet<'r, 12, Reg>;
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+
+enum RegOp {
+  #[default]
+  None,
+  RegMove(u8, u8),
+  Spill(u16, u16, u8),
+}
+
+impl Display for RegOp {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      RegOp::RegMove(from, to) => f.write_fmt(format_args!("{} -> {}", REGISTERS[*from as usize], REGISTERS[*to as usize])),
+      RegOp::Spill(offset, size, from) => f.write_fmt(format_args!("[{} => {offset}]", REGISTERS[*from as usize])),
+      _ => Ok(()),
+    }
+  }
+}
+
+#[derive(Clone, Debug)]
 struct RegisterData {
-  own:     RegisterAssignment,
-  ops:     [RegisterAssignment; 3],
-  stashed: bool,
+  own_origin:   RegisterAssignment,
+  own_updated:  RegisterAssignment,
+  ops:          [RegisterAssignment; 3],
+  pre_ops:      [RegOp; 3],
+  stashed:      bool,
+  var:          i32,
+  spill_offset: u32,
+}
+
+impl Default for RegisterData {
+  fn default() -> Self {
+    Self {
+      spill_offset: u32::MAX,
+      own_origin:   Default::default(),
+      own_updated:  Default::default(),
+      ops:          Default::default(),
+      pre_ops:      Default::default(),
+      stashed:      Default::default(),
+      var:          -1,
+    }
+  }
+}
+
+impl RegisterData {
+  fn set_own(&mut self, reg: RegisterAssignment) {
+    if self.own_origin == RegisterAssignment::None {
+      self.own_origin = reg;
+    } else {
+      self.own_updated = reg;
+    }
+  }
+
+  fn get_own(&self) -> RegisterAssignment {
+    if self.own_updated == RegisterAssignment::None {
+      self.own_origin
+    } else {
+      self.own_updated
+    }
+  }
+  fn spill(&mut self, spill_offset: &mut u64, size: u64) -> u32 {
+    if self.spill_offset == u32::MAX {
+      let offset = get_aligned_value(*spill_offset, size);
+      *spill_offset = offset + size;
+      self.spill_offset = offset as _;
+    }
+
+    self.set_own(RegisterAssignment::Spilled(self.spill_offset as _, size as _, 0));
+
+    self.spill_offset
+  }
+
+  fn add_pre_op(&mut self, op: RegOp) {
+    for existing_op in self.pre_ops.iter_mut() {
+      if *existing_op == RegOp::None {
+        *existing_op = op;
+        return;
+      }
+    }
+
+    panic!("Could not add pre-op {op:?}")
+  }
 }
 
 impl Display for RegisterData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("{} {}=> {} {} {}", self.own, if self.stashed { "*" } else { " " }, self.ops[0], self.ops[1], self.ops[2]))?;
+    f.write_fmt(format_args!(
+      "{} {} {}=> {} {} {} {} {} {}",
+      self.var,
+      self.own_origin,
+      if self.stashed { "*" } else { " " },
+      self.ops[0],
+      self.ops[1],
+      self.ops[2],
+      self.pre_ops[0],
+      self.pre_ops[1],
+      self.pre_ops[2],
+    ))?;
     Ok(())
   }
 }
@@ -541,28 +730,18 @@ impl Display for RegisterData {
 enum RegisterAssignment {
   #[default]
   None,
-  /// Variable that can be assigned to any register
-  Var(u16),
-  /// A Variable that MUST be assigned to a specific register
-  VarReg(u16, u8),
-  Spilled(u16, u8),
+  Spilled(u16, u16, u8),
+  Load(u16, u16, u8),
   Reg(u8),
 }
 
 impl Display for RegisterAssignment {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      RegisterAssignment::VarReg(v, reg) => {
-        if *v == u16::MAX {
-          f.write_fmt(format_args!("{}", REGISTERS[*reg as usize]))?
-        } else {
-          f.write_fmt(format_args!("v{v: <3}:{}", REGISTERS[*reg as usize]))?
-        }
-      }
-      RegisterAssignment::Spilled(_, reg) => f.write_fmt(format_args!("[{}]      ", REGISTERS[*reg as usize]))?,
+      RegisterAssignment::Spilled(offset, _, reg) => f.write_fmt(format_args!("[{} => {offset}]", REGISTERS[*reg as usize]))?,
       RegisterAssignment::Reg(reg) => f.write_fmt(format_args!("{:8}", REGISTERS[*reg as usize]))?,
-      RegisterAssignment::Var(v) => f.write_fmt(format_args!("v{v: <8}"))?,
-      _ => f.write_str("         ")?,
+      RegisterAssignment::Load(offset, size, reg) => f.write_fmt(format_args!("[{offset} => {}]", REGISTERS[*reg as usize]))?,
+      _ => f.write_str("    ")?,
     };
 
     Ok(())
@@ -572,41 +751,21 @@ impl Display for RegisterAssignment {
 impl RegisterAssignment {
   pub fn reg_id(&self) -> Option<usize> {
     match self {
-      &RegisterAssignment::VarReg(_, reg) => Some(reg as usize),
-      &RegisterAssignment::Spilled(_, reg) => Some(reg as usize),
+      &RegisterAssignment::Spilled(_, _, reg) => Some(reg as usize),
       &RegisterAssignment::Reg(reg) => Some(reg as usize),
       _ => None,
     }
   }
 }
 
-fn assign_registers(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[OpData], blocks: &mut [Block]) -> (Vec<RegisterData>) {
-  // Sort operation and give them logical indices
-
-  let mut op_logical_rank = vec![0u32; sn.operands.len()];
-  let mut logical_counter = 0;
-
-  for block in blocks.iter_mut() {
-    let ops = &mut block.ops;
-    ops.sort_by(|a, b| op_data[*a].dep_rank.cmp(&op_data[*b].dep_rank));
-
-    for op in ops {
-      op_logical_rank[*op] = logical_counter;
-      logical_counter += 1;
-    }
-  }
-
-  let mut op_registers = vec![RegisterData::default(); sn.operands.len()];
-
-  // First pass assigns required registers. This a bottom up pass.
-
-  bottom_up_register_assign_pass(sn, op_dependencies, &op_logical_rank, &mut op_registers);
-
-  // The top down passes assign registers and possible spills to v-registers that not yet been assigned
-
-  top_down_register_assign_pass(sn, op_dependencies, op_data, blocks, &op_logical_rank, &mut op_registers);
-
-  op_registers
+/// Stores register data for each block.
+///
+#[derive(Clone, Debug)]
+struct BlockRegisterData {
+  temp:                 X86registers<'static>,
+  active:               X86registers<'static>,
+  register_assignments: [OpId; 32],
+  register_states:      Vec<RegisterAssignment>,
 }
 
 fn top_down_register_assign_pass(
@@ -617,8 +776,29 @@ fn top_down_register_assign_pass(
   op_logical_rank: &Vec<u32>,
   op_registers: &mut [RegisterData],
 ) {
-  let mut stack_offsets = 0;
-  let mut register_set = X86registers::new(&REGISTERS, None);
+  // TODO - Sort the blocks in to output groups, where register assignments among members MUST be
+  // identical to support convergent paths.
+
+  let mut block_groups = BTreeMap::<isize, Vec<usize>>::new();
+  blocks.iter().for_each(|block| {
+    if block.fail > 0 {
+      block_groups.entry(block.fail).or_default().push(block.id);
+    }
+
+    if block.pass > 0 {
+      block_groups.entry(block.pass).or_default().push(block.id);
+    }
+  });
+
+  let mut block_assignement = vec![
+    BlockRegisterData {
+      temp:                 X86registers::new(&REGISTERS, None),
+      active:               X86registers::new(&REGISTERS, None),
+      register_assignments: [Default::default(); 32],
+      register_states:      Default::default(),
+    };
+    blocks.len()
+  ];
   /*
    * Goals:
    *  -- Assign register to all nodes.
@@ -627,279 +807,419 @@ fn top_down_register_assign_pass(
    *  -- Deconflict through use of stack storage of live values
    */
 
-  print_blocks(sn, op_dependencies, op_data, blocks, op_registers, op_logical_rank);
+  let mut spill_offset = 0u64;
+  let spill_offset = &mut spill_offset;
 
-  let mut active_register_assignments: [OpId; 32] = [Default::default(); 32];
+  // For each block
 
-  for block in blocks.iter() {
-    for op in block.ops.iter().cloned() {
-      match &sn.operands[op] {
+  // For each op in block
+
+  // Free op register assignments of operation values that have reached the end of their lifetime at the conclusion of the current op.
+  //
+  // Assign a register for the output of the current op, if applicable. Not all operations produce an output value, such as FREE.
+
+  for (block_index, block) in blocks.iter().enumerate() {
+    if let Entry::Occupied(group) = block_groups.entry(block.id as _) {
+      let group = group.get();
+      // The first block is considered the "prime" block and dictates the final state of its own and every other member's registers.
+      let Some(prim_block_id) = group.first() else { panic!("Expected prime member") };
+
+      if *prim_block_id != block.id {
+        block_assignement[block_index].active = block_assignement[*prim_block_id].active;
+        block_assignement[block_index].register_assignments = block_assignement[*prim_block_id].register_assignments;
+      }
+    };
+
+    let data = &mut block_assignement[block_index];
+
+    for op_index in block.ops.iter() {
+      let op_index = *op_index;
+      data.temp = data.active;
+
+      dbg!(&sn.operands[op_index]);
+      match &sn.operands[op_index] {
         Operation::Const(..) => {
           continue;
         }
         Operation::Port { node_id, ty, ops } => {
-          todo!("Handle Port");
+          println!("TODO: Handle Port");
         }
-        param @ Operation::Param(_, pos) => {
-          let register_index = [1u32, 2 /* , 3, 4 */][*pos as usize] as usize;
-
-          // Spill existing value if register is already in use.
-          if register_set.register_is_acquired(register_index) {
-            panic!("Set register")
-          }
-
-          register_set.acquire_specific_register(register_index);
-          op_registers[op].own = RegisterAssignment::VarReg(op as _, register_index as u8);
-        }
-        Operation::Op { operands, op_id, .. } => {
-          let mut temp_reg_set = register_set;
-          // Ensure there is a register available for operands. Either the operands already
-          // have active variables, or we need to assign a temporary variable to load spilled values.
-
-          enum ApplicationType {
+        Operation::Op { op_id, operands } => {
+          // Get assignment type for all ACTIVE arguments (inactive arguments include meta ordering arguments such as preceding memory mutation operations)
+          // Assign Types are include:
+          #[derive(Clone, Copy, Default, PartialEq, Eq)]
+          enum AssignmentType {
+            #[default]
             Ignore,
+            /// - existing             - a specific register assigned to a proceeding operation (thereby containing the result value of that operation). This
+            ///                          may include values that have been spilled to the stack. In which case, this will create a load to a temporary register.
             Existing,
-            Inline,
+            /// - defined reserved     - a specific register on which the current operation semantics depend on and reserved for special use not related to the results of any proceeding operation.
+            ///                          If the register is already assigned to a proceeding operation then the value of that register MUST be spilled OR transferred to a different available register.
+            TempRes(u8),
+            /// - defined              - a specific register in which the value of a proceeding operation MUST be loaded into. If the value of proceeding operation is stored in a register other
+            ///                          than the defined register a move must occur. If the value of the proceeding operation is spilled, then the value must be loaded into the defined register.
+            ExistRes(u8),
+            /// - temporary register   - any non-assigned register that will only be used to store a temporary variable.
+            ///                          
+            /// Applies to arg op only
             Temporary,
+            Any,
           }
-          use ApplicationType::*;
+          use AssignmentType::*;
 
-          let (action, clear_for_call) = select_op_row(*op_id, &[
-            // ---------------
-            (Op::AGG_DECL, ([Inline, Inline, Inline], false)),
-            (Op::FREE, ([Existing, Inline, Inline], true)),
-            (Op::LOAD, ([Existing, Ignore, Ignore], false)),
-            (Op::STORE, ([Existing, Existing, Ignore], false)),
-            (Op::ADD, ([Existing, Existing, Ignore], false)),
-            (Op::NPTR, ([Existing, Ignore, Ignore], false)),
-            (Op::RET, ([Existing, Ignore, Ignore], false)),
-            (Op::MUL, ([Existing, Existing, Ignore], false)),
-            (Op::SEED, ([Existing, Ignore, Ignore], false)),
+          #[derive(Clone, Copy, Default)]
+          struct Action {
+            result_action: AssignmentType,
+            arg_actions:   [AssignmentType; 3],
+          }
+
+          let Action { result_action, arg_actions } = select_op_row(*op_id, &[
+            (Op::AGG_DECL, Action { result_action: ExistRes(0), arg_actions: [TempRes(1), TempRes(2), TempRes(11)] }),
+            (Op::FREE, Action { result_action: Ignore, arg_actions: [ExistRes(1), TempRes(2), TempRes(11)] }),
+            (Op::NPTR, Action { result_action: Any, arg_actions: [Existing, Ignore, Ignore] }),
+            (Op::STORE, Action { result_action: Ignore, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::LOAD, Action { result_action: Any, arg_actions: [Existing, Ignore, Ignore] }),
+            (Op::SEED, Action { result_action: Any, arg_actions: [Existing, Ignore, Ignore] }),
+            (Op::RET, Action { result_action: ExistRes(0), arg_actions: [Existing, Ignore, Ignore] }),
+            (Op::ADD, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::MUL, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::SUB, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::EQ, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::NEQ, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::GE, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::GR, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::NE, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::LE, Action { result_action: Any, arg_actions: [Existing, Existing, Ignore] }),
+            (Op::DIV, Action { result_action: ExistRes(0), arg_actions: [ExistRes(0), Existing, Ignore] }),
           ])
-          .unwrap_or(&([Ignore, Ignore, Ignore], false));
+          .unwrap_or(&Action::default())
+          .clone();
 
-          for ((index, op_id), action) in operands.iter().enumerate().zip(action) {
-            match action {
-              Temporary => {
-                op_registers[op].ops[index] =
-                  get_temp_reg(sn, op_registers, &mut register_set, &mut temp_reg_set, &mut active_register_assignments, None, &mut stack_offsets);
+          for (arg_index, (arg_op, action)) in operands.iter().zip(arg_actions).enumerate() {
+            let reg = match action {
+              AssignmentType::Temporary => {
+                // Acquire one register from the temporary stack. If all registers are used, spill one value from an
+                // existing register and use that newly freed register.
+
+                if let Some(temp_register) = data.temp.acquire_random_register() {
+                  RegisterAssignment::Reg(temp_register as _)
+                } else {
+                  todo!("Free Register")
+                }
               }
-              Existing => {
-                if op_id.is_invalid() {
-                  continue;
+              AssignmentType::ExistRes(reg_index) => match &op_registers[arg_op.usize()].get_own() {
+                RegisterAssignment::Spilled(offset, size, reg) => {
+                  if data.temp.register_is_acquired(reg_index as _) {
+                    spill_register(sn, op_registers, data, reg_index, OpId(op_index as _), spill_offset);
+                  }
+
+                  let acquired = data.temp.acquire_specific_register(reg_index as _);
+                  debug_assert!(acquired, "Register should be free at this point.");
+                  RegisterAssignment::Load(*offset, *size, reg_index as _)
+                }
+                RegisterAssignment::Reg(reg_id) => {
+                  if *reg_id != reg_index {
+                    if data.temp.register_is_acquired(reg_index as _) {
+                      spill_register(sn, op_registers, data, reg_index, OpId(op_index as _), spill_offset);
+                    }
+
+                    let acquired = data.temp.acquire_specific_register(reg_index as _);
+                    debug_assert!(acquired, "Register should be free at this point.");
+                    op_registers[op_index].add_pre_op(RegOp::RegMove(*reg_id, reg_index));
+                  }
+                  RegisterAssignment::Reg(reg_index as _)
+                }
+                _ => unreachable!(),
+              },
+              AssignmentType::TempRes(reg_index) => {
+                if data.temp.register_is_acquired(reg_index as _) {
+                  spill_register(sn, op_registers, data, reg_index, OpId(op_index as _), spill_offset);
                 }
 
-                let op_ty = get_op_type(sn, *op_id);
+                let acquired = data.temp.acquire_specific_register(reg_index as _);
+                debug_assert!(acquired, "Register should be free at this point.");
 
-                if op_ty.base_ty() == BaseType::MemCtx || op_ty.is_mem() || op_ty.is_nouse() {
-                  continue;
-                }
-
-                let existing_register = op_registers[op_id.usize()].own;
-
-                match existing_register {
+                RegisterAssignment::Reg(reg_index as _)
+              }
+              AssignmentType::Existing => {
+                match &op_registers[arg_op.usize()].get_own() {
+                  RegisterAssignment::Spilled(offset, size, _) => {
+                    // Load this register from an active register set.
+                    if let Some(temp_register) = data.temp.acquire_random_register() {
+                      RegisterAssignment::Load(*offset, *size, temp_register as _)
+                    } else {
+                      todo!("Free Register")
+                    }
+                  }
+                  RegisterAssignment::Reg(reg_id) => RegisterAssignment::Reg(*reg_id as _),
                   RegisterAssignment::None => {
-                    // Allocate free register. Handle spilled.
-                    op_registers[op].ops[index] =
-                      get_temp_reg(sn, op_registers, &mut register_set, &mut temp_reg_set, &mut active_register_assignments, None, &mut stack_offsets);
+                    if let Some(temp_register) = data.temp.acquire_random_register() {
+                      RegisterAssignment::Reg(temp_register as _)
+                    } else {
+                      todo!("Free Register")
+                    }
                   }
-                  RegisterAssignment::Var(var) => {
-                    // Allocate free register. Handle spilled.
-                    op_registers[op].ops[index] =
-                      get_temp_reg(sn, op_registers, &mut register_set, &mut temp_reg_set, &mut active_register_assignments, None, &mut stack_offsets);
-                  }
-                  reg @ RegisterAssignment::VarReg(..) => {
-                    op_registers[op].ops[index] = reg;
-                  }
-                  RegisterAssignment::Spilled(load_offset, _) => {
-                    op_registers[op].ops[index] = get_temp_reg(
-                      sn,
-                      op_registers,
-                      &mut register_set,
-                      &mut temp_reg_set,
-                      &mut active_register_assignments,
-                      Some(load_offset),
-                      &mut stack_offsets,
-                    );
-                  }
-                  _ => {
-                    print_blocks(sn, op_dependencies, op_data, blocks, op_registers, op_logical_rank);
-                    unreachable!("Op {op} is invalid");
-                  }
+                  _ => unreachable!(),
                 }
               }
-              Inline => {
-                let RegisterAssignment::Reg(reg) = op_registers[op].ops[index] else { unreachable!("Expecting a Reg type ") };
-                if !temp_reg_set.acquire_specific_register(reg as usize) {
-                  spill_specific_register(reg as usize, sn, op_registers, &mut register_set, &mut active_register_assignments, &mut stack_offsets);
-                }
-              }
-              Ignore => {}
-            }
-            if op_id.is_valid() {}
+              _ => RegisterAssignment::None,
+            };
+
+            op_registers[op_index].ops[arg_index] = reg;
           }
 
-          if *clear_for_call {
-            // Spill any registers that are not callee saved
-
-            if !temp_reg_set.acquire_specific_register(0 as usize) {
-              spill_specific_register(0 as usize, sn, op_registers, &mut register_set, &mut active_register_assignments, &mut stack_offsets);
-            }
-          }
-        }
-        _ => {}
-      }
-
-      let curr_op_l_rank = op_logical_rank[op];
-
-      // Release any registers assigned to input operands if we have reached the end of the lifetime of those operands.
-      match &sn.operands[op] {
-        Operation::Op { operands, .. } => {
-          for op in operands {
-            if op.is_invalid() {
+          let curr_op_l_rank = op_logical_rank[op_index];
+          for (c_op, app_type) in operands.iter().zip(arg_actions) {
+            if !matches!(app_type, AssignmentType::Existing | AssignmentType::ExistRes(..)) {
               continue;
             }
 
-            let op_ty = get_op_type(sn, *op);
+            if c_op.is_invalid() {
+              continue;
+            }
+
+            let op_ty = get_op_type(sn, *c_op);
 
             if op_ty.base_ty() == BaseType::MemCtx || op_ty.is_mem() || op_ty.is_nouse() {
-              continue;
+              //continue;
             }
 
-            let dependencies = &op_dependencies[op.usize()];
+            let dependencies = &op_dependencies[c_op.usize()];
 
-            if !matches!(sn.operands[op.usize()], Operation::Op { op_id: Op::SINK, .. })
+            if !matches!(sn.operands[c_op.usize()], Operation::Op { op_id: Op::SINK, .. })
               && !dependencies.iter().any(|d| op_logical_rank[d.usize()] > curr_op_l_rank)
             {
-              match op_registers[op.usize()].own {
-                RegisterAssignment::VarReg(_, reg) => {
-                  active_register_assignments[reg as usize] = Default::default();
-                  register_set.release_register(reg as _);
+              match op_registers[c_op.usize()].get_own() {
+                RegisterAssignment::Reg(reg) => {
+                  data.register_assignments[reg as usize] = Default::default();
+                  data.active.release_register(reg as _);
                 }
                 _ => {}
               }
+            }
+          }
+
+          let has_dependencies = op_dependencies[op_index].len() > 0;
+
+          match result_action {
+            AssignmentType::ExistRes(reg_index) => {
+              if data.active.register_is_acquired(reg_index as _) {
+                spill_or_move(sn, op_registers, data, op_index, reg_index, spill_offset);
+              }
+
+              assign_op_register(data, op_registers, op_index, reg_index as _);
+            }
+            AssignmentType::Any => {
+              let own_reg = op_registers[op_index].get_own();
+              match own_reg {
+                RegisterAssignment::None => {
+                  if has_dependencies {
+                    if let Some(temp_register) = data.active.acquire_random_register() {
+                      assign_op_register(data, op_registers, op_index, temp_register);
+                    } else {
+                      todo!("Free Active Register or spill immediately if impact score is lower than existing values");
+                    }
+                  }
+                }
+                RegisterAssignment::Reg(reg_index) => {
+                  if !data.active.acquire_specific_register(reg_index as _) {
+                    let existing_op = data.register_assignments[reg_index as usize];
+
+                    debug_assert!(existing_op.is_valid());
+
+                    let mut spill_required = true;
+                    // If the existing register has the same var_id then we are good to reuse it for this op.
+
+                    if op_registers[op_index].var >= 0 {
+                      spill_required = op_registers[op_index].var != op_registers[existing_op.usize()].var;
+                    }
+
+                    if spill_required {
+                      spill_or_move(sn, op_registers, data, op_index, reg_index, spill_offset);
+                    }
+                  }
+
+                  if has_dependencies {
+                    assign_op_register(data, op_registers, op_index, reg_index as _);
+                  }
+                }
+                _ => {
+                  unreachable!()
+                }
+              }
+            }
+            AssignmentType::Ignore => {}
+            _ => {
+              unreachable!()
             }
           }
         }
         _ => {}
       }
+    }
 
-      match op_registers[op].own {
-        RegisterAssignment::Spilled(..) => unreachable!(),
-        RegisterAssignment::None => {
-          // TODO: get_free_reg should return a falsy value if there are no free registers at this point.
-          // TODO: get_free_reg should work with different register classes.
-          if let Some(reg) = register_set.acquire_random_register() {
-            op_registers[op].own = RegisterAssignment::VarReg(op as u16, reg as u8);
-            active_register_assignments[reg as usize] = OpId(op as u32);
-          } else {
-            print_blocks(sn, op_dependencies, op_data, blocks, op_registers, op_logical_rank);
-            panic!("Handle requirement to stash active register.")
-          }
+    for blocks in block_groups.values() {
+      if blocks.len() > 1 && blocks.contains(&block_index) {
+        for block_id in blocks {
+          dbg!(&block_assignement[*block_id]);
         }
-        RegisterAssignment::VarReg(curr_var, reg) => {
-          // TODO: If current variable assigned to register is a
-          if register_set.register_is_acquired(reg as _) {
-            let active_assignment = active_register_assignments[reg as usize];
 
-            if active_assignment.is_valid() && active_assignment != OpId(op as _) {
-              match op_registers[active_assignment.usize()].own {
-                RegisterAssignment::VarReg(var, r) => {
-                  if var != curr_var {
-                    spill_specific_register(reg as usize, sn, op_registers, &mut register_set, &mut active_register_assignments, &mut stack_offsets);
-                    register_set.acquire_specific_register(reg as _);
-                  }
-                }
-                _ => {}
-              }
-
-              active_register_assignments[reg as usize] = OpId(op as _);
-            }
-          } else {
-            register_set.acquire_specific_register(reg as _);
-          }
-
-          op_registers[op].own = RegisterAssignment::VarReg(curr_var, reg as u8);
-          active_register_assignments[reg as usize] = OpId(op as u32);
-        }
-        RegisterAssignment::Var(curr_var) => {
-          // Var's can take over existing assignments provided the existing assignment is of the same var.
-
-          let mut have_reg = None;
-
-          for (reg, assigned_op) in active_register_assignments.iter().enumerate() {
-            if assigned_op.is_invalid() {
-              continue;
-            }
-            match op_registers[assigned_op.usize()].own {
-              RegisterAssignment::VarReg(var, target_reg) => {
-                if var == curr_var {
-                  assert_eq!(reg, target_reg as _);
-                  have_reg = Some(reg as i32);
-                  break;
-                }
-              }
-              _ => {}
-            }
-          }
-
-          let reg = *have_reg.get_or_insert_with(|| {
-            if let Some(reg) = register_set.acquire_random_register() {
-              reg as _
-            } else {
-              spill_register(sn, op_registers, &mut register_set, &mut active_register_assignments, &mut stack_offsets);
-
-              let Some(reg) = register_set.acquire_random_register() else { unreachable!() };
-
-              reg as _
-            }
-          });
-
-          op_registers[op].own = RegisterAssignment::VarReg(curr_var, reg as u8);
-          active_register_assignments[reg as usize] = OpId(op as u32);
-        }
-        _ => {
-          unreachable!()
-        }
+        // Each block has two sets of output vars. The explicit vars which are bound to
+        // Output nodes in successor blocks, and implicit vars which are those which
+        // are still alive but are not bound to any output nodes.
+        todo!("Handle register normalization for {blocks:?}")
       }
     }
   }
 
-  print_blocks(sn, op_dependencies, &op_data, &blocks, &op_registers, &op_logical_rank);
+  panic!("End");
 }
 
-fn bottom_up_register_assign_pass(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_logical_rank: &Vec<u32>, op_registers: &mut [RegisterData]) {
+fn spill_or_move(sn: &RootNode, op_registers: &mut [RegisterData], data: &mut BlockRegisterData, op_index: usize, reg_index: u8, spill_offset: &mut u64) {
+  let existing_op = data.register_assignments[reg_index as usize];
+  debug_assert!(existing_op.is_valid());
+  if let Some(alt_register) = data.temp.acquire_random_register() {
+    op_registers[op_index].add_pre_op(RegOp::RegMove(reg_index as _, alt_register as _));
+    data.register_assignments[reg_index as usize] = Default::default();
+
+    data.active.release_register(reg_index as _);
+    data.temp.release_register(reg_index as _);
+
+    assign_op_register(data, op_registers, existing_op.usize(), alt_register);
+    data.temp.acquire_specific_register(alt_register as _);
+  } else {
+    spill_register(sn, op_registers, data, reg_index, OpId(op_index as _), spill_offset);
+  }
+}
+
+fn spill_register(sn: &RootNode, op_registers: &mut [RegisterData], data: &mut BlockRegisterData, reg_index: u8, at_op: OpId, spill_offset: &mut u64) {
+  // Try to move val to another register.
+  let target_op = data.register_assignments[reg_index as usize];
+
+  debug_assert!(target_op.is_valid(), "Acquired register should have a valid op assignment");
+
+  data.temp.release_register(reg_index as _);
+  data.active.release_register(reg_index as _);
+  data.register_assignments[reg_index as usize] = Default::default();
+
+  let size = get_op_type(sn, target_op).prim_data().and_then(|d| Some(d.byte_size as u64)).unwrap_or(8);
+
+  let offset = op_registers[target_op.usize()].spill(spill_offset, size);
+  op_registers[at_op.usize()].add_pre_op(RegOp::Spill(offset as _, size as _, reg_index));
+}
+
+fn assign_op_register(state: &mut BlockRegisterData, op_registers: &mut [RegisterData], op_index: usize, reg_index: usize) {
+  state.active.acquire_specific_register(reg_index);
+  op_registers[op_index].set_own(RegisterAssignment::Reg(reg_index as _));
+  state.register_assignments[reg_index as usize] = OpId(op_index as _);
+}
+
+fn get_reg_with_lowest_spill_score(sn: &mut RootNode, data: &mut BlockRegisterData) -> usize {
+  let mut spill_reg_id = 0;
+  let mut lowest_score = usize::MAX;
+
+  for (reg_id, score) in data.register_assignments.iter().enumerate().filter_map(|(i, op_id)| match op_id.is_valid() {
+    true => match sn.operands[op_id.usize()] {
+      Operation::Op { op_id, operands } => Some((i, 0)),
+      Operation::Param(..) => Some((i, 0)),
+      _ => None,
+    },
+    _ => None,
+  }) {
+    if score < lowest_score {
+      spill_reg_id = reg_id;
+      lowest_score = score;
+    }
+  }
+  spill_reg_id
+}
+
+#[derive(Clone, Copy)]
+struct VirtualRegister {
+  preferred: Option<u16>, // The preferred register the operation should be assigned to.
+  start:     u32,
+  end:       u32,
+  is_phi:    bool,
+  valid:     bool,
+}
+
+impl Default for VirtualRegister {
+  fn default() -> Self {
+    Self { preferred: None, start: u32::MAX, end: u32::MIN, valid: false, is_phi: false }
+  }
+}
+
+impl Debug for VirtualRegister {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if self.valid {
+      f.write_fmt(format_args!("[{:4} -> {:4< }]", self.start, self.end.to_string()))
+    } else {
+      f.write_str("XXXX")
+    }
+  }
+}
+
+/// Bottom Up -
+/// Here we attempt to persist a virtual register assignment to a many ops within a dependency chain as possible,
+/// with the intent to reduce register pressure. This most apparently can be performed with single receiver
+/// chains, where, for a given op there is one and only one dependent.
+///
+fn virtual_register_assign(
+  sn: &mut RootNode,
+  op_dependencies: &[Vec<OpId>],
+  op_data: &[OpData],
+  blocks: &[Block],
+  op_logical_rank: &Vec<u32>,
+  op_registers: &mut [usize],
+) {
+  #[derive(PartialEq)]
+  enum VarSource {
+    /// Virtual Register source comes from an operation that only requires ordering to be observed, such a memory
+    /// dependent operations. This var of this source should not be used to represent a required register allocation.
+    Meta,
+    /// The source can handle inter block register allocations, and in fact requires all dependencies to be assigned
+    /// to the same register.
+    Merge,
+    /// The source requires this dependency to be placed in the same register as the source register.
+    Dependent,
+  }
+  use VarSource::*;
+
+  // Step 1. Add termination ops to queue. Termination ops includes -
+  // -- FREE
+  // -- RET
+
   let mut td_dep = VecDeque::new();
-  for node in sn.nodes.iter().rev() {
+  let mut virt_registers = vec![VirtualRegister::default(); sn.operands.len()];
+
+  for node in sn.nodes.iter() {
     for (op, var) in node.outputs.iter() {
-      if *var == VarId::Return {
-        td_dep.push_back((*op, RegisterAssignment::VarReg(op.usize() as u16, 0)));
+      // Create register
+      set_vr(op_dependencies, &mut virt_registers, op.usize(), op.usize(), op_logical_rank);
+
+      if *var != VarId::MemCTX {
+        td_dep.push_back((*op, Merge, op.usize() as u16));
       } else {
-        // td_dep.push_back((*op, -1 - op.usize() as i32));
+        td_dep.push_back((*op, Meta, op.usize() as u16));
       }
     }
   }
 
-  for node in sn.nodes.iter().rev() {
-    for (op, var) in node.outputs.iter() {
-      if *var == VarId::Return {
-        //td_dep.push_back((*op, 0));
-      } else {
-        td_dep.push_back((*op, RegisterAssignment::Var(op.usize() as u16)));
-      }
-    }
-  }
+  // Step 2. Process queue. For each node, assign either to a new virtual register, or to an existing one.
 
-  /* Bottom Up -
-   * Here we attempt to persist a register assignment to a many ops within a dependency chain as possible,
-   * with the intent to reduce register pressure. This most apparently can be performed with single receiver
-   * chains, where for a given op there is one and only one dependent.
-   */
-  while let Some((op, mut par_reg_id)) = td_dep.pop_front() {
+  while let Some((op, source_type, par_var_id)) = td_dep.pop_front() {
     let par_op_id = op.usize();
+    let mut own_var = par_var_id;
 
-    if op_registers[par_op_id].own != RegisterAssignment::None {
+    if op.is_invalid() || op_registers[par_op_id] != usize::MAX {
       continue;
+    }
+
+    if source_type == Dependent {
+      if op_data[own_var as usize].block != op_data[op.usize()].block {
+        //   own_var = op.usize() as _;
+      }
     }
 
     match &sn.operands[par_op_id] {
@@ -907,9 +1227,7 @@ fn bottom_up_register_assign_pass(sn: &mut RootNode, op_dependencies: &[Vec<OpId
         PortType::Output => {
           if get_op_type(sn, OpId(par_op_id as u32)) != TypeV::MemCtx {
             for (_, (_, op)) in operands.iter().cloned().enumerate() {
-              if op.is_valid() {
-                td_dep.push_front((op, par_reg_id));
-              }
+              td_dep.push_front((op, Merge, own_var));
             }
           }
         }
@@ -917,102 +1235,59 @@ fn bottom_up_register_assign_pass(sn: &mut RootNode, op_dependencies: &[Vec<OpId
           if get_op_type(sn, OpId(par_op_id as u32)) != TypeV::MemCtx {
             for (_, (_, op)) in operands.iter().cloned().enumerate() {
               if op.is_valid() {
-                td_dep.push_front((op, par_reg_id));
+                td_dep.push_front((op, Merge, own_var));
               }
             }
           }
         }
       },
-      Operation::Op { op_id: op_name, operands } => {
+      Operation::Op { op_id: op_type, operands } => {
         enum ApplicationType {
           Ignore,
           Inherit,
           Default,
-          SpecificPar(u8), // Incoming reg is the same as outgoing (par) reg.
-          SpecificOwn(u8),
-          SpecificExclusive(u8),
         }
         use ApplicationType::*;
 
-        if *op_name == Op::SINK {
-          // Sinks require different considerations ... TBD
-
-          let [dst, src, ..] = operands;
-
-          let logical_index = op_logical_rank[par_op_id];
-          if op_dependencies[dst.usize()].iter().any(|op| op_logical_rank[op.usize()] > logical_index) {
-            par_reg_id = RegisterAssignment::Var(par_op_id as u16)
-          }
-
-          td_dep.push_front((*src, par_reg_id));
-        } else if let Some(action) = select_op_row(*op_name, &[
-          // -----
-          (Op::AGG_DECL, [SpecificExclusive(1), SpecificExclusive(2), SpecificExclusive(11)]),
-          (Op::ARR_DECL, [SpecificExclusive(1), SpecificExclusive(2), SpecificExclusive(11)]),
-          (Op::FREE, [Default, SpecificExclusive(2), SpecificExclusive(11)]),
-          (Op::DIV, [SpecificPar(0), Default, Ignore]),
-          (Op::ADD, [Inherit, Default, Ignore]),
-          (Op::SUB, [Inherit, Default, Ignore]),
-          (Op::MUL, [Inherit, Default, Ignore]),
-          (Op::SEED, [Default, Ignore, Ignore]),
-          (Op::RET, [SpecificOwn(0), Ignore, Ignore]),
-          (Op::NPTR, [Default, Ignore, Ignore]),
-          (Op::STORE, [Default, Default, Ignore]),
-        ]) {
-          for ((index, operand), mapping) in operands.iter().enumerate().zip(action) {
-            match mapping {
-              Inherit => {
-                td_dep.push_front((operands[index], par_reg_id));
-              }
-              Default => {
-                debug_assert!(operand.is_valid());
-                td_dep.push_front((operands[index], RegisterAssignment::Var(operands[index].usize() as u16)));
-              }
-              SpecificPar(reg) => {
-                par_reg_id = RegisterAssignment::VarReg(par_op_id as u16, *reg);
-                td_dep.push_front((operands[index], RegisterAssignment::VarReg(par_op_id as u16, *reg)));
-              }
-              SpecificOwn(reg) => {
-                debug_assert!(operand.is_valid());
-                td_dep.push_front((operands[index], RegisterAssignment::VarReg(operand.usize() as u16, *reg)));
-              }
-              SpecificExclusive(reg) => {
-                op_registers[par_op_id].ops[index] = RegisterAssignment::Reg(*reg);
-              }
-              Ignore => {}
-            }
-          }
-
-          // Needs - whether we define manual assignments or ignore certain operands entirely
-        } else if *op_name == Op::DIV {
-          unreachable!();
-          // x86 DIV and IDIV requires the first argument (both the divisor and the output) to be RAX register, so
-          // if we are working uint or int values, we must make sure that op 1 is assigned to RAX.
-
-          // Set to RAX
-          par_reg_id = RegisterAssignment::VarReg(par_op_id as u16, 0);
-
-          td_dep.push_front((operands[0], par_reg_id));
-          td_dep.push_front((operands[1], RegisterAssignment::Var(operands[1].usize() as u16)));
-        } else {
-          if op_dependencies[par_op_id].len() > 1 {
-            par_reg_id = RegisterAssignment::Var(par_op_id as u16)
-          }
-
-          let mut have_matching_root = false;
-
-          for op in operands {
-            if op.is_valid() {
-              if !have_matching_root
-                && op_dependencies[op.usize()].len() <= 1
-                && !matches!(sn.operands[op.usize()], Operation::Const(..) | Operation::Param(..))
-              {
-                td_dep.push_front((*op, par_reg_id));
-                have_matching_root = true;
-              } else {
-                td_dep.push_front((*op, RegisterAssignment::Var(op.usize() as u16)));
+        match op_type {
+          op_type
+            if let Some(action) = select_op_row(*op_type, &[
+              // -----
+              (Op::AGG_DECL, [Ignore, Ignore, Ignore]),
+              (Op::ARR_DECL, [Ignore, Ignore, Ignore]),
+              (Op::FREE, [Default, Ignore, Ignore]),
+              (Op::DIV, [Default, Default, Ignore]),
+              (Op::ADD, [Inherit, Default, Ignore]),
+              (Op::SUB, [Inherit, Default, Ignore]),
+              (Op::MUL, [Inherit, Default, Ignore]),
+              (Op::SEED, [Default, Ignore, Ignore]),
+              (Op::EQ, [Inherit, Default, Ignore]),
+              (Op::RET, [Inherit, Ignore, Ignore]),
+              (Op::NPTR, [Default, Ignore, Ignore]),
+              (Op::STORE, [Default, Default, Ignore]),
+              (Op::POISON, [Ignore, Ignore, Ignore]),
+              (Op::LOAD, [Default, Ignore, Ignore]),
+              (Op::SINK, [Ignore, Inherit, Ignore]),
+            ]) =>
+          {
+            for ((index, operand), mapping) in operands.iter().enumerate().zip(action) {
+              match mapping {
+                Inherit => {
+                  td_dep.push_front((operands[index], Dependent, own_var));
+                }
+                Default => {
+                  debug_assert!(operand.is_valid());
+                  td_dep.push_front((operands[index], Dependent, operands[index].usize() as _));
+                }
+                Ignore => {
+                  td_dep.push_front((operands[index], Meta, operands[index].usize() as _));
+                }
               }
             }
+            // Needs - whether we define manual assignments or ignore certain operands entirely
+          }
+          op_name => {
+            todo!("{op_name}")
           }
         }
       }
@@ -1022,95 +1297,20 @@ fn bottom_up_register_assign_pass(sn: &mut RootNode, op_dependencies: &[Vec<OpId
       _ => {}
     }
 
-    op_registers[par_op_id].own = par_reg_id;
-  }
-}
-
-fn get_temp_reg<'r>(
-  sn: &RootNode,
-  op_registers: &mut [RegisterData],
-  reg_set: &mut X86registers<'r>,
-  temp_reg_set: &mut X86registers<'r>,
-  active_register_assignments: &mut [OpId; 32],
-  load: Option<u16>,
-  stack_offsets: &mut u64,
-) -> RegisterAssignment {
-  let reg = if let Some(reg) = temp_reg_set.acquire_random_register() {
-    reg as u8
-  } else {
-    spill_register(sn, op_registers, reg_set, active_register_assignments, stack_offsets);
-    *temp_reg_set = *reg_set;
-    temp_reg_set.acquire_random_register().expect("Failed to spill register") as u8
-  };
-
-  if let Some(offset) = load {
-    RegisterAssignment::Spilled(offset, reg as u8)
-  } else {
-    RegisterAssignment::VarReg(u16::MAX, reg as u8)
-  }
-}
-
-fn spill_specific_register(
-  reg_id: usize,
-  sn: &RootNode,
-  op_registers: &mut [RegisterData],
-  reg_set: &mut X86registers,
-  active_register_assignments: &mut [OpId; 32],
-  stack_offsets: &mut u64,
-) {
-  for (reg_index, op) in active_register_assignments.iter().enumerate() {
-    if op.is_valid() && reg_id == reg_index {
-      let ty = get_op_type(sn, *op);
-
-      if let Some(prim) = ty.prim_data() {
-        let offset = get_aligned_value(*stack_offsets, prim.byte_size as _);
-        *stack_offsets = offset + (prim.byte_size as u64);
-
-        op_registers[op.usize()].stashed = true;
-        op_registers[op.usize()].own = RegisterAssignment::Spilled(offset as _, op_registers[op.usize()].own.reg_id().unwrap_or_default() as _);
-        active_register_assignments[reg_index] = Default::default();
-
-        reg_set.release_register(reg_index);
-      } else {
-        // Pointer value
-        let offset = get_aligned_value(*stack_offsets, 8 as _);
-        *stack_offsets = offset + (8 as u64);
-
-        op_registers[op.usize()].stashed = true;
-        op_registers[op.usize()].own = RegisterAssignment::Spilled(offset as _, op_registers[op.usize()].own.reg_id().unwrap_or_default() as _);
-        active_register_assignments[reg_index] = Default::default();
-
-        reg_set.release_register(reg_index);
-      }
-      break;
+    if source_type != Meta {
+      set_vr(op_dependencies, &mut virt_registers, own_var as _, op.usize(), op_logical_rank);
+      op_registers[par_op_id] = own_var as _;
     }
   }
+
+  print_blocks(sn, op_dependencies, op_data, blocks, &op_registers, &op_logical_rank, &virt_registers);
 }
 
-fn spill_register(
-  sn: &RootNode,
-  op_registers: &mut [RegisterData],
-  reg_set: &mut X86registers,
-  active_register_assignments: &mut [OpId; 32],
-  stack_offsets: &mut u64,
-) {
-  for (reg_index, op) in active_register_assignments.iter().enumerate() {
-    if op.is_valid() {
-      let ty = get_op_type(sn, *op);
-      if let Some(prim) = ty.prim_data() {
-        *stack_offsets = get_aligned_value(*stack_offsets + (prim.byte_size as u64), prim.byte_size as _);
-
-        op_registers[op.usize()].stashed = true;
-        op_registers[op.usize()].own = RegisterAssignment::Spilled(*stack_offsets as _, op_registers[op.usize()].own.reg_id().unwrap_or_default() as _);
-        active_register_assignments[reg_index] = Default::default();
-
-        reg_set.release_register(reg_index);
-      } else {
-        unreachable!()
-      }
-      break;
-    }
-  }
+fn set_vr(op_dependencies: &[Vec<OpId>], virt_registers: &mut [VirtualRegister], target_vr_index: usize, target_op: usize, op_logical_rank: &Vec<u32>) {
+  let vert_reg = &mut virt_registers[target_vr_index];
+  vert_reg.start = vert_reg.start.min(op_logical_rank[target_op]);
+  vert_reg.end = op_dependencies[target_op].iter().fold(vert_reg.end, |r, v| r.max(op_logical_rank[v.usize()] as _));
+  vert_reg.valid = true;
 }
 
 #[derive(Debug)]
@@ -1165,7 +1365,7 @@ fn encode_routine(
         Operation::Op { op_id: op_name, operands } => match *op_name {
           Op::RET => {
             let ret_val_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary)];
-            let out_reg = REGISTERS[registers[*op].own.reg_id().unwrap()];
+            let out_reg = REGISTERS[registers[*op].own_origin.reg_id().unwrap()];
 
             if ret_val_reg != out_reg {
               encode_x86(binary, &mov, 64, out_reg.as_reg_op(), ret_val_reg.as_reg_op(), Arg::None);
@@ -1184,7 +1384,7 @@ fn encode_routine(
                 let size_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
                 let allocator_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 2, binary);
 
-                let out_ptr = registers[*op].own.reg_id().unwrap();
+                let out_ptr = registers[*op].own_origin.reg_id().unwrap();
                 let own_ptr = REGISTERS[out_ptr as usize];
 
                 let ptr_reg = REGISTERS[ptr_reg_id];
@@ -1213,7 +1413,7 @@ fn encode_routine(
             let size_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
             let align_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
             let allocator_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 2, binary);
-            let out_ptr = registers[*op].own.reg_id().unwrap();
+            let out_ptr = registers[*op].own_origin.reg_id().unwrap();
             let own_ptr = REGISTERS[out_ptr as usize];
 
             let size_reg = REGISTERS[size_reg_id];
@@ -1236,7 +1436,7 @@ fn encode_routine(
             encode_x86(binary, &call, 64, own_ptr.as_reg_op(), Arg::None, Arg::None);
           }
           Op::NPTR => {
-            let out_ptr = registers[*op].own.reg_id().unwrap();
+            let out_ptr = registers[*op].own_origin.reg_id().unwrap();
             let base_ptr = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
 
             let base_ptr_reg = REGISTERS[base_ptr as usize];
@@ -1288,7 +1488,7 @@ fn encode_routine(
               encode_x86(binary, &mov, 8 * 8, base_ptr_reg.as_mem_op(), val_reg.as_reg_op(), Arg::None);
             }
 
-            let out_ptr = registers[*op].own.reg_id().unwrap();
+            let out_ptr = registers[*op].own_origin.reg_id().unwrap();
             let own_ptr = REGISTERS[out_ptr as usize];
 
             if own_ptr != base_ptr_reg {
@@ -1301,7 +1501,7 @@ fn encode_routine(
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
               let base_ptr_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary)];
-              let reg = REGISTERS[registers[*op].own.reg_id().unwrap()];
+              let reg = REGISTERS[registers[*op].own_origin.reg_id().unwrap()];
               encode_x86(binary, &mov, prim.byte_size as u64 * 8, reg.as_reg_op(), base_ptr_reg.as_mem_op(), Arg::None);
             } else {
               panic!("Cannot load a non-primitive value")
@@ -1310,13 +1510,13 @@ fn encode_routine(
           Op::SEED => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
-              let to = registers[*op].own.reg_id().unwrap();
+              let to = registers[*op].own_origin.reg_id().unwrap();
               match registers[*op].ops[0] {
-                RegisterAssignment::Spilled(offset, from_reg) => {
+                RegisterAssignment::Spilled(offset, size, from_reg) => {
                   let l_reg = REGISTERS[to as usize];
                   encode_x86(binary, &mov, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::RSP_REL((offset as i64) as _), Arg::None);
                 }
-                RegisterAssignment::VarReg(_, from) => {
+                RegisterAssignment::Reg(from) => {
                   if to != from as usize {
                     let l_reg = REGISTERS[to as usize];
                     let r_reg = REGISTERS[from as usize];
@@ -1330,7 +1530,7 @@ fn encode_routine(
           Op::SINK => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
-              let reg = registers[*op].own.reg_id().unwrap();
+              let reg = registers[*op].own_origin.reg_id().unwrap();
               let l = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
 
               if l != reg {
@@ -1343,7 +1543,7 @@ fn encode_routine(
           Op::MUL => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
-              let o_reg = REGISTERS[registers[*op].own.reg_id().unwrap() as usize];
+              let o_reg = REGISTERS[registers[*op].own_origin.reg_id().unwrap() as usize];
               let l_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary) as usize];
               let r_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary) as usize];
 
@@ -1353,7 +1553,6 @@ fn encode_routine(
                   panic!("Const Const multiply should be optimized out!");
                 }
                 (Const(c), _, _, reg) | (_, Const(c), reg, _) => {
-                  dbg!(o_reg, reg);
                   encode_x86(binary, &imul, (prim.byte_size as u64) * 8, o_reg.as_reg_op(), reg.as_reg_op(), Arg::Imm_Int(c.convert(prim).load()));
                 }
                 (_, _, l_reg, r_reg) => {
@@ -1369,7 +1568,7 @@ fn encode_routine(
           Op::ADD | Op::SUB | Op::MUL | Op::DIV => {
             let ty = get_op_type(sn, OpId(*op as u32));
             if let Some(prim) = ty.prim_data() {
-              let reg = registers[*op].own.reg_id().unwrap();
+              let reg = registers[*op].own_origin.reg_id().unwrap();
               let l = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
               let r = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
 
@@ -1470,7 +1669,7 @@ fn encode_routine(
                   match &sn.operands[operands[1].usize()] {
                     Operation::Const(c) => {
                       // Load const
-                      r = registers[*op].own.reg_id().unwrap();
+                      r = registers[*op].own_origin.reg_id().unwrap();
                       let c_reg = REGISTERS[r as usize];
                       encode_x86(binary, &mov, (prim.byte_size as u64) * 8, c_reg.as_reg_op(), Arg::Imm_Int(c.convert(prim).load()), Arg::None);
                     }
@@ -1511,7 +1710,7 @@ fn encode_routine(
               }
             } else {
               if let Some(prim) = operand_ty.prim_data() {
-                let reg = registers[*op].own.reg_id().unwrap();
+                let reg = registers[*op].own_origin.reg_id().unwrap();
                 let mut l = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
                 let mut r = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
 
@@ -1523,7 +1722,7 @@ fn encode_routine(
                   match &sn.operands[operands[1].usize()] {
                     Operation::Const(c) => {
                       // Load const
-                      r = registers[*op].own.reg_id().unwrap();
+                      r = registers[*op].own_origin.reg_id().unwrap();
                       let c_reg = REGISTERS[r as usize];
                       encode_x86(binary, &mov, (prim.byte_size as u64) * 8, c_reg.as_reg_op(), Arg::Imm_Int(c.convert(prim).load()), Arg::None);
                     }
@@ -1545,8 +1744,8 @@ fn encode_routine(
         _ => {}
       }
 
-      match reg_assign.own {
-        RegisterAssignment::Spilled(offset, reg) => {
+      match reg_assign.own_origin {
+        RegisterAssignment::Spilled(offset, size, reg) => {
           let ty = get_op_type(sn, OpId(*op as u32));
           let prim = ty.prim_data().unwrap_or(prim_ty_addr);
           let reg = REGISTERS[reg as usize];
@@ -1559,8 +1758,8 @@ fn encode_routine(
     }
 
     for (dst, src) in block.resolve_ops.iter().cloned() {
-      let dst_reg = registers[src.usize()].own.reg_id().unwrap();
-      let src_reg = registers[dst.usize()].own.reg_id().unwrap();
+      let dst_reg = registers[src.usize()].own_origin.reg_id().unwrap();
+      let src_reg = registers[dst.usize()].own_origin.reg_id().unwrap();
 
       if dst_reg != src_reg && src_reg >= 0 && dst_reg >= 0 {
         let dst_reg = REGISTERS[dst_reg as usize];
@@ -1612,7 +1811,7 @@ fn get_arg_register(sn: &RootNode, registers: &[RegisterData], root_op: OpId, op
   use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
   let op = operands[index];
   let reg = match registers[root_op.usize()].ops[index] {
-    RegisterAssignment::Spilled(offset, reg_id) => {
+    RegisterAssignment::Spilled(offset, size, reg_id) => {
       let ty = get_op_type(sn, OpId(op.usize() as u32));
       let reg = REGISTERS[reg_id as usize];
       let prim = ty.prim_data().unwrap_or(prim_ty_addr);
@@ -1620,7 +1819,6 @@ fn get_arg_register(sn: &RootNode, registers: &[RegisterData], root_op: OpId, op
       reg_id
     }
     RegisterAssignment::Reg(reg) => reg,
-    RegisterAssignment::VarReg(_, reg) => reg,
     _ => unreachable!(),
   };
 

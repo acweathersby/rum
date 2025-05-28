@@ -1,7 +1,4 @@
-use crate::{
-  solver::GlobalConstraint,
-  types::{Numeric, *},
-};
+use crate::types::{Numeric, *};
 use core_lang::parser::ast::annotation_Value;
 use radlr_rust_runtime::types::BlameColor;
 use rum_common::{CachedString, IString};
@@ -17,7 +14,6 @@ use rum_lang::{
     match_condition_Value,
     member_group_Value,
     non_array_type_Value,
-    routine_definition_Value,
     statement_Value,
     type_Value,
     ASM_Input,
@@ -41,8 +37,6 @@ use std::{
   u32,
 };
 
-const HEAP_DEFAULT: usize = usize::MAX;
-
 pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
 pub(crate) const INTRINSIC_ROUTINE_ID: &'static str = "---INTRINSIC_ROUTINE---";
 pub(crate) const ROUTINE_SIGNATURE_ID: &'static str = "---ROUTINE_SIGNATURE---";
@@ -53,7 +47,6 @@ pub(crate) const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
 pub(crate) const CLAUSE_ID: &'static str = "---CLAUSE---";
 pub(crate) const CALL_ID: &'static str = "---CALL---";
 pub(crate) const STRUCT_ID: &'static str = "---STRUCT---";
-pub(crate) const ARRAY_ID: &'static str = "---ARRAY---";
 pub(crate) const INTERFACE_ID: &'static str = "---INTERFACE---";
 pub(crate) const MEMORY_REGION_ID: &'static str = "---MEMORY_REGION---";
 
@@ -77,7 +70,7 @@ pub fn add_module(db: &mut Database, module: &str) {
                 node.get_mut().unwrap().annotations.push(id);
               }
             }
-
+            dbg!(&node);
             db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
           }
           routine_definition_Value::Type_Struct(strct) => {
@@ -331,7 +324,7 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
     bp.super_node.nodes[0].outputs.push((Default::default(), VarId::VoidReturn));
   }
 
-  let BuildPack { super_node: mut routine, constraints, node_stack, .. } = bp;
+  let BuildPack { super_node: routine, constraints, node_stack, .. } = bp;
 
   for (id, index) in node_stack[0].var_lu.iter() {
     match node_stack[0].vars[*index].id {
@@ -771,7 +764,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
         }
         _ => unreachable!(),
       },
-      statement_Value::RawMove(move_) => match get_or_create_mem_op(bp, &move_.from, true, move_.tok.clone()) {
+      statement_Value::RawMove(move_) => match get_or_create_mem_op(bp, &move_.from, true, move_.tok.clone(), true) {
         VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, mem_var_id, root_par_id } => {
           todo!("Handle move op of member")
         }
@@ -840,10 +833,10 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
             if new_var {
               if mem.sub_members.len() > 0 {
-                match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone()) {
+                match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone(), false) {
                   VarLookup::Ptr { mem_ptr_op, mem_ptr_ty: mem_ty, mem_var_id, root_par_id } => {
                     let (op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, mem.clone().into());
-                    println!("TODO: Free old version of member variable");
+                    eprintln!("TODO: Free old version of member variable");
                     clone_op_heap(bp, mem_ptr_op, op);
                   }
                   _ => unreachable!(),
@@ -856,14 +849,14 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
                 declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), expr_op, expr_ty);
               }
             } else {
-              match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone()) {
+              match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone(), false) {
                 VarLookup::Ptr { mem_ptr_op, mem_ptr_ty: mem_ty, mem_var_id, root_par_id } => {
                   let (op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, mem.clone().into());
-                  println!("TODO: Free old version of member variable");
+                  eprintln!("TODO: Free old version of member variable");
                   clone_op_heap(bp, mem_ptr_op, op);
                 }
                 VarLookup::Var(var_op, ty, var_name) => {
-                  println!("TODO: Free old version of variable");
+                  eprintln!("TODO: Free old version of variable");
                   let (ctx_op, _) = get_mem_context(bp);
 
                   assert!(var_op.is_valid(), "{:?}", bp);
@@ -1017,7 +1010,7 @@ fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (OpId, TypeV)
         let method_name = name.name.id.intern();
         let name_op = add_op(bp, Operation::Name(method_name), Default::default(), call.member.clone().into());
 
-        let (op, ty) = match get_or_create_mem_op(bp, &mem, false, call.member.tok.clone()) {
+        let (op, ty) = match get_or_create_mem_op(bp, &mem, false, call.member.tok.clone(), true) {
           VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, .. } => (mem_ptr_op, mem_ptr_ty),
           VarLookup::Var(var_op, ty, ..) => (var_op, ty),
           _ => unreachable!(),
@@ -1113,15 +1106,15 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
       mem_ty.add(VarAttribute::Member);
       let mem_ty = mem_ty.ty;
 
-      let var_id = VarId::MemName(agg_var_index, name);
-
       bp.super_node.type_vars[agg_var_index].add_mem(name, mem_ty.clone(), Default::default());
 
       add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty.clone(), mutable: false });
 
       let (store_op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, init.clone().into());
+
       clone_op_heap(bp, agg_ptr_op, store_op);
-      update_var(bp, var_id, store_op, ty);
+
+      //update_var(bp, var_id, store_op, ty);
     } else {
       let offset_op = add_op(bp, Operation::Const(ConstVal::new(ty_u64.prim_data().unwrap(), index as u64)), addr_ty.clone(), Default::default());
 
@@ -1145,9 +1138,10 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
       add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: candidate_mem_ty.clone(), mutable: false });
 
       let (store_op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, init.clone().into());
+
       clone_op_heap(bp, agg_ptr_op, store_op);
 
-      update_var(bp, VarId::ArrayMem(agg_var_index), store_op, ty);
+      //update_var(bp, VarId::ArrayMem(agg_var_index), store_op, ty);
     }
   }
 }
@@ -1170,12 +1164,13 @@ fn has_var(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>) -> bool {
   get_var_data(bp, VarId::Name(var_name)).is_some()
 }
 
-/// Returns either the underlying value assigned to a variable name, or the caclulated pointer to the value.
+/// Returns either the underlying value assigned to a variable name, or the calculated pointer to the value.
 fn get_or_create_mem_op(
   bp: &mut BuildPack,
   mem: &MemberCompositeAccess<Token>,
   local_only: bool,
   source_token: Token, /* , get_pointer: bool */
+  load_required: bool,
 ) -> VarLookup {
   let var_name = mem.root.name.id.intern();
   if let Some(var) = get_var_data(bp, VarId::Name(var_name)) {
@@ -1272,13 +1267,13 @@ fn get_or_create_mem_op(
 
         agg_ty_index = var.ty.generic_id().unwrap();
 
-        //  if index != mem.sub_members.len() - 1 {
-        // load the value of the pointer
-        let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
-        clone_op_heap(bp, mem_ptr_op, loaded_val_op);
-        mem_ptr_op = loaded_val_op;
-        mem_ptr_ty = loaded_val_ty;
-        //}
+        if load_required {
+          // load the value of the pointer
+          let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
+          clone_op_heap(bp, mem_ptr_op, loaded_val_op);
+          mem_ptr_op = loaded_val_op;
+          mem_ptr_ty = loaded_val_ty;
+        }
       }
 
       VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, mem_var_id, root_par_id }
@@ -1292,7 +1287,7 @@ fn get_or_create_mem_op(
 
     declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
 
-    return get_or_create_mem_op(bp, mem, true, source_token);
+    return get_or_create_mem_op(bp, mem, true, source_token, load_required);
   }
 }
 
@@ -1342,7 +1337,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
   match expr {
     expression_Value::RawBlock(block_scope) => compile_scope(&block_scope, bp),
     expression_Value::MemberCompositeAccess(mem) => {
-      let out = match get_or_create_mem_op(bp, mem, false, mem.tok.clone()) {
+      let out = match get_or_create_mem_op(bp, mem, false, mem.tok.clone(), true) {
         VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, mem_var_id, root_par_id } => (mem_ptr_op, mem_ptr_ty, None),
         VarLookup::Var(op, ty, ..) => {
           let var = get_var_from_gen_ty(bp, ty);
@@ -1428,11 +1423,11 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 
   let mut clauses = Vec::new();
   let mut clauses_input_ty = Vec::new();
-  let mut bound_id = match_.binding_name.as_ref().map(|d| d.id.intern());
+  let bound_id = match_.binding_name.as_ref().map(|d| d.id.intern());
 
   let clause_ast = match_.clauses.iter().chain(match_.default_clause.iter()).enumerate();
 
-  for (index, clause) in clause_ast.clone() {
+  for (_, clause) in clause_ast.clone() {
     push_node(bp, CLAUSE_SELECTOR_ID);
     get_var(bp, VarId::MatchActivation);
 
