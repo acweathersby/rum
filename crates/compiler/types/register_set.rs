@@ -4,10 +4,9 @@ use super::OpId;
 
 #[derive(Clone, Copy)]
 pub(crate) struct RegisterSet<'registers, const NUM_OF_REGISTERS: usize, Register: Clone + Copy> {
-  pub(crate) registers:   &'registers [Register; NUM_OF_REGISTERS],
-  pub(crate) assignments: [OpId; NUM_OF_REGISTERS],
-  pub(crate) reserved:    u64,
-  pub(crate) acquired:    u64,
+  pub(crate) registers: &'registers [Register; NUM_OF_REGISTERS],
+  pub(crate) reserved:  u64,
+  pub(crate) acquired:  u64,
 }
 
 impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + Debug> Debug for RegisterSet<'registers, NUM_OF_REGISTERS, Register> {
@@ -41,7 +40,11 @@ impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + De
       }
     }
 
-    Self { registers, reserved, acquired: 0, assignments: [OpId::default(); NUM_OF_REGISTERS] }
+    Self { registers, reserved, acquired: 0 }
+  }
+
+  pub(crate) fn join(&self, other: &Self) -> Self {
+    Self { acquired: self.acquired | other.acquired, registers: self.registers, reserved: self.reserved }
   }
 
   #[track_caller]
