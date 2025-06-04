@@ -1,14 +1,52 @@
-use crate::types::SolveDatabase;
+use crate::{basic_block_compiler, types::SolveDatabase};
 
 //pub(crate) mod x86_compiler;
 //pub use x86_compiler::compile_from_ssa_fn;
-mod x86_compiler;
+pub mod x86_binary_writer;
 pub mod x86_encoder;
 pub mod x86_eval;
 pub mod x86_instructions;
 pub mod x86_types;
-pub use x86_compiler::*;
 
+extern "C" fn allocate(size: u64, alignment: u64, allocator_slot: u64) -> *mut u8 {
+  dbg!(size, alignment, allocator_slot);
+  let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment as _).expect("");
+  let ptr = unsafe { std::alloc::alloc(layout) };
+
+  dbg!(ptr);
+  ptr
+}
+
+extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
+  dbg!(size, ptr, allocator_slot);
+  let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(8 as _).expect("");
+  unsafe { std::alloc::dealloc(ptr, layout) };
+}
+
+pub fn compile(db: &SolveDatabase) {
+  for node in db.nodes.iter() {
+    dbg!(node);
+    let binary = Vec::new();
+
+    let super_node = node.get_mut().unwrap();
+
+    print_instructions(binary.as_slice(), 0);
+
+    let fn_build_data = basic_block_compiler::encode_function(super_node, db, allocate as _, free as _);
+
+    let binary = x86_binary_writer::encode_routine(super_node, &fn_build_data.0, &fn_build_data.1, db, 0, 0);
+
+    let func = x86_eval::x86Function::new(&binary, 0);
+
+    let val = func.access_as_call::<fn(u32, u32) -> u32>()(2, 1);
+
+    dbg!(val);
+
+    // TEMP: Run the binary.
+
+    panic!("Finished: Have binary. Need to wrap in some kind of portable unit to allow progress of compilation and linking.");
+  }
+}
 
 #[inline]
 /// Pushes an arbitrary number of bytes to into a binary buffer.

@@ -2,6 +2,8 @@
 #![feature(unsized_tuple_coercion)]
 #![feature(if_let_guard)]
 
+pub mod basic_block_compiler;
+
 pub mod ir_compiler;
 
 pub mod interpreter;
