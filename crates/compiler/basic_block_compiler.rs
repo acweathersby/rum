@@ -49,27 +49,68 @@ impl Default for BasicBlock {
   }
 }
 
-pub const REGISTERS: [Reg; 12] = [RAX, RCX, RDX, RBX, R8, R9, R10, R11, R12, R13, R14, R15];
-pub const PARAM_REGISTERS: [usize; 12] = [0, 1, 2, 4, 5, 7, 8, 9, 0, 10, 11, 12];
+pub const REGISTERS: [Reg; 12] = [RCX, RDX, RBX, RDI, RSI, RAX, R10, R11, R12, R13, R14, R15];
+pub const PARAM_REGISTERS: [usize; 12] = [3, 4, 2, 4, 5, 7, 8, 9, 0, 10, 11, 12];
 
-const BU_ASSIGN_MAP: [(Op, ([bool; 3], Option<i32>)); 15] = [
-  // -----
-  (Op::AGG_DECL, ([false, false, false], None)),
-  (Op::ARR_DECL, ([false, false, false], None)),
-  (Op::FREE, ([true, false, false], None)),
-  (Op::DIV, ([false, false, false], None)),
-  (Op::ADD, ([true, false, false], None)),
-  (Op::SUB, ([true, false, false], None)),
-  (Op::MUL, ([true, false, false], None)),
-  (Op::SEED, ([false, false, false], None)),
-  (Op::EQ, ([true, false, false], None)),
-  (Op::RET, ([true, false, false], Some(0))),
-  (Op::NPTR, ([false, false, false], None)),
-  (Op::STORE, ([false, false, false], None)),
-  (Op::POISON, ([false, false, false], None)),
-  (Op::LOAD, ([false, false, false], None)),
-  (Op::SINK, ([false, true, false], None)),
-];
+enum ArgRegType {
+  /// Operation has no use of this operand
+  NoUse,
+  /// The operation requires the register containing the value of operand at the given index
+  Used,
+  /// The operand needs to be in this register before reaching this operation
+  RequiredAs(u8),
+  /// This instruction needs free access to this register.
+  /// Any existing allocation to this register should be stashed or otherwise saved
+  /// before access is granted. The value of the operand itself is ignored.
+  NeedAccessTo(u8),
+}
+
+enum ClearForCall {
+  Clear,
+  NoClear,
+}
+
+enum AssignRequirement {
+  /// Ideally the output of this operand will be placed in this register if available,
+  /// but if this register is already used then any other available register will do.
+  Suggested(u8),
+  /// The output of the operand WILL be assigned to the given register.
+  /// Steps must be taken to insure this does not clobber any existing values.
+  Forced(u8),
+  NoRequirement,
+}
+
+static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18] = {
+  use ArgRegType::{NeedAccessTo as NA, RequiredAs as RA, *};
+  use AssignRequirement::*;
+  let [rcx, rdx, rbx, rdi, rsi, rax, r10, rll, r12, r13, ..] = [0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12];
+
+  let arg1: u8 = rdx as u8;
+  let arg2: u8 = rdi as u8;
+  let arg3: u8 = rsi as u8;
+
+  [
+    // -----
+    (Op::AGG_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
+    (Op::ARR_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
+    (Op::FREE, ([RA(arg1), NA(arg2), NA(arg3)], NoRequirement, [false, false, false])),
+    (Op::DIV, ([RA(rax), Used, NoUse], Forced(rax), [true, false, false])),
+    (Op::ADD, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::SUB, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::MUL, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::EQ, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::GR, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::LE, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::LS, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::RET, ([Used, NoUse, NoUse], Forced(rax), [false, false, false])),
+    (Op::STORE, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
+    (Op::NPTR, ([Used, Used, NoUse], NoRequirement, [false, false, false])),
+    (Op::LOAD, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
+    (Op::SEED, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::SINK, ([NoUse, Used, NoUse], NoRequirement, [false, true, false])),
+    (Op::POISON, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
+  ]
+};
 
 enum ApplicationType {
   Ignore,
@@ -77,9 +118,10 @@ enum ApplicationType {
   Inline,
   Temporary,
 }
+
 use ApplicationType::*;
 
-const TD_ASSIGN_MAP: [(Op, ([ApplicationType; 3], bool)); 11] = [
+const TD_ASSIGN_MAP: [(Op, ([ApplicationType; 3], bool)); 12] = [
   // ---------------
   (Op::AGG_DECL, ([Inline, Inline, Inline], false)),
   (Op::FREE, ([Existing, Inline, Inline], true)),
@@ -91,6 +133,7 @@ const TD_ASSIGN_MAP: [(Op, ([ApplicationType; 3], bool)); 11] = [
   (Op::MUL, ([Existing, Existing, Ignore], false)),
   (Op::SEED, ([Existing, Ignore, Ignore], false)),
   (Op::EQ, ([Existing, Existing, Ignore], false)),
+  (Op::GR, ([Existing, Existing, Ignore], false)),
   (Op::SINK, ([Ignore, Existing, Ignore], false)),
 ];
 
@@ -203,7 +246,7 @@ fn assign_ops_to_blocks(
 
 /**
  * Maps ops to blocks. An operation that has already been assigned to a block may be assigned to a new block if the incoming block is ordered before the
- * outgoing block. In this case, all dependent ops will also be assigned to lower order block recursively
+ * outgoing block. In this case, all dependent ops will also be assigned to lower ordered block (the predecessor) recursively
  */
 fn assign_ops_to_blocks_inner(
   op_id: OpId,
@@ -272,6 +315,7 @@ fn assign_ops_to_blocks_inner(
         (Op::NPTR, [true, true, false]),
         (Op::FREE, [true, false, false]),
         (Op::EQ, [true, true, false]),
+        (Op::GR, [true, true, false]),
       ]) else {
         panic!("Could not get dependency map for {op_id}: {op}")
       };
@@ -548,6 +592,9 @@ pub enum OperandRegister {
   None,
   Reg(u8),
   Load(u8),
+  /// Indicates the argument is a constant value, and provides a TEMPORARY register the constant value
+  /// can be loaded into if necessary.
+  ConstReg(u8),
 }
 
 impl OperandRegister {
@@ -662,7 +709,7 @@ impl From<OpId> for RegAssignTarget {
   }
 }
 
-type X86registers<'r> = RegisterSet<'r, 3, Reg>;
+type X86registers<'r> = RegisterSet<'r, 12, Reg>;
 /// Bottom Up -
 /// Here we attempt to persist a virtual register assignment to a many ops within a dependency chain as possible,
 /// with the intent to reduce register pressure. This most apparently can be performed with single receiver
@@ -737,7 +784,8 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
 
           let var_id = match temp_registers[op_id] {
             RegisterAssignment::Var(op_id) => op_id,
-            RegisterAssignment::InterVar(..) => op_id,
+            // RegisterAssignment::InterVar(..) => op_id, -- splits the variable.
+            RegisterAssignment::InterVar(op_id) => op_id,
             _ => {
               temp_registers[op_id] = RegisterAssignment::Var(op_id);
               op_id
@@ -745,16 +793,30 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
           };
 
           match op_type {
-            op_type if let Some((action, preferred)) = select_op_row(*op_type, &BU_ASSIGN_MAP) => {
-              if let Some(preferred) = preferred {
-                op_registers[op_id].preferred = *preferred;
-              };
+            op_type if let Some((action, preferred, inherit)) = select_op_row(*op_type, &BU_ASSIGN_MAP) => {
+              match preferred {
+                AssignRequirement::Forced(register) | AssignRequirement::Suggested(register) => {
+                  if op_registers[op_id].preferred < 0 {
+                    op_registers[op_id].preferred = *register as _;
+                  }
+                }
+                _ => {}
+              }
 
-              for (dep_op_id, mapping) in operands.iter().zip(action) {
+              for ((dep_op_id, mapping), inherit) in operands.iter().zip(action).zip(inherit) {
                 if dep_op_id.is_valid() && op_data[dep_op_id.usize()].block == curr_block_id as _ {
                   match mapping {
-                    true => {
-                      temp_registers[dep_op_id.usize()] = RegisterAssignment::Var(var_id);
+                    mapping @ ArgRegType::Used | mapping @ ArgRegType::RequiredAs(..) => {
+                      if *inherit {
+                        temp_registers[dep_op_id.usize()] = RegisterAssignment::Var(var_id);
+                      } else {
+                        temp_registers[dep_op_id.usize()] = RegisterAssignment::Var(op_id);
+                      }
+
+                      if let ArgRegType::RequiredAs(register) = mapping {
+                        op_registers[dep_op_id.usize()].preferred = *register as _;
+                      }
+
                       add_var_op_lu(&mut var_op_lookups, var_id, dep_op_id.usize());
                     }
                     _ => {}
@@ -780,7 +842,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
 
   // Top Down Pass =================================================================================
 
-  let mut block_alive_vars = vec![(X86registers::new(&[RAX, RCX, RDX /* , RBX, RSP */], None), [RegAssignTarget::default(); 12]); sorted_blocks.len()];
+  let mut block_alive_vars = vec![(X86registers::new(&REGISTERS, None), [RegAssignTarget::default(); 12]); sorted_blocks.len()];
 
   let mut stack_offsets: u64 = 0;
   // print_blocks(sn, op_dependencies, op_data, blocks, &temp_registers, &op_registers);
@@ -800,7 +862,19 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
     let block = &blocks[curr_block_id];
     for op_id in block.ops.iter().cloned() {
       match &sn.operands[op_id] {
-        Operation::Param(_, index) => {}
+        Operation::Param(_, index) => {
+          let reg_index = PARAM_REGISTERS[*index as usize];
+          if !register_set.acquire_specific_register(reg_index) {
+            panic!("Could not acquire register for param")
+          };
+
+          match temp_registers[op_id] {
+            RegisterAssignment::Var(var_op_id) | RegisterAssignment::InterVar(var_op_id) => {
+              active_register_value[var_op_id] = OperandRegister::Reg(reg_index as _)
+            }
+            _ => unreachable!(),
+          }
+        }
         Operation::Op { operands, op_id: op_name, .. } => {
           let mut temp_reg_set = register_set;
 
@@ -826,7 +900,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
                 match temp_registers[dep_op_id.usize()] {
                   RegisterAssignment::Constant => {
                     if let Some(temp_register) = temp_reg_set.acquire_random_register() {
-                      op_registers[op_id].ops[index] = OperandRegister::Reg(temp_register as _);
+                      op_registers[op_id].ops[index] = OperandRegister::ConstReg(temp_register as _);
                     } else {
                       let (var_id, reg) = get_preferred_free_reg(&temp_registers, &op_registers, var_reg_assignments, operands);
                       spill_var(sn, &var_op_lookups, &mut op_registers, &mut stack_offsets, var_id);
@@ -838,7 +912,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
 
                       active_register_value[var_id] = OperandRegister::None;
                       var_reg_assignments[reg as usize] = Default::default();
-                      op_registers[op_id].ops[index] = OperandRegister::Reg(reg as _);
+                      op_registers[op_id].ops[index] = OperandRegister::ConstReg(reg as _);
                     }
                   }
                   RegisterAssignment::Var(var_id) | RegisterAssignment::InterVar(var_id) => {
@@ -870,16 +944,6 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
             }
             if dep_op_id.is_valid() {}
           }
-
-          if *clear_for_call {
-            // Spill any registers that are not callee saved
-
-            //todo!("Call for clear `1QZXQZ 12`1`2 1` X 2 X")
-
-            /* if !temp_reg_set.acquire_specific_register(0 as usize) {
-              spill_specific_register(0 as usize, sn, &mut op_registers, &mut register_set, &mut active_register_assignments, &mut stack_offsets);
-            } */
-          }
         }
         _ => {}
       }
@@ -909,27 +973,29 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
       match temp_registers[op_id] {
         RegisterAssignment::Var(var_op_id) | RegisterAssignment::InterVar(var_op_id) => {
           let preferred = op_registers[var_op_id].preferred;
-
           if let OperandRegister::None = active_register_value[var_op_id] {
+            if preferred >= 0 {
+              let mut b = register_set.clone();
+              println!("AAA {preferred} {register_set:?} {}", b.acquire_specific_register(preferred as _));
+            }
+
             if preferred >= 0 && register_set.acquire_specific_register(preferred as _) {
               active_register_value[var_op_id] = OperandRegister::Reg(preferred as _);
-
-              var_reg_assignments[preferred as usize] = OpId(op_id as _).into();
             } else if let Some(register_id) = register_set.acquire_random_register() {
               active_register_value[var_op_id] = OperandRegister::Reg(register_id as _);
             } else {
               let (var_id, reg) = get_preferred_free_reg(&temp_registers, &op_registers, var_reg_assignments, &[]);
               spill_var(sn, &var_op_lookups, &mut op_registers, &mut stack_offsets, var_id);
-
               register_set.release_register(reg as _);
               active_register_value[var_op_id] = OperandRegister::Reg(reg as _);
             }
-          } else if var_op_id == op_id && preferred >= 0 && op_registers[var_op_id].own != OperandRegister::Reg(preferred as _) {
+          } else if active_register_value[var_op_id] != OperandRegister::Reg(preferred as _) && var_op_id == op_id && preferred >= 0 {
             // The preferred register must be used as the output for the
             if register_set.acquire_specific_register(preferred as _) {
               active_register_value[var_op_id] = OperandRegister::Reg(preferred as _);
             } else {
               active_register_value[var_op_id] = OperandRegister::Reg(preferred as _);
+              print_blocks(sn, op_dependencies, op_data, blocks, &temp_registers, &op_registers);
               todo!("Need to manually assign preferred register. {var_reg_assignments:?}")
             }
           }
@@ -1022,7 +1088,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
     }
   }
 
-  //  print_blocks(sn, op_dependencies, op_data, blocks, &temp_registers, &op_registers);
+  print_blocks(sn, op_dependencies, op_data, blocks, &temp_registers, &op_registers);
 
   op_registers
 }
@@ -1094,8 +1160,7 @@ fn select_op_row<'ds, Row>(op: Op, map: &'ds [(Op, Row)]) -> Option<&'ds Row> {
 
   None
 }
-
-/* fn print_blocks(
+fn print_blocks(
   sn: &RootNode,
   op_dependencies: &[Vec<OpId>],
   op_data: &[OpData],
@@ -1148,4 +1213,3 @@ fn select_op_row<'ds, Row>(op: Op, map: &'ds [(Op, Row)]) -> Option<&'ds Row> {
     print!("\n\n")
   }
 }
- */

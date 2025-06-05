@@ -7,7 +7,7 @@ use crate::{
   basic_block_compiler::{BasicBlock, OperandRegister, RegisterData, REGISTERS},
   interpreter::{get_agg_offset, get_agg_size, get_op_type, RuntimeSystem},
   targets::x86::x86_encoder::{OpEncoder, OpSignature},
-  types::{prim_ty_addr, ty_bool, NodeHandle, Op, OpId, Operation, RootNode, SolveDatabase, TypeV},
+  types::{prim_ty_addr, ty_bool, ConstVal, NodeHandle, Op, OpId, Operation, RootNode, SolveDatabase, TypeV},
 };
 use std::{fmt::Debug, u32, usize};
 
@@ -57,21 +57,12 @@ pub fn encode_routine(
       let prim = ty.prim_data().unwrap_or(prim_ty_addr);
       let byte_size = (prim.byte_size as u64) * 8;
 
-      println!("////////////////////////");
-
       match &sn.operands[*op] {
-        Operation::Port { node_id, ty, ops } => {
-          println!("PORT");
+        Operation::Port { .. } | Operation::Const(..) => {
           continue;
         }
-        Operation::Param(..) => {
-          println!("PARAM")
-        }
-        Operation::Const(c) => {
-          continue;
-        }
+        Operation::Param(..) => {}
         Operation::Op { op_id: op_name, operands } => {
-          println!("{op_name}");
           match *op_name {
             /* Op::RET => {
                let ret_val_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary)];
@@ -235,7 +226,11 @@ pub fn encode_routine(
               if op_reg_data.own != op_reg_data.ops[1] {
                 match op_reg_data.ops[1] {
                   OperandRegister::Reg(reg_id) => {
-                    encode_x86(binary, &mov, byte_size, REGISTERS[reg_id as usize].as_reg_op(), op_reg_data.register(&REGISTERS).as_reg_op(), Arg::None);
+                    encode_x86(binary, &mov, byte_size, op_reg_data.register(&REGISTERS).as_reg_op(), REGISTERS[reg_id as usize].as_reg_op(), Arg::None);
+                  }
+                  OperandRegister::ConstReg(reg_id) => {
+                    let Operation::Const(const_val) = &sn.operands[operands[1].usize()] else { unreachable!() };
+                    encode_x86(binary, &mov, byte_size, op_reg_data.register(&REGISTERS).as_reg_op(), Arg::Imm_Int(const_val.convert(prim).load()), Arg::None);
                   }
                   _ => unreachable!(),
                 }
@@ -338,6 +333,12 @@ pub fn encode_routine(
                       let r_reg = REGISTERS[r as usize];
                       encode_x86(binary, &cmp, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
                     }
+                    (OperandRegister::Reg(l), OperandRegister::ConstReg(r)) => {
+                      let l_reg = REGISTERS[l as usize];
+                      let Operation::Const(const_val) = &sn.operands[operands[1].usize()] else { unreachable!() };
+                      encode_x86(binary, &cmp, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), Arg::Imm_Int(const_val.convert(prim).load()), Arg::None);
+                    }
+
                     a => todo!("{:?}", a),
                   }
                   let (fail_next, pass_next) = match op_name {
@@ -379,8 +380,6 @@ pub fn encode_routine(
         // Store the register
         encode_x86(binary, &mov, byte_size, Arg::RSP_REL(op_reg_data.spill_offset as _), op_reg_data.register(&REGISTERS).as_reg_op(), Arg::None);
       }
-
-      print_instructions(binary, 0);
     }
 
     /*  for (dst, src) in block.resolve_ops.iter().cloned() {
@@ -427,8 +426,6 @@ pub fn encode_routine(
     let ptr = binary[instruction_end_point - 4..].as_mut_ptr();
     unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
   }
-
-  println!("AAAAAAAAAAAAAAAAAAAAAAAAA");
 
   print_instructions(binary, 0);
 

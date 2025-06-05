@@ -1514,7 +1514,8 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     let (op, output_ty, _) = compile_scope(&clause.scope, bp);
 
     if op.is_valid() {
-      update_var(bp, VarId::OutputVal, op, output_ty);
+      let sink_op = add_op(bp, Operation::Op { op_id: Op::SINK, operands: [Default::default(), op, Default::default()] }, output_ty, Default::default());
+      update_var(bp, VarId::OutputVal, sink_op, output_ty);
     } else {
       let (poison_op, output_ty) = process_op(Op::POISON, &[], bp, Default::default());
 
