@@ -49,8 +49,8 @@ impl Default for BasicBlock {
   }
 }
 
-pub const REGISTERS: [Reg; 12] = [RCX, RDX, RBX, RDI, RSI, RAX, R10, R11, R12, R13, R14, R15];
-pub const PARAM_REGISTERS: [usize; 12] = [3, 4, 2, 4, 5, 7, 8, 9, 0, 10, 11, 12];
+pub const REGISTERS: [Reg; 12] = [RCX, R8, RBX, RDI, RSI, RAX, R10, R11, R12, R13, R14, RDX];
+pub const PARAM_REGISTERS: [usize; 12] = [3, 4, 11, 4, 5, 7, 8, 9, 0, 10, 11, 12];
 
 enum ArgRegType {
   /// Operation has no use of this operand
@@ -94,14 +94,14 @@ static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18
     (Op::AGG_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
     (Op::ARR_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
     (Op::FREE, ([RA(arg1), NA(arg2), NA(arg3)], NoRequirement, [false, false, false])),
-    (Op::DIV, ([RA(rax), Used, NoUse], Forced(rax), [true, false, false])),
-    (Op::ADD, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
-    (Op::SUB, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
-    (Op::MUL, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
-    (Op::EQ, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
-    (Op::GR, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
-    (Op::LE, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
-    (Op::LS, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
+    (Op::DIV, ([RA(rax), Used, NoUse], Forced(rax), [false, false, false])),
+    (Op::ADD, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
+    (Op::SUB, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
+    (Op::MUL, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
+    (Op::EQ, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
+    (Op::GR, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
+    (Op::LE, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
+    (Op::LS, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
     (Op::RET, ([Used, NoUse, NoUse], Forced(rax), [false, false, false])),
     (Op::STORE, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
     (Op::NPTR, ([Used, Used, NoUse], NoRequirement, [false, false, false])),
@@ -111,38 +111,6 @@ static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18
     (Op::POISON, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
   ]
 };
-
-enum ApplicationType {
-  Ignore,
-  Existing,
-  Inline,
-  Temporary,
-}
-
-use ApplicationType::*;
-
-const TD_ASSIGN_MAP: [(Op, ([ApplicationType; 3], bool)); 12] = [
-  // ---------------
-  (Op::AGG_DECL, ([Inline, Inline, Inline], false)),
-  (Op::FREE, ([Existing, Inline, Inline], true)),
-  (Op::LOAD, ([Existing, Ignore, Ignore], false)),
-  (Op::STORE, ([Existing, Existing, Ignore], false)),
-  (Op::ADD, ([Existing, Existing, Ignore], false)),
-  (Op::NPTR, ([Existing, Ignore, Ignore], false)),
-  (Op::RET, ([Existing, Ignore, Ignore], false)),
-  (Op::MUL, ([Existing, Existing, Ignore], false)),
-  (Op::SEED, ([Existing, Ignore, Ignore], false)),
-  (Op::EQ, ([Existing, Existing, Ignore], false)),
-  (Op::GR, ([Existing, Existing, Ignore], false)),
-  (Op::SINK, ([Ignore, Existing, Ignore], false)),
-];
-
-pub struct BinaryWriterDataSet<Register> {
-  register_indices:  Vec<usize>,
-  indice_to_reg:     Vec<Register>,
-  bu_assign_mapping: Vec<(Op, ([bool; 3], Option<usize>))>,
-  td_assign_mapping: Vec<(Op, ([ApplicationType; 3], bool))>,
-}
 
 pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase, allocator_address: usize, allocator_free_address: usize) -> (Vec<BasicBlock>, Vec<RegisterData>) {
   let mut op_dependencies = vec![vec![]; sn.operands.len()];
@@ -610,6 +578,9 @@ impl OperandRegister {
 pub struct RegisterData {
   pub own:          OperandRegister,
   pub ops:          [OperandRegister; 3],
+  /// Arg at a given index should be copied to corresponding register index BEFORE
+  /// operation is performed.
+  pub copy_to:      [u8; 3],
   //pre_ops:      [RegOp; 3],
   pub stashed:      bool,
   pub spill_offset: u32,
@@ -631,6 +602,7 @@ impl Default for RegisterData {
       spill_offset: u32::MAX,
       own:          Default::default(),
       ops:          Default::default(),
+      copy_to:      [255; 3],
       //pre_ops:      Default::default(),
       stashed:      Default::default(),
       preferred:    -1,
@@ -794,14 +766,21 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
 
           match op_type {
             op_type if let Some((action, preferred, inherit)) = select_op_row(*op_type, &BU_ASSIGN_MAP) => {
-              match preferred {
-                AssignRequirement::Forced(register) | AssignRequirement::Suggested(register) => {
+              let var_id = match preferred {
+                AssignRequirement::Suggested(register) => {
                   if op_registers[op_id].preferred < 0 {
                     op_registers[op_id].preferred = *register as _;
                   }
+                  var_id
                 }
-                _ => {}
-              }
+                AssignRequirement::Forced(register) => {
+                  // Split the variable
+                  temp_registers[op_id] = RegisterAssignment::Var(op_id);
+                  op_registers[op_id].preferred = *register as _;
+                  op_id
+                }
+                _ => var_id,
+              };
 
               for ((dep_op_id, mapping), inherit) in operands.iter().zip(action).zip(inherit) {
                 if dep_op_id.is_valid() && op_data[dep_op_id.usize()].block == curr_block_id as _ {
@@ -809,8 +788,6 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
                     mapping @ ArgRegType::Used | mapping @ ArgRegType::RequiredAs(..) => {
                       if *inherit {
                         temp_registers[dep_op_id.usize()] = RegisterAssignment::Var(var_id);
-                      } else {
-                        temp_registers[dep_op_id.usize()] = RegisterAssignment::Var(op_id);
                       }
 
                       if let ArgRegType::RequiredAs(register) = mapping {
@@ -881,18 +858,15 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
           // Ensure there is a register available for operands. Either the operands already
           // have active variables, or we need to assign a temporary variable to load spilled values.
 
-          let (action, clear_for_call) = select_op_row(*op_name, &TD_ASSIGN_MAP).unwrap_or(&([Ignore, Ignore, Ignore], false));
+          let (action, required_assign, ..) = select_op_row(*op_name, &BU_ASSIGN_MAP).expect("Could not find mapping for {op_name}");
 
           for ((index, dep_op_id), action) in operands.iter().enumerate().zip(action) {
-            match action {
-              Temporary => {
-                if let Some(temp_register) = temp_reg_set.acquire_random_register() {
-                  op_registers[op_id].ops[index] = OperandRegister::Reg(temp_register as _);
-                } else {
-                  todo!("Get temporary register when none available");
-                }
+            match *action {
+              ArgRegType::NoUse => {}
+              ArgRegType::NeedAccessTo(reg_index) => {
+                todo!("Implement Need Access To")
               }
-              Existing => {
+              ArgRegType::Used | ArgRegType::RequiredAs(..) => {
                 let op_ty = get_op_type(sn, *dep_op_id);
                 if op_ty.base_ty() == BaseType::MemCtx || op_ty.is_mem() || op_ty.is_nouse() {
                   unreachable!("No attempt should be made to acquire register for a memory parameter");
@@ -933,15 +907,45 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
                   _ => unreachable!(),
                 }
               }
-              Inline => {
-                if let Some(temp_register) = temp_reg_set.acquire_random_register() {
-                  op_registers[op_id].ops[index] = OperandRegister::Reg(temp_register as _);
-                } else {
-                  todo!("Get temporary register when none available");
-                }
-              }
-              Ignore => {}
             }
+
+            if let ArgRegType::RequiredAs(required_reg) = *action {
+              // This operand is required to be a in a specific register.
+              match op_registers[dep_op_id.usize()].own {
+                op @ OperandRegister::Load(..) | op @ OperandRegister::Reg(..) | op @ OperandRegister::ConstReg(..) => {
+                  let (mov_reg, free_register) = match op {
+                    OperandRegister::Reg(reg) => (reg != required_reg, reg != required_reg),
+                    _ => (false, true),
+                  };
+
+                  if mov_reg {
+                    op_registers[op_id].copy_to[index] = required_reg;
+                  }
+
+                  if free_register {
+                    if !temp_reg_set.acquire_specific_register(required_reg as _) {
+                      // Attempt to move the current register to a different register. This requires
+                      // moving it to a register that is NOT IN USE during this operation.
+                      let RegAssignTarget::Op(conflict_op) = var_reg_assignments[required_reg as usize] else { unreachable!() };
+                      let var_id = match temp_registers[conflict_op.usize()] {
+                        RegisterAssignment::Var(var_id) | RegisterAssignment::InterVar(var_id) => var_id,
+                        _ => unreachable!(),
+                      };
+
+                      if op_data[var_id].block == block.id as _ {
+                        // We are in the base block for the current variable and can change it to any other register we need.
+                        todo!("MOVE VARIABLE")
+                      } else {
+                        // The variable cannot be moved and we must either store it or stash and pop it.
+                        todo!("STASH AND POP")
+                      }
+                    }
+                  }
+                }
+                own => todo!("Apply \"required as\" to {own:?}"),
+              }
+            }
+
             if dep_op_id.is_valid() {}
           }
         }
@@ -973,6 +977,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
       match temp_registers[op_id] {
         RegisterAssignment::Var(var_op_id) | RegisterAssignment::InterVar(var_op_id) => {
           let preferred = op_registers[var_op_id].preferred;
+
           if let OperandRegister::None = active_register_value[var_op_id] {
             if preferred >= 0 {
               let mut b = register_set.clone();
@@ -1043,50 +1048,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
     }
   }
 
-  for (_, curr_block_id) in sorted_blocks.iter().cloned() {
-    let block = &blocks[curr_block_id];
-    println!("\n\n[{curr_block_id}] ================================");
-    for op_id in block.ops.iter().cloned() {
-      let reg_data = &op_registers[op_id];
-      let op_reg = reg_data.own;
-
-      if reg_data.stashed {
-        print!("{op_id:04} {op_reg:?} [{:2x}] <= ", reg_data.spill_offset,);
-      } else {
-        print!("{op_id:04} {op_reg:?} <= ",);
-      }
-
-      match &sn.operands[op_id] {
-        Operation::Op { operands, op_id: op_name, .. } => {
-          let reg_data = &op_registers[op_id];
-          let op_reg = reg_data.own;
-
-          if reg_data.stashed {
-            print!(" {op_id:04} {:>8} {op_reg:?} [{:2x}] <= ", op_name.to_string(), reg_data.spill_offset,);
-          } else {
-            print!("{op_id:04} {:>8} {op_reg:?} <= ", op_name.to_string());
-          }
-
-          let or = &op_registers[op_id];
-
-          for (sub_op_id, op) in operands.iter().zip(or.ops) {
-            if sub_op_id.is_valid() {
-              if let Operation::Const(..) = &sn.operands[sub_op_id.usize()] {
-                print!("c{:?} ", op)
-              } else {
-                print!(" {:?} ", op);
-              }
-            } else {
-              print!(" ---- ");
-            }
-          }
-        }
-        _ => {}
-      }
-
-      println!("");
-    }
-  }
+  print_groups(sn, blocks, &op_registers, sorted_blocks);
 
   print_blocks(sn, op_dependencies, op_data, blocks, &temp_registers, &op_registers);
 
@@ -1160,6 +1122,56 @@ fn select_op_row<'ds, Row>(op: Op, map: &'ds [(Op, Row)]) -> Option<&'ds Row> {
 
   None
 }
+
+fn print_groups(sn: &mut RootNode, blocks: &mut [BasicBlock], op_registers: &Vec<RegisterData>, sorted_blocks: Vec<(usize, usize)>) {
+  for (_, curr_block_id) in sorted_blocks.iter().cloned() {
+    let block = &blocks[curr_block_id];
+    println!("\n\n[{curr_block_id}] ================================");
+    for op_id in block.ops.iter().cloned() {
+      let reg_data = &op_registers[op_id];
+      let op_reg = reg_data.own;
+
+      match &sn.operands[op_id] {
+        Operation::Op { operands, op_id: op_name, .. } => {
+          let reg_data = &op_registers[op_id];
+          let op_reg = reg_data.own;
+
+          if reg_data.stashed {
+            print!(" {op_id:04} {:>8} {op_reg:?} [{:2x}] <= ", op_name.to_string(), reg_data.spill_offset,);
+          } else {
+            print!("{op_id:04} {:>8} {op_reg:?} <= ", op_name.to_string());
+          }
+
+          let or = &op_registers[op_id];
+
+          for (sub_op_id, op) in operands.iter().zip(or.ops) {
+            if sub_op_id.is_valid() {
+              if let Operation::Const(..) = &sn.operands[sub_op_id.usize()] {
+                print!("c{:?} ", op)
+              } else {
+                print!(" {:?} ", op);
+              }
+            } else {
+              print!(" ---- ");
+            }
+          }
+        }
+        _ => {
+          if reg_data.stashed {
+            print!("{op_id:04} {op_reg:?} [{:2x}] <= ", reg_data.spill_offset,);
+          } else {
+            print!("{op_id:04} {op_reg:?} <= ",);
+          }
+        }
+      }
+
+      println!(" [{:?}]", reg_data.copy_to);
+
+      println!("");
+    }
+  }
+}
+
 fn print_blocks(
   sn: &RootNode,
   op_dependencies: &[Vec<OpId>],

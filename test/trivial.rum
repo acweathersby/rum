@@ -3,12 +3,10 @@ test_struct :: [
   A: u64, 
 ]
 
-
-
 #test
 trivial :: (input: u32, input2: u32) : u32 { 
 
-  if input2 > 0 {
+  loop if input2 > 0 && input < 34 {
     
     input = if input == 2 { 2 } else { 4 }
 

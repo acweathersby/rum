@@ -5,23 +5,25 @@ use super::{
 };
 use crate::{
   basic_block_compiler::{BasicBlock, OperandRegister, RegisterData, REGISTERS},
-  interpreter::{get_agg_offset, get_agg_size, get_op_type, RuntimeSystem},
+  interpreter::get_op_type,
   targets::x86::x86_encoder::{OpEncoder, OpSignature},
-  types::{prim_ty_addr, ty_bool, ConstVal, NodeHandle, Op, OpId, Operation, RootNode, SolveDatabase, TypeV},
+  types::{prim_ty_addr, ty_bool, Op, OpId, Operation, RootNode, SolveDatabase},
 };
-use std::{fmt::Debug, u32, usize};
+use std::{collections::VecDeque, fmt::Debug, u32, usize};
 
-#[derive(Debug)]
-struct JumpResolution {
-  /// The binary offset the first instruction of each block.
-  block_offset: Vec<usize>,
-  /// The binary offset and block id target of jump instructions.
-  jump_points:  Vec<(usize, usize)>,
+#[derive(Debug, Clone, Copy)]
+struct BlockOrderData {
+  /// The actual index of this data within an ordering array
+  index:    usize,
+  /// The ID of the block this data represents
+  block_id: isize,
+  pass:     isize,
+  fail:     isize,
 }
 
-impl JumpResolution {
-  fn add_jump(&mut self, binary: &mut Vec<u8>, block_id: usize) {
-    self.jump_points.push((binary.len(), block_id));
+impl Default for BlockOrderData {
+  fn default() -> Self {
+    Self { index: 0, block_id: -1, pass: -1, fail: -1 }
   }
 }
 
@@ -36,7 +38,6 @@ pub fn encode_routine(
   use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
 
   let mut binary_data = vec![];
-  let mut jmp_resolver = JumpResolution { block_offset: Default::default(), jump_points: Default::default() };
   let binary = &mut binary_data;
 
   encode_x86(binary, &push, 64, RDX.as_reg_op(), Arg::None, Arg::None);
@@ -45,9 +46,15 @@ pub fn encode_routine(
   encode_x86(binary, &and, 64, RSP.as_reg_op(), Arg::Imm_Int(0xFFFF_FFF0), Arg::None);
   encode_x86(binary, &sub, 64, RSP.as_reg_op(), Arg::Imm_Int(128), Arg::None);
 
-  for block in blocks {
-    jmp_resolver.block_offset.push(binary.len());
-    let block_number = block.id;
+  let mut block_binary_offsets = vec![0usize; blocks.len()];
+
+  let mut jump_points = Vec::<(usize, usize)>::new();
+  let block_ordering = create_block_ordering(blocks);
+
+  for order in block_ordering.clone() {
+    let next_block_id = block_ordering.get(order.index + 1).map(|b| b.block_id);
+    let block = &blocks[order.block_id as usize];
+    block_binary_offsets[order.block_id as usize] = binary.len();
     let mut need_jump_resolution = true;
 
     for (i, op) in block.ops.iter().enumerate() {
@@ -65,16 +72,16 @@ pub fn encode_routine(
         Operation::Op { op_id: op_name, operands } => {
           match *op_name {
             /* Op::RET => {
-               let ret_val_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary)];
-               let out_reg = REGISTERS[registers[*op].own.reg_id().unwrap()];
+                 let ret_val_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary)];
+                 let out_reg = REGISTERS[registers[*op].own.reg_id().unwrap()];
 
-               if ret_val_reg != out_reg {
-                 encode_x86(binary, &mov, 64, out_reg.as_reg_op(), ret_val_reg.as_reg_op(), Arg::None);
-               }
-             } */
-             /* Op::FREE => {
-               let sub_op = operands[0];
-               // Get the type that is to be freed.
+                 if ret_val_reg != out_reg {
+                   encode_x86(binary, &mov, 64, out_reg.as_reg_op(), ret_val_reg.as_reg_op(), Arg::None);
+                 }
+               } */
+               /* Op::FREE => {
+                 let sub_op = operands[0];
+                 // Get the type that is to be freed.
                match &sn.operands[sub_op.usize()] {
                  Operation::Op { op_id: Op::ARR_DECL, operands } => {
                    todo!("Handle array");
@@ -274,6 +281,26 @@ pub fn encode_routine(
                  }
                }
              } */
+            Op::DIV => {
+              // Clear RDX
+
+              encode_x86(binary, &xor, byte_size, RDX.as_reg_op(), RDX.as_reg_op(), Arg::None);
+
+              match op_reg_data.ops[1] {
+                OperandRegister::Reg(r) => {
+                  let r_reg = REGISTERS[r as usize];
+                  encode_x86(binary, &div, byte_size, r_reg.as_reg_op(), Arg::None, Arg::None);
+                }
+                OperandRegister::ConstReg(temp_reg) => {
+                  let t_reg = REGISTERS[temp_reg as usize];
+                  let Operation::Const(const_val) = &sn.operands[operands[1].usize()] else { unreachable!() };
+                  // If the value is 10, a power of 2, or some other constant we can optimize this for minimal cycle counts.
+                  encode_x86(binary, &mov, byte_size, t_reg.as_reg_op(), Arg::Imm_Int(const_val.convert(prim).load()), Arg::None);
+                  encode_x86(binary, &div, byte_size, t_reg.as_reg_op(), Arg::None, Arg::None);
+                }
+                other => unreachable!("{other:?}"),
+              }
+            }
             Op::ADD | Op::SUB | Op::MUL | Op::DIV => {
               let reg = op_reg_data.register(&REGISTERS);
 
@@ -282,11 +309,6 @@ pub fn encode_routine(
               let (op_table, commutable, is_m_instruction): (&OpTable, bool, bool) = match *op_name {
                 Op::ADD => (&add, true, false),
                 Op::MUL => (&imul, true, false),
-                Op::DIV => {
-                  println!("HACK: NEED a permanent solution to clearing RDX when using the IDIV/DIV instructions");
-                  encode_x86(binary, &mov, 64, RDX.as_reg_op(), Arg::Imm_Int(0), Arg::None);
-                  (&div, false, true)
-                }
                 Op::SUB => (&sub, false, false),
                 _ => unreachable!(),
               };
@@ -347,17 +369,18 @@ pub fn encode_routine(
                     _ => unreachable!(),
                   };
 
-                  if block.fail == block.id as isize + 1 {
-                    encode_x86(binary, fail_next, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
-                    jmp_resolver.add_jump(binary, block.pass as usize);
-                  } else if block.pass == block.id as isize + 1 {
-                    encode_x86(binary, pass_next, 32, Arg::Imm_Int(block.fail as i64), Arg::None, Arg::None);
-                    jmp_resolver.add_jump(binary, block.fail as usize);
+                  if Some(order.fail) == next_block_id {
+                    encode_x86(binary, fail_next, 32, Arg::Imm_Int(order.pass as i64), Arg::None, Arg::None);
+                    jump_points.push((binary.len(), order.pass as usize));
+                  } else if Some(order.pass) == next_block_id {
+                    encode_x86(binary, pass_next, 32, Arg::Imm_Int(order.fail as i64), Arg::None, Arg::None);
+                    jump_points.push((binary.len(), order.fail as usize));
                   } else {
-                    encode_x86(binary, fail_next, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
-                    jmp_resolver.add_jump(binary, block.pass as usize);
-                    encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.fail as i64), Arg::None, Arg::None);
-                    jmp_resolver.add_jump(binary, block.fail as usize);
+                    encode_x86(binary, fail_next, 32, Arg::Imm_Int(order.pass as i64), Arg::None, Arg::None);
+                    jump_points.push((binary.len(), order.pass as usize));
+
+                    encode_x86(binary, &jmp, 32, Arg::Imm_Int(order.fail as i64), Arg::None, Arg::None);
+                    jump_points.push((binary.len(), order.fail as usize));
                   }
 
                   need_jump_resolution = false;
@@ -397,20 +420,23 @@ pub fn encode_routine(
     }*/
 
     if need_jump_resolution {
-      if block.fail > 0 {
-        if block.pass != (block_number + 1) as isize {
-          encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
-          jmp_resolver.add_jump(binary, block.pass as usize);
+      if order.fail > 0 {
+        if Some(order.pass) != next_block_id {
+          encode_x86(binary, &jmp, 32, Arg::Imm_Int(order.pass as i64), Arg::None, Arg::None);
+          jump_points.push((binary.len(), order.pass as usize));
         }
 
-        if block.fail != (block_number + 1) as isize {
-          encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.fail as i64), Arg::None, Arg::None);
-          jmp_resolver.add_jump(binary, block.fail as usize);
+        if Some(order.fail) != next_block_id {
+          encode_x86(binary, &jmp, 32, Arg::Imm_Int(order.fail as i64), Arg::None, Arg::None);
+          jump_points.push((binary.len(), order.fail as usize));
         }
-      } else if block.pass > 0 && block.pass != (block_number + 1) as isize {
-        encode_x86(binary, &jmp, 32, Arg::Imm_Int(block.pass as i64), Arg::None, Arg::None);
-        jmp_resolver.add_jump(binary, block.pass as usize);
-      } else if block.pass < 0 {
+      } else if order.pass >= 0 {
+        if Some(order.pass) != next_block_id {
+          encode_x86(binary, &jmp, 32, Arg::Imm_Int(order.pass as i64), Arg::None, Arg::None);
+          jump_points.push((binary.len(), order.pass as usize));
+        }
+      } else {
+        // Inside end of block.
         encode_x86(binary, &mov, 64, RSP.as_reg_op(), RBP.as_reg_op(), Arg::None);
         encode_x86(binary, &pop, 64, RBP.as_reg_op(), Arg::None, Arg::None);
         encode_x86(binary, &pop, 64, RDX.as_reg_op(), Arg::None, Arg::None);
@@ -419,9 +445,8 @@ pub fn encode_routine(
     }
   }
 
-  for (instruction_index, block_id) in &jmp_resolver.jump_points {
-    let block_address = jmp_resolver.block_offset[*block_id];
-    let instruction_end_point = *instruction_index;
+  for (instruction_end_point, block_id) in jump_points {
+    let block_address = block_binary_offsets[block_id];
     let relative_offset = block_address as i32 - instruction_end_point as i32;
     let ptr = binary[instruction_end_point - 4..].as_mut_ptr();
     unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
@@ -432,22 +457,53 @@ pub fn encode_routine(
   binary_data
 }
 
-fn get_arg_register(sn: &RootNode, registers: &[RegisterData], root_op: OpId, operands: &[OpId], index: usize, binary: &mut Vec<u8>) -> usize {
-  use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
-  let op = operands[index];
-  /*  let reg = match registers[root_op.usize()].ops[index] {
-    RegisterAssignment::Spilled(offset, size, reg_id) => {
-      let ty = get_op_type(sn, OpId(op.usize() as u32));
-      let reg = REGISTERS[reg_id as usize];
-      let prim = ty.prim_data().unwrap_or(prim_ty_addr);
-      encode_x86(binary, &mov, (prim.byte_size as u64) * 8, reg.as_reg_op(), Arg::RSP_REL((offset as i64) as _), Arg::None);
-      reg_id
+fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
+  // Optimization - Order blocks to decrease number of jumps
+  let mut block_ordering = vec![BlockOrderData::default(); blocks.len()];
+  let mut block_tracker = vec![false; blocks.len()];
+
+  block_ordering.iter_mut().enumerate().for_each(|(i, block)| block.index = i);
+
+  let mut block_order_queue = VecDeque::from_iter([0isize]);
+
+  let mut offset = 0;
+
+  while let Some(block_id) = block_order_queue.pop_front() {
+    if block_id < 0 || block_tracker[block_id as usize] {
+      continue;
     }
-    RegisterAssignment::Reg(reg) => reg,
-    _ => unreachable!(),
-  };
+    block_tracker[block_id as usize] = true;
+    block_ordering[offset].block_id = block_id as _;
+    block_ordering[offset].pass = blocks[block_id as usize].pass;
+    block_ordering[offset].fail = blocks[block_id as usize].fail;
+    offset += 1;
+    let block = &blocks[block_id as usize];
+    block_order_queue.push_front(block.fail);
+    block_order_queue.push_front(block.pass);
+  }
 
-  reg as _ */
+  // Optimization - Skip blocks that are empty.
+  for block_id in 0..blocks.len() {
+    let pass = block_ordering[block_id].pass;
+    let fail = block_ordering[block_id].fail;
 
-  Default::default()
+    if fail >= 0 {
+      let fail_block = &blocks[fail as usize];
+      if fail_block.ops.is_empty() {
+        let pass = fail_block.pass;
+        block_ordering[block_id].fail = pass;
+      }
+    }
+
+    if pass >= 0 {
+      let fail_block = &blocks[pass as usize];
+      if fail_block.ops.is_empty() {
+        let pass = fail_block.pass;
+        block_ordering[block_id].pass = pass;
+      }
+    }
+  }
+
+  // Filter out any zero length blocks
+  block_ordering.into_iter().filter(|b| b.block_id == 0 || !blocks[b.block_id as usize].ops.is_empty()).collect::<Vec<_>>()
 }

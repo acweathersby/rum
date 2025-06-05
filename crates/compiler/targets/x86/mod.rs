@@ -38,7 +38,7 @@ pub fn compile(db: &SolveDatabase) {
 
     let func = x86_eval::x86Function::new(&binary, 0);
 
-    assert_eq!(func.access_as_call::<fn(u32, u32) -> u32>()(2, 1), 37, "Failed to parse correctly");
+    assert_eq!(func.access_as_call::<fn(u32, u32) -> u32>()(4, 2), 37, "Failed to parse correctly");
 
     // TEMP: Run the binary.
 
