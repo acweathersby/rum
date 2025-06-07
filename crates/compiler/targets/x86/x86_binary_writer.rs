@@ -1,3 +1,5 @@
+use rum_lang::todo_note;
+
 use super::{
   print_instructions,
   x86_encoder::encode_x86,
@@ -5,9 +7,9 @@ use super::{
 };
 use crate::{
   basic_block_compiler::{BasicBlock, OperandRegister, RegisterData, REGISTERS},
-  interpreter::get_op_type,
+  interpreter::{get_agg_offset, get_agg_size, get_op_type, RuntimeSystem},
   targets::x86::x86_encoder::{OpEncoder, OpSignature},
-  types::{prim_ty_addr, ty_bool, Op, OpId, Operation, RootNode, SolveDatabase},
+  types::{prim_ty_addr, ty_bool, NodeHandle, Op, OpId, Operation, RootNode, SolveDatabase, TypeV},
 };
 use std::{collections::VecDeque, fmt::Debug, u32, usize};
 
@@ -64,6 +66,18 @@ pub fn encode_routine(
       let prim = ty.prim_data().unwrap_or(prim_ty_addr);
       let byte_size = (prim.byte_size as u64) * 8;
 
+      for (index, preserve) in op_reg_data.preserve.iter().enumerate() {
+        if *preserve {
+          match op_reg_data.ops[index] {
+            OperandRegister::Reg(reg) => {
+              let r_reg = REGISTERS[reg as usize];
+              encode_x86(binary, &push, byte_size, r_reg.as_reg_op(), Arg::None, Arg::None);
+            }
+            _ => unreachable!(),
+          }
+        }
+      }
+
       match &sn.operands[*op] {
         Operation::Port { .. } | Operation::Const(..) => {
           continue;
@@ -72,101 +86,108 @@ pub fn encode_routine(
         Operation::Op { op_id: op_name, operands } => {
           match *op_name {
             /* Op::RET => {
-                 let ret_val_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary)];
-                 let out_reg = REGISTERS[registers[*op].own.reg_id().unwrap()];
+                let ret_val_reg = REGISTERS[get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary)];
+                let out_reg = REGISTERS[registers[*op].own.reg_id().unwrap()];
 
-                 if ret_val_reg != out_reg {
-                   encode_x86(binary, &mov, 64, out_reg.as_reg_op(), ret_val_reg.as_reg_op(), Arg::None);
-                 }
-               } */
-               /* Op::FREE => {
-                 let sub_op = operands[0];
-                 // Get the type that is to be freed.
-               match &sn.operands[sub_op.usize()] {
-                 Operation::Op { op_id: Op::ARR_DECL, operands } => {
-                   todo!("Handle array");
-                 }
-                 Operation::Op { op_id: Op::AGG_DECL, .. } => {
-                   // Load the size and alignement in to the first and second registers
-                   let ptr_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
-                   let size_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
-                   let allocator_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 2, binary);
+                if ret_val_reg != out_reg {
+                  encode_x86(binary, &mov, 64, out_reg.as_reg_op(), ret_val_reg.as_reg_op(), Arg::None);
+                }
+              } */
+              /* Op::FREE => {
+                let sub_op = operands[0];
+                // Get the type that is to be freed.
+              match &sn.operands[sub_op.usize()] {
+                Operation::Op { op_id: Op::ARR_DECL, operands } => {
+                  todo!("Handle array");
+                }
+                Operation::Op { op_id: Op::AGG_DECL, .. } => {
+                  // Load the size and alignement in to the first and second registers
+                  let ptr_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
+                  let size_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
+                  let allocator_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 2, binary);
 
-                   let out_ptr = registers[*op].own.reg_id().unwrap();
-                   let own_ptr = REGISTERS[out_ptr as usize];
+                  let out_ptr = registers[*op].own.reg_id().unwrap();
+                  let own_ptr = REGISTERS[out_ptr as usize];
 
-                   let ptr_reg = REGISTERS[ptr_reg_id];
-                   let size_reg = REGISTERS[size_reg_id];
-                   let alloc_id_reg = REGISTERS[allocator_id];
+                  let ptr_reg = REGISTERS[ptr_reg_id];
+                  let size_reg = REGISTERS[size_reg_id];
+                  let alloc_id_reg = REGISTERS[allocator_id];
 
-                   let ty = get_op_type(sn, sub_op).cmplx_data().unwrap();
-                   let node: NodeHandle = (ty, db).into();
-                   let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
-                   let size = get_agg_size(node.get().unwrap(), &mut ctx);
+                  let ty = get_op_type(sn, sub_op).cmplx_data().unwrap();
+                  let node: NodeHandle = (ty, db).into();
+                  let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
+                  let size = get_agg_size(node.get().unwrap(), &mut ctx);
 
-                   encode_x86(binary, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None);
-                   encode_x86(binary, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None);
+                  encode_x86(binary, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None);
+                  encode_x86(binary, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None);
 
-                   // Load Rax with the location for the allocator pointer.
-                   encode_x86(binary, &mov, 64, own_ptr.as_reg_op(), Arg::Imm_Int(allocator_free_address as _), Arg::None);
+                  // Load Rax with the location for the allocator pointer.
+                  encode_x86(binary, &mov, 64, own_ptr.as_reg_op(), Arg::Imm_Int(allocator_free_address as _), Arg::None);
 
-                   // Make a call to the allocator dispatcher.
-                   encode_x86(binary, &call, 64, own_ptr.as_reg_op(), Arg::None, Arg::None);
-                 }
-                 _ => unreachable!(),
-               }
-             } */
-            /*  Op::AGG_DECL => {
-               // Load the size and alignment in to the first and second registers
-               let size_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
-               let align_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
-               let allocator_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 2, binary);
-               let out_ptr = registers[*op].own.reg_id().unwrap();
-               let own_ptr = REGISTERS[out_ptr as usize];
+                  // Make a call to the allocator dispatcher.
+                  encode_x86(binary, &call, 64, own_ptr.as_reg_op(), Arg::None, Arg::None);
+                }
+                _ => unreachable!(),
+              }
+            } */
+            Op::AGG_DECL => {
+              // Load the size and alignment in to the first and second registers
 
-               let size_reg = REGISTERS[size_reg_id];
-               let align_reg = REGISTERS[align_reg_id];
-               let alloc_id_reg = REGISTERS[allocator_id];
+              match op_reg_data.ops {
+                [OperandRegister::Reg(size_reg_id), OperandRegister::Reg(align_reg_id), OperandRegister::Reg(allocator_id)] => {
+                  let size_reg = REGISTERS[size_reg_id as usize];
+                  let align_reg = REGISTERS[align_reg_id as usize];
+                  let alloc_id_reg = REGISTERS[allocator_id as usize];
 
-               let ty = get_op_type(sn, OpId(*op as _)).cmplx_data().unwrap();
-               let node: NodeHandle = (ty, db).into();
-               let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
-               let size = get_agg_size(node.get().unwrap(), &mut ctx);
+                  let ty = get_op_type(sn, OpId(*op as _)).cmplx_data().unwrap();
+                  let node: NodeHandle = (ty, db).into();
+                  let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
+                  let size = get_agg_size(node.get().unwrap(), &mut ctx);
 
-               encode_x86(binary, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None);
-               encode_x86(binary, &mov, 8 * 8, align_reg.as_reg_op(), Arg::Imm_Int(8), Arg::None);
-               encode_x86(binary, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None);
+                  encode_x86(binary, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None);
+                  encode_x86(binary, &mov, 8 * 8, align_reg.as_reg_op(), Arg::Imm_Int(8), Arg::None);
+                  encode_x86(binary, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None);
 
-               // Load Rax with the location for the allocator pointer.
-               encode_x86(binary, &mov, 64, own_ptr.as_reg_op(), Arg::Imm_Int(allocator_address as _), Arg::None);
+                  // Load Rax with the location for the allocator pointer.
+                  encode_x86(binary, &mov, 64, RAX.as_reg_op(), Arg::Imm_Int(allocator_address as _), Arg::None);
 
-               // Make a call to the allocator dispatcher.
-               encode_x86(binary, &call, 64, own_ptr.as_reg_op(), Arg::None, Arg::None);
-             } */
-             /* Op::NPTR => {
-               let out_ptr = registers[*op].own.reg_id().unwrap();
-               let base_ptr = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
+                  // Make a call to the allocator dispatcher.
+                  encode_x86(binary, &call, 64, RAX.as_reg_op(), Arg::None, Arg::None);
+                }
+                _ => {}
+              }
+            }
+            Op::STORE | Op::FREE => {
+              todo_note!("STORE | FREE");
+            }
+            Op::NPTR => {
+              let own_ptr = REGISTERS[get_own_reg_id(op_reg_data) as usize];
 
-               let base_ptr_reg = REGISTERS[base_ptr as usize];
-               let own_ptr = REGISTERS[out_ptr as usize];
+              // Get ptr offset
+              let Operation::Name(name) = sn.operands[operands[1].usize()] else { unreachable!("Should be a name op") };
 
-               let Operation::Name(name) = sn.operands[operands[1].usize()] else { unreachable!("Should be a name op") };
+              let ty = get_op_type(sn, operands[0]).to_base_ty().cmplx_data().unwrap();
+              let node: NodeHandle = (ty, db).into();
+              let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
+              let offset = get_agg_offset(node.get().unwrap(), name, &mut ctx);
 
-               let ty = get_op_type(sn, operands[0]).to_base_ty().cmplx_data().unwrap();
-
-               let node: NodeHandle = (ty, db).into();
-               let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
-               let offset = get_agg_offset(node.get().unwrap(), name, &mut ctx);
-
-               if offset > 0 {
-                 encode_x86(binary, &lea, 8 * 8, own_ptr.as_reg_op(), Arg::MemRel(base_ptr_reg, offset as _), Arg::None);
-               } else if out_ptr != base_ptr {
-                 encode_x86(binary, &mov, 8 * 8, own_ptr.as_reg_op(), base_ptr_reg.as_reg_op(), Arg::None);
-               }
-
-               //todo!("NAMED_PTR");
-             } */
-             /* Op::STORE => {
+              // Base pointer
+              match op_reg_data.ops[0] {
+                OperandRegister::Load(_, var_id) => {
+                  todo!("Create pointer val from stashed pointer");
+                }
+                OperandRegister::Reg(reg_id) => {
+                  let base_ptr = REGISTERS[reg_id as usize];
+                  if offset > 0 {
+                    encode_x86(binary, &lea, byte_size, own_ptr.as_reg_op(), Arg::MemRel(base_ptr, offset as _), Arg::None);
+                  } else if own_ptr != base_ptr {
+                    encode_x86(binary, &mov, byte_size, own_ptr.as_reg_op(), base_ptr.as_reg_op(), Arg::None);
+                  }
+                }
+                _ => unreachable!(),
+              }
+            }
+            /* Op::STORE => {
                let base_ptr = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
                let val = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
 
@@ -218,7 +239,7 @@ pub fn encode_routine(
             Op::SEED | Op::RET => {
               if op_reg_data.own != op_reg_data.ops[0] {
                 match op_reg_data.ops[0] {
-                  OperandRegister::Load(var_id) => {
+                  OperandRegister::Load(_, var_id) => {
                     let var_data = &op_reg_data_table[var_id as usize];
                     encode_x86(binary, &mov, byte_size, op_reg_data.register(&REGISTERS).as_reg_op(), Arg::RSP_REL(var_data.spill_offset as _), Arg::None);
                   }
@@ -328,6 +349,22 @@ pub fn encode_routine(
 
                   encode_x86(binary, &op_table, byte_size, reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
                 }
+                (OperandRegister::Reg(l), OperandRegister::ConstReg(r)) => {
+                  let l_reg = REGISTERS[l as usize];
+                  let t_reg = REGISTERS[r as usize];
+
+                  if l_reg != reg {
+                    encode_x86(binary, &mov, byte_size, reg.as_reg_op(), l_reg.as_reg_op(), Arg::None);
+                  }
+
+                  let Operation::Const(const_val) = &sn.operands[operands[1].usize()] else { unreachable!() };
+                  if const_val.significant_bits() > 32 {
+                    encode_x86(binary, &mov, byte_size, t_reg.as_reg_op(), Arg::Imm_Int(const_val.convert(prim).load()), Arg::None);
+                    encode_x86(binary, &op_table, byte_size, reg.as_reg_op(), t_reg.as_reg_op(), Arg::None);
+                  } else {
+                    encode_x86(binary, &op_table, byte_size, reg.as_reg_op(), Arg::Imm_Int(const_val.convert(prim).load()), Arg::None);
+                  }
+                }
                 a => todo!("{:?}", a),
               }
             }
@@ -355,6 +392,7 @@ pub fn encode_routine(
                       let r_reg = REGISTERS[r as usize];
                       encode_x86(binary, &cmp, (prim.byte_size as u64) * 8, l_reg.as_reg_op(), r_reg.as_reg_op(), Arg::None);
                     }
+
                     (OperandRegister::Reg(l), OperandRegister::ConstReg(r)) => {
                       let l_reg = REGISTERS[l as usize];
                       let Operation::Const(const_val) = &sn.operands[operands[1].usize()] else { unreachable!() };
@@ -366,6 +404,7 @@ pub fn encode_routine(
                   let (fail_next, pass_next) = match op_name {
                     Op::GR => (&jg, &jle),
                     Op::EQ => (&je, &jne),
+                    Op::LS => (&jl, &jge),
                     _ => unreachable!(),
                   };
 
@@ -402,6 +441,18 @@ pub fn encode_routine(
       if op_reg_data.stashed {
         // Store the register
         encode_x86(binary, &mov, byte_size, Arg::RSP_REL(op_reg_data.spill_offset as _), op_reg_data.register(&REGISTERS).as_reg_op(), Arg::None);
+      }
+
+      for (index, preserve) in op_reg_data.preserve.iter().enumerate().rev() {
+        if *preserve {
+          match op_reg_data.ops[index] {
+            OperandRegister::Reg(reg) => {
+              let r_reg = REGISTERS[reg as usize];
+              encode_x86(binary, &pop, byte_size, r_reg.as_reg_op(), Arg::None, Arg::None);
+            }
+            _ => unreachable!(),
+          }
+        }
       }
     }
 
@@ -457,6 +508,13 @@ pub fn encode_routine(
   binary_data
 }
 
+fn get_own_reg_id(op_reg_data: &RegisterData) -> u8 {
+  let OperandRegister::Reg(own_r) = op_reg_data.own else {
+    unreachable!("RegisterData.own should only be assigned to OperandRegister::Reg | OperandRegister::None. Current assignment is {:?}", op_reg_data.own)
+  };
+  own_r
+}
+
 fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
   // Optimization - Order blocks to decrease number of jumps
   let mut block_ordering = vec![BlockOrderData::default(); blocks.len()];
@@ -483,27 +541,35 @@ fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
   }
 
   // Optimization - Skip blocks that are empty.
-  for block_id in 0..blocks.len() {
+  /* for block_id in 0..blocks.len() {
     let pass = block_ordering[block_id].pass;
     let fail = block_ordering[block_id].fail;
 
     if fail >= 0 {
-      let fail_block = &blocks[fail as usize];
-      if fail_block.ops.is_empty() {
-        let pass = fail_block.pass;
+      let successor_block = &blocks[fail as usize];
+      if successor_block.ops.is_empty() {
+        let pass = successor_block.pass;
         block_ordering[block_id].fail = pass;
       }
     }
 
     if pass >= 0 {
-      let fail_block = &blocks[pass as usize];
-      if fail_block.ops.is_empty() {
-        let pass = fail_block.pass;
+      let successor_block = &blocks[pass as usize];
+      if successor_block.ops.is_empty() {
+        let pass = successor_block.pass;
         block_ordering[block_id].pass = pass;
       }
     }
-  }
+  } */
 
   // Filter out any zero length blocks
-  block_ordering.into_iter().filter(|b| b.block_id == 0 || !blocks[b.block_id as usize].ops.is_empty()).collect::<Vec<_>>()
+  block_ordering
+    .into_iter()
+    //.filter(|b| b.block_id == 0 || !blocks[b.block_id as usize].ops.is_empty())
+    .enumerate()
+    .map(|(i, mut b)| {
+      b.index = i;
+      b
+    })
+    .collect::<Vec<_>>()
 }

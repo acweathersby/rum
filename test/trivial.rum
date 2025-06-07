@@ -4,14 +4,16 @@ test_struct :: [
 ]
 
 #test
-trivial :: (input: u32, input2: u32) : u32 { 
+trivial :: (input: u32, input2: u32) : u32 {
 
-  loop if input2 > 0 && input < 34 {
+  test : test_struct = [C = input2] 
+
+  loop if input2 < 10 {
     
     input = if input == 2 { 2 } else { 4 }
 
-    input2 = 34
+    input2 = input2 + 2 + test.C
   }
 
-  input / input2
+  input2
 }

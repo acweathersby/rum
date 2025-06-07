@@ -1,14 +1,15 @@
 use crate::{
   interpreter::get_op_type,
-  ir_compiler::{CLAUSE_ID, LOOP_ID, MATCH_ID},
+  ir_compiler::{CALL_ID, CLAUSE_ID, LOOP_ID, MATCH_ID},
   targets::{reg::Reg, x86::x86_types::*},
-  types::{BaseType, Op, OpId, Operation, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{BaseType, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 
 use rum_common::get_aligned_value;
+use rum_lang::todo_note;
 use std::{
-  collections::{BTreeSet, HashMap, HashSet, VecDeque},
-  fmt::{Debug, Display, Write},
+  collections::{BTreeSet, HashMap, VecDeque},
+  fmt::{Debug, Display},
   u32,
 };
 
@@ -33,6 +34,7 @@ pub struct BasicBlock {
   pub fail:         isize,
   pub predecessors: Vec<usize>,
   pub level:        usize,
+  pub loop_head:    bool,
 }
 
 impl Default for BasicBlock {
@@ -45,6 +47,7 @@ impl Default for BasicBlock {
       level:        0,
       id:           0,
       ops:          Default::default(),
+      loop_head:    false,
     }
   }
 }
@@ -52,7 +55,15 @@ impl Default for BasicBlock {
 pub const REGISTERS: [Reg; 12] = [RCX, R8, RBX, RDI, RSI, RAX, R10, R11, R12, R13, R14, RDX];
 pub const PARAM_REGISTERS: [usize; 12] = [3, 4, 11, 4, 5, 7, 8, 9, 0, 10, 11, 12];
 
+
+
+
+
+
+#[derive(Debug)]
 enum ArgRegType {
+  /// Operation needs a random register for this operation
+  Temp,
   /// Operation has no use of this operand
   NoUse,
   /// The operation requires the register containing the value of operand at the given index
@@ -78,6 +89,7 @@ enum AssignRequirement {
   /// Steps must be taken to insure this does not clobber any existing values.
   Forced(u8),
   NoRequirement,
+  NoOutput,
 }
 
 static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18] = {
@@ -93,7 +105,7 @@ static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18
     // -----
     (Op::AGG_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
     (Op::ARR_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
-    (Op::FREE, ([RA(arg1), NA(arg2), NA(arg3)], NoRequirement, [false, false, false])),
+    (Op::FREE, ([RA(arg1), NA(arg2), NA(arg3)], NoOutput, [false, false, false])),
     (Op::DIV, ([RA(rax), Used, NoUse], Forced(rax), [false, false, false])),
     (Op::ADD, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
     (Op::SUB, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
@@ -103,27 +115,28 @@ static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18
     (Op::LE, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
     (Op::LS, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
     (Op::RET, ([Used, NoUse, NoUse], Forced(rax), [false, false, false])),
-    (Op::STORE, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
-    (Op::NPTR, ([Used, Used, NoUse], NoRequirement, [false, false, false])),
-    (Op::LOAD, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
+    (Op::STORE, ([Used, Used, NoUse], NoOutput, [false, false, false])),
+    (Op::NPTR, ([Used, Temp, NoUse], NoRequirement, [false, false, false])),
+    (Op::LOAD, ([Used, NoUse, NoUse], NoRequirement, [false, false, false])),
     (Op::SEED, ([Used, NoUse, NoUse], NoRequirement, [true, false, false])),
     (Op::SINK, ([NoUse, Used, NoUse], NoRequirement, [false, true, false])),
     (Op::POISON, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
   ]
 };
 
-pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase, allocator_address: usize, allocator_free_address: usize) -> (Vec<BasicBlock>, Vec<RegisterData>) {
+pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> (Vec<BasicBlock>, Vec<RegisterData>) {
   let mut op_dependencies = vec![vec![]; sn.operands.len()];
   let mut op_data = vec![OpData::new(); sn.operands.len()];
 
   let mut blocks = vec![BasicBlock::default(), BasicBlock::default()];
   blocks[0].pass = 1;
-  blocks[1].id = 1;
+  blocks[1].id = usize::MAX;
   blocks[1].dominator = 0;
 
   let mut loop_reset_blocks = HashMap::<usize, usize>::new(); // Maps nodes
-
   assign_ops_to_blocks(sn, &mut op_dependencies, &mut op_data, &mut blocks, &mut loop_reset_blocks);
+
+  blocks[1].id = 1;
 
   // Set predecessors
   for block_id in 0..blocks.len() {
@@ -160,7 +173,7 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase, allocator_address:
     let next_level = block.level + 1;
 
     for successor_id in [block.pass, block.fail] {
-      if successor_id >= 0 {
+      if successor_id >= 0 && (successor_id as usize > block_id || successor_id == 1 || !blocks[successor_id as usize].loop_head) {
         let successor_block = &mut blocks[successor_id as usize];
 
         if successor_block.level < next_level {
@@ -171,10 +184,12 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase, allocator_address:
     }
   }
 
-  //  print_blocks(sn, &op_dependencies, &op_data, &blocks, &[], &[]);
+  print_blocks(sn, &op_dependencies, &op_data, &blocks, &[], &[]);
 
   let mut sorted_blocks = blocks.iter().map(|b| (b.level, b.id)).collect::<Vec<_>>();
   sorted_blocks.sort();
+
+  panic!("{sorted_blocks:?}");
 
   // First pass assigns required registers. This a bottom up pass.
 
@@ -249,24 +264,48 @@ fn assign_ops_to_blocks_inner(
   }
 
   if existing_block >= 0 {
-    if existing_block == head_block || existing_block == curr_block {
+    if existing_block == curr_block {
+      return;
+    } else if existing_block < head_block {
       return;
     } else {
-      let mut block = &block_set[head_block as usize];
+      /*  let mut block = &block_set[head_block as usize];
       let mut dominator_block = head_block;
 
-      while dominator_block != block.dominator {
+      while dominator_block != block.dominator && block.dominator >= 0 {
         dominator_block = block.dominator;
         block = &block_set[dominator_block as usize];
-      }
+      } */
 
-      op_data[op_index].block = dominator_block;
-      curr_block = dominator_block;
+      op_data[op_index].block = head_block;
+      curr_block = head_block;
     }
   } else {
     op_data[op_index].block = curr_block;
   }
 
+  /*   if existing_block >= 0 {
+     if existing_block == head_block || existing_block == curr_block {
+       return;
+     } else {
+       let mut block = &block_set[existing_block as usize];
+       let mut dominator_block = head_block;
+
+       while dominator_block > block.dominator {
+         if block.dominator < 0 {
+           break;
+         }
+         dominator_block = block.dominator;
+         block = &block_set[dominator_block as usize];
+       }
+
+       op_data[op_index].block = dominator_block;
+       curr_block = dominator_block;
+     }
+   } else {
+     op_data[op_index].block = curr_block;
+   }
+  */
   match op {
     Operation::Op { operands, op_id: op_name, .. } => {
       let Some(dependency_map) = select_op_row(*op_name, &[
@@ -284,6 +323,7 @@ fn assign_ops_to_blocks_inner(
         (Op::FREE, [true, false, false]),
         (Op::EQ, [true, true, false]),
         (Op::GR, [true, true, false]),
+        (Op::LS, [true, true, false]),
       ]) else {
         panic!("Could not get dependency map for {op_id}: {op}")
       };
@@ -310,23 +350,14 @@ fn assign_ops_to_blocks_inner(
         }
       }
     }
-    Operation::Port { node_id: block_id, ops: operands, .. } => {
+    Operation::Port { node_id: block_id, ops: operands, ty: port_ty } => {
       for (_, c_op) in operands {
         if !op_dependencies[c_op.usize()].contains(&op_id) {
           op_dependencies[c_op.usize()].push(op_id);
         }
       }
-      process_block_ops(
-        (head_block, curr_block),
-        *block_id as usize,
-        sn,
-        op_dependencies,
-        op_data,
-        block_set,
-        node_set,
-        loop_block_reset,
-        dependency_rank + 65536,
-      );
+
+      process_block_ops((head_block, curr_block), *block_id as usize, sn, op_dependencies, op_data, block_set, node_set, loop_block_reset, dependency_rank);
     }
     Operation::Param(..) => {
       op_data[op_index].dep_rank |= 1 << 28;
@@ -357,6 +388,9 @@ fn process_block_ops(
   let node = &sn.nodes[node_id];
 
   match node.type_str {
+    CALL_ID => {
+      todo!("Call ID")
+    }
     CLAUSE_ID => {
       for (output_op, _) in node.outputs.iter() {
         assign_ops_to_blocks_inner(
@@ -373,7 +407,6 @@ fn process_block_ops(
       }
       return (tail_block as usize, vec![tail_block as usize]);
     }
-
     MATCH_ID => {
       // Create blocks for each output
 
@@ -389,8 +422,8 @@ fn process_block_ops(
       head_block.dominator = dominator_block;
       head_block.pass = block_set[dominator_block as usize].pass;
       head_block.id = block_set.len();
-
       block_set[dominator_block as usize].pass = head_block.id as _;
+      block_set[tail_block as usize].dominator = head_block.id as _;
       let head_block_id = head_block.id as _;
       block_set.push(head_block);
 
@@ -468,29 +501,35 @@ fn process_block_ops(
     LOOP_ID => {
       //note: inputs in a loop node are PHI nodes.
 
-      // Create the dominator block for this node.
+      // The loop head is the main entry for this block.
 
       let mut loop_head_block = BasicBlock::default();
       loop_head_block.dominator = dominator_block;
       loop_head_block.id = block_set.len();
       block_set[dominator_block as usize].pass = loop_head_block.id as _;
+      block_set[tail_block as usize].dominator = loop_head_block.id as _;
       let loop_head_block_id = loop_head_block.id;
-      block_set.push(loop_head_block);
 
-      let loop_reset_block_id = block_set.len();
+      let mut loop_reentry_block = BasicBlock::default();
+      loop_reentry_block.dominator = loop_head_block_id as _;
+      loop_reentry_block.id = block_set.len() + 1;
+      loop_head_block.pass = loop_reentry_block.id as _;
+      let loop_reentry_block_id = loop_reentry_block.id;
+      loop_reentry_block.loop_head = true;
+
+      block_set.push(loop_head_block);
+      block_set.push(loop_reentry_block);
 
       let curr_block_data = &mut block_set[tail_block as usize];
       curr_block_data.dominator = loop_head_block_id as _;
 
-      // Need to create a loop resolution -----------------------------------------------
-
-      for input in &node.inputs {
-        let Operation::Port { ops: act_ops, .. } = &sn.operands[input.0.usize()] else { unreachable!() };
+      for (input_op, _) in &node.inputs {
+        let Operation::Port { ops: act_ops, .. } = &sn.operands[input_op.usize()] else { unreachable!() };
         let (_, root_op) = act_ops[0];
 
         assign_ops_to_blocks_inner(
           root_op,
-          (loop_head_block_id as _, loop_head_block_id as _),
+          (dominator_block as _, loop_head_block_id as _),
           sn,
           op_dependencies,
           op_data,
@@ -499,13 +538,15 @@ fn process_block_ops(
           loop_block_reset,
           dependency_rank + 65536,
         );
+
+        //op_data[input_op.usize()].block = tail_block as _;
       }
 
       let output = node.outputs[0];
       let Operation::Port { node_id: output_node_id, ops: act_ops, .. } = &sn.operands[output.0.usize()] else { unreachable!() };
 
       let (head, tails) = process_block_ops(
-        (loop_head_block_id as _, tail_block as _),
+        (loop_reentry_block_id as _, tail_block as _),
         *output_node_id as _,
         sn,
         op_dependencies,
@@ -520,14 +561,16 @@ fn process_block_ops(
 
       for (count, tail_block_id) in tails.iter().enumerate() {
         if count < tail_len - 1 {
-          block_set[*tail_block_id].pass = loop_reset_block_id as _;
+          block_set[*tail_block_id].pass = loop_reentry_block_id as _;
           loop_block_reset.insert(*tail_block_id as usize, node_id as usize);
         }
       }
 
-      block_set[head as usize].dominator = loop_head_block_id as _;
+      //block_set[head as usize].dominator = loop_head_block_id as _;
+      //block_set[loop_head_block_id as usize].pass = head as _;
 
-      block_set[loop_head_block_id as usize].pass = head as _;
+      dbg!(block_set);
+      //panic!("AA");
 
       return (loop_head_block_id as _, tails);
     }
@@ -559,7 +602,8 @@ pub enum OperandRegister {
   #[default]
   None,
   Reg(u8),
-  Load(u8),
+  /// Indicates the argument needs to be loaded from memory to be used.
+  Load(u16, u8),
   /// Indicates the argument is a constant value, and provides a TEMPORARY register the constant value
   /// can be loaded into if necessary.
   ConstReg(u8),
@@ -581,6 +625,7 @@ pub struct RegisterData {
   /// Arg at a given index should be copied to corresponding register index BEFORE
   /// operation is performed.
   pub copy_to:      [u8; 3],
+  pub preserve:     [bool; 3],
   //pre_ops:      [RegOp; 3],
   pub stashed:      bool,
   pub spill_offset: u32,
@@ -603,6 +648,7 @@ impl Default for RegisterData {
       own:          Default::default(),
       ops:          Default::default(),
       copy_to:      [255; 3],
+      preserve:     [false; 3],
       //pre_ops:      Default::default(),
       stashed:      Default::default(),
       preferred:    -1,
@@ -613,12 +659,14 @@ impl Default for RegisterData {
 impl Display for RegisterData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_fmt(format_args!(
-      "{:?} {}=> {:?} {:?} {:?}",
+      "{:?} {}=> {:?} {:?} {:?} c[{:?}] p[{:?}]",
       self.own,
       if self.stashed { "*" } else { " " },
       self.ops[0],
       self.ops[1],
       self.ops[2],
+      self.copy_to,
+      self.preserve,
       //self.pre_ops[0],
       //self.pre_ops[1],
       //self.pre_ops[2],
@@ -745,15 +793,6 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
           }
         }
         Operation::Op { op_id: op_type, operands } => {
-          for (dep_index, dep_op_id) in operands.iter().cloned().enumerate() {
-            if dep_op_id.is_valid() {
-              // If op_id has not been seen previously -- Kill
-              if block_kills[curr_block_id].insert(dep_op_id) {
-                kill_groups[op_id][dep_index] = dep_op_id;
-              }
-            }
-          }
-
           let var_id = match temp_registers[op_id] {
             RegisterAssignment::Var(op_id) => op_id,
             // RegisterAssignment::InterVar(..) => op_id, -- splits the variable.
@@ -810,13 +849,40 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
         _ => {}
       }
     }
+  }
 
-    let results = block_kills[curr_block_id].clone();
-    for predecessor_id in block.predecessors.iter().cloned() {
-      block_kills[predecessor_id].extend(results.iter());
+  // Calculate kills
+  for (_, curr_block_id) in sorted_blocks.iter().rev().cloned() {
+    {
+      let block = &blocks[curr_block_id];
+      for op_id in block.ops.iter().cloned().rev() {
+        if let Operation::Op { operands, .. } = &sn.operands[op_id] {
+          for (dep_index, dep_op_id) in operands.iter().cloned().enumerate() {
+            if dep_op_id.is_valid() {
+              // If op_id has not been seen previously -- Kill
+              match temp_registers[dep_op_id.usize()] {
+                RegisterAssignment::Var(v) | RegisterAssignment::InterVar(v) => {
+                  if block_kills[curr_block_id].insert(v) {
+                    kill_groups[op_id][dep_index] = dep_op_id;
+                  }
+                }
+                _ => {}
+              }
+            }
+          }
+        }
+      }
+
+      let results = block_kills[curr_block_id].clone();
+      for predecessor_id in block.predecessors.iter().cloned() {
+        block_kills[predecessor_id].extend(results.iter());
+      }
     }
   }
 
+  dbg!(block_kills);
+
+  print_blocks(sn, op_dependencies, op_data, blocks, &temp_registers, &op_registers);
   // Top Down Pass =================================================================================
 
   let mut block_alive_vars = vec![(X86registers::new(&REGISTERS, None), [RegAssignTarget::default(); 12]); sorted_blocks.len()];
@@ -825,6 +891,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
   // print_blocks(sn, op_dependencies, op_data, blocks, &temp_registers, &op_registers);
 
   for (_, curr_block_id) in sorted_blocks.iter().cloned() {
+    println!("-- {curr_block_id} --");
     let (mut register_set, mut var_reg_assignments) = block_alive_vars[curr_block_id];
 
     for (reg_id, op_id) in var_reg_assignments.iter().cloned().enumerate() {
@@ -838,6 +905,18 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
 
     let block = &blocks[curr_block_id];
     for op_id in block.ops.iter().cloned() {
+      if op_id == 2 {
+        println!("\n\n\nasdasdasd");
+      }
+      if op_id == 9 {
+        println!("BLOCK: {curr_block_id}");
+        println!("REGS: {register_set:?}");
+        println!("VARS: {var_reg_assignments:?}");
+        println!("ACTIVE: {active_register_value:?}");
+
+        panic!("A");
+      }
+
       match &sn.operands[op_id] {
         Operation::Param(_, index) => {
           let reg_index = PARAM_REGISTERS[*index as usize];
@@ -863,13 +942,76 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
           for ((index, dep_op_id), action) in operands.iter().enumerate().zip(action) {
             match *action {
               ArgRegType::NoUse => {}
-              ArgRegType::NeedAccessTo(reg_index) => {
-                todo!("Implement Need Access To")
+              ArgRegType::Temp => {
+                if let Some(temp_register) = temp_reg_set.acquire_random_register() {
+                  op_registers[op_id].ops[index] = OperandRegister::ConstReg(temp_register as _);
+                } else {
+                  let (var_id, reg) = get_preferred_free_reg(&temp_registers, &op_registers, var_reg_assignments, operands);
+                  spill_var(sn, &var_op_lookups, &mut op_registers, &mut stack_offsets, var_id);
+
+                  temp_reg_set.acquire_specific_register(reg as _);
+                  register_set.release_register(reg as _);
+
+                  println!("spill {var_id}@{:?} freeing {reg}", var_reg_assignments[reg as usize]);
+
+                  active_register_value[var_id] = OperandRegister::None;
+                  var_reg_assignments[reg as usize] = Default::default();
+                  op_registers[op_id].ops[index] = OperandRegister::ConstReg(reg as _);
+                }
+              }
+              ArgRegType::NeedAccessTo(required_reg) => {
+                if !temp_reg_set.acquire_specific_register(required_reg as _) {
+                  // Attempt to move the current register to a different register. This requires
+                  // moving it to a register that is NOT IN USE during this operation.
+                  let RegAssignTarget::Op(conflict_op) = var_reg_assignments[required_reg as usize] else { unreachable!() };
+                  let var_id = match temp_registers[conflict_op.usize()] {
+                    RegisterAssignment::Var(var_id) | RegisterAssignment::InterVar(var_id) => var_id,
+                    _ => unreachable!(),
+                  };
+
+                  if op_data[var_id].block == block.id as _ {
+                    // We are in the base block for the current variable and can change it to any other register we need.
+
+                    op_registers[op_id].preserve[index] = true;
+
+                    //todo!("MOVE VARIABLE")
+                  } else {
+                    if op_registers[var_id].stashed {
+                      // Already stashed. No need to store it.
+                    } else if var_id == conflict_op.usize() {
+                      // Can move to another register if one is available
+                      if let Some(reg) = temp_reg_set.acquire_random_register() {
+                        op_registers[op_id].copy_to[index] = reg as _;
+                        active_register_value[var_id] = OperandRegister::Reg(reg as _);
+                        register_set.acquire_specific_register(reg as _);
+                        register_set.release_register(required_reg as _);
+                        var_reg_assignments[reg] = RegAssignTarget::Op(conflict_op);
+                        var_reg_assignments[required_reg as usize] = RegAssignTarget::None;
+                      } else {
+                        spill_var(sn, &var_op_lookups, &mut op_registers, &mut stack_offsets, var_id);
+                      }
+                    } else {
+                      // push and pop it
+                      // The variable cannot be moved and we must either store it or stash and pop it.
+                      match required_assign {
+                        AssignRequirement::Forced(reg) if *reg == required_reg => {
+                          // Since the output will clobber this var_id we should  spill
+                          spill_var(sn, &var_op_lookups, &mut op_registers, &mut stack_offsets, var_id);
+                        }
+                        _ => {
+                          op_registers[op_id].preserve[index] = true;
+                        }
+                      }
+                    }
+                  }
+                }
+
+                op_registers[op_id].ops[index] = OperandRegister::Reg(required_reg as _);
               }
               ArgRegType::Used | ArgRegType::RequiredAs(..) => {
                 let op_ty = get_op_type(sn, *dep_op_id);
-                if op_ty.base_ty() == BaseType::MemCtx || op_ty.is_mem() || op_ty.is_nouse() {
-                  unreachable!("No attempt should be made to acquire register for a memory parameter");
+                if op_ty.base_ty() == BaseType::MemCtx || op_ty.is_nouse() {
+                  unreachable!("No attempt should be made to acquire register for a memory parameter {op_id} [{index}] {action:?}");
                 }
                 match temp_registers[dep_op_id.usize()] {
                   RegisterAssignment::Constant => {
@@ -893,14 +1035,17 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
                     let dep_reg = &op_registers[var_id];
 
                     if dep_reg.stashed {
-                      op_registers[op_id].ops[index] = OperandRegister::Load(var_id as _);
+                      // Select register that can be used to load the variable.
+                      if let Some(temp_register) = temp_reg_set.acquire_random_register() {
+                        op_registers[op_id].ops[index] = OperandRegister::Load(var_id as _, temp_register as _);
+                      } else {
+                        panic!("Could not select temporary register for load")
+                      }
                     } else {
                       if let OperandRegister::Reg(reg_id) = active_register_value[var_id] {
                         op_registers[op_id].ops[index] = OperandRegister::Reg(reg_id as _);
-                      } else if dep_reg.stashed {
-                        op_registers[op_id].ops[index] = OperandRegister::Load(var_id as _);
                       } else {
-                        unreachable!();
+                        unreachable!("{op_id}[{index}:{dep_op_id}]{:?}", active_register_value[var_id]);
                       }
                     }
                   }
@@ -912,7 +1057,10 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
             if let ArgRegType::RequiredAs(required_reg) = *action {
               // This operand is required to be a in a specific register.
               match op_registers[dep_op_id.usize()].own {
-                op @ OperandRegister::Load(..) | op @ OperandRegister::Reg(..) | op @ OperandRegister::ConstReg(..) => {
+                op @ OperandRegister::Load(..) => {
+                  unreachable!()
+                }
+                op @ OperandRegister::Reg(..) | op @ OperandRegister::ConstReg(..) => {
                   let (mov_reg, free_register) = match op {
                     OperandRegister::Reg(reg) => (reg != required_reg, reg != required_reg),
                     _ => (false, true),
@@ -937,7 +1085,7 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
                         todo!("MOVE VARIABLE")
                       } else {
                         // The variable cannot be moved and we must either store it or stash and pop it.
-                        todo!("STASH AND POP")
+                        spill_var(sn, &var_op_lookups, &mut op_registers, &mut stack_offsets, var_id);
                       }
                     }
                   }
@@ -948,6 +1096,10 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
 
             if dep_op_id.is_valid() {}
           }
+
+          if let AssignRequirement::NoOutput = required_assign {
+            continue;
+          }
         }
         _ => {}
       }
@@ -955,18 +1107,18 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
       for kill_op in &kill_groups[op_id] {
         if kill_op.is_valid() {
           // Get register assigned to the op.
-
           match temp_registers[kill_op.usize()] {
             RegisterAssignment::InterVar(var_id) | RegisterAssignment::Var(var_id) => {
               if var_id != kill_op.usize() {
-                continue;
+                //continue;
               }
 
-              if let OperandRegister::Reg(reg) = op_registers[kill_op.usize()].own {
+              println!("block {curr_block_id} kills {kill_op}:{var_id} at {op_id} freeing {:?}", active_register_value[var_id]);
+              if let OperandRegister::Reg(reg) = active_register_value[var_id] {
                 register_set.release_register(reg as _);
                 var_reg_assignments[reg as usize] = Default::default();
               } else {
-                panic!("Could not handle case: {:?}", op_registers[kill_op.usize()])
+                // todo_note!("Could not handle kill case: {:?}", op_registers[kill_op.usize()])
               }
             }
             _ => {}
@@ -1035,11 +1187,15 @@ fn register_assign(sn: &mut RootNode, op_dependencies: &[Vec<OpId>], op_data: &[
               RegAssignTarget::None | RegAssignTarget::Undefined => {
                 *curr = RegAssignTarget::None;
               }
-              RegAssignTarget::Op(other_op_id) => {
-                let a = temp_registers[other_op_id.usize()];
-                let b = temp_registers[op_id.usize()];
-                debug_assert_eq!(a, b);
-              }
+              RegAssignTarget::Op(other_op_id) => match (temp_registers[other_op_id.usize()], temp_registers[op_id.usize()]) {
+                (RegisterAssignment::Var(a), RegisterAssignment::Var(b))
+                | (RegisterAssignment::InterVar(a), RegisterAssignment::Var(b))
+                | (RegisterAssignment::Var(a), RegisterAssignment::InterVar(b))
+                | (RegisterAssignment::InterVar(a), RegisterAssignment::InterVar(b)) => {
+                  debug_assert_eq!(a, b);
+                }
+                _ => unreachable!(),
+              },
             },
             RegAssignTarget::None => {}
           }
@@ -1164,9 +1320,6 @@ fn print_groups(sn: &mut RootNode, blocks: &mut [BasicBlock], op_registers: &Vec
           }
         }
       }
-
-      println!(" [{:?}]", reg_data.copy_to);
-
       println!("");
     }
   }
@@ -1181,7 +1334,7 @@ fn print_blocks(
   registers: &[RegisterData],
 ) {
   for block in blocks.iter() {
-    println!("\n\nBLOCK - {} [{}]", block.id, block.level);
+    println!("\n\nBLOCK - {} [{}] {}", block.id, block.level, block.loop_head);
     let mut ops = block.ops.clone();
 
     let mut rank = 0;
