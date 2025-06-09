@@ -597,8 +597,24 @@ op_table!(lea [
   ((16, OT::REG, OT::MEM, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((32, OT::REG, OT::MEM, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((64, OT::REG, OT::MEM, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+]);
 
+/// https://www.felixcloutier.com/x86/xchg
+op_table!(xchg [
+  ((08, OT::REG, OT::MEM, OT::NONE), (0x0086, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((16, OT::REG, OT::MEM, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::MEM, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((64, OT::REG, OT::MEM, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
 
+  ((08, OT::REG, OT::REG, OT::NONE), (0x0086, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((16, OT::REG, OT::REG, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::REG, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((64, OT::REG, OT::REG, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+
+  ((08, OT::MEM, OT::REG,  OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+  ((16, OT::MEM, OT::REG,  OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+  ((32, OT::MEM, OT::REG,  OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+  ((64, OT::MEM, OT::REG,  OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
 ]);
 
 #[test]

@@ -32,13 +32,13 @@ pub fn compile(db: &SolveDatabase) {
 
     print_instructions(binary.as_slice(), 0);
 
-    let fn_build_data = basic_block_compiler::encode_function(super_node, db);
+    let register_assigned_basic_blocks = basic_block_compiler::encode_function(super_node, db);
 
-    let binary = x86_binary_writer::encode_routine(super_node, &fn_build_data.0, &fn_build_data.1, db, allocate as _, free as _);
+    let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
 
     let func = x86_eval::x86Function::new(&binary, 0);
 
-    assert_eq!(func.access_as_call::<fn(u32, u32) -> u32>()(4, 2), 37, "Failed to parse correctly");
+    assert_eq!(func.access_as_call::<fn(u32, u32) -> u32>()(4, 2), 6, "Failed to parse correctly");
 
     // TEMP: Run the binary.
 
