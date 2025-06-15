@@ -17,13 +17,13 @@ use crate::{
 use std::{collections::VecDeque, fmt::Debug, u32, usize};
 
 #[derive(Debug, Clone, Copy)]
-struct BlockOrderData {
+pub struct BlockOrderData {
   /// The actual index of this data within an ordering array
-  index:    usize,
+  pub index:    usize,
   /// The ID of the block this data represents
-  block_id: isize,
-  pass:     isize,
-  fail:     isize,
+  pub block_id: isize,
+  pub pass:     isize,
+  pub fail:     isize,
 }
 
 impl Default for BlockOrderData {
@@ -107,7 +107,10 @@ pub fn encode_routine(sn: &mut RootNode, blocks: &[BasicBlock], db: &SolveDataba
                   todo!("Store value")
                 }
                 VarVal::Reg(reg) => {
-                  todo!("Move constant value")
+                  let o_reg = REGISTERS[reg as usize];
+                  let Operation::Op { op_id, operands } = &sn.operands[op.source.usize()] else { unreachable!() };
+                  let Operation::Const(val) = &sn.operands[operands[1].usize()] else { panic!("Could not load constant value") };
+                  encode_x86(binary, &mov, (byte_size as u64), o_reg.as_reg_op(), Arg::Imm_Int(val.convert(prim).load()), Arg::None);
                 }
                 _ => {}
               },
@@ -145,7 +148,14 @@ pub fn encode_routine(sn: &mut RootNode, blocks: &[BasicBlock], db: &SolveDataba
                   todo!("Store value")
                 }
                 VarVal::Reg(reg) => {
-                  todo!("Move constant value")
+                  let o_reg = REGISTERS[reg as usize];
+
+                  let const_op = match &sn.operands[op.source.usize()] {
+                    Operation::Op { op_id, operands } => operands[0],
+                    _ => unreachable!(),
+                  };
+                  let Operation::Const(val) = &sn.operands[const_op.usize()] else { panic!("Could not load constant value") };
+                  encode_x86(binary, &mov, (byte_size as u64), o_reg.as_reg_op(), Arg::Imm_Int(val.convert(prim).load()), Arg::None);
                 }
                 _ => {}
               },
@@ -624,7 +634,7 @@ pub fn encode_routine(sn: &mut RootNode, blocks: &[BasicBlock], db: &SolveDataba
               panic!("Expected primitive base type");
             }
           } else {
-            todo!("Handle store to bool")
+            //todo!("Handle store to bool")
           }
         }
         Op::CONST => {
@@ -726,14 +736,15 @@ pub fn encode_routine(sn: &mut RootNode, blocks: &[BasicBlock], db: &SolveDataba
   binary_data
 }
 
-fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
+pub fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
   // Optimization - Order blocks to decrease number of jumps
   let mut block_ordering = vec![BlockOrderData::default(); blocks.len()];
   let mut block_tracker = vec![false; blocks.len()];
+  let first = blocks.iter().find(|b| b.predecessors.len() == 0).unwrap();
 
   block_ordering.iter_mut().enumerate().for_each(|(i, block)| block.index = i);
 
-  let mut block_order_queue = VecDeque::from_iter([0isize]);
+  let mut block_order_queue = VecDeque::from_iter([first.id as isize]);
 
   let mut offset = 0;
 
@@ -741,14 +752,15 @@ fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
     if block_id < 0 || block_tracker[block_id as usize] {
       continue;
     }
+
     block_tracker[block_id as usize] = true;
     block_ordering[offset].block_id = block_id as _;
     block_ordering[offset].pass = blocks[block_id as usize].pass;
     block_ordering[offset].fail = blocks[block_id as usize].fail;
     offset += 1;
     let block = &blocks[block_id as usize];
-    block_order_queue.push_front(block.fail);
     block_order_queue.push_front(block.pass);
+    block_order_queue.push_front(block.fail);
   }
 
   // Optimization - Skip blocks that are empty.

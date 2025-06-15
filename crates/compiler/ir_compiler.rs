@@ -31,10 +31,12 @@ use rum_lang::{
   Token,
 };
 use std::{
-  collections::{HashMap, VecDeque},
+  collections::{BTreeSet, HashMap, VecDeque},
   fmt::Debug,
   sync::Arc,
   u32,
+  usize,
+  vec,
 };
 
 pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
@@ -70,7 +72,7 @@ pub fn add_module(db: &mut Database, module: &str) {
                 node.get_mut().unwrap().annotations.push(id);
               }
             }
-            dbg!(&node);
+
             db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
           }
           routine_definition_Value::Type_Struct(strct) => {
@@ -123,8 +125,6 @@ pub(crate) fn compile_struct(
 
     add_properties(db, properties, bp, &mut offset_op);
 
-    add_output(bp, offset_op, VarId::AggSize);
-
     if let Some(heap_id) = heap_id {
       todo!("Declare HeapName");
 
@@ -167,8 +167,7 @@ fn add_properties(db: &Database, properties: &[(IString, Option<type_Value<Token
           push_node(&mut sig_bp, ROUTINE_SIGNATURE_ID);
 
           if let Some((ret_ty, ret_node)) = compile_routine_signature(ty, &mut sig_bp) {
-            let op = add_op(&mut sig_bp, Operation::Param(VarId::Return, 0), ret_ty, ret_node);
-            sig_bp.super_node.nodes[0].outputs.push((op, VarId::Return));
+            add_op(&mut sig_bp, Operation::Param(VarId::Return, 0), ret_ty, ret_node);
           }
 
           let BuildPack { constraints, .. } = sig_bp;
@@ -187,7 +186,6 @@ fn add_properties(db: &Database, properties: &[(IString, Option<type_Value<Token
 
     let (prop_offset_op, _) = process_op(Op::CAS, &[prop_op, *offset_op], bp, Default::default());
     *offset_op = prop_offset_op;
-    add_output(bp, prop_op, VarId::Name(*prop_name));
   }
 }
 
@@ -306,27 +304,34 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
   };
 
   push_node(&mut bp, ROUTINE_ID);
+  let return_ty = add_ty_var(&mut bp).ty;
+  declare_top_scope_var(&mut bp, VarId::Return, Default::default(), return_ty).origin_node_index = -1;
 
   let ret_data = compile_routine_signature(&routine.ty, &mut bp);
 
   let (out_op, out_gen_ty, ..) = compile_expression(&routine.expression.expr, &mut bp, None);
 
+  // Output memory operations that have changed
+
   if let Some((ret_ty, node)) = ret_data {
     if out_op.is_valid() {
       let (ctx_op, _) = get_mem_context(&mut bp);
       let ret_op = add_op(&mut bp, Operation::Op { op_id: Op::RET, operands: [out_op, ctx_op, Default::default()] }, ret_ty.clone(), node);
-      bp.super_node.nodes[0].outputs.push((ret_op, VarId::Return));
-      add_constraint(&mut bp, NodeConstraint::GenTyToGenTy(ret_ty, out_gen_ty));
-      add_constraint(&mut bp, NodeConstraint::OpConvertTo { src_op: ret_op, trg_op_index: 1 });
+
+      //bp.super_node.nodes[0].ports.push(NodePort { ty: PortType::Out, slots: vec![ret_op], id: VarId::Return });
+      update_var(&mut bp, VarId::Return, ret_op, ret_ty);
+
+      //add_constraint(&mut bp, NodeConstraint::GenTyToGenTy(ret_ty, out_gen_ty));
+      //add_constraint(&mut bp, NodeConstraint::OpConvertTo { src_op: ret_op, trg_op_index: 1 });
       clone_op_heap(&mut bp, out_op, ret_op);
     }
-  } else {
-    bp.super_node.nodes[0].outputs.push((Default::default(), VarId::VoidReturn));
   }
+
+  let ret = pop_node(&mut bp, true, true);
 
   let BuildPack { super_node: routine, constraints, node_stack, .. } = bp;
 
-  for (id, index) in node_stack[0].var_lu.iter() {
+  /*   for (id, index) in node_stack[0].var_lu.iter() {
     match node_stack[0].vars[*index].id {
       var_id @ VarId::MemCTX => {
         let op = node_stack[0].vars[*index].val_op;
@@ -347,7 +352,7 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
 
       _ => {}
     }
-  }
+  } */
 
   let handle = NodeHandle::new(super_node);
 
@@ -391,8 +396,11 @@ fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildP
 
     let var_id = VarId::Name(name);
     let param_op_id = add_op(bp, Operation::Param(var_id, index as u32), ty, param.clone().into());
+
+    bp.super_node.nodes[0].ports.push(NodePort { ty: PortType::In, slot: param_op_id, id: var_id });
+
     declare_top_scope_var(bp, var_id, param_op_id, ty);
-    add_input(bp, param_op_id, var_id);
+
     set_op_heap(bp, param_op_id, heap.generic_id().unwrap());
   }
 
@@ -439,7 +447,7 @@ struct Var {
   ori_op:            OpId,
   val_op:            OpId,
   ty:                TypeV,
-  origin_node_index: usize,
+  origin_node_index: isize,
 }
 
 #[derive(Debug)]
@@ -449,6 +457,7 @@ struct NodeScope {
   vars:       Vec<Var>,
   var_lu:     HashMap<VarId, usize>,
   heap_lu:    HashMap<IString, TypeV>,
+  ports:      Vec<NodePort>,
 }
 
 #[derive(Debug)]
@@ -461,14 +470,29 @@ struct BuildPack<'a> {
 
 fn push_node(bp: &mut BuildPack, id: &'static str) -> usize {
   let node_index = bp.super_node.nodes.len();
+  let parent = bp.node_stack.last().map(|d| d.node_index as isize).unwrap_or(-1);
+
   bp.super_node.nodes.push(Node {
-    index:     node_index,
-    type_str:  id,
-    inputs:    Default::default(),
-    outputs:   Default::default(),
+    index: node_index,
+    type_str: id,
+    children: Default::default(),
     loop_type: Default::default(),
+    ports: Default::default(),
+    parent,
   });
-  bp.node_stack.push(NodeScope { node_index, vars: Default::default(), var_lu: Default::default(), heap_lu: Default::default(), id });
+
+  if parent >= 0 {
+    bp.super_node.nodes[parent as usize].children.push(node_index);
+  }
+
+  bp.node_stack.push(NodeScope {
+    node_index,
+    vars: Default::default(),
+    var_lu: Default::default(),
+    heap_lu: Default::default(),
+    ports: Vec::new(),
+    id,
+  });
   bp.node_stack.len() - 1
 }
 
@@ -488,7 +512,7 @@ fn declare_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: TypeV, de
 
   let node_data = &mut bp.node_stack[declare_index];
 
-  let origin_node_index = node_data.node_index;
+  let origin_node_index = node_data.node_index as _;
 
   let var_index = node_data.vars.len();
   node_data.vars.push(Var { id: var_id, val_op: op, ty, origin_node_index, ori_op: op });
@@ -501,40 +525,74 @@ fn remove_var(bp: &mut BuildPack, var_id: VarId) {
   node_data.var_lu.remove(&var_id);
 }
 
-fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize) -> Option<(Var, usize)> {
-  for node_stack_index in (0..=current).rev() {
-    let node = &mut bp.node_stack[node_stack_index];
-    if let Some(var) = node.var_lu.get(&var_id) {
-      return Some((node.vars[*var].clone(), node_stack_index));
-    } else if matches!(bp.super_node.nodes[bp.node_stack[node_stack_index].node_index].loop_type, LoopType::Head(..)) {
-      if matches!(var_id, VarId::MemName(..)) {
-        return None;
-      }
+fn get_var_internal(bp: &mut BuildPack, var_id: VarId, current: usize, requester: usize) -> Option<Var> {
+  let node = &bp.node_stack[current];
+  let index = node.node_index;
+  let port_index = bp.super_node.nodes[index].ports.len();
 
-      let index = bp.node_stack[node_stack_index].node_index;
+  if let Some(var) = node.var_lu.get(&var_id) {
+    Some(node.vars[*var].clone())
+  } else {
+    if matches!(var_id, VarId::MemName(..)) {
+      return None;
+    }
 
-      if let Some((var, _)) = get_var_internal(bp, var_id, node_stack_index - 1) {
-        let Var { val_op: op, ty, .. } = var;
+    if current == 0 {
+      return None;
+    }
 
-        let op = add_op(bp, Operation::Port { node_id: index as u32, ty: PortType::Phi, ops: vec![(0, op)] }, ty, Default::default());
+    if let Some(var) = get_var_internal(bp, var_id, current - 1, requester) {
+      // Create merge in ports where needed.
+      // Currently needed in Merge and Loop nodes
+      if matches!(bp.super_node.nodes[current].type_str, LOOP_ID | MATCH_ID) {
+        let Var { val_op: op, ty, id, .. } = var;
 
-        bp.super_node.nodes[index].inputs.push((op, var_id));
+        let op = if op.is_valid() {
+          let port_type = match bp.super_node.nodes[index].type_str {
+            LOOP_ID => {
+              todo!("Create top level phi node for loop")
+            }
+            _ => PortType::In,
+          };
 
-        let node_data = &mut bp.node_stack[node_stack_index];
+          bp.super_node.nodes[index].ports.push(NodePort { id, ty: port_type, slot: op });
+
+          op
+        } else {
+          op
+        };
+
+        let node_data = &mut bp.node_stack[current];
         let var_index = node_data.vars.len();
 
         let new_var = Var { id: var_id, val_op: op, ty, origin_node_index: var.origin_node_index, ori_op: op };
         node_data.vars.push(new_var.clone());
-        node_data.var_lu.insert(var_id.clone(), var_index);
 
-        return Some((new_var, node_stack_index));
+        let existing = node_data.var_lu.insert(var_id.clone(), var_index);
+        debug_assert!(existing.is_none());
+
+        Some(new_var)
+      } else if current == requester {
+        let node_data = &mut bp.node_stack[current];
+        let var_index = node_data.vars.len();
+        let new_var = Var {
+          id:                var_id,
+          val_op:            var.val_op,
+          ty:                var.ty,
+          origin_node_index: var.origin_node_index,
+          ori_op:            var.ori_op,
+        };
+        node_data.vars.push(new_var.clone());
+        let existing = node_data.var_lu.insert(var_id.clone(), var_index);
+        debug_assert!(existing.is_none());
+        Some(new_var)
       } else {
-        return None;
+        Some(var)
       }
+    } else {
+      None
     }
   }
-
-  return None;
 }
 
 fn get_mem_context(bp: &mut BuildPack) -> (OpId, TypeV) {
@@ -554,14 +612,7 @@ fn get_mem_context(bp: &mut BuildPack) -> (OpId, TypeV) {
 fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, TypeV)> {
   let current = bp.node_stack.len() - 1;
 
-  if let Some((var, index)) = get_var_internal(bp, var_id, current) {
-    if index != current {
-      let current_node = &mut bp.node_stack[current];
-      let var_index = current_node.vars.len();
-      current_node.vars.push(var.clone());
-      current_node.var_lu.insert(var.id, var_index);
-    }
-
+  if let Some(var) = get_var_internal(bp, var_id, current, current) {
     Some((var.val_op, var.ty))
   } else {
     None
@@ -571,14 +622,7 @@ fn get_var(bp: &mut BuildPack, var_id: VarId) -> Option<(OpId, TypeV)> {
 fn get_var_data(bp: &mut BuildPack, var_id: VarId) -> Option<Var> {
   let current = bp.node_stack.len() - 1;
 
-  if let Some((var, index)) = get_var_internal(bp, var_id, current) {
-    if index != current {
-      let current_node = &mut bp.node_stack[current];
-      let var_index = current_node.vars.len();
-      current_node.vars.push(var.clone());
-      current_node.var_lu.insert(var.id, var_index);
-    }
-
+  if let Some(var) = get_var_internal(bp, var_id, current, current) {
     Some(var)
   } else {
     None
@@ -587,26 +631,24 @@ fn get_var_data(bp: &mut BuildPack, var_id: VarId) -> Option<Var> {
 
 /// Update the op id of a variable. The new op should have the same type as the existing op.
 fn update_var(bp: &mut BuildPack, var_id: VarId, op: OpId, ty: TypeV) {
-  let node_data = bp.node_stack.last_mut().unwrap();
+  if bp.node_stack.len() > 0 {
+    let node_data = bp.node_stack.last_mut().unwrap();
 
-  if let Some(var) = node_data.var_lu.get(&var_id) {
-    let var_index = *var;
-    let v = &node_data.vars[var_index];
+    if let Some(var) = node_data.var_lu.get(&var_id) {
+      let var_index = *var;
+      let v = &node_data.vars[var_index];
 
-    if ty.is_generic() && ty != v.ty {
-      let constraint = NodeConstraint::GenTyToGenTy(ty, v.ty);
-      add_constraint(bp, constraint);
+      if ty.is_generic() && ty != v.ty {
+        let constraint = NodeConstraint::GenTyToGenTy(ty, v.ty);
+        add_constraint(bp, constraint);
+      }
+
+      let var = &mut bp.node_stack.last_mut().unwrap().vars[var_index];
+
+      var.val_op = op;
+    } else {
+      declare_top_scope_var(bp, var_id, op, ty);
     }
-
-    let var = &mut bp.node_stack.last_mut().unwrap().vars[var_index];
-
-    var.val_op = op;
-
-    if var.ori_op.is_invalid() {
-      var.ori_op = op;
-    }
-  } else {
-    declare_top_scope_var(bp, var_id, op, ty);
   }
 }
 
@@ -614,11 +656,11 @@ fn update_mem_context(bp: &mut BuildPack, op: OpId) {
   update_var(bp, VarId::MemCTX, op, Default::default())
 }
 
-#[track_caller]
 fn add_op(bp: &mut BuildPack, operation: Operation, ty: TypeV, node: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> OpId {
   debug_assert!(ty.is_open() || ty.is_poison() || ty == TypeV::NoUse, "incompatible base type {ty}");
   let op_id = OpId(bp.super_node.operands.len() as u32);
   bp.super_node.operands.push(operation);
+  bp.super_node.operand_node.push(bp.node_stack.last().map(|d| d.node_index).unwrap_or(0));
   bp.super_node.op_types.push(ty);
   bp.super_node.source_tokens.push(node);
   bp.super_node.heap_id.push(usize::MAX);
@@ -682,16 +724,6 @@ fn add_ty_var<'a>(bp: &'a mut BuildPack) -> &'a mut TypeVar {
   &mut bp.super_node.type_vars[last_index]
 }
 
-fn add_input(bp: &mut BuildPack, op_id: OpId, var_id: VarId) {
-  let top = bp.node_stack.last().unwrap().node_index;
-  bp.super_node.nodes[top].inputs.push((op_id, var_id));
-}
-
-fn add_output(bp: &mut BuildPack, op_id: OpId, var_id: VarId) {
-  let top = bp.node_stack.last().unwrap().node_index;
-  bp.super_node.nodes[top].outputs.push((op_id, var_id));
-}
-
 fn add_constraint(bp: &mut BuildPack, constraint: NodeConstraint) {
   bp.constraints.push(constraint)
 }
@@ -743,19 +775,10 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
           let (mem_op, _) = get_mem_context(bp);
           let ((match_op, _), (active_op, _)) = process_match(match_, bp);
-
-          add_output(bp, match_op, VarId::OutputVal);
-          add_output(bp, active_op, VarId::MatchActivation);
-
           let (mem_op2, _) = get_mem_context(bp);
 
-          if mem_op != mem_op2 {
-            add_output(bp, mem_op2, VarId::MemCTX);
-          }
-
-          let node = pop_node(bp, false);
-
-          join_nodes(vec![node], bp);
+          let node = pop_node(bp, false, true);
+          merge_nodes(vec![node], bp);
 
           output = Default::default()
         }
@@ -773,7 +796,8 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
         }
       },
       statement_Value::ASM(asm) => {
-        let inputs = asm
+        todo!("Inline assembly")
+        /*  let inputs = asm
           .inputs
           .iter()
           .map(|input| {
@@ -785,38 +809,26 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
         push_node(bp, ASM_ID);
 
-        for (op_id, var_id) in inputs {
-          add_input(bp, op_id, var_id);
-        }
-
         let (heap_in_op, heap_ty) = get_mem_context(bp);
-        if heap_in_op.is_valid() {
-          add_input(bp, heap_in_op, VarId::MemCTX);
-        }
-
-        add_input(bp, Default::default(), VarId::ASM(asm.asm_data.to_string().intern()));
 
         for output in asm.outputs.iter() {
           let ASM_Output { mem_name, scope_name } = output.as_ref();
 
           let out_op = add_op(
             bp,
-            Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() },
-            Default::default(),
+            Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Merge, ops: Default::default() },
+            Default::default(),F
             Default::default(),
           );
-          add_output(bp, out_op, VarId::Name(mem_name.id.intern()));
           update_var(bp, VarId::Name(scope_name.id.intern()), out_op, Default::default());
         }
 
         let mem_op =
-          add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() }, heap_ty, Default::default());
+          add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Merge, ops: Default::default() }, heap_ty, Default::default());
 
-        add_output(bp, mem_op, VarId::Heap);
+        pop_node(bp, false, false);
 
-        pop_node(bp, false);
-
-        update_mem_context(bp, mem_op);
+        update_mem_context(bp, mem_op); */
       }
       statement_Value::RawAssignment(assign) => {
         match &assign.var {
@@ -958,7 +970,8 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
   }
 
   if heaps.len() > 0 {
-    let node_index = bp.node_stack.last().unwrap().node_index;
+    todo!("Handle stack");
+    /* let node_index = bp.node_stack.last().unwrap().node_index;
 
     // Identify dead heaps
 
@@ -970,27 +983,27 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
       declare_top_scope_var(bp, VarId::OutputVal, output.0, output.1);
     }
 
-    let mut node = pop_node(bp, false);
+    let mut node = pop_node(bp, true, true);
 
-    for (var_id, var_index) in node.var_lu.iter() {
+    /*     for (var_id, var_index) in node.var_lu.iter() {
       if matches!(var_id, VarId::MemName(..)) {
         continue;
       }
       if let Some(var) = node.vars.get_mut(*var_index) {
         if var.val_op.is_valid() {
-          let mem_op = add_op(bp, Operation::Port { node_id: node_index as u32, ty: PortType::Output, ops: vec![(0, var.val_op)] }, var.ty, Default::default());
+          let mem_op = add_op(bp, Operation::Port { node_id: node_index as u32, ty: PortType::Merge, ops: vec![(0, var.val_op)] }, var.ty, Default::default());
           clone_op_heap(bp, var.val_op, mem_op);
           bp.super_node.nodes[node_index as usize].outputs.push((var.val_op, *var_id));
           var.val_op = mem_op;
         }
       }
-    }
+    } */
 
     let (op, ty) = node.var_lu.get(&VarId::OutputVal).map(|v| &node.vars[*v]).map(|v| (v.val_op, v.ty)).unwrap_or_default();
 
-    join_nodes(vec![node], bp);
+    //merge_nodes(vec![node], bp);
 
-    (op, ty, None)
+    (op, ty, None) */
   } else {
     output
   }
@@ -1027,35 +1040,26 @@ fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (OpId, TypeV)
 
   push_node(bp, CALL_ID);
 
-  add_input(bp, call_ref_op, VarId::CallRef);
-
-  for (index, (op_id, op_ty)) in args.iter().enumerate() {
-    add_input(bp, *op_id, VarId::Param(index));
-  }
-
   let (heap_in_op, heap_ty) = get_mem_context(bp);
-  if heap_in_op.is_valid() {
-    add_input(bp, heap_in_op, VarId::MemCTX);
-  }
 
   ///////////////////////////////////
   let var = add_ty_var(bp);
   var.add(VarAttribute::ForeignType);
   let ret_ty = var.ty;
 
-  let ret_op =
-    add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() }, ret_ty.clone(), call.clone().into());
+  todo!("Call return args");
+
+  /*   let ret_op =
+    add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Merge, ops: Default::default() }, ret_ty.clone(), call.clone().into());
   declare_top_scope_var(bp, VarId::Return, ret_op, ret_ty.clone());
 
   let mem_op =
-    add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Output, ops: Default::default() }, heap_ty, call.clone().into());
+    add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Merge, ops: Default::default() }, heap_ty, call.clone().into());
   update_mem_context(bp, mem_op);
 
-  add_output(bp, ret_op, VarId::Return);
+  merge_nodes(vec![pop_node(bp, false, false)], bp);
 
-  join_nodes(vec![pop_node(bp, false)], bp);
-
-  (ret_op, ret_ty)
+  (ret_op, ret_ty)*/
 }
 
 enum VarLookup {
@@ -1380,9 +1384,10 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
     expression_Value::Sub(sub) => {
       let val = { algebraic_op!(bp, Op::SUB, sub, delta_ty) };
 
-      if let Some(var) = val.2 {
+      /* if let Some(var) = val.2 {
         get_var_from_gen_ty(bp, var).num |= s8_numeric;
-      }
+      } */
+
       val
     }
     expression_Value::Div(div) => algebraic_op!(bp, Op::DIV, div, delta_ty),
@@ -1409,9 +1414,8 @@ fn current_node_index(bp: &BuildPack) -> usize {
 }
 
 fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, TypeV), (OpId, TypeV)) {
-  let input_op = compile_expression(&expression_Value::MemberCompositeAccess(match_.expression.clone()), bp, None);
-
   push_node(bp, MATCH_ID);
+  let (input_op, input_op_ty, ..) = compile_expression(&expression_Value::MemberCompositeAccess(match_.expression.clone()), bp, None);
 
   let activation_ty = {
     let activation_ty = add_ty_var(bp).ty;
@@ -1419,7 +1423,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     activation_ty
   };
 
-  declare_top_scope_var(bp, VarId::MatchActivation, Default::default(), activation_ty.clone());
+  declare_top_scope_var(bp, VarId::MatchBooleanSelector, Default::default(), activation_ty.clone());
 
   let mut clauses = Vec::new();
   let mut clauses_input_ty = Vec::new();
@@ -1429,16 +1433,16 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 
   for (_, clause) in clause_ast.clone() {
     push_node(bp, CLAUSE_SELECTOR_ID);
-    get_var(bp, VarId::MatchActivation);
+    get_var(bp, VarId::MatchBooleanSelector);
 
     let mut known_type = TypeV::default();
 
     if let Some(expr) = &clause.expr {
-      add_input(bp, input_op.0, VarId::MatchInputExpr);
+      //add_input(bp, input_op.0, VarId::MatchInputExpr);
 
       match expr {
         match_condition_Value::RawExprMatch(expr) => {
-          let (expr_op, ..) = compile_expression(&expr.expr.clone().to_ast().into_bitwise_Value().unwrap(), bp, None);
+          let (expr_op, expr_ty, ..) = compile_expression(&expr.expr.clone().to_ast().into_bitwise_Value().unwrap(), bp, None);
 
           let cmp_op_name = match expr.op.as_str() {
             ">" => Op::GR,
@@ -1450,9 +1454,11 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
             _ => todo!(),
           };
 
-          let (bool_op, activation_ty_new) = process_op(cmp_op_name, &[input_op.0, expr_op], bp, expr.clone().into());
+          add_constraint(bp, NodeConstraint::GenTyToGenTy(expr_ty, input_op_ty));
 
-          update_var(bp, VarId::MatchActivation, bool_op, activation_ty_new);
+          let (bool_op, activation_ty_new) = process_op(cmp_op_name, &[input_op, expr_op], bp, expr.clone().into());
+
+          update_var(bp, VarId::MatchBooleanSelector, bool_op, activation_ty_new);
         }
         match_condition_Value::RawTypeMatchExpr(ty_match) => {
           let name = ty_match.name.id.intern();
@@ -1463,33 +1469,35 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 
           let prop_name_op = add_op(bp, Operation::Name(name), ty, ty_match.name.clone().into());
 
-          let (bool_op, activation_ty_new) = process_op(Op::TY_EQ, &[input_op.0, prop_name_op], bp, ty_match.clone().into());
+          add_constraint(bp, NodeConstraint::GenTyToGenTy(ty, input_op_ty));
 
-          update_var(bp, VarId::MatchActivation, bool_op, activation_ty_new);
+          let (bool_op, activation_ty_new) = process_op(Op::TY_EQ, &[input_op, prop_name_op], bp, ty_match.clone().into());
+
+          update_var(bp, VarId::MatchBooleanSelector, bool_op, activation_ty_new);
         }
         _ => {}
       }
     } else {
       let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), 1)), activation_ty.clone(), Default::default());
-      update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
+      update_var(bp, VarId::MatchBooleanSelector, sel_op, activation_ty);
     }
 
     clauses_input_ty.push(known_type);
-    clauses.push(pop_node(bp, true));
+    clauses.push(pop_node(bp, true, false));
   }
 
   if match_.default_clause.is_none() {
     push_node(bp, CLAUSE_SELECTOR_ID);
-    get_var(bp, VarId::MatchActivation);
+    get_var(bp, VarId::MatchBooleanSelector);
 
     let sel_op: OpId = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data().unwrap(), 1)), activation_ty.clone(), Default::default());
-    update_var(bp, VarId::MatchActivation, sel_op, activation_ty);
-    clauses.push(pop_node(bp, true));
+    update_var(bp, VarId::MatchBooleanSelector, sel_op, activation_ty);
+    clauses.push(pop_node(bp, true, false));
   }
 
-  join_nodes(clauses, bp);
+  merge_nodes(clauses, bp);
 
-  get_var(bp, VarId::MatchActivation).unwrap().0;
+  get_var(bp, VarId::MatchBooleanSelector).unwrap().0;
   let output_ty = add_ty_var(bp).ty;
   declare_top_scope_var(bp, VarId::OutputVal, Default::default(), output_ty);
 
@@ -1503,11 +1511,11 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
       let known_ty = &clauses_input_ty[index];
       if known_ty.is_generic() {
         // Add port for this type
-        let (mapped_op, mapped_ty) = process_op(Op::MAP_TO, &[input_op.0], bp, Default::default());
+        let (mapped_op, mapped_ty) = process_op(Op::MAP_TO, &[input_op], bp, Default::default());
         add_constraint(bp, NodeConstraint::GenTyToGenTy(mapped_ty, known_ty.clone()));
         update_var(bp, VarId::Name(name), mapped_op, known_ty.clone());
       } else {
-        update_var(bp, VarId::Name(name), input_op.0, input_op.1.clone());
+        update_var(bp, VarId::Name(name), input_op, input_op_ty);
       }
     }
 
@@ -1518,11 +1526,10 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
       update_var(bp, VarId::OutputVal, sink_op, output_ty);
     } else {
       let (poison_op, output_ty) = process_op(Op::POISON, &[], bp, Default::default());
-
       update_var(bp, VarId::OutputVal, poison_op, output_ty);
     }
 
-    clauses.push(pop_node(bp, true));
+    clauses.push(pop_node(bp, true, false));
   }
 
   if match_.default_clause.is_none() {
@@ -1530,18 +1537,27 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     get_var(bp, VarId::OutputVal);
     let (poison_op, output_ty) = process_op(Op::POISON, &[], bp, Default::default());
     update_var(bp, VarId::OutputVal, poison_op, output_ty);
-    clauses.push(pop_node(bp, true));
+    clauses.push(pop_node(bp, true, false));
   }
 
-  join_nodes(clauses, bp);
+  merge_nodes(clauses, bp);
 
-  let act = get_var(bp, VarId::MatchActivation).unwrap();
-
+  let act = get_var(bp, VarId::MatchBooleanSelector).unwrap();
   let out = get_var(bp, VarId::OutputVal).unwrap();
 
-  let node = pop_node(bp, false);
+  remove_var(bp, VarId::MatchBooleanSelector);
+  remove_var(bp, VarId::OutputVal);
 
-  join_nodes(vec![node], bp);
+  let scope = pop_node(bp, false, false);
+
+  for (.., var_index) in scope.var_lu.iter() {
+    if let Some(var) = scope.vars.get(*var_index) {
+      if var.origin_node_index < scope.node_index as _ {
+        get_var_data(bp, var.id);
+        update_var(bp, var.id, var.val_op, var.ty);
+      }
+    }
+  }
 
   assert!(out.0.is_valid());
 
@@ -1549,20 +1565,23 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 }
 
 /// port_outputs: create outputs ports for all updated variables that originated outside this scope.
-fn pop_node(bp: &mut BuildPack, port_outputs: bool) -> NodeScope {
+fn pop_node(bp: &mut BuildPack, port_outputs: bool, update_parent_vars: bool) -> NodeScope {
   let mut node = bp.node_stack.pop().unwrap();
 
+  // Create outputs for node vars.
   if port_outputs {
-    let node_index = node.node_index as u32;
+    let node_index = node.node_index;
 
     for (var_id, var_index) in node.var_lu.iter() {
       if let Some(var) = node.vars.get_mut(*var_index) {
-        if var.origin_node_index >= node_index as usize {
+        if var.origin_node_index >= node_index as isize || var.ori_op == var.val_op {
           continue;
         }
 
-        if var.val_op.is_valid() {
-          bp.super_node.nodes[node_index as usize].outputs.push((var.val_op, *var_id));
+        bp.super_node.nodes[node_index].ports.push(NodePort { ty: PortType::Out, slot: var.val_op, id: var.id });
+
+        if update_parent_vars {
+          update_var(bp, var.id, var.val_op, var.ty);
         }
       }
     }
@@ -1571,104 +1590,54 @@ fn pop_node(bp: &mut BuildPack, port_outputs: bool) -> NodeScope {
   node
 }
 
-fn join_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
+fn merge_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
   let current_node: &NodeScope = bp.node_stack.last().unwrap();
   let current_node_index = current_node.node_index;
 
-  let mut outgoing_vars: HashMap<VarId, _> = HashMap::new();
-  let nodes_len = outgoing_nodes.len();
+  let outgoing_var_ids = outgoing_nodes
+    .iter()
+    .map(|s| s.vars.iter().filter_map(|Var { id, origin_node_index, .. }| if *origin_node_index <= current_node_index as _ { Some(*id) } else { None }))
+    .flatten()
+    .collect::<BTreeSet<_>>();
 
-  let node_index_mappings = outgoing_nodes.iter().map(|n| n.node_index).collect::<Vec<_>>();
+  // Create merge ports
+  let mut port_indices = vec![OpId::default(); outgoing_var_ids.len()];
 
-  for (node_index, outgoing_node) in outgoing_nodes.into_iter().enumerate() {
-    for var in outgoing_node.var_lu {
-      let out_var = &outgoing_node.vars[var.1];
+  for (index, var_id) in outgoing_var_ids.iter().cloned().enumerate() {
+    // Insert a merge node
+    let var = get_var_data(bp, var_id).unwrap();
+    let op: OpId = add_op(bp, Operation::Phi(current_node_index as _, vec![]), var.ty, Default::default());
+    bp.super_node.nodes[current_node_index].ports.push(NodePort { ty: PortType::Merge, slot: op, id: var_id });
+    port_indices[index] = op as _;
+  }
 
-      // No need to do anything with vars that we declared in the outgoing nodes scope.
-      if out_var.origin_node_index >= outgoing_node.node_index {
-        continue;
-      }
-
-      match outgoing_vars.entry(var.0) {
-        std::collections::hash_map::Entry::Vacant(e) => {
-          let var = get_var_data(bp, var.0).unwrap();
-          let ori_op = var.val_op;
-
-          let mut vec = vec![ori_op; nodes_len];
-
-          vec[node_index] = out_var.val_op;
-
-          if var.origin_node_index < current_node_index {
-            e.insert((ori_op, vec));
-          } else {
-            e.insert((Default::default(), vec));
-          }
-        }
-        std::collections::hash_map::Entry::Occupied(mut e) => {
-          e.get_mut().1[node_index] = out_var.val_op;
-        }
-      }
+  // Acquire, or create, ops for child outputs, and assign them to the merge  ports in the current node
+  for node in outgoing_nodes {
+    for (index, var_id) in outgoing_var_ids.iter().cloned().enumerate() {
+      let current_node_port_index = port_indices[index];
+      let op = if let Some(var) = node.vars.iter().find(|v| v.id == var_id && v.origin_node_index <= current_node_index as _) {
+        var.val_op
+      } else if let Some(var) = get_var_internal(bp, var_id, bp.node_stack.len() - 1, usize::MAX) {
+        // Pull the variable into the current node
+        let child_node = node.node_index;
+        let child_port_id = bp.super_node.nodes[child_node].ports.len();
+        var.val_op
+      } else {
+        unreachable!()
+      };
+      let Operation::Phi(_, vec) = &mut bp.super_node.operands[current_node_port_index.usize()] else { unreachable!() };
+      vec.push(op);
     }
   }
 
-  for (var_id, (ori_op, vars)) in outgoing_vars {
-    if let Some((op, ty)) = get_var(bp, var_id) {
-      let all_invalid_assignments = vars.iter().all(|v| v.is_invalid());
-      //let has_valid_assignments = !has_invalid_assignment;
-      let has_same_assignments_as_initial = vars.iter().all(|v| *v == op);
+  // Update variables for merge ports.
+  for (index, var_id) in outgoing_var_ids.iter().cloned().enumerate() {
+    let current_node_port_index = port_indices[index];
 
-      let is_single_op = vars.len() == 1;
-
-      if all_invalid_assignments || has_same_assignments_as_initial {
-        // All ops are invalid and therefore no changes have been observed on this var.
-        continue;
-      }
-
-      if vars.len() > 0 {
-        let ty_a = if op.is_valid() { bp.super_node.op_types[op.0 as usize] } else { bp.super_node.op_types[vars[0].usize()] };
-
-        for out_var in &vars {
-          if out_var.is_invalid() {
-            continue;
-          }
-
-          let ty_b = bp.super_node.op_types[out_var.usize()];
-          if ty_a != ty_b {
-            if var_id == VarId::MemCTX {
-            } else {
-              add_constraint(bp, NodeConstraint::GenTyToGenTy(ty_a.clone(), ty_b));
-            }
-          }
-        }
-
-        let iter = vars.iter().enumerate().map(|(i, v)| (node_index_mappings[i] as u32, *v));
-        match &mut bp.super_node.operands.get_mut(op.0 as usize) {
-          Some(Operation::Port { ops: port_vars, .. }) => {
-            if is_single_op {
-              panic!(
-                "Should not be the case that we need to merge more ops into an existing port. Ports should be closed to modification once a
-                node has been popped and sealed."
-              );
-            } else {
-              port_vars.extend(iter.filter(|i| i.1 != op));
-            }
-          }
-          _ => {
-            if is_single_op {
-              update_var(bp, var_id, iter.into_iter().next().unwrap().1, ty);
-            } else {
-              assert_ne!(current_node_index, 0, "{:?}", iter.collect::<Vec<_>>());
-              let port_op =
-                add_op(bp, Operation::Port { node_id: current_node_index as u32, ty: PortType::Output, ops: iter.collect() }, ty, Default::default());
-              if ori_op.is_valid() {
-                //  add_input(bp, ori_op, var_id);
-              }
-              add_output(bp, port_op, var_id);
-              update_var(bp, var_id, port_op, ty);
-            }
-          }
-        }
-      }
+    if let Some(var) = get_var_internal(bp, var_id, bp.node_stack.len() - 1, usize::MAX) {
+      declare_top_scope_var(bp, var.id, current_node_port_index, var.ty).origin_node_index = var.origin_node_index;
+    } else {
+      unreachable!()
     }
   }
 }

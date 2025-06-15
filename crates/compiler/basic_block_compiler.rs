@@ -3,13 +3,16 @@ use rum_common::get_aligned_value;
 
 use crate::{
   interpreter::get_op_type,
-  ir_compiler::{CALL_ID, CLAUSE_ID, LOOP_ID, MATCH_ID},
-  targets::{reg::Reg, x86::x86_types::*},
-  types::{Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  ir_compiler::{CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, ROUTINE_ID},
+  targets::{
+    reg::Reg,
+    x86::{x86_binary_writer::create_block_ordering, x86_types::*},
+  },
+  types::{Node, NodePort, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 use std::{
   cmp::Ordering,
-  collections::{BTreeSet, HashMap, VecDeque},
+  collections::{btree_map, BTreeMap, BTreeSet, HashMap, VecDeque},
   fmt::{Debug, Display},
   u32,
 };
@@ -71,6 +74,7 @@ pub struct BasicBlock {
   pub predecessors: Vec<usize>,
   pub level:        usize,
   pub loop_head:    bool,
+  pub cmp_op:       isize,
 }
 
 impl Default for BasicBlock {
@@ -85,6 +89,7 @@ impl Default for BasicBlock {
       ops:          Default::default(),
       ops2:         Default::default(),
       loop_head:    false,
+      cmp_op:       -1,
     }
   }
 }
@@ -213,7 +218,7 @@ static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18
     (Op::NPTR, ([Used, Temp, NoUse], NoRequirement, [false, false, false])),
     (Op::LOAD, ([Used, NoUse, NoUse], NoRequirement, [false, false, false])),
     (Op::SEED, ([Used, NoUse, NoUse], Inherit(0), [false, false, false])),
-    (Op::SINK, ([NoUse, Used, NoUse], Inherit(1), [false, true, false])),
+    (Op::SINK, ([NoUse, Used, NoUse], Inherit(1), [false, false, false])),
     (Op::POISON, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
   ]
 };
@@ -222,15 +227,11 @@ static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18
 pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock> {
   let mut op_data = vec![OpData::new(); sn.operands.len()];
 
-  let mut blocks = vec![BasicBlock::default(), BasicBlock::default()];
-  blocks[0].pass = 1;
-  blocks[1].id = usize::MAX;
-  blocks[1].dominator = 0;
+  // Assign variable ids, starting with all output and input ops
+  let mut op_to_var_map = vec![u32::MAX; sn.operands.len()];
+  let mut vars = Vec::<Var>::new();
 
-  let mut loop_reset_blocks = HashMap::<usize, usize>::new(); // Maps nodes
-  assign_ops_to_blocks(sn, &mut op_data, &mut blocks, &mut loop_reset_blocks);
-
-  blocks[1].id = 1;
+  let (head, mut blocks) = assign_ops_to_blocks(sn, &mut op_data, &mut vars, &mut op_to_var_map);
 
   // Set predecessors
   for block_id in 0..blocks.len() {
@@ -241,44 +242,19 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
     }
   }
 
-  // Assign variable ids, starting with all output and input ops
-  let mut op_to_var_map = vec![u32::MAX; sn.operands.len()];
-  let mut vars = Vec::<Var>::new();
-
-  // Start with ports, as these map many to many and many to one
-  for node in &sn.nodes {
-    for (op, var_id) in node.inputs.iter().chain(node.outputs.iter()) {
-      if let Operation::Port { node_id, ty, ops } = &sn.operands[op.usize()] {
-        let var_id = op_to_var_map[op.usize()];
-        let var_id = (var_id != u32::MAX).then_some(var_id).unwrap_or_else(|| {
-          let len = vars.len() as _;
-          op_to_var_map[op.usize()] = len;
-          vars.push(Var::create(get_op_type(sn, *op)));
-          len
-        });
-
-        for (_, op) in ops {
-          if op.is_valid() {
-            op_to_var_map[op.usize()] = var_id;
-          }
-        }
-      }
-    }
-  }
-
   for (op, data) in op_data.iter().enumerate() {
     if data.block >= 0 || data.block == -100 {
-      let var_id = op_to_var_map[op];
-      (var_id != u32::MAX).then_some(var_id).unwrap_or_else(|| {
-        let len = vars.len() as _;
-        op_to_var_map[op] = len;
-        vars.push(Var::create(get_op_type(sn, OpId(op as _))));
-        len
-      });
+      get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, OpId(op as _));
     }
   }
 
   // Map block data to var_ids
+
+  for ordering in create_block_ordering(&blocks) {
+    let block_id = ordering.block_id as usize;
+    let block = &blocks[block_id];
+    println!("{block:?}\n \n\n");
+  }
 
   // Add op references to blocks and sort dependencies
   for op_index in 0..sn.operands.len() {
@@ -298,17 +274,10 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
               source:  OpId(op_index as u32),
               ty_data: get_op_type(sn, OpId(op_index as u32)),
             });
-
             vars[op_var_id as usize].register = VarVal::Reg(PARAM_REGISTERS[*index as usize] as _);
           }
-          Operation::Port { .. } => {
-            blocks[data.block as usize].ops2.push(BBop {
-              op_ty:   Op::Meta,
-              out:     VarVal::Var(op_var_id),
-              ins:     [VarVal::Var(op_var_id), VarVal::None, VarVal::None],
-              source:  OpId(op_index as u32),
-              ty_data: get_op_type(sn, OpId(op_index as u32)),
-            });
+          Operation::Phi(_, ops) => {
+            //todo!("Todo: PHI")
           }
           Operation::Op { op_id: op_type, operands } => match op_type {
             op_type if let Some((action, preferred, inherit)) = select_op_row(*op_type, &BU_ASSIGN_MAP) => {
@@ -419,17 +388,17 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
 
   let mut in_out_sets = vec![(BTreeSet::<u32>::new(), BTreeSet::<u32>::new()); blocks.len()];
 
+  // ===============================================================
   // Calculate the input and output sets of all blocks
   let mut queue = VecDeque::from_iter(0..blocks.len());
 
   while let Some(block_id) = queue.pop_front() {
     let (ins, outs) = &in_out_sets[block_id as usize].clone();
-
     let mut new_ins = outs.clone();
 
     for op in blocks[block_id as usize].ops2.iter().rev() {
       match op {
-        BBop { out: id, ins: operands, .. } => {
+        BBop { out: id, ins: operands, source, .. } => {
           match id {
             VarVal::Var(id) => {
               new_ins.remove(id);
@@ -440,6 +409,10 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
           for op in operands {
             match op {
               VarVal::Var(var_id) => {
+                if *var_id == u32::MAX {
+                  continue;
+                }
+                debug_assert!(*var_id != u32::MAX, "{source} => ops:{:?} \n {:?}", operands, sn.operands[source.usize()]);
                 new_ins.insert(*var_id);
               }
               _ => {}
@@ -459,6 +432,13 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
     }
   }
 
+  for ordering in create_block_ordering(&blocks) {
+    let block_id = ordering.block_id as usize;
+    let (ins, outs) = &in_out_sets[block_id];
+    let block = &blocks[block_id];
+    println!("{block:?}\n ins: {ins:?} \n outs: {outs:?}\n\n");
+  }
+
   // ===============================================================
   // Create the interference graph
 
@@ -466,7 +446,7 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
 
   for block in &blocks {
     let mut outs = in_out_sets[block.id as usize].1.clone();
-    for BBop { out: id, ins: operands, .. } in block.ops2.iter().rev() {
+    for BBop { out: id, ins: operands, source, .. } in block.ops2.iter().rev() {
       match id {
         VarVal::Var(id) => {
           outs.remove(id);
@@ -495,8 +475,10 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
   // ===============================================================
   // Find a graph coloring solution
   let mut stash_offset = 0;
+
   let mut sorted_vars = vars.iter().enumerate().map(|(index, var)| (var.prefer.unwrap_or(u32::MAX), index as u32)).collect::<Vec<_>>();
-  sorted_vars.sort_by(|a, b| b.1.cmp(&a.0));
+
+  sorted_vars.sort_by(|a, b| if b.1 < a.0 { Ordering::Less } else { a.0.cmp(&b.0) });
 
   for (_, var_id) in sorted_vars {
     let var_id = var_id as usize;
@@ -526,11 +508,6 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
       if let Some(reg) = reg_alloc.acquire_random_register() {
         vars[var_id].register = VarVal::Reg(reg as _);
       } else {
-        for other_id in &interference_graph[var_id] {
-          let other_var = vars[*other_id as usize];
-          println!("{other_var:?}");
-        }
-
         let size = pending_var.ty.prim_data().unwrap().byte_size as u64;
         let stashed_location = get_aligned_value(stash_offset, size);
         vars[var_id].register = VarVal::Stashed(stashed_location as _);
@@ -538,13 +515,6 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
         println!("Could not color graph: register collision on {:?}", interference_graph[var_id]);
       }
     }
-  }
-
-  for block_id in 0..blocks.len() {
-    let (ins, outs) = &in_out_sets[block_id];
-    let block = &blocks[block_id];
-
-    println!("{block:?}\n ins: {ins:?} \n outs: {outs:?}\n\n");
   }
 
   println!("{interference_graph:?}");
@@ -574,342 +544,264 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
     }
   }
 
-  for block_id in 0..blocks.len() {
+  for ordering in create_block_ordering(&blocks) {
+    let block_id = ordering.block_id as usize;
     let (ins, outs) = &in_out_sets[block_id];
     let block = &blocks[block_id];
-
     println!("{block:?}\n ins: {ins:?} \n outs: {outs:?}\n\n");
   }
+
   println!("{interference_graph:?}");
+
+  // todo!("Complete Port Conversion");
 
   blocks
 }
 
-fn assign_ops_to_blocks(sn: &RootNode, op_data: &mut Vec<OpData>, block_set: &mut Vec<BasicBlock>, loop_block_reset: &mut HashMap<usize, usize>) {
-  let node = &sn.nodes[0];
-  let mut node_set = vec![false; sn.nodes.len()];
+fn assign_ops_to_blocks(sn: &RootNode, op_data: &mut [OpData], vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> (usize, Vec<BasicBlock>) {
+  let mut blocks = vec![];
+  // Start the root node and operation in th
+  let routine_node = &sn.nodes[0];
 
-  for (output_op, var_id) in node.outputs.iter() {
-    let dep_rank = if *var_id == VarId::Freed { 2 } else { 1 };
-    assign_ops_to_blocks_inner(*output_op, (0, 1), sn, op_data, block_set, &mut node_set, loop_block_reset, (dep_rank + (1 << 16)));
+  let (head, tail) = process_node(sn, routine_node, op_data, &mut blocks, &Default::default(), vars, op_var_map);
+
+  for port in routine_node.get_inputs() {
+    op_data[port.0.usize()].block = head as _;
   }
+
+  (head, blocks)
 }
 
-/**
- * Maps ops to blocks. An operation that has already been assigned to a block may be assigned to a new block if the incoming block is ordered before the
- * outgoing block. In this case, all dependent ops will also be assigned to lower ordered block (the predecessor) recursively
- */
-fn assign_ops_to_blocks_inner(
-  op_id: OpId,
-  (head_block, mut curr_block): (i32, i32),
+fn process_match(
   sn: &RootNode,
-  op_data: &mut Vec<OpData>,
-  block_set: &mut Vec<BasicBlock>,
-  node_set: &mut [bool],
-  loop_block_reset: &mut HashMap<usize, usize>,
-  dependency_rank: i32,
-) {
-  if op_id.is_invalid() {
-    return;
-  }
+  node: &Node,
+  op_data: &mut [OpData],
+  blocks: &mut Vec<BasicBlock>,
+  vars: &mut Vec<Var>,
+  op_var_map: &mut Vec<u32>,
+) -> (usize, usize) {
+  debug_assert!(node.type_str == MATCH_ID);
 
-  let op_index = op_id.usize();
-  let op = &sn.operands[op_index];
-  let existing_block = op_data[op_index].block;
-  let op_ty = get_op_type(sn, op_id);
+  let selectors = node.children.iter().filter_map(|id| (sn.nodes[*id].type_str == CLAUSE_SELECTOR_ID).then_some(&sn.nodes[*id])).collect::<Vec<_>>();
+  let clauses = node.children.iter().filter_map(|id| (sn.nodes[*id].type_str == CLAUSE_ID).then_some(&sn.nodes[*id])).collect::<Vec<_>>();
 
-  if op_ty.is_nouse() || (op_ty.is_mem() && !matches!(op, Operation::Op { op_id: Op::FREE, .. })) {
-    return;
-  }
+  let outside_ops = node.ports.iter().filter_map(|f| if f.ty == PortType::In { Some(f.slot) } else { None }).collect::<BTreeSet<_>>();
 
-  op_data[op_index].dep_rank = op_data[op_index].dep_rank.max(dependency_rank);
+  let head_id = blocks.len();
+  let mut block = BasicBlock::default();
+  block.id = head_id;
+  blocks.push(block);
 
-  let ty = get_op_type(sn, op_id);
+  let mut tails: Vec<usize> = vec![];
 
-  if ty.is_poison() {
-    return;
-  }
+  let mut sel = -1 as isize;
+  let mut head = -1isize;
 
-  if existing_block >= 0 {
-    if existing_block == curr_block {
-      return;
-    } else if existing_block < head_block {
-      return;
+  for (index, (selector, clause)) in selectors.iter().zip(clauses.iter()).enumerate() {
+    let last = index == selectors.len() - 1;
+
+    if !last {
+      let (sel_head, sel_tail) = process_node(sn, *selector, op_data, blocks, &outside_ops, vars, op_var_map);
+
+      if head < 0 {
+        head = sel_head as _;
+        blocks[head_id as usize].pass = sel_head as _;
+      }
+
+      let (clause_head, clause_tail) = process_node(sn, *clause, op_data, blocks, &outside_ops, vars, op_var_map);
+
+      let merge_id = create_merge_block(sn, node, blocks, index, vars, op_var_map);
+
+      blocks[sel_tail].pass = clause_head as _;
+      blocks[clause_tail].pass = merge_id as _;
+      tails.push(merge_id as _);
+
+      if sel >= 0 {
+        blocks[sel as usize].fail = sel_tail as _;
+      }
+
+      sel = sel_tail as _
     } else {
-      op_data[op_index].block = head_block;
-      curr_block = head_block;
+      let (clause_head, clause_tail) = process_node(sn, *clause, op_data, blocks, &outside_ops, vars, op_var_map);
+
+      let merge_id = create_merge_block(sn, node, blocks, index, vars, op_var_map);
+
+      blocks[clause_tail].pass = merge_id as _;
+
+      if sel >= 0 {
+        blocks[sel as usize].fail = clause_head as _;
+      }
+
+      tails.push(merge_id as _);
     }
-  } else {
-    op_data[op_index].block = curr_block;
   }
 
-  match op {
-    Operation::Op { operands, op_id: op_name, .. } => {
-      let Some(dependency_map) = select_op_row(*op_name, &[
-        (Op::AGG_DECL, [false, false, false]),
-        (Op::RET, [true, false, false]),
-        (Op::ADD, [true, true, false]),
-        (Op::MUL, [true, true, false]),
-        (Op::DIV, [true, true, false]),
-        (Op::SUB, [true, true, false]),
-        (Op::SEED, [true, false, false]),
-        (Op::SINK, [true, true, false]),
-        (Op::LOAD, [true, false, false]),
-        (Op::STORE, [true, true, false]),
-        (Op::NPTR, [true, true, false]),
-        (Op::FREE, [true, false, false]),
-        (Op::EQ, [true, true, false]),
-        (Op::GR, [true, true, false]),
-        (Op::LS, [true, true, false]),
-      ]) else {
-        panic!("Could not get dependency map for {op_id}: {op}")
-      };
+  let tail_id = blocks.len();
+  let mut block = BasicBlock::default();
+  block.id = tail_id;
+  blocks.push(block);
 
-      for (c_op, is_register_dependency) in operands.iter().cloned().zip(dependency_map) {
-        if c_op.is_valid() {
-          assign_ops_to_blocks_inner(c_op, (head_block, curr_block), sn, op_data, block_set, node_set, loop_block_reset, dependency_rank + 65536);
+  for tail in tails {
+    blocks[tail].pass = tail_id as _;
+  }
+
+  debug_assert_eq!(selectors.len(), clauses.len());
+  (head_id as _, tail_id as _)
+}
+/*
+    let var_id = vars.len() as _;
+        vars.push(Var::create(get_op_type(sn, phi_op)));
+        op_to_var_map[slot_op_index] = var_id;
+*/
+
+fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, index: usize, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> usize {
+  let merge_id = blocks.len();
+  let mut block = BasicBlock::default();
+  for port in node.ports.iter() {
+    if port.ty == PortType::Merge && port.id != VarId::MatchBooleanSelector {
+      let ty = get_op_type(sn, port.slot);
+
+      let Operation::Phi(_, ops) = &sn.operands[port.slot.usize()] else { unreachable!() };
+      let op = ops[index];
+
+      if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem()) {
+        let phi_ty_var = get_or_create_op_var(sn, vars, op_var_map, port.slot);
+        let op_ty_var = get_or_create_op_var(sn, vars, op_var_map, op);
+        block.ops2.push(BBop {
+          op_ty:   Op::Meta,
+          out:     VarVal::Var(phi_ty_var),
+          ins:     [VarVal::Var(op_ty_var), VarVal::None, VarVal::None],
+          source:  port.slot,
+          ty_data: ty,
+        });
+
+        if let Operation::Phi(..) = &sn.operands[op.usize()] {
+          vars[phi_ty_var as usize].prefer = Some(op_ty_var);
         }
       }
     }
-    Operation::Port { node_id: block_id, ops: operands, ty: port_ty } => {
-      process_block_ops((head_block, curr_block), *block_id as usize, sn, op_data, block_set, node_set, loop_block_reset, dependency_rank);
-    }
-    Operation::Param(..) => {
-      op_data[op_index].dep_rank |= 1 << 28;
-      op_data[op_index].block = -100;
-    }
-    _ => {
-      op_data[op_index].dep_rank |= 1 << 27;
-    }
   }
+  block.id = merge_id;
+  blocks.push(block);
+  merge_id
 }
 
-fn process_block_ops(
-  (dominator_block, tail_block): (i32, i32),
-  node_id: usize,
+fn get_or_create_op_var(sn: &RootNode, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>, op: OpId) -> u32 {
+  let ty_var = if op_var_map[op.usize()] == u32::MAX {
+    let var_id = vars.len() as _;
+    vars.push(Var::create(get_op_type(sn, op)));
+    op_var_map[op.usize()] = var_id;
+    var_id
+  } else {
+    op_var_map[op.usize()]
+  };
+  ty_var
+}
+
+fn process_node(
   sn: &RootNode,
-  op_data: &mut Vec<OpData>,
-  block_set: &mut Vec<BasicBlock>,
-  node_set: &mut [bool],
-  loop_block_reset: &mut HashMap<usize, usize>,
-  dependency_rank: i32,
-) -> (usize, Vec<usize>) {
-  if node_set[node_id] {
-    return (0, vec![]);
-  }
-  node_set[node_id] = true;
+  node: &Node,
+  op_data: &mut [OpData],
+  blocks: &mut Vec<BasicBlock>,
+  outside_ops: &BTreeSet<OpId>,
+  vars: &mut Vec<Var>,
+  op_var_map: &mut Vec<u32>,
+) -> (usize, usize) {
+  let block_start = blocks.len() as i32;
 
-  let node = &sn.nodes[node_id];
+  let mut pending_ops = VecDeque::from_iter(
+    node.ports.iter().filter(|p| matches!(p.ty, PortType::Out | PortType::Passthrough | PortType::Merge)).map(|p| p.slot).map(|o| (o, block_start)),
+  );
 
-  match node.type_str {
-    CALL_ID => {
-      todo!("Call ID")
+  let mut max_level = block_start;
+  let mut nodes: BTreeMap<u32, i32> = BTreeMap::new();
+
+  while let Some((op, level)) = pending_ops.pop_front() {
+    let ty = get_op_type(sn, op);
+    if outside_ops.contains(&op) {
+      continue;
     }
-    CLAUSE_ID => {
-      for (output_op, _) in node.outputs.iter() {
-        assign_ops_to_blocks_inner(*output_op, (dominator_block, tail_block), sn, op_data, block_set, node_set, loop_block_reset, dependency_rank + 65536);
-      }
-      return (tail_block as usize, vec![tail_block as usize]);
-    }
-    MATCH_ID => {
-      println!("------------------------------------------");
-      // Create blocks for each output
 
-      let (activation_op_id, _) = node.outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
-      let (output_op_id, _) = node.outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
+    if !ty.is_poison() && !ty.is_undefined() && op.is_valid() && op_data[op.usize()].block < level {
+      max_level = max_level.max(level);
+      match &sn.operands[op.usize()] {
+        Operation::Phi(node_id, ops) => {
+          let sub_node = &sn.nodes[*node_id as usize];
 
-      let Operation::Port { ops: act_ops, .. } = &sn.operands[activation_op_id.usize()] else { unreachable!() };
-      let Operation::Port { ops: out_ops, .. } = &sn.operands[output_op_id.usize()] else { unreachable!() };
+          // Do not process outer slots: slots that are defined within parent scopes.
+          if sub_node.index > *node_id as _ {
+            continue;
+          }
 
-      debug_assert_eq!(act_ops.len(), out_ops.len());
+          op_data[op.usize()].block = level;
 
-      let mut head_block = BasicBlock::default();
-      head_block.dominator = dominator_block;
-      head_block.pass = block_set[dominator_block as usize].pass;
-      head_block.id = block_set.len();
-      block_set[dominator_block as usize].pass = head_block.id as _;
-      block_set[tail_block as usize].dominator = head_block.id as _;
-      let head_block_id = head_block.id as _;
-      block_set.push(head_block);
+          match nodes.entry(*node_id) {
+            btree_map::Entry::Occupied(mut entry) => {
+              if *entry.get() < level {
+                entry.insert(level + 1);
+                max_level = max_level.max(level + 1);
+              }
+            }
+            btree_map::Entry::Vacant(entry) => {
+              entry.insert(level + 1);
+              max_level = max_level.max(level + 1);
 
-      let mut tail_blocks = vec![];
-      let mut curr_select_block_id = head_block_id as i32;
-      let dominator = head_block_id as i32;
-      let last_block_id = act_ops.len() - 1;
-
-      for (index, ((_, select_op), (clause_node, _))) in act_ops.iter().zip(out_ops).enumerate() {
-        if index < last_block_id {
-          assign_ops_to_blocks_inner(
-            *select_op,
-            (dominator, curr_select_block_id),
-            sn,
-            op_data,
-            block_set,
-            node_set,
-            loop_block_reset,
-            dependency_rank + 65536,
-          );
-
-          let mut clause_block = BasicBlock::default();
-          clause_block.dominator = dominator;
-          clause_block.pass = tail_block as _;
-          clause_block.id = block_set.len();
-
-          let clause_id = clause_block.id as _;
-          block_set.push(clause_block);
-          tail_blocks.push(clause_id);
-
-          block_set[curr_select_block_id as usize].pass = clause_id as _;
-
-          process_block_ops((dominator, clause_id as _), *clause_node as _, sn, op_data, block_set, node_set, loop_block_reset, dependency_rank + 65536);
-
-          let mut next_select_block = BasicBlock::default();
-          next_select_block.dominator = dominator;
-          next_select_block.id = block_set.len() as _;
-          let next_select_id = next_select_block.id;
-          block_set.push(next_select_block);
-
-          block_set[curr_select_block_id as usize].fail = next_select_id as _;
-          curr_select_block_id = next_select_id as _;
-        } else {
-          process_block_ops(
-            (dominator, curr_select_block_id as _),
-            *clause_node as _,
-            sn,
-            op_data,
-            block_set,
-            node_set,
-            loop_block_reset,
-            dependency_rank + 65536,
-          );
-          block_set[curr_select_block_id as usize].pass = tail_block as _;
-          tail_blocks.push(curr_select_block_id as _);
-        }
-      }
-
-      block_set[tail_block as usize].dominator = head_block_id as _;
-
-      return (head_block_id, tail_blocks);
-    }
-    LOOP_ID => {
-      //note: inputs in a loop node are PHI nodes.
-
-      // The loop head is the main entry for this block.
-
-      let mut loop_head_block = BasicBlock::default();
-      loop_head_block.dominator = dominator_block;
-      loop_head_block.id = block_set.len();
-      block_set[dominator_block as usize].pass = loop_head_block.id as _;
-      block_set[tail_block as usize].dominator = loop_head_block.id as _;
-      let loop_head_block_id = loop_head_block.id;
-
-      let mut loop_reentry_block = BasicBlock::default();
-      loop_reentry_block.dominator = loop_head_block_id as _;
-      loop_reentry_block.id = block_set.len() + 1;
-      loop_head_block.pass = loop_reentry_block.id as _;
-      let loop_reentry_block_id = loop_reentry_block.id;
-      loop_reentry_block.loop_head = true;
-
-      block_set.push(loop_head_block);
-      block_set.push(loop_reentry_block);
-
-      let curr_block_data = &mut block_set[tail_block as usize];
-      curr_block_data.dominator = loop_head_block_id as _;
-
-      for (input_op, _) in &node.inputs {
-        let Operation::Port { ops: act_ops, .. } = &sn.operands[input_op.usize()] else { unreachable!() };
-        let (_, root_op) = act_ops[0];
-
-        assign_ops_to_blocks_inner(
-          root_op,
-          (dominator_block as _, loop_head_block_id as _),
-          sn,
-          op_data,
-          block_set,
-          node_set,
-          loop_block_reset,
-          dependency_rank + 65536,
-        );
-      }
-
-      let mut tails = Vec::new();
-
-      for (op, var) in node.outputs.iter().chain(node.inputs.iter()) {
-        match &sn.operands[op.usize()] {
-          Operation::Port { ty, node_id: output_node_id, ops: act_ops, .. } => {
-            if *output_node_id == node_id as _ {
-              if *ty == PortType::Phi {
-                let (_, root_op) = act_ops[0];
-
-                assign_ops_to_blocks_inner(
-                  root_op,
-                  (dominator_block as _, loop_head_block_id as _),
-                  sn,
-                  op_data,
-                  block_set,
-                  node_set,
-                  loop_block_reset,
-                  dependency_rank + 65536,
-                );
-
-                for (_, root_op) in &act_ops[1..] {
-                  assign_ops_to_blocks_inner(
-                    *root_op,
-                    (loop_reentry_block_id as _, tail_block as _),
-                    sn,
-                    op_data,
-                    block_set,
-                    node_set,
-                    loop_block_reset,
-                    dependency_rank + 65536,
-                  );
+              for port in sub_node.ports.iter() {
+                match port.ty {
+                  PortType::In | PortType::Passthrough => {
+                    let op = port.slot;
+                    //op_data[op.usize()].block = level + 1;
+                    pending_ops.push_back((op, level + 1));
+                  }
+                  PortType::Phi => {
+                    todo!("Phi merge")
+                  }
+                  _ => {}
                 }
               }
-            } else {
-              let (head, other_tails) = process_block_ops(
-                (loop_reentry_block_id as _, tail_block as _),
-                *output_node_id as _,
-                sn,
-                op_data,
-                block_set,
-                node_set,
-                loop_block_reset,
-                dependency_rank + 65536,
-              );
-
-              tails.extend(other_tails);
             }
           }
-          _ => {
-            assign_ops_to_blocks_inner(
-              *op,
-              (loop_reentry_block_id as _, tail_block as _),
-              sn,
-              op_data,
-              block_set,
-              node_set,
-              loop_block_reset,
-              dependency_rank + 65536,
-            );
+        }
+        Operation::Op { op_id, operands } => {
+          op_data[op.usize()].block = level;
+          for op in operands {
+            pending_ops.push_back((*op, level));
           }
         }
-      }
-      let output = node.outputs[0];
-      let Operation::Port { node_id: output_node_id, ops: act_ops, .. } = &sn.operands[output.0.usize()] else { unreachable!() };
-
-      let tail_len = tails.len();
-
-      for (count, tail_block_id) in tails.iter().enumerate() {
-        if count < tail_len - 1 {
-          block_set[*tail_block_id].pass = loop_reentry_block_id as _;
-          loop_block_reset.insert(*tail_block_id as usize, node_id as usize);
+        _ => {
+          op_data[op.usize()].block = level;
         }
       }
-
-      dbg!(block_set);
-
-      return (loop_head_block_id as _, tails);
     }
-    ty => todo!("Handle node ty {ty:?}"),
   }
+
+  let mut slot_data = vec![];
+
+  for i in block_start..=max_level {
+    let mut block = BasicBlock::default();
+    block.id = i as usize;
+    blocks.push(block);
+    slot_data.push((i, i - 1));
+  }
+
+  for (node_id, head_block) in nodes {
+    let head_block = head_block - block_start;
+
+    let sub_node = &sn.nodes[node_id as usize];
+    let (head, tail) = match sub_node.type_str {
+      MATCH_ID => process_match(sn, sub_node, op_data, blocks, vars, op_var_map),
+      id => unreachable!("Invalid node type at this point {id}"),
+    };
+
+    let (block_head, block_tail) = slot_data[head_block as usize];
+
+    blocks[block_head as usize].pass = head as isize;
+    blocks[tail].pass = block_tail as isize;
+
+    slot_data[head_block as usize] = (head as _, block_tail);
+  }
+
+  let start = max_level;
+
+  (start as usize, block_start as usize)
 }

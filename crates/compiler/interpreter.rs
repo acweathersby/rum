@@ -49,7 +49,7 @@ macro_rules! cmp_match {
 }
 
 pub fn get_element_count(super_node: &RootNode, ctx: &mut RuntimeSystem) -> u64 {
-  if super_node.nodes[0].inputs.len() > 0 {
+  if super_node.nodes[0].get_inputs().len() > 0 {
     return 0;
   }
 
@@ -57,7 +57,7 @@ pub fn get_element_count(super_node: &RootNode, ctx: &mut RuntimeSystem) -> u64 
 
   interpret_node(super_node, &[], &mut scratch, 0, ctx);
 
-  for (op_id, var_id) in super_node.nodes[0].outputs.iter() {
+  for (op_id, var_id) in super_node.nodes[0].get_outputs().iter() {
     match var_id {
       VarId::ElementCount => match scratch[op_id.usize()].0 {
         Value::u64(val) => return val,
@@ -70,7 +70,7 @@ pub fn get_element_count(super_node: &RootNode, ctx: &mut RuntimeSystem) -> u64 
 }
 
 pub fn get_agg_size(super_node: &RootNode, ctx: &mut RuntimeSystem) -> u64 {
-  if super_node.nodes[0].inputs.len() > 0 {
+  if super_node.nodes[0].get_inputs().len() > 0 {
     return 0;
   }
 
@@ -78,7 +78,7 @@ pub fn get_agg_size(super_node: &RootNode, ctx: &mut RuntimeSystem) -> u64 {
 
   interpret_node(super_node, &[], &mut scratch, 0, ctx);
 
-  for (op_id, var_id) in super_node.nodes[0].outputs.iter() {
+  for (op_id, var_id) in super_node.nodes[0].get_outputs().iter() {
     match var_id {
       VarId::AggSize => match scratch[op_id.usize()].0 {
         Value::u64(val) => return val,
@@ -94,7 +94,7 @@ pub fn get_agg_offset(super_node: &RootNode, name: IString, ctx: &mut RuntimeSys
   let mut scratch = Vec::new();
   interpret_node(super_node, &[], &mut scratch, 0, ctx);
 
-  for (op_id, var_id) in super_node.nodes[0].outputs.iter() {
+  for (op_id, var_id) in super_node.nodes[0].get_outputs().iter() {
     match var_id {
       VarId::Name(prop_name) if *prop_name == name => match scratch[op_id.usize()].0 {
         Value::u64(val) => return val,
@@ -140,7 +140,7 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
 
   let root_node = &super_node.nodes[0];
 
-  for (op_id, var_id) in root_node.inputs.iter() {
+  for (op_id, var_id) in root_node.get_inputs().iter() {
     let index = op_id.usize();
     match var_id {
       VarId::MemCTX => match &super_node.operands[index] {
@@ -162,7 +162,7 @@ pub fn interpret_node(super_node: &RootNode, args: &[Value], scratch: &mut Vec<(
 
   interprete_node(super_node, 0, scratch, ctx, scope);
 
-  for (op_id, var_id) in root_node.outputs.iter() {
+  for (op_id, var_id) in root_node.get_outputs().iter() {
     match var_id {
       VarId::Return => return scratch[offset + op_id.usize()].0.clone(),
       _ => {}
@@ -194,7 +194,7 @@ pub fn interprete_node(super_node: &RootNode, node_id: usize, scratch: &mut Vec<
   let scratch_slice = &mut scratch[slice_start..slice_end];
   let node = &super_node.nodes[node_id];
 
-  for (op_id, var_id) in node.outputs.iter() {
+  for (op_id, var_id) in node.get_outputs().iter() {
     match var_id {
       VarId::Heap => {}
       _ | VarId::Return => {
@@ -245,7 +245,6 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
         },
         _ => panic!("unexpected node type {op_ty}"),
       },
-      Operation::Port { .. } => interprete_port(super_node, op, scratch, ctx, scope_data),
       Operation::Op { op_id: op_name, operands } => match *op_name {
         Op::CONVERT => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
@@ -754,9 +753,13 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 }
 
 pub fn get_op_type(super_node: &RootNode, op: OpId) -> TypeV {
-  let base_ty = &super_node.op_types[op.usize()];
-  let op_ty = if let Some(offset) = base_ty.generic_id() { &super_node.type_vars[offset].ty } else { base_ty };
-  *op_ty
+  if op.is_invalid() {
+    TypeV::Undefined
+  } else {
+    let base_ty = &super_node.op_types[op.usize()];
+    let op_ty = if let Some(offset) = base_ty.generic_id() { &super_node.type_vars[offset].ty } else { base_ty };
+    *op_ty
+  }
 }
 
 fn allocate_from_heap(ctx: &mut RuntimeSystem, heap_name: CMPLXId, size: u64) -> *mut u8 {
@@ -810,7 +813,7 @@ fn get_ty_size(ty: TypeV, ctx: &mut RuntimeSystem) -> u64 {
   }
 }
 
-pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(Value, u32)>, ctx: &mut RuntimeSystem, scope_data: ScopeData) -> Value {
+/*pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(Value, u32)>, ctx: &mut RuntimeSystem, scope_data: ScopeData) -> Value {
   let ScopeData { slice_start, slice_end, loop_old, loop_new } = scope_data;
   let scratch_index = slice_start + port_op.usize();
   let Operation::Port { node_id: host_index, ops: port_inputs, .. } = &super_node.operands[port_op.usize()] else { unreachable!() };
@@ -822,7 +825,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       // allocate memory_regions
 
       let mut run_region = true;
-      for (op_id, _) in host_node.outputs.iter() {
+      for (op_id, _) in host_node.get_outputs().iter() {
         let scratch_index = op_id.usize();
         if !(scratch[scratch_index] == (Value::Uninitialized, 0) || scratch[scratch_index].1 == loop_old) {
           run_region = false;
@@ -831,8 +834,8 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       }
 
       if run_region {
-        let mem_regions = host_node
-          .outputs
+        let outputs = host_node.get_outputs();
+        let mem_regions = outputs
           .iter()
           .filter_map(|(op, var_id)| match var_id {
             VarId::Heap => Some((op, interprete_op(super_node, *op, scratch, ctx, scope_data))),
@@ -840,7 +843,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
           })
           .collect::<Vec<_>>();
 
-        for (op, var) in host_node.outputs.iter() {
+        for (op, var) in host_node.get_outputs().iter() {
           if *var == VarId::Heap {
             continue;
           }
@@ -870,19 +873,20 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       scratch[scratch_index].1 = loop_new;
     }
     LOOP_ID => {
-      let (activation_op_id, _) = host_node.outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
-      let (output_op_id, _) = host_node.outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
+      let outputs = host_node.get_outputs();
+      let (activation_op_id, _) = outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
+      let (output_op_id, _) = outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
 
       let mut new_scope = scope_data;
 
       new_scope.loop_new = loop_new + 1;
       new_scope.loop_old = loop_new;
 
-      let mut port_values = vec![Value::Uninitialized; host_node.inputs.len()];
+      let mut port_values = vec![Value::Uninitialized; host_node.get_inputs().len()];
 
       if scratch[slice_start + activation_op_id.usize()].0 == Value::Uninitialized {
         // Preload phi nodes.
-        for (phi_op, var_id) in host_node.inputs.iter() {
+        for (phi_op, var_id) in host_node.get_inputs().iter() {
           if !matches!(var_id, VarId::Name(..) | VarId::MemCTX) {
             continue;
           }
@@ -898,7 +902,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
         loop {
           match interprete_op(super_node, *activation_op_id, scratch, ctx, new_scope) {
             Value::u32(index) => {
-              for (val, (phi_op, _)) in host_node.inputs.iter().enumerate() {
+              for (val, (phi_op, _)) in host_node.get_inputs().iter().enumerate() {
                 if let Operation::Port { ops: ports, .. } = &super_node.operands[phi_op.usize()] {
                   for (_, op) in ports.iter().rev() {
                     let op_index = op.usize() + slice_start;
@@ -910,7 +914,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
                 }
               }
 
-              for (val, (phi_op, _)) in host_node.inputs.iter().enumerate() {
+              for (val, (phi_op, _)) in host_node.get_inputs().iter().enumerate() {
                 let scratch_index = phi_op.usize() + slice_start;
                 scratch[scratch_index] = (port_values[val].clone(), new_scope.loop_new);
                 port_values[val] = Value::Uninitialized;
@@ -939,8 +943,9 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       }
     }
     MATCH_ID => {
-      let (activation_op_id, _) = host_node.outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
-      let (output_op_id, _) = host_node.outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
+      let outputs = host_node.get_outputs();
+      let (activation_op_id, _) = outputs.iter().find(|(_, var)| *var == VarId::MatchActivation).unwrap();
+      let (output_op_id, _) = outputs.iter().find(|(_, var)| *var == VarId::OutputVal).unwrap();
 
       let act_op = &super_node.operands[activation_op_id.usize()];
       let out_op = &super_node.operands[output_op_id.usize()];
@@ -986,7 +991,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       // Create instruction buffer
       use crate::targets::x86::{x86_encoder::*, x86_eval::*, x86_instructions::*, x86_types::*};
 
-      for (op, var_id) in host_node.inputs.iter() {
+      for (op, var_id) in host_node.get_inputs().iter() {
         if *var_id == VarId::MemCTX {
           interprete_op(super_node, *op, scratch, ctx, scope_data);
         } else if let VarId::ASM(data) = var_id {
@@ -1006,7 +1011,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
       }
 
       // Setup registers.
-      for (op, var_id) in host_node.inputs.iter() {
+      for (op, var_id) in host_node.get_inputs().iter() {
         if let VarId::Name(reg_name) = var_id {
           let reg_index = match reg_name.to_str().as_str() {
             "RAX" | "rax" => RAX,
@@ -1046,7 +1051,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
 
       //print_instructions(instructions.as_slice(), 0);
 
-      for (op, var_id) in host_node.outputs.iter() {
+      for (op, var_id) in host_node.get_outputs().iter() {
         if let VarId::Name(name) = var_id {
           todo!("Encode register reads");
         }
@@ -1057,15 +1062,16 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
     }
 
     CALL_ID => {
-      let (call_ref_op, _) = host_node.inputs.iter().find(|(_, var)| *var == VarId::CallRef).unwrap();
+      let inputs = host_node.get_inputs();
+      let (call_ref_op, _) = inputs.iter().find(|(_, var)| *var == VarId::CallRef).unwrap();
 
-      for output in host_node.outputs.iter() {
+      for output in host_node.get_outputs().iter() {
         if output.1 == VarId::Return {
           let ret_val_index = output.0.usize();
 
           let mut args = Vec::with_capacity(7);
 
-          for (input_op, input_id) in host_node.inputs.iter() {
+          for (input_op, input_id) in host_node.get_inputs().iter() {
             match input_id {
               VarId::CallRef => {}
               VarId::Param(_) => {
@@ -1124,7 +1130,7 @@ pub fn interprete_port(super_node: &RootNode, port_op: OpId, scratch: &mut Vec<(
   }
 
   scratch[scratch_index].0.clone()
-}
+}*/
 
 fn intrinsic_allocate(size: u64) -> *mut u8 {
   let alignment = 16;

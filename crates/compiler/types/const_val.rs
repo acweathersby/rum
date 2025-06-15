@@ -136,7 +136,6 @@ impl ConstVal {
           for (index, byte) in self.val.iter().rev().enumerate() {
             let leading_zeros = byte.leading_zeros();
             if leading_zeros < 8 {
-              dbg!(leading_zeros, index, byte);
               sig_bits = (120 - (index as u32) * 8) + 8 - leading_zeros;
               break;
             }

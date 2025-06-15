@@ -1,19 +1,23 @@
-test_struct :: [
-  C: u32, B: u32,
-  A: u64, 
-]
-
 #test
-trivial :: (input: u32, input2: u32) : u32 {
+trivial :: (a: u32, d: u32) : u32 { 
 
-  test : test_struct = [C = input2] 
+  // if d > 0 {
 
-  loop if input2 < 10 {
+    //if d == 1 { 
+    //  a = a + 4
+    //}
     
-    input = if input == 2 { 2 } else { 4 }
+   // s a = a + 5
 
-    input2 = input2 + 2 + test.C
-  }
 
-  input2
+   a = if a > 10 { 100 } else { if d > 2 { d = 0 } 200 }
+    
+   
+   if d < 1 { d = 4 } else { d = 80 }
+
+  //   d = d - a
+ // } 
+
+  d + a
+  
 }

@@ -59,7 +59,7 @@ pub fn get_routine_type_or_none(routine: NodeHandle, arg_index: CallArgType) -> 
   match arg_index {
     CallArgType::Index(param_id) => {
       let param_index = VarId::Param(param_id as usize);
-      if let Some((op, _)) = routine.nodes[0].inputs.iter().find(|i| {
+      if let Some((op, _)) = routine.nodes[0].get_inputs().iter().find(|i| {
         param_index == i.1
           || match routine.operands[i.0.usize()] {
             Operation::Param(var_id, index) => index == param_id,
@@ -73,7 +73,7 @@ pub fn get_routine_type_or_none(routine: NodeHandle, arg_index: CallArgType) -> 
     }
     CallArgType::Return => {
       let param_index = VarId::Return;
-      if let Some((op, _)) = routine.nodes[0].outputs.iter().find(|i| param_index == i.1) {
+      if let Some((op, _)) = routine.nodes[0].get_outputs().iter().find(|i| param_index == i.1) {
         get_closed_type_or_none(routine, op)
       } else {
         None
@@ -144,7 +144,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             let mut interface_methods = BTreeMap::new();
 
-            for (op, interface_param_id) in interface_node.nodes[0].outputs.iter().filter(|(_, var)| matches!(var, VarId::Name(_))) {
+            for (op, interface_param_id) in interface_node.nodes[0].get_outputs().iter().filter(|(_, var)| matches!(var, VarId::Name(_))) {
               let gen_ty = &interface_node.op_types[op.usize()];
               let ty_var_index = gen_ty.generic_id().unwrap();
               let ty_var = &interface_node.type_vars[ty_var_index];
@@ -241,7 +241,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 _ => {
                   match ty.base_ty() {
                     BaseType::Generic => {
-                      if let Some((op, id)) = implementation_node.nodes[0].outputs.iter().find(|(_, v)| *v == *interface_param_id) {
+                      if let Some((op, id)) = implementation_node.nodes[0].get_outputs().iter().find(|(_, v)| *v == *interface_param_id) {
                         let struct_ty = implementation_node.get_base_ty(implementation_node.op_types[op.usize()].clone());
 
                         if struct_ty == *ty {
@@ -271,7 +271,8 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               let RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, .. } = host_node_ref;
               let call_node = &nodes[*call_node_id];
 
-              let Some((function_name, call_op)) = call_node.inputs.iter().find_map(|(op_id, var_id)| match var_id {
+              let inputs = call_node.get_inputs();
+              let Some((function_name, call_op)) = inputs.iter().find_map(|(op_id, var_id)| match var_id {
                 VarId::CallRef => match &operands[op_id.usize()] {
                   Operation::Name(name) => Some((*name, op_id)),
                   _ => None,
@@ -432,7 +433,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
               let routine_inner_node = &routine_node.nodes[*heap_node_id];
 
-              for (op, var_id) in routine_inner_node.outputs.iter() {
+              for (op, var_id) in routine_inner_node.get_outputs().iter() {
                 if let VarId::Heap = var_id {
                   let ty = routine_node.type_vars[routine_node.op_types[op.usize()].generic_id().unwrap()].ty;
                   match ty.cmplx_data() {
@@ -898,7 +899,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>,
             if node.nodes[0].type_str == INTERFACE_ID {
               // Do not mark members
             } else {
-              if let Some((op, _)) = node.nodes[0].outputs.iter().find(|(_, v)| *v == VarId::Heap) {
+              if let Some((op, _)) = node.nodes[0].get_outputs().iter().find(|(_, v)| *v == VarId::Heap) {
                 let heap_ty = node.get_base_ty_from_op(*op);
                 match heap_ty.base_ty() {
                   BaseType::Heap => {
@@ -931,7 +932,7 @@ pub fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConstraint>,
               // Do not mark members
             } else {
               for member in members.iter() {
-                if let Some((op_id, _)) = node.nodes[0].outputs.iter().find(|(_, v)| match v {
+                if let Some((op_id, _)) = node.nodes[0].get_outputs().iter().find(|(_, v)| match v {
                   VarId::Name(n) => {
                     if n.to_str().as_str() == "base_type" {
                       member.name == Default::default()

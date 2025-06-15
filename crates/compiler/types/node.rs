@@ -38,7 +38,7 @@ impl Default for NodeHandle {
 }
 impl Debug for NodeHandle {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("{:16X} => {:?}\n", self as *const _ as usize, self.get().unwrap()))?;
+    f.write_fmt(format_args!("\n{:16X} => \n", self as *const _ as usize,))?;
     let r = unsafe { self.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
     r.node.fmt(f)
   }
@@ -139,7 +139,7 @@ impl NodeHandle {
   }
 }
 
-#[derive(Default, Clone, Copy, Hash, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Hash, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VarId {
   #[default]
   Undefined,
@@ -151,7 +151,8 @@ pub enum VarId {
   MemRef(usize),
   MatchInputExpr,
   OutputVal,
-  MatchActivation,
+  /// Match activation are bound to comparison operators and represent a branch pending the result of the comparison
+  MatchBooleanSelector,
   LoopActivation,
   Return,
   VoidReturn,
@@ -175,7 +176,7 @@ impl Display for VarId {
       Self::MemRef(id) => f.write_fmt(format_args!("--*{id}--")),
       Self::MatchInputExpr => f.write_str("MATCH_INPUT_VALUE"),
       Self::OutputVal => f.write_str("OUTPUT_VALUE"),
-      Self::MatchActivation => f.write_str("MATCH_ACTIVATION"),
+      Self::MatchBooleanSelector => f.write_str("MATCH_ACTIVATION"),
       Self::Return => f.write_str("RETURN"),
       Self::LoopActivation => f.write_str("LOOP_ACTIVATION"),
       Self::MemCTX => f.write_fmt(format_args!("MemCtx")),
@@ -227,10 +228,21 @@ impl OpId {
   }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum PortType {
   Phi,
-  Output,
+  In,
+  Out,
+  #[default]
+  Merge,
+  Passthrough,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct NodePort {
+  pub ty:   PortType,
+  pub slot: OpId,
+  pub id:   VarId,
 }
 
 #[derive(Clone)]
@@ -240,11 +252,8 @@ pub(crate) enum Operation {
   Param(VarId, u32),
   Heap(VarId),
   MemCheck(OpId),
-  Port {
-    node_id: u32,
-    ty:      PortType,
-    ops:     Vec<(u32, OpId)>,
-  },
+
+  Phi(u32, Vec<OpId>),
   Op {
     op_id:    Op,
     operands: [OpId; 3],
@@ -270,16 +279,12 @@ impl Display for Operation {
       Operation::IntrinsicCallTarget(target) => f.write_fmt(format_args!("Target [{}]", target)),
       Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
-      Operation::Port { node_id: block_id, ty, ops, .. } => f.write_fmt(format_args!(
-        "{ty:?} :> {:12} {}",
-        format!("from: {block_id}"),
-        ops.iter().map(|(a, b)| { format!("{:5}", format!("{b}@{a}")) }).collect::<Vec<String>>().join("  ")
-      )),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
       Operation::Op { op_id: op_name, operands } => {
         f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
       }
+      Operation::Phi(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
       Operation::Data => f.write_fmt(format_args!("DATA",)),
       Operation::Allocate => f.write_fmt(format_args!("allocate",)),
@@ -292,6 +297,8 @@ pub(crate) struct RootNode {
   pub(crate) nodes:         Vec<Node>,
   pub(crate) annotations:   Vec<IString>,
   pub(crate) operands:      Vec<Operation>,
+  /// Maps operands to the node they belong to.
+  pub(crate) operand_node:  Vec<usize>,
   pub(crate) op_types:      Vec<TypeV>,
   pub(crate) type_vars:     Vec<TypeVar>,
   pub(crate) heap_id:       Vec<usize>,
@@ -304,6 +311,7 @@ impl Default for RootNode {
       nodes:         Vec::with_capacity(8),
       annotations:   Vec::with_capacity(8),
       operands:      Vec::with_capacity(8),
+      operand_node:  Vec::with_capacity(8),
       op_types:      Vec::with_capacity(8),
       type_vars:     Vec::with_capacity(8),
       source_tokens: Vec::with_capacity(8),
@@ -344,9 +352,10 @@ pub fn get_signature(node: &RootNode) -> Signature {
 }
 
 pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
+  todo!("Change from inputs outputs to slots.");
   let RootNode { nodes, operands, op_types: types, type_vars, heap_id, source_tokens, .. } = node;
   let call_node = &nodes[internal_node_index];
-
+  /*
   let caller_sig = Signature::new(
     &call_node
       .inputs
@@ -367,7 +376,7 @@ pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) 
       })
       .collect::<Vec<_>>(),
   );
-  caller_sig
+  caller_sig */
 }
 
 impl Debug for RootNode {
@@ -400,36 +409,9 @@ impl Debug for RootNode {
       }
 
       f.write_str("(")?;
-      f.write_str(
-        &sig_node
-          .inputs
-          .iter()
-          .map(|input| {
-            if input.0.is_valid() {
-              let ty = self.get_base_ty(self.op_types[input.0 .0 as usize].clone());
-              format!("{}: {ty}", input.1)
-            } else {
-              format!("{}: --", input.1)
-            }
-          })
-          .collect::<Vec<_>>()
-          .join(", "),
-      )?;
+
       f.write_str(")")?;
       f.write_str(" => ")?;
-      for input in sig_node.outputs.iter() {
-        if input.0.is_valid() {
-          let ty = self.get_base_ty(self.op_types[input.0 .0 as usize].clone());
-
-          if input.1 == VarId::Return {
-            f.write_fmt(format_args!(" {ty}"))?;
-          } else {
-            f.write_fmt(format_args!(" [{}: {ty}]", input.1))?;
-          }
-        } else {
-          f.write_fmt(format_args!("[{}: --]", input.1))?;
-        }
-      }
 
       f.write_str("\n###################### \n")?;
     }
@@ -439,12 +421,19 @@ impl Debug for RootNode {
       let mut tok = self.source_tokens[index].token();
       let source = tok.to_string();
       let heap = self.heap_id.get(index).cloned().unwrap_or_default();
+      let parent_node = self.operand_node[index];
 
       //let heap = if heap < self.type_vars.len() { self.type_vars[heap].ty.to_string() } else { "???".to_string() };
 
       let heap = if heap == usize::MAX { "".to_string() } else { heap.to_string() };
 
-      f.write_fmt(format_args!("\n  {index:3} <= {:36} @{heap:10} :{:32} {}: {:}", format!("{op}"), format!("{ty}"), tok.get_line(), source))?
+      f.write_fmt(format_args!(
+        "\n  {index:3} @ [{parent_node:3}] <= {:36} @{heap:10} :{:32} {}: {:}",
+        format!("{op}"),
+        format!("{ty}"),
+        tok.get_line(),
+        source
+      ))?
     }
     f.write_str("\nnodes:")?;
 
@@ -501,10 +490,29 @@ pub enum LoopType {
 #[derive(Clone)]
 pub(crate) struct Node {
   pub(crate) index:     usize,
+  pub(crate) parent:    isize,
   pub(crate) type_str:  &'static str,
-  pub(crate) inputs:    Vec<(OpId, VarId)>,
-  pub(crate) outputs:   Vec<(OpId, VarId)>,
+  pub(crate) children:  Vec<usize>,
   pub(crate) loop_type: LoopType,
+  pub(crate) ports:     Vec<NodePort>,
+}
+
+impl Node {
+  pub fn get_inputs(&self) -> Vec<(OpId, VarId)> {
+    let mut out = Vec::new();
+    for port in self.ports.iter().filter(|p| p.ty == PortType::In) {
+      out.push((port.slot, port.id));
+    }
+    out
+  }
+
+  pub fn get_outputs(&self) -> Vec<(OpId, VarId)> {
+    let mut out = Vec::new();
+    for port in self.ports.iter().filter(|p| p.ty == PortType::Out) {
+      out.push((port.slot, port.id));
+    }
+    out
+  }
 }
 
 impl Debug for Node {
@@ -515,9 +523,18 @@ impl Debug for Node {
 
 impl Display for Node {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("[{}] {} {:?}\n", self.index, self.type_str, self.loop_type))?;
+    f.write_fmt(format_args!("[{}] {} {:?} <= {}\n", self.index, self.type_str, self.loop_type, self.parent))?;
+    f.write_str("ports:\n")?;
 
-    f.write_str("inputs:\n")?;
+    for NodePort { slot: slots, id: name, ty } in self.ports.iter() {
+      f.write_fmt(format_args!("  {ty:?} of {name} {:?}\n", slots))?;
+    }
+
+    if !self.children.is_empty() {
+      f.write_fmt(format_args!("c: {:?} \n", self.children))?;
+    }
+
+    /*  f.write_str("inputs:\n")?;
     for (op, id) in self.inputs.iter() {
       f.write_fmt(format_args!("  {op}[{}]\n", id.to_string()))?;
     }
@@ -526,7 +543,7 @@ impl Display for Node {
 
     for (op, id) in self.outputs.iter() {
       f.write_fmt(format_args!("  {op}[{}]\n", id.to_string()))?;
-    }
+    } */
 
     Ok(())
   }

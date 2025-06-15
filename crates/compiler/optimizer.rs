@@ -1,6 +1,6 @@
 use crate::{
   interpreter::get_op_type,
-  types::{Op, OpId, OptimizeLevel, SolveDatabase, TypeV, VarId},
+  types::{NodePort, Op, OpId, OptimizeLevel, PortType, SolveDatabase, TypeV, VarId},
 };
 
 pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDatabase<'a> {
@@ -26,68 +26,75 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
 
         let mut new_nodes = vec![];
 
-        for (i, (op, var_id)) in node.nodes[0].outputs.iter().enumerate() {
-          if let VarId::MemCTX = var_id {
-            mem_context = (i, *op);
-            break;
+        let outputs = node.nodes[0].get_outputs();
+        let inputs = node.nodes[0].get_inputs();
+
+        for (i, port) in node.nodes[0].ports.iter().enumerate() {
+          if port.ty == PortType::Out {
+            if let VarId::MemCTX = port.id {
+              mem_context = (i, port.slot);
+              break;
+            }
           }
         }
 
         // Check for free nodes.
-        for (i, (op, var_id)) in node.nodes[0].outputs.iter().enumerate() {
-          if let VarId::Freed = var_id {
-            let mut node_escapes = false;
+        for (i, port) in node.nodes[0].ports.iter().enumerate() {
+          if port.ty == PortType::Out {
+            if let VarId::Freed = port.id {
+              let op = port.slot;
+              let mut node_escapes = false;
 
-            for (j, (o_op, _)) in node.nodes[0].outputs.iter().enumerate() {
-              if j == i {
-                continue;
+              for (j, other) in node.nodes[0].ports.iter().enumerate() {
+                if j == i {
+                  continue;
+                }
+
+                if other.slot == op {
+                  node_escapes = true;
+                  break;
+                }
               }
 
-              if *o_op == *op {
-                node_escapes = true;
-                break;
+              for (o_op, _) in inputs.iter() {
+                if *o_op == op {
+                  node_escapes = true;
+                  break;
+                }
               }
-            }
 
-            for (o_op, _) in node.nodes[0].inputs.iter() {
-              if *o_op == *op {
-                node_escapes = true;
-                break;
+              let ty = get_op_type(node, op);
+
+              // Do not insert free if type is not a memory type.
+              node_escapes |= !ty.is_array() && !ty.is_cmplx() && ty.ptr_depth() == 0;
+
+              if !node_escapes {
+                // Insert free
+
+                let (_, mem_op) = mem_context;
+
+                let new_mem_op = OpId(node.operands.len() as u32);
+                node.operands.push(crate::types::Operation::Op { op_id: Op::FREE, operands: [op, mem_op, Default::default()] });
+                node.op_types.push(TypeV::util());
+                node.source_tokens.push(Default::default());
+                node.heap_id.push(node.heap_id[op.usize()]);
+
+                new_nodes.push(NodePort { id: VarId::Freed, ty: PortType::Out, slot: new_mem_op });
+              } else {
+                println!("TODO: Check that we are not in the entry process entry function, and ");
               }
-            }
-
-            let ty = get_op_type(node, *op);
-
-            // Do not insert free if type is not a memory type.
-            node_escapes |= !ty.is_array() && !ty.is_cmplx() && ty.ptr_depth() == 0;
-
-            if !node_escapes {
-              // Insert free
-
-              let (_, mem_op) = mem_context;
-
-              let new_mem_op = OpId(node.operands.len() as u32);
-              node.operands.push(crate::types::Operation::Op { op_id: Op::FREE, operands: [*op, mem_op, Default::default()] });
-              node.op_types.push(TypeV::util());
-              node.source_tokens.push(Default::default());
-              node.heap_id.push(node.heap_id[op.usize()]);
-
-              mem_context.1 = new_mem_op;
-
-              new_nodes.push((new_mem_op, VarId::Freed));
-            } else {
-              println!("TODO: Check that we are not in the entry process entry function, and ");
             }
           }
         }
 
         if mem_context.1 != Default::default() {
-          node.nodes[0].outputs[mem_context.0].0 = mem_context.1;
+          node.nodes[0].ports[mem_context.0].slot = mem_context.1;
         }
 
         // remove Freed entries
-        node.nodes[0].outputs = node.nodes[0].outputs.iter().filter(|(_, v)| VarId::Freed != *v).cloned().collect();
-        node.nodes[0].outputs.extend(new_nodes);
+
+        node.nodes[0].ports = node.nodes[0].ports.iter().filter(|p| p.id != VarId::Freed).cloned().collect();
+        node.nodes[0].ports.extend(new_nodes);
       }
     }
     OptimizeLevel::ExpressionOptimization_02 => {
