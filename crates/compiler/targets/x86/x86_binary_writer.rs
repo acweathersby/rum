@@ -757,10 +757,12 @@ pub fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
     block_ordering[offset].block_id = block_id as _;
     block_ordering[offset].pass = blocks[block_id as usize].pass;
     block_ordering[offset].fail = blocks[block_id as usize].fail;
+
     offset += 1;
+
     let block = &blocks[block_id as usize];
-    block_order_queue.push_front(block.pass);
     block_order_queue.push_front(block.fail);
+    block_order_queue.push_front(block.pass);
   }
 
   // Optimization - Skip blocks that are empty.
@@ -787,6 +789,8 @@ pub fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {
 
   // Filter out any zero length blocks
   block_ordering
+    .iter()
+    .cloned()
     .into_iter()
     //.filter(|b| b.block_id == 0 || !blocks[b.block_id as usize].ops.is_empty())
     .enumerate()

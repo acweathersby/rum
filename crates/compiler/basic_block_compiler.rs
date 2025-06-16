@@ -96,7 +96,7 @@ impl Default for BasicBlock {
 
 impl Debug for BasicBlock {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("BLOCK - {} [{}] {}\n  ", self.id, self.level, self.loop_head))?;
+    f.write_fmt(format_args!("#{:03} BLOCK - [{}] {}\n  ", self.id, self.level, self.loop_head))?;
 
     f.write_str("\n  ")?;
     for op in &self.ops2 {
@@ -105,14 +105,14 @@ impl Debug for BasicBlock {
     }
     f.write_str("\n")?;
 
-    f.write_fmt(format_args!("Predecessors {:?}\n", self.predecessors))?;
+    f.write_fmt(format_args!("  Predecessors {:?}\n", self.predecessors))?;
 
     if self.fail >= 0 {
-      f.write_fmt(format_args!("PASS {} FAIL {}", self.pass, self.fail))?;
+      f.write_fmt(format_args!("  PASS {} FAIL {}", self.pass, self.fail))?;
     } else if self.pass >= 0 {
-      f.write_fmt(format_args!("GOTO {}", self.pass))?;
+      f.write_fmt(format_args!("  GOTO {}", self.pass))?;
     } else {
-      f.write_str("RET")?;
+      f.write_str("  RET")?;
     }
 
     f.write_str("\n")?;
@@ -249,12 +249,6 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
   }
 
   // Map block data to var_ids
-
-  for ordering in create_block_ordering(&blocks) {
-    let block_id = ordering.block_id as usize;
-    let block = &blocks[block_id];
-    println!("{block:?}\n \n\n");
-  }
 
   // Add op references to blocks and sort dependencies
   for op_index in 0..sn.operands.len() {
@@ -517,8 +511,6 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
     }
   }
 
-  println!("{interference_graph:?}");
-
   // ===============================================================
   // Convert var_ids to register indices
 
@@ -553,8 +545,6 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
 
   println!("{interference_graph:?}");
 
-  // todo!("Complete Port Conversion");
-
   blocks
 }
 
@@ -587,11 +577,6 @@ fn process_match(
 
   let outside_ops = node.ports.iter().filter_map(|f| if f.ty == PortType::In { Some(f.slot) } else { None }).collect::<BTreeSet<_>>();
 
-  let head_id = blocks.len();
-  let mut block = BasicBlock::default();
-  block.id = head_id;
-  blocks.push(block);
-
   let mut tails: Vec<usize> = vec![];
 
   let mut sel = -1 as isize;
@@ -605,7 +590,6 @@ fn process_match(
 
       if head < 0 {
         head = sel_head as _;
-        blocks[head_id as usize].pass = sel_head as _;
       }
 
       let (clause_head, clause_tail) = process_node(sn, *clause, op_data, blocks, &outside_ops, vars, op_var_map);
@@ -646,13 +630,8 @@ fn process_match(
   }
 
   debug_assert_eq!(selectors.len(), clauses.len());
-  (head_id as _, tail_id as _)
+  (head as _, tail_id as _)
 }
-/*
-    let var_id = vars.len() as _;
-        vars.push(Var::create(get_op_type(sn, phi_op)));
-        op_to_var_map[slot_op_index] = var_id;
-*/
 
 fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, index: usize, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> usize {
   let merge_id = blocks.len();
