@@ -798,7 +798,7 @@ fn process_node(
     blocks[block_head as usize].pass = head as isize;
     blocks[tail].pass = block_tail as isize;
 
-    slot_data[head_block as usize] = (head as _, block_tail);
+    slot_data[head_block as usize] = (tail as _, block_tail);
   }
 
   let start = max_level;
