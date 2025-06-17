@@ -3,17 +3,17 @@ use rum_common::get_aligned_value;
 
 use crate::{
   interpreter::get_op_type,
-  ir_compiler::{CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, LOOP_ID, MATCH_ID, ROUTINE_ID},
+  ir_compiler::{CLAUSE_ID, CLAUSE_SELECTOR_ID, MATCH_ID},
   targets::{
     reg::Reg,
     x86::{x86_binary_writer::create_block_ordering, x86_types::*},
   },
-  types::{Node, NodePort, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{Node, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 use std::{
   cmp::Ordering,
-  collections::{btree_map, BTreeMap, BTreeSet, HashMap, VecDeque},
-  fmt::{Debug, Display},
+  collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
+  fmt::Debug,
   u32,
 };
 
@@ -780,7 +780,5 @@ fn process_node(
     slot_data[head_block as usize] = (tail as _, block_tail);
   }
 
-  let start = max_level;
-
-  (start as usize, block_start as usize)
+  (max_level as usize, block_start as usize)
 }

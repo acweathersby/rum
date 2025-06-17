@@ -150,6 +150,8 @@ fn add_properties(db: &Database, properties: &[(IString, Option<type_Value<Token
     let prop_name_op = add_op(bp, Operation::Name(*prop_name), Default::default(), Default::default());
     let (prop_op, prop_ty) = process_op(Op::PROP, &[prop_name_op, *offset_op], bp, Default::default());
 
+    bp.super_node.nodes[0].ports.push(NodePort { ty: PortType::Out, slot: prop_op, id: VarId::Name(*prop_name) });
+
     if let Some(src_ty) = src_ty {
       match src_ty {
         type_Value::RawRoutineType(ty) => {
