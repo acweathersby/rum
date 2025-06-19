@@ -1,4 +1,3 @@
-use core_lang::parser::ast::Port;
 use rum_common::get_aligned_value;
 
 use crate::{
@@ -8,17 +7,16 @@ use crate::{
     reg::Reg,
     x86::{x86_binary_writer::create_block_ordering, x86_types::*},
   },
-  types::{Node, Op, OpId, Operation, PortType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{prim_ty_addr, Node, Op, OpId, Operation, PortType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 use std::{
-  cmp::Ordering,
   collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
   fmt::Debug,
   u32,
 };
 
 #[derive(Debug, Clone, Copy)]
-struct OpData {
+pub(crate) struct OpData {
   dep_rank: i32,
   block:    i32,
 }
@@ -30,7 +28,7 @@ impl OpData {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum VarVal {
+pub(crate) enum VarVal {
   None,
   Var(u32),
   Reg(u8),
@@ -51,21 +49,22 @@ impl Debug for VarVal {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Var {
+pub(crate) struct Var {
   register: VarVal,
   // Prefer to use the register assigned to the given variable_id
-  prefer:   Option<u32>,
-  ty:       TypeV,
+  prefer:   VarVal,
+  prim_ty:  PrimitiveType,
+  // Masks out these register from use
+  mask:     u64,
 }
 
 impl Var {
-  fn create(ty: TypeV) -> Self {
-    Self { register: VarVal::None, prefer: None, ty }
+  fn create(prim_ty: PrimitiveType) -> Self {
+    Self { register: VarVal::None, prefer: VarVal::None, prim_ty, mask: 0 }
   }
 }
 
-pub struct BasicBlock {
-  pub dominator:    i32,
+pub(crate) struct BasicBlock {
   pub id:           usize,
   pub ops:          Vec<usize>,
   pub ops2:         Vec<BBop>,
@@ -74,13 +73,11 @@ pub struct BasicBlock {
   pub predecessors: Vec<usize>,
   pub level:        usize,
   pub loop_head:    bool,
-  pub cmp_op:       isize,
 }
 
 impl Default for BasicBlock {
   fn default() -> Self {
     Self {
-      dominator:    -1,
       fail:         -1,
       pass:         -1,
       predecessors: Default::default(),
@@ -89,7 +86,6 @@ impl Default for BasicBlock {
       ops:          Default::default(),
       ops2:         Default::default(),
       loop_head:    false,
-      cmp_op:       -1,
     }
   }
 }
@@ -121,24 +117,62 @@ impl Debug for BasicBlock {
   }
 }
 
-pub const SMALL_REGISTER_SET: [Reg; 2] = [RCX, R8];
-pub const REGISTERS: [Reg; 12] = [RCX, R8, RBX, RDI, RSI, RAX, R10, R11, R12, R13, R14, RDX];
-pub const PARAM_REGISTERS: [usize; 12] = [3, 4, 11, 4, 5, 7, 8, 9, 0, 10, 11, 12];
-//pub const PARAM_REGISTERS: [usize; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+pub const REGISTERS: [Reg; 44] = [
+  RCX, R8, RBX, RDI, RSI, RAX, R10, R9, R11, R12, R13, R14, RDX, VEC0, VEC2, VEC3, VEC4, VEC5, VEC6, VEC7, VEC8, VEC9, VEC10, VEC11, VEC12, VEC13, VEC14,
+  VEC15, VEC16, VEC17, VEC18, VEC19, VEC20, VEC21, VEC22, VEC23, VEC24, VEC25, VEC26, VEC27, VEC28, VEC29, VEC30, VEC31,
+];
+
+pub const GP_REG_MASK: u64 = 0xFFF8_0000_0000_0000;
+
+/// Masks out registers that are not preserved over a FFI call
+pub const FFI_CALLER_SAVE_MASK: u64 = 0x000F_FFFF_FFFF_FFFF + (0b1101_1101_0000_1 << 51);
+
+pub const VEC_REG_MASK: u64 = !GP_REG_MASK;
+
+pub const PARAM_REGISTERS: [usize; 12] = [3, 4, 12, 2, 5, 7, 8, 9, 0, 10, 11, 12];
 pub const OUTPUT_REGISTERS: [usize; 4] = [5, 4, 2, 0];
-pub const MAX_CONSTANT_INLINE_BITS: u32 = 32;
-type X86registers<'r> = RegisterSet<'r, 12, Reg>;
-pub struct BBop {
+
+static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3], bool)); 18] = {
+  use ArgRegType::{NeedAccessTo as NA, RequiredAs as RA, *};
+  use AssignRequirement::*;
+  let [arg1, arg2, arg3, ret1] = [PARAM_REGISTERS[0] as u8, PARAM_REGISTERS[1] as u8, PARAM_REGISTERS[2] as u8, OUTPUT_REGISTERS[0] as u8];
+
+  [
+    // -----
+    (Op::AGG_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(ret1), [false, false, false], false)),
+    (Op::ARR_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(ret1), [false, false, false], false)),
+    (Op::FREE, ([RA(arg1), NA(arg2), NA(arg3)], NoOutput, [false, false, false], false)),
+    (Op::DIV, ([RA(ret1), Used, NoUse], Forced(ret1), [false, false, false], false)),
+    (Op::ADD, ([Used, Used, NoUse], NoRequirement, [true, false, false], true)),
+    (Op::SUB, ([Used, Used, NoUse], NoRequirement, [true, false, false], false)),
+    (Op::MUL, ([Used, Used, NoUse], NoRequirement, [true, false, false], true)),
+    (Op::EQ, ([Used, Used, NoUse], NoRequirement, [false, false, false], true)),
+    (Op::GR, ([Used, Used, NoUse], NoRequirement, [true, false, false], false)),
+    (Op::LE, ([Used, Used, NoUse], NoRequirement, [true, false, false], false)),
+    (Op::LS, ([Used, Used, NoUse], NoRequirement, [true, false, false], false)),
+    (Op::RET, ([Used, NoUse, NoUse], Forced(ret1), [true, false, false], false)),
+    (Op::STORE, ([Used, Used, NoUse], NoOutput, [false, false, false], false)),
+    (Op::NPTR, ([Used, Temp, NoUse], NoRequirement, [false, false, false], false)),
+    (Op::LOAD, ([Used, NoUse, NoUse], NoRequirement, [false, false, false], false)),
+    (Op::SEED, ([Used, NoUse, NoUse], Inherit(0), [false, false, false], false)),
+    (Op::SINK, ([NoUse, Used, NoUse], Inherit(1), [false, false, false], false)),
+    (Op::POISON, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false], false)),
+  ]
+};
+
+type X86registers<'r> = RegisterSet<'r, 44, Reg>;
+pub(crate) struct BBop {
   pub op_ty:   Op,
   pub out:     VarVal,
-  pub ins:     [VarVal; 3],
+  pub args:    [VarVal; 3],
+  pub ops:     [OpId; 3],
   pub source:  OpId,
-  pub ty_data: TypeV,
+  pub ty_data: PrimitiveType,
 }
 
 impl Debug for BBop {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let BBop { op_ty, out: id, ins: operands, source, ty_data } = self;
+    let BBop { op_ty, out: id, args: operands, source, ty_data, ops } = self;
     f.write_fmt(format_args!(
       "{:<8} {id:?} <= {} {:6} {ty_data}",
       op_ty.to_string(),
@@ -174,15 +208,7 @@ enum ArgRegType {
   NeedAccessTo(u8),
 }
 
-enum ClearForCall {
-  Clear,
-  NoClear,
-}
-
 enum AssignRequirement {
-  /// Ideally the output of this operand will be placed in this register if available,
-  /// but if this register is already used then any other available register will do.
-  Suggested(u8),
   /// The output of the operand WILL be assigned to the given register.
   /// Steps must be taken to insure this does not clobber any existing values.
   Forced(u8),
@@ -191,62 +217,37 @@ enum AssignRequirement {
   Inherit(u8),
 }
 
-static BU_ASSIGN_MAP: [(Op, ([ArgRegType; 3], AssignRequirement, [bool; 3])); 18] = {
-  use ArgRegType::{NeedAccessTo as NA, RequiredAs as RA, *};
-  use AssignRequirement::*;
-  let [rcx, rdx, rbx, rdi, rsi, rax, r10, rll, r12, r13, ..] = [0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12];
-
-  let arg1: u8 = rdx as u8;
-  let arg2: u8 = rdi as u8;
-  let arg3: u8 = rsi as u8;
-
-  [
-    // -----
-    (Op::AGG_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
-    (Op::ARR_DECL, ([NA(arg1), NA(arg2), NA(arg3)], Forced(rax), [false, false, false])),
-    (Op::FREE, ([RA(arg1), NA(arg2), NA(arg3)], NoOutput, [false, false, false])),
-    (Op::DIV, ([RA(rax), Used, NoUse], Forced(rax), [false, false, false])),
-    (Op::ADD, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
-    (Op::SUB, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
-    (Op::MUL, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
-    (Op::EQ, ([Used, Used, NoUse], NoRequirement, [false, false, false])),
-    (Op::GR, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
-    (Op::LE, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
-    (Op::LS, ([Used, Used, NoUse], NoRequirement, [true, false, false])),
-    (Op::RET, ([Used, NoUse, NoUse], Forced(rax), [true, false, false])),
-    (Op::STORE, ([Used, Used, NoUse], NoOutput, [false, false, false])),
-    (Op::NPTR, ([Used, Temp, NoUse], NoRequirement, [false, false, false])),
-    (Op::LOAD, ([Used, NoUse, NoUse], NoRequirement, [false, false, false])),
-    (Op::SEED, ([Used, NoUse, NoUse], Inherit(0), [false, false, false])),
-    (Op::SINK, ([NoUse, Used, NoUse], Inherit(1), [false, false, false])),
-    (Op::POISON, ([NoUse, NoUse, NoUse], NoRequirement, [false, false, false])),
-  ]
-};
+pub(crate) struct BasicBlockFunction {
+  pub stash_size:        usize,
+  pub blocks:            Vec<BasicBlock>,
+  pub makes_system_call: bool,
+  pub makes_ffi_call:    bool,
+}
 
 /// Returns a vector of register assigned basic blocks.
-pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock> {
+pub(crate) fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> BasicBlockFunction {
   let mut op_data = vec![OpData::new(); sn.operands.len()];
+
+  dbg!(&sn);
+
+  let mut bb_funct = BasicBlockFunction { blocks: vec![], stash_size: 0, makes_ffi_call: false, makes_system_call: false };
 
   // Assign variable ids, starting with all output and input ops
   let mut op_to_var_map = vec![u32::MAX; sn.operands.len()];
   let mut vars = Vec::<Var>::new();
 
-  let (head, mut blocks) = assign_ops_to_blocks(sn, &mut op_data, &mut vars, &mut op_to_var_map);
+  assign_ops_to_blocks(sn, &mut bb_funct.blocks, &mut op_data, &mut vars, &mut op_to_var_map);
 
   // Set predecessors
-  for block_id in 0..blocks.len() {
-    for successor_id in [blocks[block_id].pass, blocks[block_id].fail] {
+  for block_id in 0..bb_funct.blocks.len() {
+    for successor_id in [bb_funct.blocks[block_id].pass, bb_funct.blocks[block_id].fail] {
       if successor_id >= 0 {
-        blocks[successor_id as usize].predecessors.push(block_id);
+        bb_funct.blocks[successor_id as usize].predecessors.push(block_id);
       }
     }
   }
 
-  for (op, data) in op_data.iter().enumerate() {
-    if data.block >= 0 || data.block == -100 {
-      get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, OpId(op as _));
-    }
-  }
+  let mut forced_vars = vec![];
 
   // Map block data to var_ids
 
@@ -254,63 +255,119 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
   for op_index in 0..sn.operands.len() {
     let data = op_data[op_index];
     if data.block >= 0 {
+      let target_op = OpId(op_index as _);
       // -- Filter out memory ordering operations.
-      if !get_op_type(sn, OpId(op_index as _)).is_mem() {
-        blocks[data.block as usize].ops.push(op_index);
-        let op_var_id = op_to_var_map[op_index];
+      if !get_op_type(sn, target_op).is_mem() {
+        bb_funct.blocks[data.block as usize].ops.push(op_index);
 
         match &sn.operands[op_index] {
           Operation::Param(_, index) => {
-            blocks[data.block as usize].ops2.push(BBop {
+            let inner_var_id = create_var(&mut vars, get_op_type(sn, target_op));
+            let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+
+            bb_funct.blocks[data.block as usize].ops2.push(BBop {
               op_ty:   Op::PARAM,
-              out:     VarVal::Var(op_var_id),
-              ins:     [VarVal::None; 3],
+              out:     VarVal::Var(outer_var_id),
+              args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
+              ops:     [OpId::default(); 3],
               source:  OpId(op_index as u32),
-              ty_data: get_op_type(sn, OpId(op_index as u32)),
+              ty_data: get_op_type(sn, OpId(op_index as u32)).prim_data().unwrap(),
             });
-            vars[op_var_id as usize].register = VarVal::Reg(PARAM_REGISTERS[*index as usize] as _);
-          }
-          Operation::Phi(_, ops) => {
-            //todo!("Todo: PHI")
+            vars[outer_var_id as usize].prefer = VarVal::Var(inner_var_id as u32);
+            vars[inner_var_id as usize].register = VarVal::Reg(PARAM_REGISTERS[*index as usize] as _);
           }
           Operation::Op { op_id: op_type, operands } => match op_type {
-            op_type if let Some((action, preferred, inherit)) = select_op_row(*op_type, &BU_ASSIGN_MAP) => {
+            op_type if let Some((action, preferred, inherit, is_commutable)) = select_op_row(*op_type, &BU_ASSIGN_MAP) => {
+              // Temporary
+              if *op_type == Op::AGG_DECL {
+                bb_funct.makes_ffi_call = true;
+              }
+
+              let out = if matches!(preferred, AssignRequirement::NoOutput) {
+                VarVal::None
+              } else {
+                VarVal::Var(get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op))
+              };
+
               let mut out_ops = [VarVal::None; 3];
+              let first_operand_is_constant = operands[0].is_valid() && matches!(sn.operands[operands[0].usize()], Operation::Const(..));
+              let second_operand_is_constant = operands[1].is_valid() && matches!(sn.operands[operands[1].usize()], Operation::Const(..));
+
+              if first_operand_is_constant && second_operand_is_constant {
+                panic!("Cannot resolve double operands: {:?}", sn.operands[op_index]);
+              }
+
+              let operands = if first_operand_is_constant && *is_commutable {
+                // Swap first and second.
+                [operands[1], operands[0], operands[2]]
+              } else {
+                *operands
+              };
 
               for (((index, dep_op_id), mapping), inherit) in operands.iter().enumerate().zip(action).zip(inherit) {
-                let operand_var_id = if operands[index].is_valid() { op_to_var_map[operands[index].usize()] } else { u32::MAX };
+                let mut operand_var_id = if operands[index].is_valid() { op_to_var_map[operands[index].usize()] } else { u32::MAX };
+
+                let is_const = dep_op_id.is_valid() && matches!(sn.operands[dep_op_id.usize()], Operation::Const(..));
 
                 if operand_var_id != u32::MAX {
                   out_ops[index] = VarVal::Var(operand_var_id);
                 }
 
-                if *inherit {
-                  vars[operand_var_id as usize].prefer = Some(op_var_id as _);
-                }
+                if index == 0 && is_const && !is_commutable {
+                  let dep_op_id = &operands[0];
+                  let require_var_id = vars.len();
 
-                if dep_op_id.is_valid() as _ {
+                  let ty = get_op_type(sn, *dep_op_id).prim_data().unwrap();
+                  let out = VarVal::Var(require_var_id as _);
+
+                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                    op_ty: Op::LOAD_CONST,
+                    out,
+                    args: [VarVal::Const, VarVal::None, VarVal::None],
+                    ops: [*dep_op_id, OpId::default(), OpId::default()],
+                    source: Default::default(),
+                    ty_data: ty,
+                  });
+
+                  operand_var_id = require_var_id as _;
+
+                  vars.push(Var { register: VarVal::None, prefer: VarVal::None, prim_ty: ty, mask: 0 });
+
+                  dbg!(out);
+                  out_ops[index] = out;
+                } else if is_const {
+                  out_ops[index] = VarVal::Const;
+                } else {
                   match mapping {
                     ArgRegType::NeedAccessTo(reg) => {
-                      if operand_var_id != u32::MAX {
-                        debug_assert!(matches!(vars[operand_var_id as usize].register, VarVal::None));
-                        vars[operand_var_id as usize].register = VarVal::Reg(*reg);
-                      }
-                      todo!("NeedAccessTo")
-                    }
-                    ArgRegType::RequiredAs(reg) => {
                       let require_var_id = vars.len();
 
-                      let ty = get_op_type(sn, *dep_op_id);
+                      forced_vars.push(require_var_id);
 
-                      blocks[data.block as usize].ops2.push(BBop {
+                      vars.push(Var {
+                        register: VarVal::Reg(*reg),
+                        prefer:   VarVal::None,
+                        prim_ty:  prim_ty_addr,
+                        mask:     FFI_CALLER_SAVE_MASK,
+                      });
+
+                      out_ops[index] = VarVal::Var(require_var_id as _);
+                    }
+                    ArgRegType::RequiredAs(reg) if dep_op_id.is_valid() => {
+                      let require_var_id = vars.len();
+
+                      let ty = get_op_type(sn, *dep_op_id).prim_data().unwrap();
+
+                      bb_funct.blocks[data.block as usize].ops2.push(BBop {
                         op_ty:   Op::SEED,
                         out:     VarVal::Var(require_var_id as _),
-                        ins:     [VarVal::Var(operand_var_id), VarVal::None, VarVal::None],
+                        args:    [VarVal::Var(operand_var_id), VarVal::None, VarVal::None],
+                        ops:     [OpId::default(); 3],
                         source:  *dep_op_id,
                         ty_data: ty,
                       });
 
-                      vars.push(Var { register: VarVal::Reg(*reg), prefer: None, ty });
+                      vars.push(Var { register: VarVal::Reg(*reg), prefer: VarVal::None, prim_ty: ty, mask: 0 });
                     }
                     ArgRegType::NoUse => {
                       out_ops[index] = VarVal::None;
@@ -318,46 +375,36 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
                     _ => {}
                   }
                 }
+
+                if *inherit {
+                  vars[operand_var_id as usize].prefer = out;
+                }
               }
 
-              match preferred {
-                AssignRequirement::Forced(reg) => {
-                  vars[op_to_var_map[op_index] as usize].register = VarVal::Reg(*reg);
+              match (out, preferred) {
+                (VarVal::Var(op_var_id), AssignRequirement::Forced(reg)) => {
+                  vars[op_var_id as usize].register = VarVal::Reg(*reg);
                 }
-                AssignRequirement::Inherit(index) => match out_ops[*index as usize] {
-                  VarVal::Var(var_id) => vars[op_to_var_map[op_index] as usize].prefer = Some(var_id as _),
+                (VarVal::Var(op_var_id), AssignRequirement::Inherit(index)) => match out_ops[*index as usize] {
+                  v @ VarVal::Var(..) => vars[op_var_id as usize].prefer = v,
                   _ => {}
                 },
                 _ => {}
               }
 
-              blocks[data.block as usize].ops2.push(BBop {
-                op_ty:   *op_type,
-                out:     VarVal::Var(op_var_id),
-                ins:     out_ops,
-                source:  OpId(op_index as u32),
-                ty_data: get_op_type(sn, OpId(op_index as u32)),
+              bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                op_ty: *op_type,
+                out,
+                args: out_ops,
+                source: OpId(op_index as u32),
+                ops: operands,
+                ty_data: get_op_type(sn, OpId(op_index as u32)).prim_data().unwrap(),
               });
             }
             op_name => {
               todo!("{op_name}")
             }
           },
-
-          Operation::Const(constant_val) => {
-            if constant_val.significant_bits() <= MAX_CONSTANT_INLINE_BITS {
-              // Allow the register to be loaded as a constant value.
-              vars[op_to_var_map[op_index] as usize].register = VarVal::Const;
-            }
-
-            blocks[data.block as usize].ops2.push(BBop {
-              op_ty:   Op::CONST,
-              out:     VarVal::Var(op_var_id),
-              ins:     [VarVal::None; 3],
-              source:  OpId(op_index as u32),
-              ty_data: get_op_type(sn, OpId(op_index as u32)),
-            });
-          }
           _ => {}
         }
       }
@@ -365,12 +412,14 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
       // Param, add to root block
       match &sn.operands[op_index] {
         Operation::Param(_, index) => {
-          blocks[0 as usize].ops2.push(BBop {
-            op_ty:   Op::PARAM,
-            out:     VarVal::Var(op_to_var_map[op_index]),
-            ins:     [VarVal::None; 3],
-            source:  OpId(op_index as u32),
-            ty_data: get_op_type(sn, OpId(op_index as u32)),
+          bb_funct.blocks[0 as usize].ops2.push(BBop {
+            op_ty:  Op::PARAM,
+            out:    VarVal::Var(op_to_var_map[op_index]),
+            args:   [VarVal::None; 3],
+            source: OpId(op_index as u32),
+            ops:    [OpId::default(); 3],
+
+            ty_data: get_op_type(sn, OpId(op_index as u32)).prim_data().unwrap(),
           });
 
           vars[op_to_var_map[op_index] as usize].register = VarVal::Reg(PARAM_REGISTERS[*index as usize] as _);
@@ -380,19 +429,19 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
     }
   }
 
-  let mut in_out_sets = vec![(BTreeSet::<u32>::new(), BTreeSet::<u32>::new()); blocks.len()];
+  let mut in_out_sets = vec![(BTreeSet::<u32>::new(), BTreeSet::<u32>::new()); bb_funct.blocks.len()];
 
   // ===============================================================
   // Calculate the input and output sets of all blocks
-  let mut queue = VecDeque::from_iter(0..blocks.len());
+  let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
 
   while let Some(block_id) = queue.pop_front() {
     let (ins, outs) = &in_out_sets[block_id as usize].clone();
     let mut new_ins = outs.clone();
 
-    for op in blocks[block_id as usize].ops2.iter().rev() {
+    for op in bb_funct.blocks[block_id as usize].ops2.iter().rev() {
       match op {
-        BBop { out: id, ins: operands, source, .. } => {
+        BBop { out: id, args: operands, source, .. } => {
           match id {
             VarVal::Var(id) => {
               new_ins.remove(id);
@@ -419,17 +468,17 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
     if &new_ins != ins {
       in_out_sets[block_id as usize].0 = new_ins.clone();
 
-      for predecessor in &blocks[block_id as usize].predecessors {
+      for predecessor in &bb_funct.blocks[block_id as usize].predecessors {
         in_out_sets[*predecessor as usize].1.extend(new_ins.iter());
         queue.push_back(*predecessor);
       }
     }
   }
 
-  for ordering in create_block_ordering(&blocks) {
+  for ordering in create_block_ordering(&bb_funct.blocks) {
     let block_id = ordering.block_id as usize;
     let (ins, outs) = &in_out_sets[block_id];
-    let block = &blocks[block_id];
+    let block = &bb_funct.blocks[block_id];
     println!("{block:?}\n ins: {ins:?} \n outs: {outs:?}\n\n");
   }
 
@@ -438,9 +487,9 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
 
   let mut interference_graph = vec![BTreeSet::<u32>::new(); vars.len()];
 
-  for block in &blocks {
+  for block in &bb_funct.blocks {
     let mut outs = in_out_sets[block.id as usize].1.clone();
-    for BBop { out: id, ins: operands, source, .. } in block.ops2.iter().rev() {
+    for BBop { out: id, args: operands, .. } in block.ops2.iter().rev() {
       match id {
         VarVal::Var(id) => {
           outs.remove(id);
@@ -468,16 +517,25 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
 
   // ===============================================================
   // Find a graph coloring solution
+
   let mut stash_offset = 0;
 
-  let mut sorted_vars = vars.iter().enumerate().map(|(index, var)| (var.prefer.unwrap_or(u32::MAX), index as u32)).collect::<Vec<_>>();
+  let mut work_vec = VecDeque::from_iter(forced_vars.into_iter().chain(0..vars.len()));
 
-  sorted_vars.sort_by(|a, b| if b.1 < a.0 { Ordering::Less } else { a.0.cmp(&b.0) });
+  while let Some(var_id) = work_vec.pop_front() {
+    dbg!(var_id);
+    let var = &vars[var_id];
 
-  for (_, var_id) in sorted_vars {
-    let var_id = var_id as usize;
     let pending_var = vars[var_id];
+
     if matches!(pending_var.register, VarVal::None) {
+      if let VarVal::Var(preference) = var.prefer {
+        if vars[preference as usize].register == VarVal::None {
+          work_vec.push_back(var_id);
+          continue;
+        }
+      }
+
       let mut reg_alloc = X86registers::new(&REGISTERS, None);
 
       for other_id in &interference_graph[var_id] {
@@ -485,12 +543,16 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
         match other_var.register {
           VarVal::Reg(reg) => {
             reg_alloc.acquire_specific_register(reg as _);
+            if other_var.mask > 0 {
+              reg_alloc.mask(other_var.mask as _);
+              dbg!(var_id, reg_alloc);
+            }
           }
           _ => {}
         }
       }
 
-      if let Some(preference_id) = pending_var.prefer {
+      if let VarVal::Var(preference_id) = pending_var.prefer {
         if let VarVal::Reg(reg) = vars[preference_id as usize].register {
           if reg_alloc.acquire_specific_register(reg as _) {
             vars[var_id].register = VarVal::Reg(reg as _);
@@ -502,7 +564,7 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
       if let Some(reg) = reg_alloc.acquire_random_register() {
         vars[var_id].register = VarVal::Reg(reg as _);
       } else {
-        let size = pending_var.ty.prim_data().unwrap().byte_size as u64;
+        let size = pending_var.prim_ty.byte_size as u64;
         let stashed_location = get_aligned_value(stash_offset, size);
         vars[var_id].register = VarVal::Stashed(stashed_location as _);
         stash_offset = stashed_location + size;
@@ -514,8 +576,8 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
   // ===============================================================
   // Convert var_ids to register indices
 
-  for block_id in 0..blocks.len() {
-    for BBop { op_ty: ty, out, ins, source, ty_data } in blocks[block_id].ops2.iter_mut().rev() {
+  for block_id in 0..bb_funct.blocks.len() {
+    for BBop { out, args: ins, .. } in bb_funct.blocks[block_id].ops2.iter_mut().rev() {
       match out {
         VarVal::Var(var_id) => {
           let out_var = vars[*var_id as usize];
@@ -536,30 +598,29 @@ pub fn encode_function(sn: &mut RootNode, db: &SolveDatabase) -> Vec<BasicBlock>
     }
   }
 
-  for ordering in create_block_ordering(&blocks) {
+  for ordering in create_block_ordering(&bb_funct.blocks) {
     let block_id = ordering.block_id as usize;
     let (ins, outs) = &in_out_sets[block_id];
-    let block = &blocks[block_id];
+    let block = &bb_funct.blocks[block_id];
     println!("{block:?}\n ins: {ins:?} \n outs: {outs:?}\n\n");
   }
 
   println!("{interference_graph:?}");
 
-  blocks
+  bb_funct
 }
 
-fn assign_ops_to_blocks(sn: &RootNode, op_data: &mut [OpData], vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> (usize, Vec<BasicBlock>) {
-  let mut blocks = vec![];
+fn assign_ops_to_blocks(sn: &RootNode, blocks: &mut Vec<BasicBlock>, op_data: &mut [OpData], vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> usize {
   // Start the root node and operation in th
   let routine_node = &sn.nodes[0];
 
-  let (head, tail) = process_node(sn, routine_node, op_data, &mut blocks, &Default::default(), vars, op_var_map);
+  let (head, _) = process_node(sn, routine_node, op_data, blocks, &Default::default(), vars, op_var_map);
 
   for port in routine_node.get_inputs() {
     op_data[port.0.usize()].block = head as _;
   }
 
-  (head, blocks)
+  head
 }
 
 fn process_match(
@@ -649,13 +710,14 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
         block.ops2.push(BBop {
           op_ty:   Op::Meta,
           out:     VarVal::Var(phi_ty_var),
-          ins:     [VarVal::Var(op_ty_var), VarVal::None, VarVal::None],
+          args:    [VarVal::Var(op_ty_var), VarVal::None, VarVal::None],
+          ops:     [Default::default(); 3],
           source:  port.slot,
-          ty_data: ty,
+          ty_data: ty.prim_data().unwrap(),
         });
 
         if let Operation::Phi(..) = &sn.operands[op.usize()] {
-          vars[phi_ty_var as usize].prefer = Some(op_ty_var);
+          vars[phi_ty_var as usize].prefer = VarVal::Var(op_ty_var);
         }
       }
     }
@@ -668,13 +730,19 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
 fn get_or_create_op_var(sn: &RootNode, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>, op: OpId) -> u32 {
   let ty_var = if op_var_map[op.usize()] == u32::MAX {
     let var_id = vars.len() as _;
-    vars.push(Var::create(get_op_type(sn, op)));
+    vars.push(Var::create(get_op_type(sn, op).prim_data().unwrap()));
     op_var_map[op.usize()] = var_id;
     var_id
   } else {
     op_var_map[op.usize()]
   };
   ty_var
+}
+
+fn create_var(vars: &mut Vec<Var>, ty: TypeV) -> u32 {
+  let var_id = vars.len();
+  vars.push(Var::create(ty.prim_data().unwrap()));
+  var_id as _
 }
 
 fn process_node(
@@ -704,7 +772,7 @@ fn process_node(
     if !ty.is_poison() && !ty.is_undefined() && op.is_valid() && op_data[op.usize()].block < level {
       max_level = max_level.max(level);
       match &sn.operands[op.usize()] {
-        Operation::Phi(node_id, ops) => {
+        Operation::Phi(node_id, ..) => {
           let sub_node = &sn.nodes[*node_id as usize];
 
           // Do not process outer slots: slots that are defined within parent scopes.
@@ -741,7 +809,7 @@ fn process_node(
             }
           }
         }
-        Operation::Op { op_id, operands } => {
+        Operation::Op { operands, .. } => {
           op_data[op.usize()].block = level;
           for op in operands {
             pending_ops.push_back((*op, level));

@@ -63,6 +63,10 @@ impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + De
     self.acquired & (1 << (63 - register_index as u64)) > 0
   }
 
+  pub(crate) fn mask(&mut self, mask: u64) {
+    self.acquired |= mask
+  }
+
   /// Returns true if the register has not already been acquired.
   pub(crate) fn acquire_specific_register(&mut self, register_index: usize) -> bool {
     if self.register_is_acquired(register_index) {

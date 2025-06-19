@@ -166,6 +166,7 @@ impl TypeV {
   pub fn prim_data(&self) -> Option<PrimitiveType> {
     match self.base_ty() {
       BaseType::Primitive => Some(unsafe { std::mem::transmute(self.data()) }),
+      BaseType::Complex | BaseType::Heap => Some(prim_ty_addr),
       _ => None,
     }
   }
