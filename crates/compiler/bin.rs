@@ -1,6 +1,6 @@
 #![allow(unused_variables, dead_code)]
-use ir_compiler::add_module;
 use interpreter::interpret;
+use ir_compiler::add_module;
 use rum_compiler::*;
 use types::{Database, SolveDatabase};
 
@@ -25,7 +25,9 @@ fn main() {
 
       let sdb: SolveDatabase<'_> = SolveDatabase::solve_for("#test", &db);
 
-      let sdb_opt = sdb.optimize(types::OptimizeLevel::MemoryOperations_01);
+      let sdb_fin = sdb.finalize();
+
+      let sdb_opt = sdb_fin.optimize(types::OptimizeLevel::MemoryOperations_01);
 
       targets::x86::compile(&sdb_opt);
 

@@ -219,7 +219,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
     scratch[scratch_index].0 = match &super_node.operands[op.usize()] {
       Operation::Param(..) => scratch[scratch_index].0,
       Operation::Const(cst) => match op_ty.prim_data() {
-        Some(prim) => match prim.base_ty {
+        prim => match prim.base_ty {
           PrimitiveBaseType::Signed => match prim.byte_size {
             8 => Value::i64(cst.convert(prim).load()),
             4 => Value::i32(cst.convert(prim).load()),
@@ -245,13 +245,13 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
         },
         _ => panic!("unexpected node type {op_ty}"),
       },
-      Operation::Op { op_id: op_name, operands } => match *op_name {
+      Operation::Op { op_name, operands } => match *op_name {
         Op::CONVERT => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 
           match val {
             Value::i32(v) => match op_ty.prim_data() {
-              Some(prim_ty) => match prim_ty {
+              prim_ty => match prim_ty {
                 prim_ty_u32 => Value::u32(v as u32),
                 prim_ty_s32 => val,
                 prim_ty_u8 => Value::u8(v as u8),
@@ -260,7 +260,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::f32(v) => match op_ty.prim_data() {
-              Some(prim_ty) => match prim_ty {
+              prim_ty => match prim_ty {
                 prim_ty_u32 => Value::u32(v as u32),
                 prim_ty_f32 => val,
                 prim_ty_u8 => Value::u8(v as u8),
@@ -269,7 +269,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::f64(v) => match op_ty.prim_data() {
-              Some(prim_ty) => match prim_ty {
+              prim_ty => match prim_ty {
                 prim_ty_u64 => Value::f64(v as f64),
                 prim_ty_f64 => val,
                 dd_ => unreachable!("{dd_}"),
@@ -277,7 +277,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::u64(v) => match op_ty.prim_data() {
-              Some(prim_ty) => match prim_ty {
+              prim_ty => match prim_ty {
                 prim_ty_u64 => val,
                 prim_ty_addr => val,
                 prim_ty_u8 => Value::u8(v as u8),
@@ -286,7 +286,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::u32(v) => match op_ty.prim_data() {
-              Some(prim_ty) => match prim_ty {
+              prim_ty => match prim_ty {
                 prim_ty_u32 => val,
                 prim_ty_u8 => Value::u8(v as u8),
                 dd_ => unreachable!("{dd_}"),
@@ -294,7 +294,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::u8(v) => match op_ty.prim_data() {
-              Some(prim_ty) => match prim_ty {
+              prim_ty => match prim_ty {
                 prim_ty_u8 => val,
                 dd_ => unreachable!("{dd_}"),
               },
@@ -416,7 +416,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             _ => 1,
           };
 
-          convert_primitive_types(op_ty.prim_data().unwrap(), Value::u64(val))
+          convert_primitive_types(op_ty.prim_data(), Value::u64(val))
         }
         Op::FREE => {
           let ptr_val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
@@ -453,8 +453,8 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
           let ele_size = match op_ty.remove_array().to_base_ty() {
             ty_u8 => 1,
-            ty_u32 => ty_u32.prim_data().unwrap().byte_size as _,
-            ty_u64 => ty_u64.prim_data().unwrap().byte_size as _,
+            ty_u32 => ty_u32.prim_data().byte_size as _,
+            ty_u64 => ty_u64.prim_data().byte_size as _,
             ty => todo!("Get byte size from  {ty}"),
           };
 
@@ -538,7 +538,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
                   let len = get_element_count(NodeHandle::from((v, ctx.db)).get().unwrap(), ctx);
                   if offset_base >= len {
                     let tok = super_node.source_tokens[op.usize()].clone();
-                    let msg = tok.token().blame(1, 1, &format!("Index [{offset_base}] is out of bounds"), BlameColor::RED);
+                    let msg = tok.blame(1, 1, &format!("Index [{offset_base}] is out of bounds"), BlameColor::RED);
 
                     panic!("{msg}");
                   }
@@ -564,8 +564,8 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
                   let ele_size = match op_ty.remove_array().to_base_ty() {
                     ty_u8 => 1,
-                    ty_u32 => ty_u32.prim_data().unwrap().byte_size as _,
-                    ty_u64 => ty_u64.prim_data().unwrap().byte_size as _,
+                    ty_u32 => ty_u32.prim_data().byte_size as _,
+                    ty_u64 => ty_u64.prim_data().byte_size as _,
                     ty => todo!("Get byte size from  {ty}"),
                   };
 
@@ -601,7 +601,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
           match val {
             Value::Ptr(ptr, ty, _) => match ty.prim_data() {
-              Some(prim_ty) => {
+              prim_ty => {
                 let ptr_count = ty.ptr_depth();
                 while ptr_count > 1 {
                   todo!("Dereference multi level pointer")
@@ -629,7 +629,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
 
           match src {
             Value::u8(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_u8 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_u8 => {
                 unsafe { *ptr = val };
                 dst
               }
@@ -637,7 +637,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::u16(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_u16 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_u16 => {
                 unsafe { *(ptr as *mut _) = val };
                 dst
               }
@@ -645,7 +645,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::u32(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_u32 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_u32 => {
                 unsafe { *(ptr as *mut _) = val };
                 dst
               }
@@ -653,7 +653,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::u64(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_u64 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_u64 => {
                 unsafe { *(ptr as *mut _) = val };
                 dst
               }
@@ -661,7 +661,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::i64(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_s64 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_s64 => {
                 unsafe { *(ptr as *mut _) = val };
                 dst
               }
@@ -669,7 +669,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::i32(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_s32 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_s32 => {
                 unsafe { *(ptr as *mut _) = val };
                 dst
               }
@@ -677,7 +677,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::i16(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_s16 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_s16 => {
                 unsafe { *(ptr as *mut _) = val };
                 dst
               }
@@ -685,7 +685,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
               _ => unreachable!(),
             },
             Value::i8(val) => match dst {
-              Value::Ptr(ptr, ty, _) if ty.prim_data().unwrap() == prim_ty_s8 => {
+              Value::Ptr(ptr, ty, _) if ty.prim_data() == prim_ty_s8 => {
                 unsafe { *(ptr as *mut _) = val };
                 dst
               }
@@ -703,10 +703,10 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             Value::Ptr(ptr, ty, _) => {
               assert!(ty.ptr_depth() == 1);
               match ty.prim_data() {
-                Some(prim_ty_f32) => unsafe { Value::f32(*(ptr as *mut f32)) },
-                Some(prim_ty_f64) => unsafe { Value::f64(*(ptr as *mut f64)) },
-                Some(prim_ty_u64) => unsafe { Value::u64(*(ptr as *mut u64)) },
-                Some(prim_ty_u8) => unsafe { Value::u8(*(ptr as *mut u8)) },
+                prim_ty_f32 => unsafe { Value::f32(*(ptr as *mut f32)) },
+                prim_ty_f64 => unsafe { Value::f64(*(ptr as *mut f64)) },
+                prim_ty_u64 => unsafe { Value::u64(*(ptr as *mut u64)) },
+                prim_ty_u8 => unsafe { Value::u8(*(ptr as *mut u8)) },
                 ty => todo!("Load {ty:?}"),
               }
             }
@@ -725,11 +725,11 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
             Value::Ptr(ptr, ty, _) => {
               assert!(ty.ptr_depth() == 1);
               match (ty.prim_data(), val) {
-                (Some(prim_ty_u32), Value::u32(val)) => unsafe { *(ptr as *mut u32) = val },
-                (Some(prim_ty_f32), Value::f32(val)) => unsafe { *(ptr as *mut f32) = val },
-                (Some(prim_ty_f64), Value::f64(val)) => unsafe { *(ptr as *mut f64) = val },
-                (Some(prim_ty_u8), Value::u8(val)) => unsafe { *(ptr as *mut u8) = val },
-                (Some(prim_ty_s8), Value::i8(val)) => unsafe { *(ptr as *mut i8) = val },
+                (prim_ty_u32, Value::u32(val)) => unsafe { *(ptr as *mut u32) = val },
+                (prim_ty_f32, Value::f32(val)) => unsafe { *(ptr as *mut f32) = val },
+                (prim_ty_f64, Value::f64(val)) => unsafe { *(ptr as *mut f64) = val },
+                (prim_ty_u8, Value::u8(val)) => unsafe { *(ptr as *mut u8) = val },
+                (prim_ty_s8, Value::i8(val)) => unsafe { *(ptr as *mut i8) = val },
                 (ptr, val) => todo!("Store {val:?} into {ptr:?} at {op}"),
               }
             }
@@ -806,7 +806,7 @@ fn get_ty_size(ty: TypeV, ctx: &mut RuntimeSystem) -> u64 {
     todo!("Get array size from {ty}")
   } else {
     match ty.base_ty() {
-      BaseType::Primitive => ty.prim_data().unwrap().byte_size as u64,
+      BaseType::Primitive => ty.prim_data().byte_size as u64,
       BaseType::Complex => get_agg_size(NodeHandle::from((ty.cmplx_data().unwrap(), ctx.db)).get().unwrap(), ctx),
       _ => todo!("Calculate size of {ty}"),
     }
@@ -1166,8 +1166,8 @@ fn interprete_binary_args(
   let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
   let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
-  let l_val = convert_primitive_types(ty.prim_data().unwrap(), l);
-  let r_val: Value = convert_primitive_types(ty.prim_data().unwrap(), r);
+  let l_val = convert_primitive_types(ty.prim_data(), l);
+  let r_val: Value = convert_primitive_types(ty.prim_data(), r);
   (l_val, r_val)
 }
 
@@ -1185,8 +1185,8 @@ fn interprete_binary_cmp_args(
   let l = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
   let r = interprete_op(super_node, operands[1], scratch, ctx, scope_data);
 
-  let l_val = convert_primitive_types(ty.prim_data().unwrap(), l);
-  let r_val: Value = convert_primitive_types(ty.prim_data().unwrap(), r);
+  let l_val = convert_primitive_types(ty.prim_data(), l);
+  let r_val: Value = convert_primitive_types(ty.prim_data(), r);
   (l_val, r_val)
 }
 

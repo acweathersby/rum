@@ -283,8 +283,8 @@ fn test_mov_o() {
   assert_eq!("cmovo r8d,r11d", test_enc_dos(&mov_o, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovo r8,r11", test_enc_dos(&mov_o, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovo r8d,[r11]", test_enc_dos(&mov_o, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovo r8,[r11]", test_enc_dos(&mov_o, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovo r8d,[r11]", test_enc_dos(&mov_o, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovo r8,[r11]", test_enc_dos(&mov_o, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -302,8 +302,8 @@ fn test_mov_no() {
   assert_eq!("cmovno r8d,r11d", test_enc_dos(&mov_no, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovno r8,r11", test_enc_dos(&mov_no, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovno r8d,[r11]", test_enc_dos(&mov_no, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovno r8,[r11]", test_enc_dos(&mov_no, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovno r8d,[r11]", test_enc_dos(&mov_no, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovno r8,[r11]", test_enc_dos(&mov_no, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -331,8 +331,8 @@ fn test_mov_ae() {
   assert_eq!("cmovae r8d,r11d", test_enc_dos(&mov_ae, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovae r8,r11", test_enc_dos(&mov_ae, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovae r8d,[r11]", test_enc_dos(&mov_ae, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovae r8,[r11]", test_enc_dos(&mov_ae, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovae r8d,[r11]", test_enc_dos(&mov_ae, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovae r8,[r11]", test_enc_dos(&mov_ae, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -350,8 +350,8 @@ fn test_mov_e() {
   assert_eq!("cmove r8d,r11d", test_enc_dos(&mov_e, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmove r8,r11", test_enc_dos(&mov_e, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmove r8d,[r11]", test_enc_dos(&mov_e, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmove r8,[r11]", test_enc_dos(&mov_e, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmove r8d,[r11]", test_enc_dos(&mov_e, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmove r8,[r11]", test_enc_dos(&mov_e, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -369,8 +369,8 @@ fn test_mov_ne() {
   assert_eq!("cmovne r8d,r11d", test_enc_dos(&mov_ne, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovne r8,r11", test_enc_dos(&mov_ne, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovne r8d,[r11]", test_enc_dos(&mov_ne, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovne r8,[r11]", test_enc_dos(&mov_ne, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovne r8d,[r11]", test_enc_dos(&mov_ne, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovne r8,[r11]", test_enc_dos(&mov_ne, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -388,8 +388,8 @@ fn test_mov_be() {
   assert_eq!("cmovbe r8d,r11d", test_enc_dos(&mov_be, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovbe r8,r11", test_enc_dos(&mov_be, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovbe r8d,[r11]", test_enc_dos(&mov_be, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovbe r8,[r11]", test_enc_dos(&mov_be, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovbe r8d,[r11]", test_enc_dos(&mov_be, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovbe r8,[r11]", test_enc_dos(&mov_be, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -407,8 +407,8 @@ fn test_mov_a() {
   assert_eq!("cmova r8d,r11d", test_enc_dos(&mov_a, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmova r8,r11", test_enc_dos(&mov_a, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmova r8d,[r11]", test_enc_dos(&mov_a, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmova r8,[r11]", test_enc_dos(&mov_a, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmova r8d,[r11]", test_enc_dos(&mov_a, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmova r8,[r11]", test_enc_dos(&mov_a, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -426,8 +426,8 @@ fn test_mov_s() {
   assert_eq!("cmovs r10d,r11d", test_enc_dos(&mov_s, 32, R10.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovs r10,r11", test_enc_dos(&mov_s, 64, R10.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovs r10d,[r11]", test_enc_dos(&mov_s, 32, R10.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovs r10,[r11]", test_enc_dos(&mov_s, 64, R10.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovs r10d,[r11]", test_enc_dos(&mov_s, 32, R10.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovs r10,[r11]", test_enc_dos(&mov_s, 64, R10.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -445,8 +445,8 @@ fn test_mov_ns() {
   assert_eq!("cmovns r8d,r11d", test_enc_dos(&mov_ns, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovns r8,r11", test_enc_dos(&mov_ns, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovns r8d,[r11]", test_enc_dos(&mov_ns, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovns r8,[r11]", test_enc_dos(&mov_ns, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovns r8d,[r11]", test_enc_dos(&mov_ns, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovns r8,[r11]", test_enc_dos(&mov_ns, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -464,8 +464,8 @@ fn test_mov_pe() {
   assert_eq!("cmovp r8d,r11d", test_enc_dos(&mov_pe, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovp r8,r11", test_enc_dos(&mov_pe, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovp r8d,[r11]", test_enc_dos(&mov_pe, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovp r8,[r11]", test_enc_dos(&mov_pe, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovp r8d,[r11]", test_enc_dos(&mov_pe, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovp r8,[r11]", test_enc_dos(&mov_pe, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -483,8 +483,8 @@ fn test_mov_po() {
   assert_eq!("cmovnp r8d,r11d", test_enc_dos(&mov_po, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovnp r8,r11", test_enc_dos(&mov_po, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovnp r8d,[r11]", test_enc_dos(&mov_po, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovnp r8,[r11]", test_enc_dos(&mov_po, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovnp r8d,[r11]", test_enc_dos(&mov_po, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovnp r8,[r11]", test_enc_dos(&mov_po, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -502,8 +502,8 @@ fn test_mov_l() {
   assert_eq!("cmovl r8d,r11d", test_enc_dos(&mov_l, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovl r8,r11", test_enc_dos(&mov_l, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovl r8d,[r11]", test_enc_dos(&mov_l, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovl r8,[r11]", test_enc_dos(&mov_l, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovl r8d,[r11]", test_enc_dos(&mov_l, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovl r8,[r11]", test_enc_dos(&mov_l, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -521,8 +521,8 @@ fn test_mov_ge() {
   assert_eq!("cmovge r8d,r11d", test_enc_dos(&mov_ge, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovge r8,r11", test_enc_dos(&mov_ge, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovge r8d,[r11]", test_enc_dos(&mov_ge, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovge r8,[r11]", test_enc_dos(&mov_ge, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovge r8d,[r11]", test_enc_dos(&mov_ge, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovge r8,[r11]", test_enc_dos(&mov_ge, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -540,8 +540,8 @@ fn test_mov_le() {
   assert_eq!("cmovle r8d,r11d", test_enc_dos(&mov_le, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovle r8,r11", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovle r8d,[r11]", test_enc_dos(&mov_le, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovle r8,[r11]", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovle r8d,[r11]", test_enc_dos(&mov_le, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovle r8,[r11]", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -559,12 +559,38 @@ fn test_mov_g() {
   assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovg r8,r11", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_reg_op()));
 
-  assert_eq!("cmovg r8d,[r11]", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_addr_op()));
-  assert_eq!("cmovg r8,[r11]", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_addr_op()));
+  assert_eq!("cmovg r8d,[r11]", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovg r8,[r11]", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
-/// https://www.felixcloutier.com/x86/mov
+op_table!(cvrt_to_i32 [
+  /// https://www.felixcloutier.com/x86/cvtsd2si
+  ((64, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0xF20F2D, 0x00, OpEncoding::VEX_RM_2{ w: false }, gen_multi_op as *const OpEncoder)),
+  ((64, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0xF20F2D, 0x00, OpEncoding::VEX_RM_2{ w: false }, gen_multi_op as *const OpEncoder)),
+  // https://www.felixcloutier.com/x86/cvtss2si
+  ((32, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0xF30F2D, 0x00, OpEncoding::VEX_RM_2{ w: false }, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0xF30F2D, 0x00, OpEncoding::VEX_RM_2{ w: false }, gen_multi_op as *const OpEncoder)),
+]);
+
+op_table!(cvrt_to_i64 [
+  /// https://www.felixcloutier.com/x86/cvtsd2si
+  ((64, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0xF20F2D, 0x00, OpEncoding::VEX_RM_2{ w: true }, gen_multi_op as *const OpEncoder)),
+  ((64, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0xF20F2D, 0x00, OpEncoding::VEX_RM_2{ w: true }, gen_multi_op as *const OpEncoder)),
+  // https://www.felixcloutier.com/x86/cvtss2si
+  ((32, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0xF30F2D, 0x00, OpEncoding::VEX_RM_2{ w: true }, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0xF30F2D, 0x00, OpEncoding::VEX_RM_2{ w: true }, gen_multi_op as *const OpEncoder)),
+]);
+
+fn test_cvrt_to_i32() {
+  assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_reg_op()));
+  assert_eq!("cmovg r8,r11", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_reg_op()));
+
+  assert_eq!("cmovg r8d,[r11]", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("cmovg r8,[r11]", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_mem_op()));
+}
+
 op_table!(mov [
+  /// https://www.felixcloutier.com/x86/mov
   ((08, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0088, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
   ((16, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0089, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
   ((32, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0089, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
@@ -589,6 +615,38 @@ op_table!(mov [
   ((16, OT::MEM, OT::IMM_INT, OT::NONE, OT::NONE), (0x00C7, 0x00, OpEncoding::MI, gen_multi_op as *const OpEncoder)),
   ((32, OT::MEM, OT::IMM_INT, OT::NONE, OT::NONE), (0x00C7, 0x00, OpEncoding::MI, gen_multi_op as *const OpEncoder)),
   ((64, OT::MEM, OT::IMM_INT, OT::NONE, OT::NONE), (0x00C7, 0x00, OpEncoding::MI, gen_multi_op as *const OpEncoder)),
+  /// Floating point moves
+  /// https://www.felixcloutier.com/x86/movd:movq
+  ((32, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: false }, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::REG, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: false}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::REG, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  ((32, OT::MEM, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: false}, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: false}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::MEM, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  //https://www.felixcloutier.com/x86/movq
+  ((32, OT::XMM, OT::XMM, OT::NONE, OT::NONE), (0xF30F7E, 0x00, OpEncoding::VEX_RM_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::XMM, OT::NONE, OT::NONE), (0xF30F7E, 0x00, OpEncoding::VEX_RM_2{ w: true}, gen_multi_op as *const OpEncoder)),
+
+  // Vector Moves ============================
+]);
+
+#[test]
+fn test_mov() {
+  assert_eq!("lea r8d,[r11]", test_enc_dos(&mov, 32, RCX.as_mem_op(), VEC0.as_reg_op()));
+}
+
+/// https://www.felixcloutier.com/x86/movd:movq
+op_table!(mov_fp_scalar [
+  ((32, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: false }, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::REG, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: false}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::REG, OT::NONE, OT::NONE), (0x660F6E, 0x00, OpEncoding::VEX_RM_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  ((32, OT::MEM, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: false}, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: false}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::MEM, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: true}, gen_multi_op as *const OpEncoder)),
+  ((64, OT::REG, OT::XMM, OT::NONE, OT::NONE), (0x660F7E, 0x00, OpEncoding::VEX_MR_2{ w: true}, gen_multi_op as *const OpEncoder)),
 ]);
 
 /// https://www.felixcloutier.com/x86/lea
@@ -631,26 +689,46 @@ op_table!(vmov32_align [
   ((128, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((128, OT::MEM, OT::REG, OT::NONE, OT::NONE), (0x660F7F, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
   //
-  ((256, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::VEX_RM, gen_multi_op as *const OpEncoder)),
-  ((256, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::VEX_RM, gen_multi_op as *const OpEncoder)),
-  ((256, OT::MEM, OT::REG, OT::NONE, OT::NONE), (0x660F7F, 0x00, OpEncoding::VEX_MR, gen_multi_op as *const OpEncoder)),
+  ((256, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::VEX_RM_3, gen_multi_op as *const OpEncoder)),
+  ((256, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::VEX_RM_3, gen_multi_op as *const OpEncoder)),
+  ((256, OT::MEM, OT::REG, OT::NONE, OT::NONE), (0x660F7F, 0x00, OpEncoding::VEX_MR_3, gen_multi_op as *const OpEncoder)),
 
   ((512, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::EVEX_RM{ w:0 }, gen_multi_op as *const OpEncoder)),
 ]);
 
-op_table!(vadd32_scalar [
-  ((64, OT::REG, OT::REG, OT::NONE, OT::NONE), (0xF30F58, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
-  ((64, OT::REG, OT::REG, OT::REG, OT::NONE), (0xF30F58, 0x00, OpEncoding::EVEX_RM { w: 0}, gen_multi_op as *const OpEncoder)),
+/// https://www.felixcloutier.com/x86/addss
+op_table!(add_fp_scalar [
+  ((32, OT::XMM, OT::XMM, OT::NONE, OT::NONE), (0xF30F58, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0xF30F58, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::XMM, OT::XMM, OT::NONE), (0xF30F58, 0x00, OpEncoding::VEX_RM_3, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::XMM, OT::MEM, OT::NONE), (0xF30F58, 0x00, OpEncoding::VEX_RM_3, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::XMM, OT::XMM, OT::MSK), (0xF30F58, 0x00, OpEncoding::EVEX_RM { w: 1 }, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::XMM, OT::MEM, OT::MSK), (0xF30F58, 0x00, OpEncoding::EVEX_RM { w: 1 }, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::XMM, OT::NONE, OT::NONE), (0xF20F58, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0xF20F58, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::XMM, OT::XMM, OT::NONE), (0xF20F58, 0x00, OpEncoding::VEX_RM_3, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::XMM, OT::MEM, OT::NONE), (0xF20F58, 0x00, OpEncoding::VEX_RM_3, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::XMM, OT::XMM, OT::MSK), (0xF20F58, 0x00, OpEncoding::EVEX_RM { w: 1 }, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::XMM, OT::MEM, OT::MSK), (0xF20F58, 0x00, OpEncoding::EVEX_RM { w: 1 }, gen_multi_op as *const OpEncoder)),
 ]);
 
 #[test]
-fn test_vec_add() {
-  assert_eq!("vmovdqa64 zmm31{k1},zmm31", test_enc_tres(&vadd32_scalar, 64, VEC31.as_reg_op(), VEC2.as_reg_op(), K2.as_reg_op()));
+fn test_f32_add() {
+  assert_eq!("vaddss xmm15,xmm2,dword ptr [r8+16]", test_enc_tres(&add_fp_scalar, 32, VEC15.as_reg_op(), VEC2.as_reg_op(), Arg::MemRel(R8, 16)));
+  assert_eq!("vaddsd xmm15,xmm2,qword ptr [r8+16]", test_enc_tres(&add_fp_scalar, 64, VEC15.as_reg_op(), VEC2.as_reg_op(), Arg::MemRel(R8, 16)));
+}
+
+#[test]
+fn test_fp_mov() {
+  assert_eq!("vmovq xmm15,rax", test_enc_tres(&mov_fp_scalar, 64, VEC15.as_reg_op(), RAX.as_reg_op(), Arg::None));
+  assert_eq!("vmovd xmm15,eax", test_enc_tres(&mov_fp_scalar, 32, VEC15.as_reg_op(), RAX.as_reg_op(), Arg::None));
+  assert_eq!("vmovq rax,xmm15", test_enc_tres(&mov_fp_scalar, 64, RAX.as_reg_op(), VEC15.as_reg_op(), Arg::None));
+  assert_eq!("vmovd eax,xmm15", test_enc_tres(&mov_fp_scalar, 32, RAX.as_reg_op(), VEC15.as_reg_op(), Arg::None));
 }
 
 op_table!(vmov64_align [
-  ((512, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::EVEX_RM{ w:1 }, gen_multi_op as *const OpEncoder)),
-  ((512, OT::REG, OT::REG, OT::REG, OT::NONE), (0x660F6F, 0x00, OpEncoding::EVEX_RM{ w:1 }, gen_multi_op as *const OpEncoder)),
+  ((512, OT::XMM, OT::XMM, OT::NONE, OT::NONE), (0x660F6F, 0x00, OpEncoding::EVEX_RM{ w:1 }, gen_multi_op as *const OpEncoder)),
+  ((512, OT::XMM, OT::XMM, OT::XMM, OT::NONE), (0x660F6F, 0x00, OpEncoding::EVEX_RM{ w:1 }, gen_multi_op as *const OpEncoder)),
 ]);
 
 #[test]
@@ -664,8 +742,8 @@ fn test_vec_mov() {
   assert_eq!("vmovdqa ymmword ptr [r15],ymm8", test_enc_dos(&vmov32_align, 256, VEC15.as_mem_op(), R8.as_reg_op()));
 }
 
-/// https://www.felixcloutier.com/x86/cmp
 op_table!(cmp [
+  /// https://www.felixcloutier.com/x86/cmp
   ((08, OT::REG, OT::IMM_INT, OT::NONE, OT::NONE), (0x0080, 0x07, OpEncoding::MI, gen_multi_op as *const OpEncoder)),
   ((16, OT::REG, OT::IMM_INT, OT::NONE, OT::NONE), (0x0081, 0x07, OpEncoding::MI, gen_multi_op as *const OpEncoder)),
   ((32, OT::REG, OT::IMM_INT, OT::NONE, OT::NONE), (0x0081, 0x07, OpEncoding::MI, gen_multi_op as *const OpEncoder)),
@@ -689,7 +767,21 @@ op_table!(cmp [
   ((16, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x003B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((32, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x003B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
   ((64, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x003B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  ((32, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x003B, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+  // https://www.felixcloutier.com/x86/comisd
+  ((64, OT::XMM, OT::XMM, OT::NONE, OT::NONE), (0x660F2F, 0x00, OpEncoding::VEX_RM_2 { w: true }, gen_multi_op as *const OpEncoder)),
+  ((64, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0x660F2F, 0x00, OpEncoding::VEX_RM_2 { w: true }, gen_multi_op as *const OpEncoder)),
+  // https://www.felixcloutier.com/x86/comiss
+  ((32, OT::XMM, OT::XMM, OT::NONE, OT::NONE), (0x0F2F, 0x00, OpEncoding::VEX_RM_2 { w: false }, gen_multi_op as *const OpEncoder)),
+  ((32, OT::XMM, OT::MEM, OT::NONE, OT::NONE), (0x0F2F, 0x00, OpEncoding::VEX_RM_2 { w: false }, gen_multi_op as *const OpEncoder)),
 ]);
+
+#[test]
+fn test_fp_cmp() {
+  assert_eq!("vcomisd xmm12,xmm12", test_enc_tres(&cmp, 64, VEC12.as_reg_op(), VEC12.as_reg_op(), Arg::None));
+  assert_eq!("vcomiss xmm12,xmm12", test_enc_tres(&cmp, 32, VEC12.as_reg_op(), VEC12.as_reg_op(), Arg::None));
+  assert_eq!("vcomiss xmm12,xmm12", test_enc_tres(&cmp, 32, VEC2.as_reg_op(), Arg::RSP_REL(8), Arg::None));
+}
 
 /// https://www.felixcloutier.com/x86/add
 op_table!(add [

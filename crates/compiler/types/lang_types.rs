@@ -133,7 +133,7 @@ impl TypeV {
   }
 
   pub fn is_poison(&self) -> bool {
-    self.prim_data().is_some_and(|t| t.base_ty == PrimitiveBaseType::Poison) || self.base_ty() == BaseType::Poison
+    self.prim_data().base_ty == PrimitiveBaseType::Poison
   }
 
   pub fn is_undefined(&self) -> bool {
@@ -163,11 +163,15 @@ impl TypeV {
     }
   }
 
-  pub fn prim_data(&self) -> Option<PrimitiveType> {
-    match self.base_ty() {
-      BaseType::Primitive => Some(unsafe { std::mem::transmute(self.data()) }),
-      BaseType::Complex | BaseType::Heap => Some(prim_ty_addr),
-      _ => None,
+  pub fn prim_data(&self) -> PrimitiveType {
+    if self.ptr_depth() > 0 {
+      prim_ty_addr
+    } else {
+      match self.base_ty() {
+        BaseType::Primitive => unsafe { std::mem::transmute(self.data()) },
+        BaseType::Complex | BaseType::Heap => prim_ty_addr,
+        _ => prim_ty_undefined,
+      }
     }
   }
 
@@ -181,7 +185,7 @@ impl TypeV {
   pub fn type_data(&self) -> TypeData {
     match self.base_ty() {
       BaseType::Undefined => TypeData::Undefined,
-      BaseType::Primitive => TypeData::Primitive(self.prim_data().unwrap()),
+      BaseType::Primitive => TypeData::Primitive(self.prim_data()),
       BaseType::Complex => TypeData::Complex(self.cmplx_data().unwrap()),
       BaseType::Generic => TypeData::Generic(self.generic_id().unwrap() as usize),
       BaseType::Heap => TypeData::Heap(self.heap_id().unwrap()),
@@ -194,21 +198,18 @@ impl TypeV {
 
   pub fn numeric(&self) -> Numeric {
     match self.prim_data() {
-      Some(prim) => match prim {
-        prim_ty_u8 => u8_numeric,
-        prim_ty_u16 => u16_numeric,
-        prim_ty_u64 => u64_numeric,
-        prim_ty_u32 => u32_numeric,
-        prim_ty_u128 => u128_numeric,
-        prim_ty_s8 => s8_numeric,
-        prim_ty_s16 => s16_numeric,
-        prim_ty_s32 => s32_numeric,
-        prim_ty_s64 => s64_numeric,
-        prim_ty_s128 => s128_numeric,
-        prim_ty_f32 => f32_numeric,
-        prim_ty_f64 => f64_numeric,
-        _ => Default::default(),
-      },
+      prim_ty_u8 => u8_numeric,
+      prim_ty_u16 => u16_numeric,
+      prim_ty_u64 => u64_numeric,
+      prim_ty_u32 => u32_numeric,
+      prim_ty_u128 => u128_numeric,
+      prim_ty_s8 => s8_numeric,
+      prim_ty_s16 => s16_numeric,
+      prim_ty_s32 => s32_numeric,
+      prim_ty_s64 => s64_numeric,
+      prim_ty_s128 => s128_numeric,
+      prim_ty_f32 => f32_numeric,
+      prim_ty_f64 => f64_numeric,
       _ => {
         if self.is_array() || self.ptr_depth() > 0 {
           u64_numeric
@@ -283,7 +284,7 @@ impl Display for TypeV {
 
     match self.base_ty() {
       BaseType::Primitive => {
-        Display::fmt(&self.prim_data().unwrap(), f)?;
+        Display::fmt(&self.prim_data(), f)?;
       }
       BaseType::Complex => {
         f.write_str("Π")?;

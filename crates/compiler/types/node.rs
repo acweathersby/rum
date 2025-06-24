@@ -155,17 +155,21 @@ pub enum VarId {
   MatchBooleanSelector,
   LoopActivation,
   Return,
+  MemReturn,
   VoidReturn,
   GlobalContext,
   Generic,
   MemCTX,
   Heap,
   Freed,
-  Param(usize),
-  CallRef,
+  Param(usize, IString),
+  Arg(usize, IString),
+  CallId(IString),
   BaseType,
   ElementCount,
   AggSize,
+  CallTarget(CMPLXId),
+  IntrinsicCallTarget(IString),
 }
 
 impl Display for VarId {
@@ -204,9 +208,13 @@ impl Debug for OpId {
 impl Display for OpId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.is_valid() {
-      f.write_fmt(format_args!("{:>3}", format!("`{}", self.0)))
+      f.write_fmt(format_args!("{:>6}", format!("`{}", self.0)))
     } else {
-      f.write_fmt(format_args!("`xxx"))
+      if self.0 == u32::MAX {
+        f.write_fmt(format_args!("    xxx"))
+      } else {
+        f.write_fmt(format_args!("[*{:>3}]", self.meta()))
+      }
     }
   }
 }
@@ -217,8 +225,16 @@ impl Default for OpId {
 }
 
 impl OpId {
+  pub(crate) fn create_meta(data: u32) -> Self {
+    debug_assert!(data < 0x1000_0000);
+    Self(0x1000_0000 | data)
+  }
+
+  pub(crate) fn meta(&self) -> usize {
+    (self.0 & !0x1000_0000) as usize
+  }
   pub(crate) fn is_invalid(&self) -> bool {
-    self.0 == u32::MAX
+    self.0 & 0x1000_0000 > 0
   }
   pub(crate) fn is_valid(&self) -> bool {
     !self.is_invalid()
@@ -236,6 +252,7 @@ pub enum PortType {
   #[default]
   Merge,
   Passthrough,
+  CallTarget,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -254,16 +271,16 @@ pub(crate) enum Operation {
   MemCheck(OpId),
 
   Phi(u32, Vec<OpId>),
+  Gamma(u32, OpId),
   Op {
-    op_id:    Op,
+    op_name:  Op,
     operands: [OpId; 3],
   },
   Const(ConstVal),
   Data,
   Name(IString),
-  CallTarget(CMPLXId),
-  IntrinsicCallTarget(IString),
   Allocate,
+  Dead,
 }
 
 impl Debug for Operation {
@@ -275,19 +292,19 @@ impl Debug for Operation {
 impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Operation::CallTarget(target) => f.write_fmt(format_args!("Target [cmplx {:?}]", target)),
-      Operation::IntrinsicCallTarget(target) => f.write_fmt(format_args!("Target [{}]", target)),
       Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
-      Operation::Op { op_id: op_name, operands } => {
+      Operation::Op { op_name, operands } => {
         f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
       }
+      Operation::Gamma(node, op) => f.write_fmt(format_args!("Gamma  {op:?} @ {node}",)),
       Operation::Phi(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
       Operation::Data => f.write_fmt(format_args!("DATA",)),
       Operation::Allocate => f.write_fmt(format_args!("allocate",)),
+      Operation::Dead => f.write_fmt(format_args!("XXXX",)),
     }
   }
 }
@@ -302,7 +319,7 @@ pub(crate) struct RootNode {
   pub(crate) op_types:      Vec<TypeV>,
   pub(crate) type_vars:     Vec<TypeVar>,
   pub(crate) heap_id:       Vec<usize>,
-  pub(crate) source_tokens: Vec<rum_lang::parser::script_parser::ast::ASTNode<Token>>,
+  pub(crate) source_tokens: Vec<Token>,
 }
 
 impl Default for RootNode {
@@ -352,31 +369,32 @@ pub fn get_signature(node: &RootNode) -> Signature {
 }
 
 pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
-  todo!("Change from inputs outputs to slots.");
-  let RootNode { nodes, operands, op_types: types, type_vars, heap_id, source_tokens, .. } = node;
+  dbg!(node);
+  let RootNode { nodes, op_types: types, type_vars, .. } = node;
   let call_node = &nodes[internal_node_index];
-  /*
-  let caller_sig = Signature::new(
+
+  Signature::new(
     &call_node
-      .inputs
+      .ports
       .iter()
-      .filter_map(|(op, i)| match i {
-        VarId::Param(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty)),
-        VarId::Name(_) => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty)),
+      .filter(|p| p.ty == PortType::In)
+      .filter_map(|p| match p.id {
+        VarId::Param(..) => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
+        VarId::Name(_) => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
         _ => None,
       })
       .collect::<Vec<_>>(),
     &call_node
-      .outputs
+      .ports
       .iter()
-      .filter_map(|(op, i)| match i {
-        VarId::VoidReturn => Some((*op, TypeV::NoUse)),
-        VarId::Return => Some((*op, type_vars[types[op.usize()].generic_id().unwrap()].ty)),
+      .filter(|p| p.ty == PortType::Out)
+      .filter_map(|p| match p.id {
+        VarId::VoidReturn => Some((p.slot, TypeV::NoUse)),
+        VarId::Return => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
         _ => None,
       })
       .collect::<Vec<_>>(),
-  );
-  caller_sig */
+  )
 }
 
 impl Debug for RootNode {
@@ -417,23 +435,27 @@ impl Debug for RootNode {
     }
 
     for ((index, op), ty) in self.operands.iter().enumerate().zip(self.op_types.iter()) {
-      let ty = self.get_base_ty(*ty);
-      let mut tok = self.source_tokens[index].token();
-      let source = tok.to_string();
-      let heap = self.heap_id.get(index).cloned().unwrap_or_default();
-      let parent_node = self.operand_node[index];
+      if matches!(op, Operation::Dead) {
+        f.write_str("\n  DEAD xxxx")?;
+      } else {
+        let ty = self.get_base_ty(*ty);
+        let mut tok = self.source_tokens[index].clone();
+        let source = tok.to_string();
+        let heap = self.heap_id.get(index).cloned().unwrap_or_default();
+        let parent_node = self.operand_node[index];
 
-      //let heap = if heap < self.type_vars.len() { self.type_vars[heap].ty.to_string() } else { "???".to_string() };
+        //let heap = if heap < self.type_vars.len() { self.type_vars[heap].ty.to_string() } else { "???".to_string() };
 
-      let heap = if heap == usize::MAX { "".to_string() } else { heap.to_string() };
+        let heap = if heap == usize::MAX { "".to_string() } else { heap.to_string() };
 
-      f.write_fmt(format_args!(
-        "\n  {index:3} @ [{parent_node:3}] <= {:36} @{heap:10} :{:32} {}: {:}",
-        format!("{op}"),
-        format!("{ty}"),
-        tok.get_line(),
-        source
-      ))?
+        f.write_fmt(format_args!(
+          "\n  {index:3} @ [{parent_node:3}] <= {:36} @{heap:10} :{:32} {}: {:}",
+          format!("{op}"),
+          format!("{ty}"),
+          tok.get_line(),
+          source
+        ))?
+      }
     }
     f.write_str("\nnodes:")?;
 

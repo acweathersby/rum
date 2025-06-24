@@ -3,11 +3,13 @@ use rum_lang::parser::{self, script_parser::entry_Value};
 
 use super::RootNode;
 use crate::{
+  finalizer::finalize,
   ir_compiler::compile_struct,
   optimizer::optimize,
   solver::{solve, GlobalConstraint},
   types::*,
 };
+
 use std::{
   collections::{binary_heap::Iter, BTreeMap, HashMap, VecDeque},
   sync::{Arc, Mutex, MutexGuard},
@@ -125,6 +127,10 @@ impl<'a> SolveDatabase<'a> {
     solve(&mut solver_db, global_constraints, false);
 
     solver_db
+  }
+
+  pub fn finalize(&self) -> SolveDatabase {
+    finalize(self)
   }
 
   pub fn optimize(&self, optimize_level: OptimizeLevel) -> SolveDatabase {

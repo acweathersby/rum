@@ -206,21 +206,30 @@ pub(crate) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
       encode_mod_rm_reg(props, op2, op1);
     }
     EVEX_MR { w } => {
-      let op_code = encode_evex(op_code, op1, op2, op3, bit_size, props, w);
+      let op_code: u32 = encode_evex(op_code, op1, op2, op3, bit_size, props, w);
       insert_op_code_bytes(props.bin, op_code);
       encode_mod_rm_reg(props, op1, op2);
     }
-    VEX_RM => {
-      let op_code = encode_vex(op_code, op2, op1, bit_size, props);
+    VEX_RM_3 => {
+      let op_code = encode_vex(op_code, op1, op2, op3, bit_size, props, false);
+      insert_op_code_bytes(props.bin, op_code);
+      encode_mod_rm_reg(props, op3, op1);
+    }
+    VEX_RM_2 { w } => {
+      let op_code = encode_vex(op_code, op2, Arg::None, op1, bit_size, props, w);
       insert_op_code_bytes(props.bin, op_code);
       encode_mod_rm_reg(props, op2, op1);
     }
-    VEX_MR => {
-      let op_code = encode_vex(op_code, op1, op2, bit_size, props);
+    VEX_MR_2 { w } => {
+      let op_code = encode_vex(op_code, op1, Arg::None, op2, bit_size, props, w);
       insert_op_code_bytes(props.bin, op_code);
       encode_mod_rm_reg(props, op1, op2);
     }
-
+    VEX_MR_3 => {
+      let op_code = encode_vex(op_code, op3, op2, op1, bit_size, props, false);
+      insert_op_code_bytes(props.bin, op_code);
+      encode_mod_rm_reg(props, op1, op3);
+    }
     MR => {
       encode_rex(props, bit_size, op1, op2);
       insert_op_code_bytes(props.bin, op_code);
@@ -279,35 +288,39 @@ pub(crate) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
 fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
   const SIB_SCALE_OFFSET: u8 = 6;
   const SIB_INDEX_OFFSET: u8 = 3;
-  const SIB_INDEX_NOT_USED: u8 = 0b100 << SIB_INDEX_OFFSET;
+  const SIB_INDEX_NOT_USED: u8 = 0b100;
   const SIB_NO_INDEX_SCALE: u8 = 0b00 << SIB_SCALE_OFFSET;
   const DISPLACEMENT_INDEX: u8 = 0b101;
-  const SIB_RIP_BASE: u8 = 0b101;
+  const MOD_IMM_8_FOLLOWS: u8 = 0b10;
+  const MOD_IMM_32_FOLLOWS: u8 = 0b01;
 
-  let mut mem_encoding = 0b00;
+  let mut mod_encoding = 0b00;
   let mut displace_val = 0 as i64;
   let rm_index = r_m.reg_index();
 
   let sib = match rm_index {
     4 => match r_m {
       Arg::Mem(RSP) | Arg::Mem(R12) => {
-        // use sib index to access the RSP register
+        // use sib index to access the RSP/R12 register
         (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
       }
 
       Arg::RSP_REL(val) | Arg::MemRel(_, val) => {
         if (val & !0xFF) > 0 {
-          mem_encoding = 0b10
+          mod_encoding = MOD_IMM_8_FOLLOWS;
         } else {
-          mem_encoding = 0b01;
+          mod_encoding = MOD_IMM_32_FOLLOWS;
         }
 
         displace_val = val;
 
-        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
+        let sib_scale = 0b00 << 6;
+        let sib_index = SIB_INDEX_NOT_USED << 3;
+        let sib_base = ((RSP.0 & 7) as u8) << 0;
+
+        sib_scale | sib_index | sib_base
       }
       _ => 0,
-      arg => unreachable!("{arg:?}"),
     },
     5 => match r_m {
       Arg::RIP_REL(val) | Arg::MemRel(_, val) => {
@@ -316,21 +329,17 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
       }
       Arg::Mem(RBP) | Arg::Mem(R13) => {
         // use sib index to access the RSP register
-        mem_encoding = 0b01;
+        mod_encoding = 0b01;
         (SIB_NO_INDEX_SCALE | (0b000 << 3) | 0b000) as u8
       }
-      Arg::Reg(RBP) | Arg::Reg(R13) => {
-        // use sib index to access the RBP register
-        0
-      }
-      _ => unreachable!(),
+      _ => 0,
     },
     _ => match r_m {
-      Arg::MemRel(_, val) => {
+      Arg::MemRel(re, val) => {
         if (val & !0xFF) > 0 {
-          mem_encoding = 0b10
+          mod_encoding = 0b10
         } else {
-          mem_encoding = 0b01;
+          mod_encoding = 0b01;
         }
 
         displace_val = val;
@@ -342,7 +351,7 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
   };
 
   let mod_bits = match r_m {
-    Arg::RSP_REL(_) | Arg::RIP_REL(_) | Arg::Mem(_) | Arg::MemRel(..) => mem_encoding,
+    Arg::RSP_REL(_) | Arg::RIP_REL(_) | Arg::Mem(_) | Arg::MemRel(..) => mod_encoding,
     Arg::Reg(_) => 0b11,
     op => panic!("Invalid r_m operand {op:?}"),
   };
@@ -448,7 +457,7 @@ fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: u64, props:
   op_ext[0] as u32
 }
 
-pub(crate) fn encode_vex(op_code: u32, op2: Arg, op1: Arg, bit_size: u64, props: &mut InstructionProps<'_>) -> u32 {
+pub(crate) fn encode_vex(op_code: u32, op1: Arg, op2: Arg, op3: Arg, bit_size: u64, props: &mut InstructionProps<'_>, w: bool) -> u32 {
   // two byte form
   let op_ext: [u8; 4] = unsafe { std::mem::transmute(op_code) };
   let mut pp = 0;
@@ -456,9 +465,9 @@ pub(crate) fn encode_vex(op_code: u32, op2: Arg, op1: Arg, bit_size: u64, props:
 
   for i in (0..4).rev() {
     match op_ext[i] {
-      0x66 => pp = 1,
-      0xF3 => pp = 2,
-      0xF2 => pp = 3,
+      0x66 => pp = 0b01,
+      0xF3 => pp = 0b10,
+      0xF2 => pp = 0b11,
       0x0F => {
         match op_ext[i - 1] {
           0x3A => m_mmmmm = 3,
@@ -473,29 +482,33 @@ pub(crate) fn encode_vex(op_code: u32, op2: Arg, op1: Arg, bit_size: u64, props:
 
   let op_code = op_ext[0] as u32;
 
-  let use_three = op2.is_upper_8_reg();
-  let rex_r = ((op1.is_upper_8_reg() as u8) ^ 1) << 7;
-  let rex_x = 0;
-  let rex_b = ((op2.is_upper_8_reg() as u8) ^ 1) << 6;
-  let rex_w = 0;
+  let use_three = true;
+  let rex_r = ((op3.is_upper_8_reg() as u8) ^ 1) << 7;
+  let rex_x = 1 << 6;
+  let rex_b = ((op1.is_upper_8_reg() as u8) ^ 1) << 5;
 
-  let vvvv = 0xF << 3;
+  let rex_w = (w as u8) << 7;
+
+  let mut vvvv = 0xF << 3;
+
+  if op2.is_reg() {
+    vvvv = (!op2.reg_index()) << 3
+  }
 
   let vec_len = match bit_size {
-    b256 => 0b100u8,
-    b128 => 0b000u8,
-    _ => 0,
+    256 => 0b100u8,
+    _ => 0b000u8,
   };
 
   if use_three {
     insert_op_code_bytes(props.bin, 0xC4);
-    let mut byte1 = rex_r | rex_x | rex_b | m_mmmmm;
-    let mut byte2 = rex_w | vvvv | vec_len | pp;
+    let byte1 = rex_r | rex_x | rex_b | m_mmmmm;
+    let byte2 = rex_w | vvvv | vec_len | pp;
     insert_op_code_bytes(props.bin, byte1 as u32);
     insert_op_code_bytes(props.bin, byte2 as u32);
   } else {
     insert_op_code_bytes(props.bin, 0xC5);
-    let mut byte1 = rex_r | vvvv | vec_len | pp;
+    let byte1 = rex_r | vvvv | vec_len | pp;
     insert_op_code_bytes(props.bin, byte1 as u32);
   }
   op_code

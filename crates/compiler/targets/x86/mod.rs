@@ -1,4 +1,7 @@
-use crate::{basic_block_compiler, types::SolveDatabase};
+use crate::{
+  basic_block_compiler::{self, x86_spec_fn},
+  types::SolveDatabase,
+};
 
 //pub(crate) mod x86_compiler;
 //pub use x86_compiler::compile_from_ssa_fn;
@@ -31,13 +34,13 @@ pub fn compile(db: &SolveDatabase) {
 
     print_instructions(binary.as_slice(), 0);
 
-    let register_assigned_basic_blocks = basic_block_compiler::encode_function(super_node, db);
+    let register_assigned_basic_blocks = basic_block_compiler::encode_function(super_node, db, &x86_spec_fn);
 
     let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
 
-    let func = x86_eval::x86Function::new(&binary, 0);
+    let func = x86_eval::x86Function::new(&binary);
 
-    assert_eq!(func.access_as_call::<fn(u32, u32) -> u32>()(10, 3), 6, "Failed to parse correctly");
+    assert_eq!(func.access_as_call::<fn(f32, f32) -> &'static (f32, u32)>()(10f32, 3f32), &(2f32, 3u32), "Failed to parse correctly");
 
     // TEMP: Run the binary.
 
@@ -71,7 +74,7 @@ mod test {
 pub fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {
   use iced_x86::{Decoder, DecoderOptions, Formatter, MasmFormatter};
 
-  let mut decoder = Decoder::with_ip(64, &binary, offset, DecoderOptions::NONE);
+  let decoder = Decoder::with_ip(64, &binary, offset, DecoderOptions::NONE);
   let mut formatter = MasmFormatter::new();
 
   formatter.options_mut().set_digit_separator("_");
@@ -96,7 +99,7 @@ pub fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {
 fn print_instruction(binary: &[u8]) -> String {
   use iced_x86::{Decoder, DecoderOptions, Formatter, MasmFormatter};
 
-  let mut decoder = Decoder::with_ip(64, &binary, 0, DecoderOptions::NONE);
+  let decoder = Decoder::with_ip(64, &binary, 0, DecoderOptions::NONE);
   let mut formatter = MasmFormatter::new();
 
   formatter.options_mut().set_digit_separator("_");

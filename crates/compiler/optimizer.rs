@@ -26,7 +26,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
 
         let mut new_nodes = vec![];
 
-        let outputs = node.nodes[0].get_outputs();
+        //let outputs = node.nodes[0].get_outputs();
         let inputs = node.nodes[0].get_inputs();
 
         for (i, port) in node.nodes[0].ports.iter().enumerate() {
@@ -74,7 +74,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
                 let (_, mem_op) = mem_context;
 
                 let new_mem_op = OpId(node.operands.len() as u32);
-                node.operands.push(crate::types::Operation::Op { op_id: Op::FREE, operands: [op, mem_op, Default::default()] });
+                node.operands.push(crate::types::Operation::Op { op_name: Op::FREE, operands: [op, mem_op, Default::default()] });
                 node.op_types.push(TypeV::util());
                 node.source_tokens.push(Default::default());
                 node.heap_id.push(node.heap_id[op.usize()]);

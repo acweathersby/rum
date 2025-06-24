@@ -3,8 +3,14 @@ use crate::targets::reg::Reg;
 #[derive(Debug, Hash, Clone, Copy)]
 pub(crate) enum OpEncoding {
   Zero,
-  VEX_MR,
-  VEX_RM,
+  VEX_MR_3,
+  VEX_RM_3,
+  VEX_RM_2 {
+    w: bool,
+  },
+  VEX_MR_2 {
+    w: bool,
+  },
   EVEX_RM {
     w: u8,
   },
@@ -182,21 +188,21 @@ impl Reg {
     (self.flags() & (VECTOR_REGISTER | MASK_REGISTER)) == 0
   }
 
-  pub(crate) fn is_vector(&self) -> bool {
+  pub(crate) fn is_xmm(&self) -> bool {
     (self.flags() & (VECTOR_REGISTER)) > 0
+  }
+
+  pub(crate) fn is_mask(&self) -> bool {
+    (self.flags() & (MASK_REGISTER)) > 0
   }
 
   /// The register is one of R8-R15
   pub(crate) fn is_ext_8_reg(&self) -> bool {
-    self.real_index() >= 8
+    (self.real_index() & 0b1111_1000) >= 8
   }
 
   pub(crate) fn is_upper_16_reg(&self) -> bool {
     self.real_index() >= 16
-  }
-
-  pub fn as_addr_op(&self) -> Arg {
-    Arg::Mem(*self)
   }
 
   /// Returns an Arg::Reg op for the given register. Panics if the Graphid is
@@ -216,7 +222,9 @@ impl Reg {
 pub(crate) enum OperandType {
   REG,
   MEM,
+  XMM,
   IMM_INT,
+  MSK,
   NONE,
 }
 
@@ -236,7 +244,15 @@ impl Arg {
   pub(crate) fn ty(&self) -> OperandType {
     match self {
       Arg::Imm_Int(..) => OperandType::IMM_INT,
-      Arg::Reg(..) => OperandType::REG,
+      Arg::Reg(reg) => {
+        if reg.is_xmm() {
+          OperandType::XMM
+        } else if reg.is_mask() {
+          OperandType::MSK
+        } else {
+          OperandType::REG
+        }
+      }
       Arg::Mem(..) => OperandType::MEM,
       Arg::MemRel(..) => OperandType::MEM,
       Arg::RSP_REL(..) => OperandType::MEM,
@@ -263,7 +279,7 @@ impl Arg {
     match self {
       Arg::RIP_REL(_) => 0x5,
       Arg::RSP_REL(_) => 0x4,
-      Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, ..) => (reg.0 & 7) as u8,
+      Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, ..) => reg.real_index() as u8,
       Self::OpExt(index) => *index,
 
       arg => unreachable!("{arg:?}"),
@@ -277,30 +293,16 @@ impl Arg {
     }
   }
 
-  pub(crate) fn is_vector_register(&self) -> bool {
-    match self {
-      Arg::Reg(reg) => (reg.flags() & VECTOR_REGISTER) > 0,
-      _ => false,
-    }
-  }
-
-  pub(crate) fn is_general_purpose(&self) -> bool {
-    match self {
-      Arg::Reg(reg) => (reg.flags() & (VECTOR_REGISTER | MASK_REGISTER)) == 0,
-      _ => false,
-    }
-  }
-
   pub(crate) fn is_upper_8_reg(&self) -> bool {
     match self {
-      Arg::Reg(reg) | Arg::Mem(reg) => reg.is_ext_8_reg(),
+      Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, _) => reg.is_ext_8_reg(),
       _ => false,
     }
   }
 
   pub(crate) fn is_upper_16_reg(&self) -> bool {
     match self {
-      Arg::Reg(reg) | Arg::Mem(reg) => reg.is_upper_16_reg(),
+      Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, _) => reg.is_upper_16_reg(),
       _ => false,
     }
   }

@@ -58,7 +58,7 @@ pub fn get_routine_type_or_none(routine: NodeHandle, arg_index: CallArgType) -> 
   let routine = routine.get().unwrap();
   match arg_index {
     CallArgType::Index(param_id) => {
-      let param_index = VarId::Param(param_id as usize);
+      let param_index = VarId::Param(param_id as usize, Default::default());
       if let Some((op, _)) = routine.nodes[0].get_inputs().iter().find(|i| {
         param_index == i.1
           || match routine.operands[i.0.usize()] {
@@ -268,15 +268,11 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
             let host_node = NodeHandle::from((*host_node_id, &*db));
 
             if let Some(host_node_ref) = host_node.get() {
-              let RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, .. } = host_node_ref;
+              let RootNode { nodes, .. } = host_node_ref;
               let call_node = &nodes[*call_node_id];
 
-              let inputs = call_node.get_inputs();
-              let Some((function_name, call_op)) = inputs.iter().find_map(|(op_id, var_id)| match var_id {
-                VarId::CallRef => match &operands[op_id.usize()] {
-                  Operation::Name(name) => Some((*name, op_id)),
-                  _ => None,
-                },
+              let Some((index, function_name, call_op)) = call_node.ports.iter().enumerate().find_map(|(index, NodePort { ty, slot, id })| match id {
+                VarId::CallId(name) => Some((index, *name, *slot)),
                 _ => None,
               }) else {
                 panic!("Call node defined without CallRef name");
@@ -373,9 +369,9 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 }
 
                 if callee_node.get_type() == INTRINSIC_ROUTINE_ID {
-                  host_node.get_mut().unwrap().operands[call_op.usize()] = Operation::IntrinsicCallTarget(function_name);
+                  host_node.get_mut().unwrap().nodes[*call_node_id].ports[index].id = VarId::IntrinsicCallTarget(function_name);
                 } else {
-                  host_node.get_mut().unwrap().operands[call_op.usize()] = Operation::CallTarget(callee_node_id);
+                  host_node.get_mut().unwrap().nodes[*call_node_id].ports[index].id = VarId::CallTarget(callee_node_id);
                 }
 
                 match (caller_constraints.is_empty(), callee_constraints.is_empty()) {
@@ -549,7 +545,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             for (i, op) in operands.iter().enumerate() {
               match op {
-                Operation::Op { op_id: a @ Op::SINK, operands: [op1, op2, _] } => {
+                Operation::Op { op_name: a @ Op::SINK, operands: [op1, op2, _] } => {
                   if op1.is_valid() {
                     let var_src = get_root_var_mut(types[op1.usize()].generic_id().unwrap(), type_vars);
                     let var_dst = get_root_var_mut(types[op2.usize()].generic_id().unwrap(), type_vars);
@@ -557,7 +553,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                     var_dst.num |= var_src.num;
                   }
                 }
-                Operation::Op { op_id: Op::SEED, operands: [op1, op2, _] } => {}
+                Operation::Op { op_name: Op::SEED, operands: [op1, op2, _] } => {}
                 Operation::Heap(VarId::Heap) => {}
                 _ => {}
               }
@@ -644,7 +640,7 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
 
   for (index, op) in operands.iter().enumerate().rev() {
     match op {
-      Operation::Op { op_id: op_name, operands } => match *op_name {
+      Operation::Op { op_name, operands } => match *op_name {
         Op::ADD => {
           let op_ty = &type_vars[types[index].generic_id().unwrap()].ty;
 

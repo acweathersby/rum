@@ -1,23 +1,20 @@
+DD :: [
+  test: f32,
+  rainbow: u32
+]
+
+mango :: (d: u32) : u32 { 
+  d + 2000
+}
+
 #test
-trivial :: (a: u32, d: u32) : u32 { 
+trivial :: (u:f32) : DD {
+  d = [ test = 200.0, rainbow = if u < 30 { (3 + mango(234)) } else { 200 + 200 * 4 } ]
 
-  // if d > 0 {
+  r = 33022
 
-    //if d == 1 { 
-    //  a = a + 4
-    //}
-    
-   // s a = a + 5
+  d.rainbow = 392 + d.test
+  d.test = 988 + r
 
-
-   a = if a > 10 { 100 } else { if d > 2 { d = 0 } 200 }
-    
-   
-   if d < 1 { d = 4 } else { d = 80 }
-
-  //   d = d - a
- // } 
-
-  d + a
-  
+  d
 }
