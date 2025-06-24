@@ -3,6 +3,11 @@ DD :: [
   rainbow: u32
 ]
 
+fifi :: (d: u32) : u32 { 
+  d + 2000
+}
+
+
 mango :: (d: u32) : u32 { 
   d + 2000
 }

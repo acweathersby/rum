@@ -1,6 +1,14 @@
+use std::{
+  any::Any,
+  collections::{HashSet, VecDeque},
+};
+
+use x86_binary_writer::BinaryFunction;
+
 use crate::{
   basic_block_compiler::{self, x86_spec_fn},
-  types::SolveDatabase,
+  ir_compiler::{CALL_ID, ROUTINE_ID},
+  types::{NodeHandle, SolveDatabase, TypeVar, VarId},
 };
 
 //pub(crate) mod x86_compiler;
@@ -26,26 +34,47 @@ extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
   unsafe { std::alloc::dealloc(ptr, layout) };
 }
 
-pub fn compile(db: &SolveDatabase) {
-  for node in db.nodes.iter() {
-    let binary = Vec::new();
+pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
+  let mut functions = vec![];
+  let mut queue = VecDeque::from_iter(db.roots.iter().map(|(_, id)| *id));
+  let mut seen = HashSet::new();
 
-    let super_node = node.get_mut().unwrap();
+  while let Some(id) = queue.pop_front() {
+    if seen.insert(id) {
+      let handle: NodeHandle = (id, db).into();
 
-    print_instructions(binary.as_slice(), 0);
+      if handle.get_type() == ROUTINE_ID {
+        let super_node = handle.get_mut().unwrap();
 
-    let register_assigned_basic_blocks = basic_block_compiler::encode_function(super_node, db, &x86_spec_fn);
+        // Collect call targets
+        for node in super_node.nodes.iter() {
+          for id in node.ports.iter().map(|p| p.id) {
+            match id {
+              VarId::CallTarget(tgt) => {
+                queue.push_back(tgt);
+              }
+              _ => {}
+            }
+          }
+        }
 
-    let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
+        // Collect complex node requirements
+        for TypeVar { ty, .. } in super_node.type_vars.iter() {
+          if ty.is_cmplx() {
+            queue.push_back(ty.cmplx_data().unwrap());
+          }
+        }
 
-    let func = x86_eval::x86Function::new(&binary);
+        let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db, &x86_spec_fn);
 
-    assert_eq!(func.access_as_call::<fn(f32, f32) -> &'static (f32, u32)>()(10f32, 3f32), &(2f32, 3u32), "Failed to parse correctly");
+        let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
 
-    // TEMP: Run the binary.
-
-    panic!("Finished: Have binary. Need to wrap in some kind of portable unit to allow progress of compilation and linking.");
+        functions.push(binary);
+      }
+    }
   }
+
+  functions
 }
 
 #[inline]

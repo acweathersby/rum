@@ -14,6 +14,8 @@ pub mod optimizer;
 
 pub mod finalizer;
 
+pub mod linker;
+
 pub mod solver;
 
 pub mod types;

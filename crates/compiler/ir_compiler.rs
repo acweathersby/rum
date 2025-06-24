@@ -73,8 +73,6 @@ pub fn add_module(db: &mut Database, module: &str) {
               }
             }
 
-            dbg!(&node, &constraints);
-
             db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
           }
           routine_definition_Value::Type_Struct(strct) => {
@@ -321,12 +319,9 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
     if out_op.is_valid() {
       let (ctx_op, _) = get_mem_context(&mut bp);
       let ret_op = add_op(&mut bp, Operation::Op { op_name: Op::RET, operands: [out_op, ctx_op, Default::default()] }, ret_ty.clone(), node);
-
-      //bp.super_node.nodes[0].ports.push(NodePort { ty: PortType::Out, slots: vec![ret_op], id: VarId::Return });
       update_var(&mut bp, VarId::Return, ret_op, ret_ty);
 
       add_constraint(&mut bp, NodeConstraint::GenTyToGenTy(ret_ty, out_gen_ty));
-      //add_constraint(&mut bp, NodeConstraint::OpConvertTo { src_op: ret_op, trg_op_index: 1 });
       clone_op_heap(&mut bp, out_op, ret_op);
     }
   }

@@ -369,7 +369,6 @@ pub fn get_signature(node: &RootNode) -> Signature {
 }
 
 pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
-  dbg!(node);
   let RootNode { nodes, op_types: types, type_vars, .. } = node;
   let call_node = &nodes[internal_node_index];
 

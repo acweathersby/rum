@@ -1,7 +1,12 @@
 #![allow(unused_variables, dead_code)]
+use std::{collections::HashMap, io::Write};
+
 use interpreter::interpret;
 use ir_compiler::add_module;
-use rum_compiler::*;
+use rum_compiler::{
+  targets::x86::{print_instructions, x86_binary_writer::BinaryFunction, x86_eval},
+  *,
+};
 use types::{Database, SolveDatabase};
 
 // Stage 0 - Compiles single file and runs all "#test" annotated functions, which should have this signature `#test name => () `
@@ -29,13 +34,42 @@ fn main() {
 
       let sdb_opt = sdb_fin.optimize(types::OptimizeLevel::MemoryOperations_01);
 
-      targets::x86::compile(&sdb_opt);
+      let bin_functs = targets::x86::compile(&sdb_opt);
 
-      for item in sdb_opt.get("#test") {
-        let val = interpret(item, &[], &sdb_opt);
+      // LINKER ====================================================
 
-        println!("{item:?} = {val:?}");
-      }
+      let (entry_offset, binary) = linker::link(bin_functs);
+
+      println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
+      print_instructions(&binary, 0);
+
+      let func = x86_eval::x86Function::new(&binary, entry_offset);
+
+      let out = func.access_as_call::<fn(f32) -> &'static (f32, u32)>()(2f32);
+
+      dbg!((out as *const _ as *const usize));
+
+      assert_eq!(out, &(2f32, 3u32), "Failed to parse correctly");
+
+      // TEMP: Run the binary.
+
+      panic!("Finished: Have binary. Need to wrap in some kind of portable unit to allow progress of compilation and linking.");
+
+      todo!("Link bin functs");
+
+    /*      let func = x86_eval::x86Function::new(&binary);
+
+    assert_eq!(func.access_as_call::<fn(f32, f32) -> &'static (f32, u32)>()(10f32, 3f32), &(2f32, 3u32), "Failed to parse correctly");
+
+    // TEMP: Run the binary.
+
+    panic!("Finished: Have binary. Need to wrap in some kind of portable unit to allow progress of compilation and linking.");
+
+    for item in sdb_opt.get("#test") {
+      let val = interpret(item, &[], &sdb_opt);
+
+      println!("{item:?} = {val:?}");
+    } */
     } else {
       panic!("Could not read {}", args[0])
     }

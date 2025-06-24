@@ -35,23 +35,30 @@ fn test_syscall() {
 }
 
 /// https://www.felixcloutier.com/x86/call
-op_table!(call [
-((32, OT::IMM_INT, OT::NONE, OT::NONE, OT::NONE), (0x00E8, 0x00, OpEncoding::D, gen_unary_op as *const OpEncoder)),
-//
+op_table!(call_abs [
 ((64, OT::MEM, OT::NONE, OT::NONE, OT::NONE), (0x00FF, 0x02, OpEncoding::M, gen_unary_op as *const OpEncoder)),
 //
 ((64, OT::REG, OT::NONE, OT::NONE, OT::NONE), (0x00FF, 0x02, OpEncoding::M, gen_unary_op as *const OpEncoder)),
 ]);
 
 #[test]
-fn test_call() {
-  assert_eq!("call 37", test_enc_uno(&call, 32, Arg::Imm_Int(32)));
-  assert_eq!("call r8", test_enc_uno(&call, 64, R8.as_reg_op()));
-  assert_eq!("call qword ptr [r8]", test_enc_uno(&call, 64, R8.as_mem_op()));
-  assert_eq!("call qword ptr [rip+23]", test_enc_uno(&call, 64, Arg::RIP_REL(23)));
-  assert_eq!("call qword ptr [rsp+23]", test_enc_uno(&call, 64, Arg::RSP_REL(23)));
-  assert_eq!("call qword ptr [rbx]", test_enc_uno(&call, 64, RBX.as_mem_op()));
-  assert_eq!("call qword ptr [r13]", test_enc_uno(&call, 64, R13.as_mem_op()));
+fn test_call_abs() {
+  assert_eq!("call qword ptr [r8]", test_enc_uno(&call_abs, 64, R8.as_mem_op()));
+  assert_eq!("call qword ptr [rip+23]", test_enc_uno(&call_abs, 64, Arg::RIP_REL(23)));
+  assert_eq!("call qword ptr [rsp+23]", test_enc_uno(&call_abs, 64, Arg::RSP_REL(23)));
+  assert_eq!("call qword ptr [rbx]", test_enc_uno(&call_abs, 64, RBX.as_mem_op()));
+  assert_eq!("call qword ptr [r13]", test_enc_uno(&call_abs, 64, R13.as_mem_op()));
+}
+
+/// https://www.felixcloutier.com/x86/call
+op_table!(call_rel [
+  //((16, OT::IMM_INT, OT::NONE, OT::NONE, OT::NONE), (0x00E8, 0x00, OpEncoding::D, gen_unary_op as *const OpEncoder)),
+  ((32, OT::IMM_INT, OT::NONE, OT::NONE, OT::NONE), (0x00E8, 0x00, OpEncoding::D, gen_unary_op as *const OpEncoder)),
+]);
+
+#[test]
+fn test_call_rel() {
+  assert_eq!("call 37", test_enc_uno(&call_rel, 32, Arg::Imm_Int(32)));
 }
 
 /// https://www.felixcloutier.com/x86/ret

@@ -28,6 +28,7 @@ use crate::{
     RootNode,
     SolveDatabase,
     TypeV,
+    VarId,
   },
 };
 use std::{collections::VecDeque, fmt::Debug};
@@ -50,15 +51,22 @@ impl Default for BlockOrderData {
 
 const TMP_REG: Reg = R15;
 
-enum PatchType {
+pub(crate) enum PatchType {
   Function(CMPLXId),
 }
 
 pub struct BinaryFunction {
+  pub id:                CMPLXId,
   pub data_segment_size: usize,
   pub entry_offset:      usize,
   pub binary:            Vec<u8>,
   pub patch_points:      Vec<(usize, PatchType)>,
+}
+
+impl BinaryFunction {
+  pub fn byte_size(&self) -> usize {
+    self.binary.len()
+  }
 }
 
 pub fn encode_routine(
@@ -100,13 +108,10 @@ pub fn encode_routine(
   let block_ordering = create_block_ordering(blocks);
 
   for order in block_ordering.clone() {
-    dbg!(order);
-
     let next_block_id = block_ordering.get(order.index + 1).map(|b| b.block_id);
     let block = &blocks[order.block_id as usize];
     block_binary_offsets[order.block_id as usize] = instr_bytes.len();
     let mut need_jump_resolution = true;
-    dbg!(block);
 
     for (i, op) in block.ops2.iter().enumerate() {
       let is_last_op = i == block.ops2.len() - 1;
@@ -282,7 +287,7 @@ pub fn encode_routine(
           encode_x86(instr_bytes, &mov, 64, out_reg.as_reg_op(), Arg::Imm_Int(allocator_address as _), Arg::None, Arg::None);
 
           // Make a call to the allocator dispatcher.
-          encode_x86(instr_bytes, &call, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
+          encode_x86(instr_bytes, &call_abs, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
         }
         Op::NPTR => {
           let VarVal::Reg(out_reg_id) = op.out else { unreachable!() };
@@ -566,15 +571,23 @@ pub fn encode_routine(
           let VarVal::Reg(reg) = op.out else { unreachable!() };
 
           let call_reg = REGISTERS[reg as usize];
+          let node = &sn.nodes[sn.operand_node[op.source.usize()]];
 
-          // Get the complex id from node associated with the call.
+          if let Some(cmplx_id) = node.ports.iter().find_map(|p| match p.id {
+            VarId::CallTarget(id) => Some(id),
+            _ => None,
+          }) {
+            // Get the complex id from node associated with the call.
 
-          //patch_points.push(PatchType::Function(()));
+            //encode_binary(instr_bytes, &mov, 64, call_reg.as_reg_op(), Arg::Imm_Int(0));
+            encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
 
-          encode_binary(instr_bytes, &mov, 64, call_reg.as_reg_op(), Arg::Imm_Int(0));
-          encode_unary(instr_bytes, &call, 64, call_reg.as_reg_op());
+            patch_points.push((instr_bytes.len(), PatchType::Function(cmplx_id)));
 
           //print_instructions(&instr_bytes, 0);
+          } else {
+            panic!("Call target does not exist!")
+          }
         }
         Op::LOAD_CONST => {
           let Operation::Const(val) = sn.operands[op.ops[0].usize()] else { unreachable!() };
@@ -660,8 +673,6 @@ pub fn encode_routine(
         encode_binary(instr_bytes, &ret, 32, Arg::None, Arg::None);
       }
     }
-
-    print_instructions(&instr_bytes, 0);
   }
 
   for (instr_offset, data_section_offset) in vec_rip_resolutions {
@@ -681,14 +692,22 @@ pub fn encode_routine(
     unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
   }
 
-  let entry_offset = data_store.len();
+  let instr_offset = data_store.len();
   data_store.append(instr_bytes);
 
-  println!("\n\n\n===================================\n");
+  for (offset, _) in &mut patch_points {
+    *offset += instr_offset
+  }
 
   print_instructions(&data_store, 0);
 
-  BinaryFunction { data_segment_size: entry_offset, entry_offset: entry_offset, binary: data_store, patch_points }
+  BinaryFunction {
+    id: bb_fn.id,
+    data_segment_size: instr_offset,
+    entry_offset: instr_offset,
+    binary: data_store,
+    patch_points,
+  }
 }
 
 pub fn create_block_ordering(blocks: &[BasicBlock]) -> Vec<BlockOrderData> {

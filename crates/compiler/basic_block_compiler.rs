@@ -1,4 +1,3 @@
-use core_lang::parser::ast::Port;
 use rum_common::get_aligned_value;
 
 use crate::{
@@ -8,7 +7,7 @@ use crate::{
     reg::Reg,
     x86::{x86_binary_writer::create_block_ordering, x86_types::*},
   },
-  types::{prim_ty_addr, BaseType, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{prim_ty_addr, CMPLXId, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 use std::{
   collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
@@ -204,10 +203,10 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
   const def_const_hndl: &'static ConstHandler = &default_const_handler;
 
   match op_id {
-    Op::AGG_DECL | Op::ARR_DECL => Some(&SpecializationData { arg_usage: [NA(ARG1), NA(ARG2), NA(ARG3)], out_assign_req: Forced(RET1), ..DEFAULT_SPEC }),
+    Op::AGG_DECL | Op::ARR_DECL => Some(&SpecializationData { arg_usage: [NA(ARG1), NA(ARG2), NA(ARG3)], out_assign_req: Forced(RET1, true), ..DEFAULT_SPEC }),
     Op::FREE => Some(&SpecializationData {
       arg_usage:                    [RA(ARG1), NA(ARG2), NA(ARG3)],
-      out_assign_req:               Forced(RET1),
+      out_assign_req:               NoOutput,
       arithimatic_const_commutable: false,
       op_inheritance:               None,
       constant_handler:             def_const_hndl,
@@ -293,7 +292,7 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
 
     Op::CALL => Some(&SpecializationData {
       arg_usage:                    [NoUse, NoUse, NoUse],
-      out_assign_req:               Forced(RET1),
+      out_assign_req:               Forced(RET1, true),
       arithimatic_const_commutable: false,
       op_inheritance:               None,
       constant_handler:             def_const_hndl,
@@ -328,7 +327,7 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
     }),
     Op::RET => Some(&SpecializationData {
       arg_usage:                    [Used, Used, NoUse],
-      out_assign_req:               Forced(RET1),
+      out_assign_req:               Forced(RET1, false),
       arithimatic_const_commutable: false,
       op_inheritance:               Some(0),
       constant_handler:             def_const_hndl,
@@ -352,7 +351,7 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
       } else {
         Some(&SpecializationData {
           arg_usage:                    [RA(RET1), Used, NoUse],
-          out_assign_req:               Forced(RET1),
+          out_assign_req:               Forced(RET1, true),
           arithimatic_const_commutable: false,
           op_inheritance:               None,
           constant_handler:             def_const_hndl,
@@ -414,14 +413,17 @@ enum ArgRegType {
 #[derive(Clone, Copy)]
 enum AssignRequirement {
   /// The output of the operand WILL be assigned to the given register.
-  /// Steps must be taken to insure this does not clobber any existing values.
-  Forced(u8),
+  /// If true, a temporary register will be used to prevent clobbering of existing assignments.
+  Forced(u8, bool),
   NoRequirement,
   NoOutput,
+  /// Indicates the output should use the same register as is assigned to the argument
+  /// op with the respective index.
   Inherit(u8),
 }
 
 pub(crate) struct BasicBlockFunction {
+  pub id:                CMPLXId,
   pub stash_size:        usize,
   pub blocks:            Vec<BasicBlock>,
   pub makes_system_call: bool,
@@ -430,15 +432,14 @@ pub(crate) struct BasicBlockFunction {
 
 /// Returns a vector of register assigned basic blocks.
 pub(crate) fn encode_function(
+  id: CMPLXId,
   sn: &mut RootNode,
   db: &SolveDatabase,
   spec_lu_fn: &'static impl Fn(Op, PrimitiveType, [OpId; 3]) -> Option<&'static SpecializationData>,
 ) -> BasicBlockFunction {
   let mut op_data = vec![OpData::new(); sn.operands.len()];
 
-  dbg!(&sn);
-
-  let mut bb_funct = BasicBlockFunction { blocks: vec![], stash_size: 0, makes_ffi_call: false, makes_system_call: false };
+  let mut bb_funct = BasicBlockFunction { id, blocks: vec![], stash_size: 0, makes_ffi_call: false, makes_system_call: false };
 
   // Assign variable ids, starting with all output and input ops
   let mut op_to_var_map = vec![u32::MAX; sn.operands.len()];
@@ -597,13 +598,19 @@ pub(crate) fn encode_function(
               }
 
               match (out, out_assign_req) {
-                (VarVal::Var(op_var_id), AssignRequirement::Forced(reg)) => {
-                  /*
-                  //forced_vars.push(op_var_id as _);
-                  //vars[op_var_id as usize].register = VarVal::Reg(reg);
-                   */
-
-                  {
+                (VarVal::Var(op_var_id), AssignRequirement::Forced(reg, reassign)) => {
+                  if !reassign {
+                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                      op_ty: *op_type,
+                      out,
+                      args: out_ops,
+                      source: target_op,
+                      ops: operands,
+                      prim_ty: get_op_type(sn, target_op).prim_data(),
+                    });
+                    forced_vars.push(op_var_id as _);
+                    vars[op_var_id as usize].register = VarVal::Reg(reg);
+                  } else {
                     let require_var_id = vars.len();
                     forced_vars.push(require_var_id);
 
@@ -693,10 +700,10 @@ pub(crate) fn encode_function(
     }
   }
 
-  let mut in_out_sets = vec![(BTreeSet::<u32>::new(), BTreeSet::<u32>::new()); bb_funct.blocks.len()];
-
   // ===============================================================
   // Calculate the input and output sets of all blocks
+
+  let mut in_out_sets = vec![(BTreeSet::<u32>::new(), BTreeSet::<u32>::new()); bb_funct.blocks.len()];
   let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
 
   while let Some(block_id) = queue.pop_front() {
@@ -737,13 +744,6 @@ pub(crate) fn encode_function(
         queue.push_back(*predecessor);
       }
     }
-  }
-
-  for ordering in create_block_ordering(&bb_funct.blocks) {
-    let block_id = ordering.block_id as usize;
-    let (ins, outs) = &in_out_sets[block_id];
-    let block = &bb_funct.blocks[block_id];
-    println!("{block:?}\n ins: {ins:?} \n outs: {outs:?}\n\n");
   }
 
   // ===============================================================
@@ -998,11 +998,9 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
       let op = ops[index];
 
       if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem()) {
-        println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-
         let phi_ty_var = get_or_create_op_var(sn, vars, op_var_map, port.slot);
         let op_ty_var = get_or_create_op_var(sn, vars, op_var_map, op);
-        dbg!((op, op_ty_var, phi_ty_var));
+
         block.ops2.push(BBop {
           op_ty:   Op::TempMetaPhi,
           out:     VarVal::Var(phi_ty_var),

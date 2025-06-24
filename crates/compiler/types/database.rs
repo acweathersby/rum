@@ -103,6 +103,7 @@ impl<'a> SolveDatabase<'a> {
     match &node.entry {
       entry_Value::Annotation(annotation) => {
         let annotation_str = annotation.val.intern();
+
         for (name, node, node_constraints) in db.get_ref().nodes.iter().filter(|node| node.1.get().unwrap().annotations.iter().any(|s| *s == annotation_str)) {
           let node = node.duplicate();
 
@@ -112,7 +113,8 @@ impl<'a> SolveDatabase<'a> {
             global_constraints.push(GlobalConstraint::ResolveObjectConstraints { node_id, constraints: node_constraints.clone() });
           }
 
-          global_constraints.push(GlobalConstraint::ExtractGlobals { node_id });
+          solver_db.add_root(RootType::Any, node_id);
+          //global_constraints.push(GlobalConstraint::ExtractGlobals { node_id });
         }
       }
       entry_Value::NamedEntries(names) => {
@@ -164,7 +166,7 @@ impl<'a> SolveDatabase<'a> {
   }
 
   pub fn get_root(&self, root_ty: RootType) -> Option<CMPLXId> {
-    for ((c_root_ty, root)) in &self.roots {
+    for (c_root_ty, root) in &self.roots {
       if *c_root_ty == root_ty {
         return Some(*root);
       }
@@ -197,7 +199,7 @@ impl<'a> SolveDatabase<'a> {
             return Existing(*root);
           }
         }
-        _ => unreachable!(),
+        _ => {}
       }
     }
 
@@ -208,18 +210,18 @@ impl<'a> SolveDatabase<'a> {
     NotFound
   }
 
-  // Returns a Type bound to a name in the user's binding namespace.
+  /// Returns a Type bound to a name in the user's binding namespace.
   pub fn get_type_by_name_mut(&mut self, name: IString) -> GetResult {
     use GetResult::*;
 
-    for ((root_ty, root)) in &self.roots {
+    for (root_ty, root) in &self.roots {
       match root_ty {
         RootType::ExecutableEntry(root_name) => {
           if *root_name == name {
             return Existing(root.clone());
           }
         }
-        _ => unreachable!(),
+        _ => {}
       }
     }
 
