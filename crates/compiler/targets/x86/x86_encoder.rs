@@ -90,6 +90,7 @@ pub(crate) fn encode_binary<'bin>(
   encode_x86(binary, table, bit_size, op1, op2, Arg::None, Arg::None)
 }
 
+#[track_caller]
 pub(crate) fn encode_x86<'bin>(
   binary: &'bin mut Vec<u8>,
   table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),

@@ -1,8 +1,11 @@
+use std::collections::VecDeque;
+
 use rum_lang::Token;
 
 use crate::{
   interpreter::get_op_type,
-  types::{Op, OpId, Operation, SolveDatabase, SolveState},
+  ir_compiler::{CALL_ID, CLAUSE_SELECTOR_ID, MATCH_ID},
+  types::{Op, OpId, Operation, PortType, SolveDatabase, SolveState},
 };
 
 /// Performs necessary transformations on active nodes, such as inserting convert instructions, etc.
@@ -11,14 +14,63 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
   for node in db.nodes.iter() {
     let node = node.get_mut().unwrap();
 
+    dbg!(&node);
+
     let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
+    let mut used_ops = vec![false; node.operands.len()];
     let mut dissolved_operations = false;
 
     if node.solve_state() == SolveState::Solved {
       // Create or report failed converts.
 
+      let mut op_queue = VecDeque::from_iter(node.nodes[0].ports.iter().filter_map(|n| match n.ty {
+        PortType::Out => Some(n.slot),
+        _ => None,
+      }));
+
+      for node in &node.nodes {
+        if node.type_str == CLAUSE_SELECTOR_ID || node.type_str == CALL_ID {
+          op_queue.extend(node.ports.iter().map(|p| p.slot));
+        }
+      }
+
+      while let Some(op) = op_queue.pop_front() {
+        if !op.is_valid() {
+          continue;
+        }
+
+        if !used_ops[op.usize()] {
+          used_ops[op.usize()] = true;
+        } else {
+          continue;
+        }
+
+        match &node.operands[op.usize()] {
+          Operation::Param(..) | Operation::Const(..) | Operation::Name(..) => {}
+          Operation::Op { op_name, operands } => {
+            for op in operands {
+              op_queue.push_back(*op);
+            }
+          }
+          Operation::Gamma(_, op) => {
+            op_queue.push_back(*op);
+          }
+          Operation::Phi(_, ops) => {
+            for op in ops {
+              op_queue.push_back(*op);
+            }
+          }
+          d => unreachable!("{op:?} {d} \n {node:?}"),
+        }
+      }
+
       for op_index in 0..node.operands.len() {
         let op_id = OpId(op_index as _);
+
+        if !used_ops[op_index] {
+          node.operands[op_index] = Operation::Dead;
+          continue;
+        }
 
         match &node.operands[op_id.usize()] {
           Operation::Op { op_name, operands } => {

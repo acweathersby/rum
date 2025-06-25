@@ -269,7 +269,6 @@ pub(crate) enum Operation {
   Param(VarId, u32),
   Heap(VarId),
   MemCheck(OpId),
-
   Phi(u32, Vec<OpId>),
   Gamma(u32, OpId),
   Op {

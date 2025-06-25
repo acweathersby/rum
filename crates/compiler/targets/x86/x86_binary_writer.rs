@@ -7,7 +7,7 @@ use super::{
   x86_types::{Arg, *},
 };
 use crate::{
-  basic_block_compiler::{BasicBlock, BasicBlockFunction, VarVal, REGISTERS},
+  basic_block_compiler::{BasicBlock, BasicBlockFunction, Probe, VarVal, REGISTERS},
   interpreter::{get_agg_offset, get_op_type, RuntimeSystem},
   targets::{
     reg::Reg,
@@ -127,18 +127,18 @@ pub fn encode_routine(
                 VarVal::Stashed(_) => {
                   todo!("move store to store")
                 }
-                VarVal::Reg(reg) => {
+                VarVal::Reg(reg, _) => {
                   todo!("load from memory")
                 }
                 _ => {}
               },
-              VarVal::Reg(reg) => {
+              VarVal::Reg(reg, _) => {
                 let in_reg = REGISTERS[reg as usize];
                 match op.out {
                   VarVal::Stashed(_) => {
                     todo!("store to stash")
                   }
-                  VarVal::Reg(reg) => {
+                  VarVal::Reg(reg, _) => {
                     let out_reg = REGISTERS[reg as usize];
                     encode_x86(instr_bytes, &mov, byte_size, out_reg.as_reg_op(), in_reg.as_reg_op(), Arg::None, Arg::None);
                   }
@@ -149,7 +149,7 @@ pub fn encode_routine(
                 VarVal::Stashed(_) => {
                   todo!("Store value")
                 }
-                VarVal::Reg(reg) => {
+                VarVal::Reg(reg, _) => {
                   let o_reg = REGISTERS[reg as usize];
                   let Operation::Op { op_name: op_id, operands } = &sn.operands[op.source.usize()] else { unreachable!() };
                   let Operation::Const(val) = &sn.operands[operands[1].usize()] else { panic!("Could not load constant value") };
@@ -169,7 +169,7 @@ pub fn encode_routine(
                 Arg::Imm_Int(val.convert(op_prim_ty).load())
               }
               VarVal::Stashed(offset) => Arg::RSP_REL(offset as _),
-              VarVal::Reg(reg) => REGISTERS[reg as usize].as_reg_op(),
+              VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
               v => unreachable!("{op:?} {v:?}"),
             };
 
@@ -182,7 +182,7 @@ pub fn encode_routine(
                   encode_x86(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_offset as _), TMP_REG.as_reg_op(), Arg::None, Arg::None);
                 }
               }
-              VarVal::Reg(reg) => {
+              VarVal::Reg(reg, _) => {
                 let to_op = REGISTERS[reg as usize].as_reg_op();
                 encode_x86(instr_bytes, &mov, byte_size, to_op, from_op, Arg::None, Arg::None);
               }
@@ -198,7 +198,7 @@ pub fn encode_routine(
           let to_ty = get_op_type(sn, op.source).prim_data();
 
           let from_op = match op.args[0] {
-            VarVal::Reg(reg) => REGISTERS[reg as usize].as_reg_op(),
+            VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
             VarVal::Stashed(offset) => {
               let target_reg = match from_ty {
                 prim_ty_f64 | prim_ty_f32 => Arg::RSP_REL(offset as _),
@@ -213,7 +213,7 @@ pub fn encode_routine(
           };
 
           let to_op = match op.out {
-            VarVal::Reg(reg) => REGISTERS[reg as usize].as_reg_op(),
+            VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
             VarVal::Stashed(offset) => {
               todo!("Handle store");
             }
@@ -267,7 +267,7 @@ pub fn encode_routine(
         Op::AGG_DECL => {
           // Load the size and alignment in to the first and second registers
 
-          let [VarVal::Reg(size_reg_id), VarVal::Reg(align_reg_id), VarVal::Reg(allocator_id)] = op.args else { unreachable!() };
+          let [VarVal::Reg(size_reg_id, _), VarVal::Reg(align_reg_id, _), VarVal::Reg(allocator_id, _)] = op.args else { unreachable!() };
           let size_reg = REGISTERS[size_reg_id as usize];
           let align_reg = REGISTERS[align_reg_id as usize];
           let alloc_id_reg = REGISTERS[allocator_id as usize];
@@ -276,11 +276,13 @@ pub fn encode_routine(
           let mut ctx: RuntimeSystem<'_, '_> = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
           let size = 16; // get_agg_size(node.get().unwrap(), &mut ctx);
 
+          let cw_pack = encode_call_preamble(instr_bytes, op);
+
           encode_x86(instr_bytes, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None, Arg::None);
           encode_x86(instr_bytes, &mov, 8 * 8, align_reg.as_reg_op(), Arg::Imm_Int(8), Arg::None, Arg::None);
           encode_x86(instr_bytes, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None, Arg::None);
 
-          let VarVal::Reg(out_reg_id) = op.out else { unreachable!() };
+          let VarVal::Reg(out_reg_id, _) = op.out else { unreachable!() };
           let out_reg = REGISTERS[out_reg_id as usize];
 
           // Load Rax with the location for the allocator pointer.
@@ -288,9 +290,11 @@ pub fn encode_routine(
 
           // Make a call to the allocator dispatcher.
           encode_x86(instr_bytes, &call_abs, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
+
+          encode_call_postamble(instr_bytes, cw_pack);
         }
         Op::NPTR => {
-          let VarVal::Reg(out_reg_id) = op.out else { unreachable!() };
+          let VarVal::Reg(out_reg_id, _) = op.out else { unreachable!() };
           let own_ptr = REGISTERS[out_reg_id as usize];
 
           // Get ptr offset
@@ -307,7 +311,7 @@ pub fn encode_routine(
             VarVal::Stashed(offset) => {
               todo!("Create pointer val from stashed pointer");
             }
-            VarVal::Reg(reg_id) => {
+            VarVal::Reg(reg_id, _) => {
               let base_ptr = REGISTERS[reg_id as usize];
               if offset > 0 {
                 encode_x86(instr_bytes, &lea, 64, own_ptr.as_reg_op(), Arg::MemRel(base_ptr, offset as _), Arg::None, Arg::None);
@@ -321,7 +325,7 @@ pub fn encode_routine(
         Op::STORE => {
           let byte_size = get_op_type(sn, op.ops[1]).prim_data().byte_size as u64 * 8;
           let val_arg = match op.args[1] {
-            VarVal::Reg(val_reg_id) => REGISTERS[val_reg_id as usize].as_reg_op(),
+            VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
             VarVal::Stashed(val_stash_loc) => {
               encode_x86(instr_bytes, &mov, byte_size, TMP_REG.as_reg_op(), Arg::RSP_REL(val_stash_loc as _), Arg::None, Arg::None);
               TMP_REG.as_reg_op()
@@ -334,7 +338,7 @@ pub fn encode_routine(
           };
 
           match op.args[0] {
-            VarVal::Reg(base_ptr_id) => {
+            VarVal::Reg(base_ptr_id, _) => {
               let base_ptr_reg = REGISTERS[base_ptr_id as usize];
 
               encode_x86(instr_bytes, &mov, byte_size, base_ptr_reg.as_mem_op(), val_arg, Arg::None, Arg::None);
@@ -345,13 +349,13 @@ pub fn encode_routine(
         }
         Op::LOAD => {
           let val_arg = match op.out {
-            VarVal::Reg(val_reg_id) => REGISTERS[val_reg_id as usize].as_reg_op(),
+            VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
             VarVal::Stashed(val_stash_loc) => Arg::RSP_REL(val_stash_loc as _),
             _ => unreachable!(),
           };
 
           match op.args[0] {
-            VarVal::Reg(base_ptr_id) => {
+            VarVal::Reg(base_ptr_id, _) => {
               let base_ptr_reg = REGISTERS[base_ptr_id as usize];
               if val_arg.is_reg() {
                 encode_x86(instr_bytes, &mov, byte_size, val_arg, base_ptr_reg.as_mem_op(), Arg::None, Arg::None);
@@ -401,7 +405,7 @@ pub fn encode_routine(
           if op_prim_ty.base_ty == PrimitiveBaseType::Float {
             if op_prim_ty.ele_count == 1 {
               let left_arg = match op.args[0] {
-                VarVal::Reg(reg) => REGISTERS[reg as usize].as_reg_op(),
+                VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
                 VarVal::Stashed(stashed) => {
                   todo!("Load f32/f64 into SSE/AVX register");
                 }
@@ -409,13 +413,13 @@ pub fn encode_routine(
               };
 
               let right_arg = match op.args[1] {
-                VarVal::Reg(reg) => REGISTERS[reg as usize].as_reg_op(),
+                VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
                 VarVal::Stashed(stash_offset) => Arg::RSP_REL(stash_offset as _),
                 ty => unreachable!("{ty:?} not supported"),
               };
 
               match op.out {
-                VarVal::Reg(reg) => {
+                VarVal::Reg(reg, _) => {
                   let out_arg = REGISTERS[reg as usize].as_reg_op();
                   encode_x86(instr_bytes, &add_fp_scalar, byte_size, out_arg, left_arg, right_arg, Arg::None);
                 }
@@ -439,7 +443,7 @@ pub fn encode_routine(
             let temp_reg = TMP_REG.as_reg_op();
 
             let r_arg = match op.args[1] {
-              VarVal::Reg(r_reg) => REGISTERS[r_reg as usize].as_reg_op(),
+              VarVal::Reg(r_reg, _) => REGISTERS[r_reg as usize].as_reg_op(),
               VarVal::Stashed(right_loc) => {
                 encode_binary(instr_bytes, &mov, byte_size, temp_reg, Arg::RSP_REL(right_loc as _));
                 temp_reg
@@ -452,12 +456,12 @@ pub fn encode_routine(
             };
 
             match op.out {
-              VarVal::Reg(out_reg) => {
+              VarVal::Reg(out_reg, _) => {
                 let out_reg = REGISTERS[out_reg as usize];
 
                 // LEFT ===================
                 match op.args[0] {
-                  VarVal::Reg(left_reg) => {
+                  VarVal::Reg(left_reg, _) => {
                     let left_reg = REGISTERS[left_reg as usize];
                     if out_reg != left_reg {
                       encode_binary(instr_bytes, &mov, byte_size, out_reg.as_reg_op(), left_reg.as_reg_op());
@@ -474,7 +478,7 @@ pub fn encode_routine(
               VarVal::Stashed(out_loc) => {
                 // LEFT ===================
                 match op.args[0] {
-                  VarVal::Reg(left_reg) => {
+                  VarVal::Reg(left_reg, _) => {
                     let left_reg = REGISTERS[left_reg as usize];
                     encode_binary(instr_bytes, &op_table, byte_size, left_reg.as_reg_op(), r_arg);
                     encode_binary(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_loc as _), left_reg.as_reg_op());
@@ -504,13 +508,13 @@ pub fn encode_routine(
         Op::GR | Op::LS | Op::EQ | Op::NE | Op::LE | Op::GE => {
           // LEFT ===================
           let left_op = match op.args[0] {
-            VarVal::Reg(left_reg) => REGISTERS[left_reg as usize].as_reg_op(),
+            VarVal::Reg(left_reg, _) => REGISTERS[left_reg as usize].as_reg_op(),
             VarVal::Stashed(left_loc) => Arg::RSP_REL(left_loc as _),
             _ => unreachable!(),
           };
 
           let right_op = match op.args[1] {
-            VarVal::Reg(left_reg) => REGISTERS[left_reg as usize].as_reg_op(),
+            VarVal::Reg(left_reg, _) => REGISTERS[left_reg as usize].as_reg_op(),
             VarVal::Stashed(left_loc) => Arg::RSP_REL(left_loc as _),
             VarVal::Const => {
               let Operation::Const(val) = &sn.operands[op.ops[1].usize()] else { panic!("Could not load constant value") };
@@ -568,7 +572,7 @@ pub fn encode_routine(
           }
         }
         Op::CALL => {
-          let VarVal::Reg(reg) = op.out else { unreachable!() };
+          let VarVal::Reg(reg, _) = op.out else { unreachable!() };
 
           let call_reg = REGISTERS[reg as usize];
           let node = &sn.nodes[sn.operand_node[op.source.usize()]];
@@ -577,6 +581,7 @@ pub fn encode_routine(
             VarId::CallTarget(id) => Some(id),
             _ => None,
           }) {
+            let cw_pack = encode_call_preamble(instr_bytes, op);
             // Get the complex id from node associated with the call.
 
             //encode_binary(instr_bytes, &mov, 64, call_reg.as_reg_op(), Arg::Imm_Int(0));
@@ -584,6 +589,7 @@ pub fn encode_routine(
 
             patch_points.push((instr_bytes.len(), PatchType::Function(cmplx_id)));
 
+            encode_call_postamble(instr_bytes, cw_pack);
           //print_instructions(&instr_bytes, 0);
           } else {
             panic!("Call target does not exist!")
@@ -609,7 +615,7 @@ pub fn encode_routine(
             }
 
             match op.out {
-              VarVal::Reg(reg) => {
+              VarVal::Reg(reg, _) => {
                 let out_reg = REGISTERS[reg as usize];
                 encode_binary(instr_bytes, &mov_fp_scalar, byte_size as u64 * 8, out_reg.as_reg_op(), Arg::RIP_REL(256));
                 vec_rip_resolutions.push((instr_bytes.len(), aligned_offset));
@@ -618,7 +624,7 @@ pub fn encode_routine(
             }
           } else {
             match op.out {
-              VarVal::Reg(reg) => {
+              VarVal::Reg(reg, _) => {
                 let out_reg = REGISTERS[reg as usize];
 
                 // Can move value directly into memory if the value has 32 significant bits or less.
@@ -707,6 +713,56 @@ pub fn encode_routine(
     entry_offset: instr_offset,
     binary: data_store,
     patch_points,
+  }
+}
+
+struct CallWrapperPack {
+  writes:       Vec<(u64, u64, Reg)>,
+  final_offset: u64,
+}
+
+fn encode_call_preamble(instr_bytes: &mut Vec<u8>, op: &crate::basic_block_compiler::BBop) -> CallWrapperPack {
+  use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
+  let mut writes = vec![];
+  let mut final_offset = 0;
+
+  if let Probe::ActiveRegs(regs) = &op.probe {
+    let mut offset = 0;
+    for v in regs {
+      match v.register {
+        VarVal::Reg(reg, prim_ty) => {
+          let reg = REGISTERS[reg as usize];
+
+          let byte_size = prim_ty.byte_size as u64;
+          let aligned_offset = get_aligned_value(offset, byte_size);
+          writes.push((aligned_offset, byte_size, reg));
+          offset = aligned_offset + byte_size;
+        }
+        _ => unreachable!(),
+      }
+    }
+
+    final_offset = get_aligned_value(offset, 16);
+
+    if writes.len() > 0 {
+      encode_x86(instr_bytes, &sub, 64, RSP.as_reg_op(), Arg::Imm_Int(final_offset as _), Arg::None, Arg::None);
+
+      for (aligned_offset, byte_size, reg) in writes.iter().cloned() {
+        encode_x86(instr_bytes, &mov, byte_size as u64 * 8, Arg::RSP_REL(-(aligned_offset as i64)), reg.as_reg_op(), Arg::None, Arg::None);
+      }
+    }
+  }
+  CallWrapperPack { writes, final_offset }
+}
+
+fn encode_call_postamble(instr_bytes: &mut Vec<u8>, cw_pack: CallWrapperPack) {
+  use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
+  if cw_pack.writes.len() > 0 {
+    for (aligned_offset, byte_size, reg) in cw_pack.writes {
+      encode_x86(instr_bytes, &mov, byte_size as u64 * 8, reg.as_reg_op(), Arg::RSP_REL(-(aligned_offset as i64)), Arg::None, Arg::None);
+    }
+
+    encode_x86(instr_bytes, &add, 64, RSP.as_reg_op(), Arg::Imm_Int(cw_pack.final_offset as _), Arg::None, Arg::None);
   }
 }
 

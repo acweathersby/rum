@@ -45,7 +45,7 @@ fn main() {
 
       let func = x86_eval::x86Function::new(&binary, entry_offset);
 
-      let out = func.access_as_call::<fn(f32) -> &'static (f32, u32)>()(2f32);
+      let out = func.access_as_call::<fn(u32) -> &'static (f32, u32)>()(9);
 
       dbg!((out as *const _ as *const usize));
 

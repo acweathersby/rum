@@ -3,19 +3,18 @@ use std::fmt::Debug;
 use super::OpId;
 
 #[derive(Clone, Copy)]
-pub(crate) struct RegisterSet<'registers, const NUM_OF_REGISTERS: usize, Register: Clone + Copy> {
-  pub(crate) registers: &'registers [Register; NUM_OF_REGISTERS],
-  pub(crate) reserved:  u64,
-  pub(crate) acquired:  u64,
+pub(crate) struct RegisterSet {
+  pub(crate) acquired: u64,
+  pub(crate) size:     u8,
 }
 
-impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + Debug> Debug for RegisterSet<'registers, NUM_OF_REGISTERS, Register> {
+impl Debug for RegisterSet {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_str("Active Registers [")?;
 
-    for (index, reg) in self.registers.iter().enumerate() {
+    for index in 0..64usize {
       if self.register_is_acquired(index) {
-        f.write_fmt(format_args!(" {reg:?}"))?;
+        f.write_fmt(format_args!(" r{index:03}"))?;
       }
     }
 
@@ -25,37 +24,17 @@ impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + De
   }
 }
 
-impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + Debug> RegisterSet<'registers, NUM_OF_REGISTERS, Register> {
-  pub(crate) fn new(registers: &'registers [Register; NUM_OF_REGISTERS], reserved_registers: Option<&[Register]>) -> Self {
-    let mut reserved = 0;
-
-    if let Some(reserved_registers) = reserved_registers {
-      for reserved_reg in reserved_registers {
-        for (index, register) in registers.iter().enumerate() {
-          if register == reserved_reg {
-            reserved |= 1 << (index as u64);
-            break;
-          }
-        }
-      }
-    }
-
-    Self { registers, reserved, acquired: 0 }
+impl RegisterSet {
+  pub(crate) fn new(size: u8) -> Self {
+    Self { acquired: 0, size }
   }
 
   pub(crate) fn join(&self, other: &Self) -> Self {
-    Self { acquired: self.acquired | other.acquired, registers: self.registers, reserved: self.reserved }
-  }
-
-  #[track_caller]
-  pub(crate) fn get_register_from_id(&self, register_id: usize) -> Register {
-    *self.registers.get(register_id).expect("")
+    Self { acquired: self.acquired | other.acquired, size: self.size }
   }
 
   #[track_caller]
   pub(crate) fn release_register(&mut self, register_id: usize) {
-    // debug_assert!(self.register_is_acquired(register_id), "Register {:?} has not be acquired", self.get_register_from_id(register_id));
-
     self.acquired &= !(1 << (63 - register_id));
   }
 
@@ -78,12 +57,16 @@ impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + De
     true
   }
 
+  pub(crate) fn get_active_reg_indices<'a>(&'a self) -> impl Iterator<Item = usize> + 'a {
+    (0..self.size as usize).into_iter().filter(|i| self.register_is_acquired(*i))
+  }
+
   pub(crate) fn acquire_random_register(&mut self) -> Option<usize> {
     let reg_lu = &mut self.acquired;
 
     let base = !(*reg_lu/* | self.reserved */);
 
-    if base.leading_zeros() as usize >= NUM_OF_REGISTERS {
+    if base.leading_zeros() as usize >= self.size as usize {
       return None;
     }
 
@@ -100,7 +83,7 @@ impl<'registers, const NUM_OF_REGISTERS: usize, Register: Eq + Clone + Copy + De
 
     *reg_lu = *reg_lu | 1 << (63 - leading_zeros);
 
-    debug_assert!((leading_zeros as usize) < NUM_OF_REGISTERS);
+    debug_assert!((leading_zeros as usize) < self.size as usize);
 
     Some(leading_zeros as usize)
   }
@@ -112,13 +95,13 @@ pub(crate) mod test_register_set {
 
   use super::RegisterSet;
 
-  type X86registers<'r> = RegisterSet<'r, 6, Reg>;
+  type X86registers = RegisterSet;
 
   #[test]
   fn test_get_free_register() {
     const REGISTERS: [Reg; 6] = [RAX, RDX, RBX, R10, R11, R12];
 
-    let mut register_set = X86registers::new(&REGISTERS, None);
+    let mut register_set = X86registers::new(6);
 
     assert_eq!(register_set.acquire_random_register(), Some(0));
     assert_eq!(register_set.acquire_random_register(), Some(1));

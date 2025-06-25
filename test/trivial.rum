@@ -9,16 +9,16 @@ fifi :: (d: u32) : u32 {
 
 
 mango :: (d: u32) : u32 { 
-  d + 2000
+  fifi(d) + 2000
 }
 
 #test
-trivial :: (u:f32) : DD {
-  d = [ test = 200.0, rainbow = if u < 30 { (3 + mango(234)) } else { 200 + 200 * 4 } ]
+trivial :: (u:u32) : DD {
+  d = [ test = 200.0, rainbow = if u < 10 { mango(u) } else { 200 + 200 * 8 } ]
 
   r = 33022
 
-  d.rainbow = 392 + d.test
+  //d.rainbow = 392 + d.test
   d.test = 988 + r
 
   d

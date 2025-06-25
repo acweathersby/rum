@@ -1,17 +1,36 @@
 use rum_common::get_aligned_value;
 
 use crate::{
+  bitfield,
   interpreter::get_op_type,
   ir_compiler::{CALL_ID, CLAUSE_ID, CLAUSE_SELECTOR_ID, MATCH_ID},
   targets::{
     reg::Reg,
     x86::{x86_binary_writer::create_block_ordering, x86_types::*},
   },
-  types::{prim_ty_addr, CMPLXId, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{
+    prim_ty_addr,
+    prim_ty_u32,
+    CMPLXId,
+    Node,
+    Op,
+    OpId,
+    Operation,
+    PortType,
+    PrimitiveBaseType,
+    PrimitiveType,
+    RegisterSet,
+    RootNode,
+    SolveDatabase,
+    TypeV,
+    VarId,
+  },
 };
 use std::{
   collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
+  default,
   fmt::Debug,
+  ops::ControlFlow,
   u32,
 };
 
@@ -27,11 +46,11 @@ impl OpData {
   }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum VarVal {
   None,
   Var(u32),
-  Reg(u8),
+  Reg(u8, PrimitiveType),
   Const,
   Stashed(u32),
 }
@@ -41,21 +60,21 @@ impl Debug for VarVal {
     match self {
       VarVal::None => f.write_str("----  "),
       VarVal::Const => f.write_str("CONST "),
-      VarVal::Reg(r) => f.write_fmt(format_args!("r{r:02}   ")),
-      VarVal::Var(v) => f.write_fmt(format_args!("v{v:03x}  ")),
-      VarVal::Stashed(v) => f.write_fmt(format_args!("[{v:04x}]")),
+      VarVal::Reg(r, t) => f.write_fmt(format_args!("r{r:02}[{t}] ")),
+      VarVal::Var(v) => f.write_fmt(format_args!("v{v:03}     ")),
+      VarVal::Stashed(v) => f.write_fmt(format_args!("[{v:04}]   ")),
     }
   }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Var {
-  register: VarVal,
+  pub register: VarVal,
   // Prefer to use the register assigned to the given variable_id
-  prefer:   VarVal,
-  prim_ty:  PrimitiveType,
+  pub prefer:   VarVal,
+  pub prim_ty:  PrimitiveType,
   // Masks out these register from use
-  mask:     u64,
+  pub mask:     u64,
 }
 
 impl Var {
@@ -190,6 +209,7 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
         ops: [dep_op_id, OpId::default(), OpId::default()],
         source: Default::default(),
         prim_ty: ty,
+        probe: Probe::None,
       });
 
       vars.push(Var { register: VarVal::None, prefer: VarVal::None, prim_ty: ty, mask: 0 });
@@ -203,9 +223,13 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
   const def_const_hndl: &'static ConstHandler = &default_const_handler;
 
   match op_id {
-    Op::AGG_DECL | Op::ARR_DECL => Some(&SpecializationData { arg_usage: [NA(ARG1), NA(ARG2), NA(ARG3)], out_assign_req: Forced(RET1, true), ..DEFAULT_SPEC }),
+    Op::AGG_DECL | Op::ARR_DECL => Some(&SpecializationData {
+      arg_usage: [NA(ARG1, prim_ty_addr), NA(ARG2, prim_ty_u32), NA(ARG3, prim_ty_u32)],
+      out_assign_req: Forced(5, true),
+      ..DEFAULT_SPEC
+    }),
     Op::FREE => Some(&SpecializationData {
-      arg_usage:                    [RA(ARG1), NA(ARG2), NA(ARG3)],
+      arg_usage:                    [RA(ARG1), NA(ARG2, prim_ty_u32), NA(ARG3, prim_ty_u32)],
       out_assign_req:               NoOutput,
       arithimatic_const_commutable: false,
       op_inheritance:               None,
@@ -220,16 +244,30 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
         constant_handler:             def_const_hndl,
       };
 
-      match ops[1].meta() {
-        0 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[0] as _), NoUse, NoUse], ..base }),
-        1 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[1] as _), NoUse, NoUse], ..base }),
-        2 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[2] as _), NoUse, NoUse], ..base }),
-        3 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[3] as _), NoUse, NoUse], ..base }),
-        4 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[4] as _), NoUse, NoUse], ..base }),
-        5 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[5] as _), NoUse, NoUse], ..base }),
-        6 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[6] as _), NoUse, NoUse], ..base }),
-        7 => Some(&SpecializationData { arg_usage: [RequiredAs(PARAM_REGISTERS[7] as _), NoUse, NoUse], ..base }),
-        _ => None,
+      if ty.base_ty == PrimitiveBaseType::Float {
+        match ops[1].meta() {
+          0 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[0] as _, false), ..base }),
+          1 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[1] as _, false), ..base }),
+          2 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[2] as _, false), ..base }),
+          3 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[3] as _, false), ..base }),
+          4 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[4] as _, false), ..base }),
+          5 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[5] as _, false), ..base }),
+          6 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[6] as _, false), ..base }),
+          7 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[7] as _, false), ..base }),
+          _ => None,
+        }
+      } else {
+        match ops[1].meta() {
+          0 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[0] as _, false), ..base }),
+          1 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[1] as _, false), ..base }),
+          2 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[2] as _, false), ..base }),
+          3 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[3] as _, false), ..base }),
+          4 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[4] as _, false), ..base }),
+          5 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[5] as _, false), ..base }),
+          6 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[6] as _, false), ..base }),
+          7 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[7] as _, false), ..base }),
+          _ => None,
+        }
       }
     }
     Op::GR | Op::GE | Op::LS | Op::LE | Op::NE | Op::EQ => {
@@ -247,6 +285,7 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
             ops:     [OpId::default(); 3],
             source:  op,
             prim_ty: get_op_type(sn, op).prim_data(),
+            probe:   Probe::None,
           });
 
           vars.push(Var { register: VarVal::None, prefer: VarVal::None, prim_ty, mask: 0 });
@@ -362,7 +401,15 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
   }
 }
 
-type X86registers<'r> = RegisterSet<'r, 44, Reg>;
+#[derive(Debug, Clone)]
+pub(crate) enum Probe {
+  None,
+  Pending(u32),
+  /// Registers that are active
+  ActiveRegs(Vec<Var>),
+}
+
+type X86registers = RegisterSet;
 pub(crate) struct BBop {
   pub op_ty:   Op,
   pub out:     VarVal,
@@ -370,13 +417,14 @@ pub(crate) struct BBop {
   pub ops:     [OpId; 3],
   pub source:  OpId,
   pub prim_ty: PrimitiveType,
+  pub probe:   Probe,
 }
 
 impl Debug for BBop {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let BBop { op_ty, out: id, args: operands, source, prim_ty: ty_data, ops } = self;
+    let BBop { op_ty, out: id, args: operands, source, prim_ty: ty_data, probe, .. } = self;
     f.write_fmt(format_args!(
-      "{:<8} {id:?} <= {} {:6} {ty_data}",
+      "{:<8} {id:?} <= {} {:6} {ty_data} {probe:?}",
       op_ty.to_string(),
       operands.iter().map(|s| { format!("{s:?}") }).collect::<Vec<_>>().join(" "),
       source.to_string()
@@ -405,7 +453,7 @@ enum ArgRegType {
   /// This instruction needs free access to this register.
   /// Any existing allocation to this register should be stashed or otherwise saved
   /// before access is granted. The value of the operand itself is ignored.
-  NeedAccessTo(u8),
+  NeedAccessTo(u8, PrimitiveType),
   /// A special setup for handling odd cases such as needing to create temp v-register
   Custom(&'static dyn Fn(&RootNode, &mut BasicBlock, &mut Vec<Var>, VarVal, OpId) -> VarVal),
 }
@@ -467,233 +515,238 @@ pub(crate) fn encode_function(
     let op_prim_ty = get_op_type(&sn, target_op).prim_data();
     if data.block >= 0 {
       // -- Filter out memory ordering operations.
-      if !get_op_type(sn, target_op).is_mem() {
-        bb_funct.blocks[data.block as usize].ops.push(op_index);
 
-        match &sn.operands[op_index] {
-          Operation::Gamma(_, inner_op) => {
-            let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *inner_op);
-            let out_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-            bb_funct.blocks[data.block as usize].ops2.push(BBop {
-              op_ty:   Op::Meta,
-              out:     VarVal::Var(out_var_id),
-              args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
-              ops:     [OpId::default(); 3],
-              source:  target_op,
-              prim_ty: op_prim_ty,
-            });
-          }
-          Operation::Param(_, index) => {
-            let inner_var_id = create_var(&mut vars, get_op_type(sn, target_op));
-            let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+      bb_funct.blocks[data.block as usize].ops.push(op_index);
 
-            bb_funct.blocks[data.block as usize].ops2.push(BBop {
-              op_ty:   Op::PARAM,
-              out:     VarVal::Var(outer_var_id),
-              args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
-              ops:     [OpId::default(); 3],
-              source:  target_op,
-              prim_ty: op_prim_ty,
-            });
-            vars[outer_var_id as usize].prefer = VarVal::Var(inner_var_id as u32);
-            vars[inner_var_id as usize].register = VarVal::Reg(get_param_registers(*index as usize, op_prim_ty) as _);
-          }
-          Operation::Op { op_name: op_type, operands } => {
-            if let Some(SpecializationData {
-              out_assign_req,
-              arg_usage,
-              op_inheritance,
-              arithimatic_const_commutable: arithmetic_const_commutable,
-              constant_handler,
-            }) = spec_lu_fn(*op_type, op_prim_ty, *operands).copied()
-            {
-              // Temporary
-              if *op_type == Op::AGG_DECL {
-                bb_funct.makes_ffi_call = true;
-              }
+      match &sn.operands[op_index] {
+        Operation::Gamma(_, inner_op) => {
+          let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *inner_op);
+          let out_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+          bb_funct.blocks[data.block as usize].ops2.push(BBop {
+            op_ty:   Op::Meta,
+            out:     VarVal::Var(out_var_id),
+            args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
+            ops:     [OpId::default(); 3],
+            source:  target_op,
+            prim_ty: op_prim_ty,
+            probe:   Probe::None,
+          });
+        }
+        Operation::Param(_, index) => {
+          //  let inner_var_id = create_var(&mut vars, get_op_type(sn, target_op));
+          let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
 
-              let mut out_ops = [VarVal::None; 3];
-              let first_operand_is_constant = operands[0].is_valid() && matches!(sn.operands[operands[0].usize()], Operation::Const(..));
-              let second_operand_is_constant = operands[1].is_valid() && matches!(sn.operands[operands[1].usize()], Operation::Const(..));
+          let input_reg = VarVal::Reg(get_param_registers(*index as usize, op_prim_ty) as _, op_prim_ty);
 
-              if first_operand_is_constant && second_operand_is_constant {
-                panic!("Cannot resolve double operands: {:?}", sn.operands[op_index]);
-              }
+          bb_funct.blocks[data.block as usize].ops2.push(BBop {
+            op_ty:   Op::PARAM,
+            out:     VarVal::Var(outer_var_id),
+            args:    [input_reg, VarVal::None, VarVal::None],
+            ops:     [OpId::default(); 3],
+            source:  target_op,
+            prim_ty: op_prim_ty,
+            probe:   Probe::None,
+          });
 
-              let operands = if first_operand_is_constant && arithmetic_const_commutable {
-                // Swap first and second.
-                [operands[1], operands[0], operands[2]]
+          vars[outer_var_id as usize].prefer = input_reg;
+
+          //vars[inner_var_id as usize].register = VarVal::Reg(get_param_registers(*index as usize, op_prim_ty) as _);
+        }
+        Operation::Op { op_name: op_type, operands } => {
+          if let Some(SpecializationData {
+            out_assign_req,
+            arg_usage,
+            op_inheritance,
+            arithimatic_const_commutable: arithmetic_const_commutable,
+            constant_handler,
+          }) = spec_lu_fn(*op_type, op_prim_ty, *operands).copied()
+          {
+            // Temporary
+            if *op_type == Op::AGG_DECL {
+              bb_funct.makes_ffi_call = true;
+            }
+
+            let probe = if *op_type == Op::CALL || *op_type == Op::AGG_DECL { Probe::Pending(create_var(&mut vars, TypeV::NoUse)) } else { Probe::None };
+
+            let mut out_ops = [VarVal::None; 3];
+            let first_operand_is_constant = operands[0].is_valid() && matches!(sn.operands[operands[0].usize()], Operation::Const(..));
+            let second_operand_is_constant = operands[1].is_valid() && matches!(sn.operands[operands[1].usize()], Operation::Const(..));
+
+            if first_operand_is_constant && second_operand_is_constant {
+              panic!("Cannot resolve double operands: {:?}", sn.operands[op_index]);
+            }
+
+            let operands = if first_operand_is_constant && arithmetic_const_commutable {
+              // Swap first and second.
+              [operands[1], operands[0], operands[2]]
+            } else {
+              *operands
+            };
+
+            for ((arg_index, dep_op_id), mapping) in operands.iter().enumerate().zip(arg_usage) {
+              let is_const = dep_op_id.is_valid() && matches!(sn.operands[dep_op_id.usize()], Operation::Const(..));
+              let arg_prim_ty = get_op_type(&sn, *dep_op_id).prim_data();
+
+              if is_const {
+                out_ops[arg_index] = constant_handler(sn, data.block as _, &mut bb_funct, &mut vars, arg_index, *dep_op_id);
               } else {
-                *operands
-              };
+                let operand_var_id = if operands[arg_index].is_valid() { op_to_var_map[operands[arg_index].usize()] } else { u32::MAX };
 
-              for ((arg_index, dep_op_id), mapping) in operands.iter().enumerate().zip(arg_usage) {
-                let is_const = dep_op_id.is_valid() && matches!(sn.operands[dep_op_id.usize()], Operation::Const(..));
-                let arg_prim_ty = get_op_type(&sn, *dep_op_id).prim_data();
-
-                if is_const {
-                  out_ops[arg_index] = constant_handler(sn, data.block as _, &mut bb_funct, &mut vars, arg_index, *dep_op_id);
-                } else {
-                  let operand_var_id = if operands[arg_index].is_valid() { op_to_var_map[operands[arg_index].usize()] } else { u32::MAX };
-
-                  if operand_var_id != u32::MAX {
-                    out_ops[arg_index] = VarVal::Var(operand_var_id);
-                  }
-
-                  match mapping {
-                    ArgRegType::NeedAccessTo(reg) => {
-                      let require_var_id = vars.len();
-
-                      forced_vars.push(require_var_id);
-
-                      vars.push(Var {
-                        register: VarVal::Reg(reg),
-                        prefer:   VarVal::None,
-                        prim_ty:  prim_ty_addr,
-                        mask:     FFI_CALLER_SAVE_MASK,
-                      });
-
-                      out_ops[arg_index] = VarVal::Var(require_var_id as _);
-                    }
-                    ArgRegType::RequiredAs(reg) if dep_op_id.is_valid() => {
-                      let require_var_id = vars.len();
-                      let out = VarVal::Var(require_var_id as _);
-
-                      forced_vars.push(require_var_id);
-
-                      bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                        op_ty:   Op::SEED,
-                        out:     out,
-                        args:    [VarVal::Var(operand_var_id), VarVal::None, VarVal::None],
-                        ops:     [OpId::default(); 3],
-                        source:  *dep_op_id,
-                        prim_ty: arg_prim_ty,
-                      });
-
-                      vars.push(Var { register: VarVal::Reg(reg), prefer: VarVal::None, prim_ty: arg_prim_ty, mask: 0 });
-
-                      out_ops[arg_index] = out;
-                    }
-                    ArgRegType::NoUse => {
-                      out_ops[arg_index] = VarVal::None;
-                    }
-                    ArgRegType::Custom(custom_fn) => {
-                      out_ops[arg_index] = custom_fn(sn, &mut bb_funct.blocks[data.block as usize], &mut vars, out_ops[arg_index], *dep_op_id);
-                    }
-                    _ => {}
-                  }
+                if operand_var_id != u32::MAX {
+                  out_ops[arg_index] = VarVal::Var(operand_var_id);
                 }
-              }
 
-              let out = if matches!(out_assign_req, AssignRequirement::NoOutput) {
-                VarVal::None
-              } else {
-                VarVal::Var(get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op))
-              };
-
-              if let Some(index) = op_inheritance {
-                debug_assert!(index <= 2);
-                let var = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, operands[index as usize]);
-                vars[var as usize].prefer = out;
-              }
-
-              match (out, out_assign_req) {
-                (VarVal::Var(op_var_id), AssignRequirement::Forced(reg, reassign)) => {
-                  if !reassign {
-                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                      op_ty: *op_type,
-                      out,
-                      args: out_ops,
-                      source: target_op,
-                      ops: operands,
-                      prim_ty: get_op_type(sn, target_op).prim_data(),
-                    });
-                    forced_vars.push(op_var_id as _);
-                    vars[op_var_id as usize].register = VarVal::Reg(reg);
-                  } else {
+                match mapping {
+                  ArgRegType::NeedAccessTo(reg, prim_ty) => out_ops[arg_index] = VarVal::Reg(reg, prim_ty),
+                  ArgRegType::RequiredAs(reg) if dep_op_id.is_valid() => {
                     let require_var_id = vars.len();
+                    let out = VarVal::Var(require_var_id as _);
+
                     forced_vars.push(require_var_id);
 
-                    vars.push(Var {
-                      register: VarVal::Reg(reg),
-                      prefer:   VarVal::None,
-                      prim_ty:  get_op_type(sn, target_op).prim_data(),
-                      mask:     0,
+                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                      op_ty:   Op::SEED,
+                      out:     out,
+                      args:    [VarVal::Var(operand_var_id), VarVal::None, VarVal::None],
+                      ops:     [OpId::default(); 3],
+                      source:  *dep_op_id,
+                      prim_ty: arg_prim_ty,
+                      probe:   Probe::None,
                     });
 
-                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                      op_ty:   *op_type,
-                      out:     VarVal::Var(require_var_id as _),
-                      args:    out_ops,
-                      source:  target_op,
-                      ops:     operands,
-                      prim_ty: get_op_type(sn, target_op).prim_data(),
-                    });
+                    vars.push(Var { register: VarVal::Reg(reg, arg_prim_ty), prefer: VarVal::None, prim_ty: arg_prim_ty, mask: 0 });
 
-                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                      op_ty: Op::Meta,
-                      out,
-                      args: [VarVal::Var(require_var_id as _), VarVal::None, VarVal::None],
-                      source: target_op,
-                      ops: Default::default(),
-                      prim_ty: get_op_type(sn, target_op).prim_data(),
-                    });
+                    out_ops[arg_index] = VarVal::Reg(reg, arg_prim_ty);
                   }
-                }
-                (VarVal::Var(op_var_id), AssignRequirement::Inherit(index)) => match out_ops[index as usize] {
-                  v @ VarVal::Var(..) => {
-                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                      op_ty: *op_type,
-                      out,
-                      args: out_ops,
-                      source: target_op,
-                      ops: operands,
-                      prim_ty: get_op_type(sn, target_op).prim_data(),
-                    });
-                    vars[op_var_id as usize].prefer = v
+                  ArgRegType::NoUse => {
+                    out_ops[arg_index] = VarVal::None;
                   }
-                  _ => {
-                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                      op_ty: *op_type,
-                      out,
-                      args: out_ops,
-                      source: target_op,
-                      ops: operands,
-                      prim_ty: get_op_type(sn, target_op).prim_data(),
-                    });
+                  ArgRegType::Custom(custom_fn) => {
+                    out_ops[arg_index] = custom_fn(sn, &mut bb_funct.blocks[data.block as usize], &mut vars, out_ops[arg_index], *dep_op_id);
                   }
-                },
-                _ => {
-                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                    op_ty: *op_type,
-                    out,
-                    args: out_ops,
-                    source: target_op,
-                    ops: operands,
-                    prim_ty: get_op_type(sn, target_op).prim_data(),
-                  });
+                  _ => {}
                 }
               }
             }
+
+            let out = match out_assign_req {
+              AssignRequirement::NoOutput => {
+                bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                  op_ty: *op_type,
+                  out: VarVal::None,
+                  args: out_ops,
+                  source: target_op,
+                  ops: operands,
+                  prim_ty: op_prim_ty,
+                  probe,
+                });
+                VarVal::None
+              }
+              AssignRequirement::Forced(reg, reassign) => {
+                let require_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+                let out = VarVal::Var(require_var_id);
+                forced_vars.push(require_var_id as _);
+
+                if !reassign {
+                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                    op_ty: *op_type,
+                    out: VarVal::Reg(reg, op_prim_ty),
+                    args: out_ops,
+                    source: target_op,
+                    ops: operands,
+                    prim_ty: op_prim_ty,
+                    probe,
+                  });
+
+                  out
+                } else {
+                  vars.push(Var { register: VarVal::Reg(reg, op_prim_ty), prefer: VarVal::None, prim_ty: op_prim_ty, mask: 0 });
+
+                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                    op_ty: *op_type,
+                    out: VarVal::Reg(reg, op_prim_ty),
+                    args: out_ops,
+                    source: target_op,
+                    ops: operands,
+                    prim_ty: op_prim_ty,
+                    probe,
+                  });
+
+                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                    op_ty: Op::Meta,
+                    out,
+                    args: [VarVal::Reg(reg, op_prim_ty), VarVal::None, VarVal::None],
+                    source: target_op,
+                    ops: Default::default(),
+                    prim_ty: op_prim_ty,
+                    probe: Probe::None,
+                  });
+
+                  out
+                }
+              }
+              AssignRequirement::Inherit(index) => {
+                let op_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+                let out = VarVal::Var(op_var_id);
+
+                bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                  op_ty: *op_type,
+                  out,
+                  args: out_ops,
+                  source: target_op,
+                  ops: operands,
+                  prim_ty: op_prim_ty,
+                  probe,
+                });
+
+                if let v @ VarVal::Var(..) = out_ops[index as usize] {
+                  vars[op_var_id as usize].prefer = v;
+                }
+
+                out
+              }
+              _ => {
+                let op_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+                let out = VarVal::Var(op_var_id);
+
+                bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                  op_ty: *op_type,
+                  out,
+                  args: out_ops,
+                  source: target_op,
+                  ops: operands,
+                  prim_ty: op_prim_ty,
+                  probe,
+                });
+
+                out
+              }
+            };
+
+            if let Some(index) = op_inheritance {
+              debug_assert!(index <= 2);
+              let var = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, operands[index as usize]);
+              vars[var as usize].prefer = out;
+            }
           }
-          _ => {}
         }
+        _ => {}
       }
     } else if data.block == -100 {
       // Param, add to root block
       match &sn.operands[op_index] {
         Operation::Param(_, index) => {
           bb_funct.blocks[0 as usize].ops2.push(BBop {
-            op_ty:  Op::PARAM,
-            out:    VarVal::Var(op_to_var_map[op_index]),
-            args:   [VarVal::None; 3],
-            source: target_op,
-            ops:    [OpId::default(); 3],
-
+            op_ty:   Op::PARAM,
+            out:     VarVal::Var(op_to_var_map[op_index]),
+            args:    [VarVal::None; 3],
+            source:  target_op,
+            ops:     [OpId::default(); 3],
             prim_ty: get_op_type(sn, target_op).prim_data(),
+            probe:   Probe::None,
           });
 
-          vars[op_to_var_map[op_index] as usize].register = VarVal::Reg(PARAM_REGISTERS[*index as usize] as _);
+          vars[op_to_var_map[op_index] as usize].register = VarVal::Reg(PARAM_REGISTERS[*index as usize] as _, get_op_type(sn, target_op).prim_data());
         }
         _ => unreachable!(),
       }
@@ -703,18 +756,34 @@ pub(crate) fn encode_function(
   // ===============================================================
   // Calculate the input and output sets of all blocks
 
-  let mut in_out_sets = vec![(BTreeSet::<u32>::new(), BTreeSet::<u32>::new()); bb_funct.blocks.len()];
+  #[derive(Debug, Default, Clone)]
+  struct InOuts {
+    ins:  BTreeSet<u32>,
+    outs: BTreeSet<u32>,
+  }
+
+  let mut bf = bitfield::BitFieldArena::new(bb_funct.blocks.len() * 2 + 1, vars.len());
+  let mut in_out_sets = vec![InOuts::default(); bb_funct.blocks.len()];
   let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
 
+  let bf_working_set_id = bf.len - 1;
+
   while let Some(block_id) = queue.pop_front() {
-    let (ins, outs) = &in_out_sets[block_id as usize].clone();
+    let InOuts { ins, outs } = &mut in_out_sets[block_id as usize];
+
+    let block_ins_id = block_id << 1;
+    let block_outs_id = (block_id << 1) + 1;
+
+    bf.mov(bf_working_set_id, block_outs_id);
+
     let mut new_ins = outs.clone();
 
     for op in bb_funct.blocks[block_id as usize].ops2.iter().rev() {
       match op {
-        BBop { out: id, args: operands, source, .. } => {
+        BBop { out: id, args: operands, source, probe, .. } => {
           match id {
             VarVal::Var(id) => {
+              bf.unset_bit(bf_working_set_id, *id as _);
               new_ins.remove(id);
             }
             _ => {}
@@ -727,6 +796,8 @@ pub(crate) fn encode_function(
                   continue;
                 }
                 debug_assert!(*var_id != u32::MAX, "{source} => ops:{:?} \n {:?}", operands, sn.operands[source.usize()]);
+
+                bf.set_bit(bf_working_set_id, *var_id as _);
                 new_ins.insert(*var_id);
               }
               _ => {}
@@ -736,11 +807,18 @@ pub(crate) fn encode_function(
       }
     }
 
-    if &new_ins != ins {
-      in_out_sets[block_id as usize].0 = new_ins.clone();
+    if &new_ins != ins || bf.mov(block_ins_id, bf_working_set_id) {
+      let clone = new_ins.clone();
+      //*ins = clone.clone();
+
+      *ins = clone.clone();
 
       for predecessor in &bb_funct.blocks[block_id as usize].predecessors {
-        in_out_sets[*predecessor as usize].1.extend(new_ins.iter());
+        in_out_sets[*predecessor as usize].outs.extend(clone.iter());
+
+        let predecessor_outs_index = (*predecessor << 1) + 1;
+        bf.or(predecessor_outs_index, bf_working_set_id);
+
         queue.push_back(*predecessor);
       }
     }
@@ -748,45 +826,111 @@ pub(crate) fn encode_function(
 
   // ===============================================================
   // Create the interference graph
+  let mut interference_graph = vec![BTreeSet::<VarVal>::new(); vars.len()];
 
-  let mut interference_graph = vec![BTreeSet::<u32>::new(); vars.len()];
+  dbg!(bf);
+
+  fn is_interference_value(arg_ty: PrimitiveType, out_ty: PrimitiveType) -> bool {
+    if arg_ty != out_ty {
+      match (arg_ty.base_ty, out_ty.base_ty) {
+        (a, b) if a == b => {}
+        (PrimitiveBaseType::Address, PrimitiveBaseType::Signed)
+        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Address)
+        | (PrimitiveBaseType::Address, PrimitiveBaseType::Unsigned)
+        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Address)
+        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Unsigned)
+        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Signed) => {}
+        (a, b) => {
+          dbg!((a, b));
+          return true;
+        }
+      }
+    }
+    false
+  }
 
   for block in &bb_funct.blocks {
-    let mut outs = in_out_sets[block.id as usize].1.clone();
-    for BBop { out: id, args: operands, .. } in block.ops2.iter().rev() {
-      match id {
+    // Represent
+    let mut outs = in_out_sets[block.id as usize].outs.clone();
+    for BBop { out, args, prim_ty, probe, .. } in block.ops2.iter().rev() {
+      match out {
         VarVal::Var(id) => {
           outs.remove(id);
         }
         _ => {}
       }
 
-      for op in operands {
-        match op {
-          VarVal::Var(op) => {
-            outs.insert(*op);
+      for arg in args {
+        match arg {
+          VarVal::Var(arg_var_id) => {
+            outs.insert(*arg_var_id);
 
-            for out in outs.iter() {
-              interference_graph[*out as usize].insert(*op);
-              interference_graph[*op as usize].insert(*out as _);
+            let arg_ty = vars[*arg_var_id as usize].prim_ty;
+
+            for out_var_id in outs.iter() {
+              let out_ty = vars[*out_var_id as usize].prim_ty;
+
+              if is_interference_value(arg_ty, out_ty) {
+                continue;
+              }
+
+              interference_graph[*out_var_id as usize].insert(*arg);
+              interference_graph[*arg_var_id as usize].insert(VarVal::Var(*out_var_id));
             }
 
-            interference_graph[*op as usize].remove(op);
+            interference_graph[*arg_var_id as usize].remove(arg);
+          }
+          VarVal::Reg(_, arg_ty) => {
+            for out_var_id in outs.iter() {
+              let out_ty = vars[*out_var_id as usize].prim_ty;
+
+              if is_interference_value(*arg_ty, out_ty) {
+                continue;
+              }
+
+              interference_graph[*out_var_id as usize].insert(*arg);
+            }
           }
           _ => {}
         }
       }
+
+      if let Probe::Pending(probe) = probe {
+        for out_var_id in outs.iter() {
+          interference_graph[*probe as usize].insert(VarVal::Var(*out_var_id));
+        }
+      }
     }
+  }
+  dbg!(sn);
+  for ordering in create_block_ordering(&bb_funct.blocks) {
+    let block_id = ordering.block_id as usize;
+    let InOuts { ins, outs } = &in_out_sets[block_id];
+    let block = &bb_funct.blocks[block_id];
+
+    println!("BLOCK {}", block_id);
+
+    for op in &block.ops2 {
+      println!("   {op:?}");
+      if let VarVal::Var(index) = op.out {
+        let ig = &interference_graph[index as usize];
+        println!("    {index} => {ig:?}");
+      }
+    }
+
+    println!("  preds {:?} ", block.predecessors);
+
+    println!("\n    ins:  {ins:?} \n    outs: {outs:?}\n\n");
   }
 
   // ===============================================================
   // Find a graph coloring solution
-
   let mut stash_offset = 0;
   let mut work_vec = VecDeque::from_iter(forced_vars.into_iter().chain(0..vars.len()));
 
   while let Some(var_id) = work_vec.pop_front() {
     let var = &vars[var_id];
+    let ty = var.prim_ty;
 
     let pending_var = vars[var_id];
 
@@ -798,7 +942,7 @@ pub(crate) fn encode_function(
         }
       }
 
-      let mut reg_alloc = X86registers::new(&REGISTERS, None);
+      let mut reg_alloc = X86registers::new(44);
 
       // Mask operands based on the primitive type of the value
       if var.prim_ty.base_ty == PrimitiveBaseType::Float {
@@ -810,29 +954,37 @@ pub(crate) fn encode_function(
       }
 
       for other_id in &interference_graph[var_id] {
-        let other_var = vars[*other_id as usize];
-        match other_var.register {
-          VarVal::Reg(reg) => {
-            reg_alloc.acquire_specific_register(reg as _);
-            if other_var.mask > 0 {
-              reg_alloc.mask(other_var.mask as _);
+        match other_id {
+          VarVal::Var(other_id) => {
+            let other_var = vars[*other_id as usize];
+            match other_var.register {
+              VarVal::Reg(reg, _) => {
+                reg_alloc.acquire_specific_register(reg as _);
+                if other_var.mask > 0 {
+                  reg_alloc.mask(other_var.mask as _);
+                }
+              }
+              _ => {}
             }
           }
-          _ => {}
+          VarVal::Reg(reg_index, _) => {
+            reg_alloc.acquire_specific_register(*reg_index as _);
+          }
+          _ => unreachable!(),
         }
       }
 
       if let VarVal::Var(preference_id) = pending_var.prefer {
-        if let VarVal::Reg(reg) = vars[preference_id as usize].register {
+        if let VarVal::Reg(reg, _) = vars[preference_id as usize].register {
           if reg_alloc.acquire_specific_register(reg as _) {
-            vars[var_id].register = VarVal::Reg(reg as _);
+            vars[var_id].register = VarVal::Reg(reg as _, ty);
             continue;
           }
         }
       }
 
       if let Some(reg) = reg_alloc.acquire_random_register() {
-        vars[var_id].register = VarVal::Reg(reg as _);
+        vars[var_id].register = VarVal::Reg(reg as _, ty);
       } else {
         let size = pending_var.prim_ty.byte_size as u64;
         let stashed_location = get_aligned_value(stash_offset, size);
@@ -847,13 +999,29 @@ pub(crate) fn encode_function(
   // Convert var_ids to register indices
 
   for block_id in 0..bb_funct.blocks.len() {
-    for BBop { out, args: ins, .. } in bb_funct.blocks[block_id].ops2.iter_mut().rev() {
+    for (index, BBop { out, args: ins, probe, .. }) in bb_funct.blocks[block_id].ops2.iter_mut().enumerate().rev() {
       match out {
         VarVal::Var(var_id) => {
           let out_var = vars[*var_id as usize];
           *out = out_var.register
         }
         _ => {}
+      }
+
+      if let Probe::Pending(prob_index) = probe {
+        let var_id = *prob_index as usize;
+        let var_ids = interference_graph[var_id]
+          .iter()
+          .filter_map(|v| match v {
+            VarVal::Var(v) => match &vars[*v as usize].register {
+              VarVal::Reg(..) => Some(vars[*v as usize]),
+              _ => None,
+            },
+            _ => None,
+          })
+          .collect::<Vec<_>>();
+
+        *probe = Probe::ActiveRegs(var_ids);
       }
 
       for op in ins {
@@ -867,16 +1035,6 @@ pub(crate) fn encode_function(
       }
     }
   }
-
-  for ordering in create_block_ordering(&bb_funct.blocks) {
-    let block_id = ordering.block_id as usize;
-    let (ins, outs) = &in_out_sets[block_id];
-    let block = &bb_funct.blocks[block_id];
-
-    println!("{block:?}\n ins: {ins:?} \n outs: {outs:?}\n\n");
-  }
-
-  println!("{interference_graph:?}");
 
   bb_funct
 }
@@ -994,26 +1152,28 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
     if port.ty == PortType::Merge && port.id != VarId::MatchBooleanSelector {
       let ty = get_op_type(sn, port.slot);
 
-      let Operation::Phi(_, ops) = &sn.operands[port.slot.usize()] else { unreachable!() };
-      let op = ops[index];
+      if let Operation::Phi(_, ops) = &sn.operands[port.slot.usize()] {
+        let op = ops[index];
 
-      if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem()) {
-        let phi_ty_var = get_or_create_op_var(sn, vars, op_var_map, port.slot);
-        let op_ty_var = get_or_create_op_var(sn, vars, op_var_map, op);
+        if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem()) {
+          let phi_ty_var = get_or_create_op_var(sn, vars, op_var_map, port.slot);
+          let op_ty_var = get_or_create_op_var(sn, vars, op_var_map, op);
 
-        block.ops2.push(BBop {
-          op_ty:   Op::TempMetaPhi,
-          out:     VarVal::Var(phi_ty_var),
-          args:    [VarVal::Var(op_ty_var), VarVal::None, VarVal::None],
-          ops:     [Default::default(); 3],
-          source:  port.slot,
-          prim_ty: ty.prim_data(),
-        });
+          block.ops2.push(BBop {
+            op_ty:   Op::TempMetaPhi,
+            out:     VarVal::Var(phi_ty_var),
+            args:    [VarVal::Var(op_ty_var), VarVal::None, VarVal::None],
+            ops:     [Default::default(); 3],
+            source:  port.slot,
+            prim_ty: ty.prim_data(),
+            probe:   Probe::None,
+          });
 
-        if let Operation::Phi(..) = &sn.operands[op.usize()] {
-          vars[phi_ty_var as usize].prefer = VarVal::Var(op_ty_var);
+          if let Operation::Phi(..) = &sn.operands[op.usize()] {
+            vars[phi_ty_var as usize].prefer = VarVal::Var(op_ty_var);
+          }
         }
-      }
+      };
     }
   }
   block.id = merge_id;
@@ -1063,12 +1223,14 @@ fn process_node(
 
   while let Some((op, level)) = pending_ops.pop_front() {
     let ty = get_op_type(sn, op);
+
     if outside_ops.contains(&op) {
       continue;
     }
 
     if !ty.is_poison() && !ty.is_undefined() && op.is_valid() && op_data[op.usize()].block < level {
       max_level = max_level.max(level);
+
       match &sn.operands[op.usize()] {
         Operation::Phi(node_id, ..) | Operation::Gamma(node_id, ..) => {
           let sub_node = &sn.nodes[*node_id as usize];

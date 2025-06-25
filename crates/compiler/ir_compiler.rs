@@ -1464,6 +1464,8 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
 
           let (bool_op, activation_ty_new) = process_op(cmp_op_name, &[input_op, expr_op], bp, expr.clone().into());
 
+          //  update_mem_context(bp, mem_op);
+
           update_var(bp, VarId::MatchBooleanSelector, bool_op, activation_ty_new);
         }
         match_condition_Value::RawTypeMatchExpr(ty_match) => {
