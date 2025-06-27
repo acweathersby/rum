@@ -3,11 +3,11 @@ use std::{
   collections::{HashSet, VecDeque},
 };
 
-use x86_binary_writer::BinaryFunction;
+use x86_binary_writer::{BinaryFunction, PatchType};
 
 use crate::{
   basic_block_compiler::{self, x86_spec_fn},
-  ir_compiler::{CALL_ID, ROUTINE_ID},
+  ir_compiler::ROUTINE_ID,
   types::{NodeHandle, SolveDatabase, TypeVar, VarId},
 };
 
@@ -46,18 +46,6 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
       if handle.get_type() == ROUTINE_ID {
         let super_node = handle.get_mut().unwrap();
 
-        // Collect call targets
-        for node in super_node.nodes.iter() {
-          for id in node.ports.iter().map(|p| p.id) {
-            match id {
-              VarId::CallTarget(tgt) => {
-                queue.push_back(tgt);
-              }
-              _ => {}
-            }
-          }
-        }
-
         // Collect complex node requirements
         for TypeVar { ty, .. } in super_node.type_vars.iter() {
           if ty.is_cmplx() {
@@ -68,6 +56,15 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
         let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db, &x86_spec_fn);
 
         let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
+
+        for (_, patch) in &binary.patch_points {
+          match patch {
+            PatchType::Function(cmplx_id) => {
+              queue.push_back(*cmplx_id);
+            }
+            _ => unreachable!(),
+          }
+        }
 
         functions.push(binary);
       }

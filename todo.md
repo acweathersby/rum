@@ -7,9 +7,9 @@
 
 # Types Database as hierarchy
 
-Types should be accessible the same way as variables are accessed, as named and scoped bindings that can be quried for the value, and 
+Types should be accessible the same way as variables are accessed, as named and scoped bindings that can be quired for the value, and 
 also added and removed from the given scope as needed. The creation of a type (that is all types that are not primitive) can either be
-through manual definitions in user's source code, or ad hoc as derived from 
+through manual definitions in user's source code, or ad hoc
 
 # Inherit state machine syntax
 State machines are common, lets make them more so.
@@ -169,7 +169,7 @@ An array is a memory location composed of an ordered set of elements of a homoge
 
 A structure whose composition is indistinguishable from an array, save for the naming scheme of its elements, may be accessed as an array.
 
-An array of length 1 is indistinguishable from a pointer to an object of the arrays type, and thus may be used as such.
+An array of element length 1 is indistinguishable from a pointer to an object of the array's element type, and thus may be used as such.
 
 
 --------------------

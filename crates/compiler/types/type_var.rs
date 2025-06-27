@@ -59,6 +59,7 @@ pub enum NodeConstraint {
     src_op:       OpId,
     trg_op_index: usize,
   },
+  LinkCall(OpId),
 }
 
 #[derive(Clone)]
@@ -351,12 +352,7 @@ impl std::ops::BitOrAssign for Numeric {
 impl std::ops::BitOr for Numeric {
   type Output = Self;
   fn bitor(self, rhs: Self) -> Self::Output {
-    Self {
-      ele_cnt:  self.ele_cnt.max(rhs.ele_cnt),
-      flags:    rhs.flags | self.flags,
-      sig_bits: self.sig_bits.max(rhs.sig_bits),
-      exp_bits: self.exp_bits.max(rhs.exp_bits),
-    }
+    Self { ele_cnt: self.ele_cnt.max(rhs.ele_cnt), flags: rhs.flags | self.flags, sig_bits: self.sig_bits.max(rhs.sig_bits), exp_bits: self.exp_bits.max(rhs.exp_bits) }
   }
 }
 

@@ -1,7 +1,7 @@
 #![allow(unused_variables, dead_code)]
 use std::{collections::HashMap, io::Write};
 
-use interpreter::interpret;
+use _interpreter::interpret;
 use ir_compiler::add_module;
 use rum_compiler::{
   targets::x86::{print_instructions, x86_binary_writer::BinaryFunction, x86_eval},
@@ -17,9 +17,7 @@ fn main() {
   if args.len() >= 2 {
     let path = std::path::PathBuf::from(args[1].clone());
 
-    let path = if path.is_relative() { std::env::current_dir().expect("Could not read current directory").join(path) } else { path }
-      .canonicalize()
-      .expect("Could not find path");
+    let path = if path.is_relative() { std::env::current_dir().expect("Could not read current directory").join(path) } else { path }.canonicalize().expect("Could not find path");
 
     if let Ok(input) = std::fs::read_to_string(path) {
       let input = input.as_str();
@@ -45,7 +43,7 @@ fn main() {
 
       let func = x86_eval::x86Function::new(&binary, entry_offset);
 
-      let out = func.access_as_call::<fn(u32) -> &'static (f32, u32)>()(9);
+      let out = func.access_as_call::<fn(u32) -> &'static (f32, u32)>()(1);
 
       dbg!((out as *const _ as *const usize));
 

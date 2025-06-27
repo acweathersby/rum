@@ -1,6 +1,8 @@
 use radlr_rust_runtime::types::Token;
 use rum_common::{CachedString, IString};
 
+use crate::_interpreter::get_op_type;
+
 use super::*;
 
 use std::{
@@ -80,12 +82,7 @@ impl NodeHandle {
         panic!("Could not allocate space for Node");
       }
 
-      let mut wrapper = NodeWrapper {
-        node,
-        owners: std::sync::atomic::AtomicU16::new(1),
-        readers: Default::default(),
-        writers: Default::default(),
-      };
+      let mut wrapper = NodeWrapper { node, owners: std::sync::atomic::AtomicU16::new(1), readers: Default::default(), writers: Default::default() };
       std::mem::swap(ptr.as_mut().unwrap(), &mut wrapper);
       std::mem::forget(wrapper);
 
@@ -107,12 +104,7 @@ impl NodeHandle {
         panic!("Could not allocate space for Node");
       }
 
-      let mut wrapper = NodeWrapper {
-        node:    self.get().unwrap().clone(),
-        owners:  std::sync::atomic::AtomicU16::new(1),
-        readers: Default::default(),
-        writers: Default::default(),
-      };
+      let mut wrapper = NodeWrapper { node: self.get().unwrap().clone(), owners: std::sync::atomic::AtomicU16::new(1), readers: Default::default(), writers: Default::default() };
       std::mem::swap(ptr.as_mut().unwrap(), &mut wrapper);
       std::mem::forget(wrapper);
 
@@ -262,23 +254,45 @@ pub(crate) struct NodePort {
   pub id:   VarId,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Reference {
+  UnresolvedName(IString),
+  Funct(CMPLXId),
+  Intrinsic(IString),
+}
+
+impl Debug for Reference {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::UnresolvedName(name) => f.write_fmt(format_args!("{name}?")),
+      Self::Intrinsic(name) => f.write_fmt(format_args!("`{name}")),
+      Self::Funct(id) => f.write_fmt(format_args!("`{id:?}")),
+    }
+  }
+}
+
 #[derive(Clone)]
 pub(crate) enum Operation {
   /// - VarId - Variable representing the param value.
   /// - u32   - List index position of the parameter
   Param(VarId, u32),
-  Heap(VarId),
-  MemCheck(OpId),
+  // Heap(VarId),
+  // MemCheck(OpId),
   Phi(u32, Vec<OpId>),
   Gamma(u32, OpId),
+  Call {
+    reference:  Reference,
+    args:       Vec<OpId>,
+    mem_ctx_op: OpId,
+  },
   Op {
     op_name:  Op,
     operands: [OpId; 3],
   },
   Const(ConstVal),
-  Data,
-  Name(IString),
-  Allocate,
+  //Data,
+  Str(IString),
+  Type(IString),
   Dead,
 }
 
@@ -291,18 +305,17 @@ impl Debug for Operation {
 impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Operation::Name(name) => f.write_fmt(format_args!("\"{name}\"",)),
-      Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
+      Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
+      Operation::Type(name) => f.write_fmt(format_args!("type::{name}",)),
+      Operation::Call { reference, args, .. } => f.write_fmt(format_args!("{reference:?}({args:?})",)),
+      // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
-      Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
-      Operation::Op { op_name, operands } => {
-        f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  ")))
-      }
+      //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
+      Operation::Op { op_name, operands } => f.write_fmt(format_args!("{op_name:12}  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  "))),
       Operation::Gamma(node, op) => f.write_fmt(format_args!("Gamma  {op:?} @ {node}",)),
       Operation::Phi(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
-      Operation::Data => f.write_fmt(format_args!("DATA",)),
-      Operation::Allocate => f.write_fmt(format_args!("allocate",)),
+      // Operation::Data => f.write_fmt(format_args!("DATA",)),
       Operation::Dead => f.write_fmt(format_args!("XXXX",)),
     }
   }
@@ -363,11 +376,11 @@ pub(crate) fn write_agg(var: &TypeVar, vars: &[TypeVar]) -> String {
   string
 }
 
-pub fn get_signature(node: &RootNode) -> Signature {
+pub(crate) fn get_signature(node: &RootNode) -> Signature {
   get_internal_node_signature(node, 0)
 }
 
-pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
+pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
   let RootNode { nodes, op_types: types, type_vars, .. } = node;
   let call_node = &nodes[internal_node_index];
 
@@ -393,6 +406,27 @@ pub fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) 
       })
       .collect::<Vec<_>>(),
   )
+}
+
+pub(crate) fn get_call_op_signature(node: &RootNode, call_op: OpId) -> Signature {
+  if let Operation::Call { reference, args, .. } = &node.operands[call_op.usize()] {
+    Signature::new(
+      &args
+        .iter()
+        .filter_map(|op| {
+          let ty = get_op_type(node, *op);
+          if ty.is_mem() {
+            None
+          } else {
+            Some((*op, ty))
+          }
+        })
+        .collect::<Vec<_>>(),
+      &{ vec![(call_op, get_op_type(node, call_op))] },
+    )
+  } else {
+    unreachable!("Should be call operation")
+  }
 }
 
 impl Debug for RootNode {
@@ -446,13 +480,7 @@ impl Debug for RootNode {
 
         let heap = if heap == usize::MAX { "".to_string() } else { heap.to_string() };
 
-        f.write_fmt(format_args!(
-          "\n  {index:3} @ [{parent_node:3}] <= {:36} @{heap:10} :{:32} {}: {:}",
-          format!("{op}"),
-          format!("{ty}"),
-          tok.get_line(),
-          source
-        ))?
+        f.write_fmt(format_args!("\n  {index:3} @ [{parent_node:3}] <= {:36} @{heap:10} :{:32} {}: {:}", format!("{op}"), format!("{ty}"), tok.get_line(), source))?
       }
     }
     f.write_str("\nnodes:")?;

@@ -1,25 +1,35 @@
-DD :: [
-  test: f32,
-  rainbow: u32
-]
-
-fifi :: (d: u32) : u32 { 
-  d + 2000
-}
+DD :: [ test: f32, rainbow: u32 ]
 
 
-mango :: (d: u32) : u32 { 
-  fifi(d) + 2000
-}
+
+aligned :: (offset: u32, alignment: u32) : u32
+
+  (offset + ( alignment + 1 )) & (4294967295 - (alignment - 1))
+
+
+max :: (a:u32, b:u32) : u32 
+
+  if a > b { a } otherwise { b }
+
+
+min :: (a:u32, b:u32) : u32 
+
+  if a < b { a } otherwise { b }
+
 
 #test
 trivial :: (u:u32) : DD {
-  d = [ test = 200.0, rainbow = if u < 10 { mango(u) } else { 200 + 200 * 8 } ]
+
+  o:u32 = aligned(u, 64) + u
+
+  d = [ test = 200.0, rainbow =  min(max(o, 0), 3999) ]
 
   r = 33022
 
   //d.rainbow = 392 + d.test
-  d.test = 988 + r
+  //d.test = 988 + r
 
   d
 }
+
+

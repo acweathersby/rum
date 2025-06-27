@@ -255,12 +255,7 @@ pub struct Database(pub std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
 
 impl Default for Database {
   fn default() -> Self {
-    let mut core = DatabaseCore {
-      ops:      Default::default(),
-      nodes:    Default::default(),
-      parent:   std::ptr::null(),
-      name_map: Default::default(),
-    };
+    let mut core = DatabaseCore { ops: Default::default(), nodes: Default::default(), parent: std::ptr::null(), name_map: Default::default() };
     add_ops_to_db(&mut core, &OP_DEFINITIONS);
     Self(Arc::new(Mutex::new(core)))
   }

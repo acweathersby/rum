@@ -7,29 +7,13 @@ use super::{
   x86_types::{Arg, *},
 };
 use crate::{
+  _interpreter::{get_agg_offset, get_op_type, RuntimeSystem},
   basic_block_compiler::{BasicBlock, BasicBlockFunction, Probe, VarVal, REGISTERS},
-  interpreter::{get_agg_offset, get_op_type, RuntimeSystem},
   targets::{
     reg::Reg,
     x86::x86_encoder::{encode_binary, encode_unary, OpEncoder, OpSignature},
   },
-  types::{
-    prim_ty_f32,
-    prim_ty_f64,
-    prim_ty_u32,
-    ty_f32,
-    ty_f64,
-    ty_u32,
-    CMPLXId,
-    NodeHandle,
-    Op,
-    Operation,
-    PrimitiveBaseType,
-    RootNode,
-    SolveDatabase,
-    TypeV,
-    VarId,
-  },
+  types::{prim_ty_f32, prim_ty_f64, prim_ty_u32, CMPLXId, NodeHandle, Op, Operation, PrimitiveBaseType, Reference, RootNode, SolveDatabase, TypeV, VarId},
 };
 use std::{collections::VecDeque, fmt::Debug};
 
@@ -51,10 +35,12 @@ impl Default for BlockOrderData {
 
 const TMP_REG: Reg = R15;
 
+#[derive(Debug)]
 pub(crate) enum PatchType {
   Function(CMPLXId),
 }
 
+#[derive(Debug)]
 pub struct BinaryFunction {
   pub id:                CMPLXId,
   pub data_segment_size: usize,
@@ -69,13 +55,7 @@ impl BinaryFunction {
   }
 }
 
-pub fn encode_routine(
-  sn: &mut RootNode,
-  bb_fn: &BasicBlockFunction,
-  db: &SolveDatabase,
-  allocator_address: usize,
-  allocator_free_address: usize,
-) -> BinaryFunction {
+pub fn encode_routine(sn: &mut RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatabase, allocator_address: usize, allocator_free_address: usize) -> BinaryFunction {
   use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
   let blocks = &bb_fn.blocks;
   let stash_size = get_aligned_value(bb_fn.stash_size as _, 16);
@@ -120,7 +100,7 @@ pub fn encode_routine(
       let byte_size = (op_prim_ty.byte_size as u64) * 8;
 
       match &op.op_ty {
-        Op::SINK => {
+        /*         Op::SINK => {
           if op.args[1] != op.out {
             match op.args[1] {
               VarVal::Stashed(_) => match op.out {
@@ -160,7 +140,7 @@ pub fn encode_routine(
               _ => {}
             }
           }
-        }
+        } */
         Op::Meta | Op::RET | Op::SEED | Op::PARAM | Op::ARG | Op::TempMetaPhi => {
           if op.args[0] != VarVal::None && op.args[0] != op.out {
             let from_op = match op.args[0] {
@@ -293,12 +273,41 @@ pub fn encode_routine(
 
           encode_call_postamble(instr_bytes, cw_pack);
         }
+        Op::ARR_DECL => {
+          // Load the size and alignment in to the first and second registers
+
+          let [VarVal::Reg(size_reg_id, _), VarVal::Reg(align_reg_id, _), VarVal::Reg(allocator_id, _)] = op.args else { unreachable!() };
+          let size_reg = REGISTERS[size_reg_id as usize];
+          let align_reg = REGISTERS[align_reg_id as usize];
+          let alloc_id_reg = REGISTERS[allocator_id as usize];
+
+          let node: NodeHandle = (ty.cmplx_data().unwrap(), db).into();
+          let mut ctx: RuntimeSystem<'_, '_> = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
+          let size = 16; // get_agg_size(node.get().unwrap(), &mut ctx);
+
+          let cw_pack = encode_call_preamble(instr_bytes, op);
+
+          encode_x86(instr_bytes, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None, Arg::None);
+          encode_x86(instr_bytes, &mov, 8 * 8, align_reg.as_reg_op(), Arg::Imm_Int(8), Arg::None, Arg::None);
+          encode_x86(instr_bytes, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None, Arg::None);
+
+          let VarVal::Reg(out_reg_id, _) = op.out else { unreachable!() };
+          let out_reg = REGISTERS[out_reg_id as usize];
+
+          // Load Rax with the location for the allocator pointer.
+          encode_x86(instr_bytes, &mov, 64, out_reg.as_reg_op(), Arg::Imm_Int(allocator_address as _), Arg::None, Arg::None);
+
+          // Make a call to the allocator dispatcher.
+          encode_x86(instr_bytes, &call_abs, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
+
+          encode_call_postamble(instr_bytes, cw_pack);
+        }
         Op::NPTR => {
           let VarVal::Reg(out_reg_id, _) = op.out else { unreachable!() };
           let own_ptr = REGISTERS[out_reg_id as usize];
 
           // Get ptr offset
-          let Operation::Name(name) = sn.operands[op.ops[1].usize()] else { unreachable!("Should be a name op") };
+          let Operation::Str(name) = sn.operands[op.ops[1].usize()] else { unreachable!("Should be a name op") };
 
           let ty = get_op_type(sn, op.ops[0]).to_base_ty().cmplx_data().unwrap();
 
@@ -401,7 +410,7 @@ pub fn encode_routine(
             } */
           }
         }
-        Op::ADD | Op::SUB | Op::MUL => {
+        Op::ADD | Op::SUB | Op::MUL | Op::BIT_AND => {
           if op_prim_ty.base_ty == PrimitiveBaseType::Float {
             if op_prim_ty.ele_count == 1 {
               let left_arg = match op.args[0] {
@@ -433,16 +442,21 @@ pub fn encode_routine(
             }
           } else {
             type OpTable = (&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]);
-            let op_table: &OpTable = match op.op_ty {
-              Op::ADD => &add,
-              Op::MUL => &imul,
-              Op::SUB => &sub,
+            let (op_table, is_commutative): (&OpTable, bool) = match op.op_ty {
+              Op::ADD => (&add, true),
+              Op::MUL => (&imul, true),
+              Op::SUB => (&sub, false),
+              Op::BIT_AND => (&and, true),
               _ => unreachable!(),
             };
 
+            if op.op_ty == Op::BIT_AND {
+              dbg!(op);
+            }
+
             let temp_reg = TMP_REG.as_reg_op();
 
-            let r_arg = match op.args[1] {
+            let mut r_arg = match op.args[1] {
               VarVal::Reg(r_reg, _) => REGISTERS[r_reg as usize].as_reg_op(),
               VarVal::Stashed(right_loc) => {
                 encode_binary(instr_bytes, &mov, byte_size, temp_reg, Arg::RSP_REL(right_loc as _));
@@ -457,23 +471,30 @@ pub fn encode_routine(
 
             match op.out {
               VarVal::Reg(out_reg, _) => {
-                let out_reg = REGISTERS[out_reg as usize];
-
+                let mut out_reg = REGISTERS[out_reg as usize].as_reg_op();
                 // LEFT ===================
                 match op.args[0] {
                   VarVal::Reg(left_reg, _) => {
-                    let left_reg = REGISTERS[left_reg as usize];
-                    if out_reg != left_reg {
-                      encode_binary(instr_bytes, &mov, byte_size, out_reg.as_reg_op(), left_reg.as_reg_op());
+                    let left_arg = REGISTERS[left_reg as usize].as_reg_op();
+                    if out_reg != left_arg {
+                      if r_arg == out_reg {
+                        if !is_commutative {
+                          encode_binary(instr_bytes, &xchg, byte_size, r_arg, left_arg);
+                        }
+                        out_reg = r_arg;
+                        r_arg = left_arg;
+                      } else {
+                        encode_binary(instr_bytes, &mov, byte_size, out_reg, left_arg);
+                      }
                     }
                   }
                   VarVal::Stashed(left_loc) => {
-                    encode_binary(instr_bytes, &mov, byte_size, out_reg.as_reg_op(), Arg::RSP_REL(left_loc as _));
+                    encode_binary(instr_bytes, &mov, byte_size, out_reg, Arg::RSP_REL(left_loc as _));
                   }
                   ty => unreachable!("{ty:?}"),
                 }
 
-                encode_binary(instr_bytes, &op_table, byte_size, out_reg.as_reg_op(), r_arg);
+                encode_binary(instr_bytes, &op_table, byte_size, out_reg, r_arg);
               }
               VarVal::Stashed(out_loc) => {
                 // LEFT ===================
@@ -571,28 +592,23 @@ pub fn encode_routine(
             todo!("Handle store to bool")
           }
         }
-        Op::CALL => {
-          let VarVal::Reg(reg, _) = op.out else { unreachable!() };
+        Op::ResolvedCall => {
+          let Operation::Call { reference, .. } = &sn.operands[op.source.usize()] else { unreachable!() };
 
-          let call_reg = REGISTERS[reg as usize];
-          let node = &sn.nodes[sn.operand_node[op.source.usize()]];
+          match reference {
+            Reference::Funct(cmplx_id) => {
+              let cw_pack = encode_call_preamble(instr_bytes, op);
+              // Get the complex id from node associated with the call.
 
-          if let Some(cmplx_id) = node.ports.iter().find_map(|p| match p.id {
-            VarId::CallTarget(id) => Some(id),
-            _ => None,
-          }) {
-            let cw_pack = encode_call_preamble(instr_bytes, op);
-            // Get the complex id from node associated with the call.
+              //encode_binary(instr_bytes, &mov, 64, call_reg.as_reg_op(), Arg::Imm_Int(0));
+              encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
 
-            //encode_binary(instr_bytes, &mov, 64, call_reg.as_reg_op(), Arg::Imm_Int(0));
-            encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
+              patch_points.push((instr_bytes.len(), PatchType::Function(*cmplx_id)));
 
-            patch_points.push((instr_bytes.len(), PatchType::Function(cmplx_id)));
-
-            encode_call_postamble(instr_bytes, cw_pack);
-          //print_instructions(&instr_bytes, 0);
-          } else {
-            panic!("Call target does not exist!")
+              encode_call_postamble(instr_bytes, cw_pack);
+              //print_instructions(&instr_bytes, 0);
+            }
+            tgt => panic!("Call target does not exist! {tgt:?}"),
           }
         }
         Op::LOAD_CONST => {
@@ -630,11 +646,16 @@ pub fn encode_routine(
                 // Can move value directly into memory if the value has 32 significant bits or less.
                 // Otherwise, we must move the value into a temporary register first.
 
-                let raw_ty = ty.prim_data();
+                let raw_ty = op.prim_ty;
 
                 if byte_size < 32 {
                   encode_binary(instr_bytes, &xor, 64, out_reg.as_reg_op(), out_reg.as_reg_op());
                 }
+
+                dbg!(val);
+                dbg!(ty, raw_ty);
+                dbg!(byte_size);
+                dbg!(val.convert(raw_ty));
 
                 encode_binary(instr_bytes, &mov, byte_size, out_reg.as_reg_op(), Arg::Imm_Int(val.convert(raw_ty).load()));
               }
@@ -707,13 +728,7 @@ pub fn encode_routine(
 
   print_instructions(&data_store, 0);
 
-  BinaryFunction {
-    id: bb_fn.id,
-    data_segment_size: instr_offset,
-    entry_offset: instr_offset,
-    binary: data_store,
-    patch_points,
-  }
+  BinaryFunction { id: bb_fn.id, data_segment_size: instr_offset, entry_offset: instr_offset, binary: data_store, patch_points }
 }
 
 struct CallWrapperPack {

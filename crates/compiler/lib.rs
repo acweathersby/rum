@@ -8,7 +8,7 @@ pub mod basic_block_compiler;
 
 pub mod ir_compiler;
 
-pub mod interpreter;
+pub mod _interpreter;
 
 pub mod optimizer;
 

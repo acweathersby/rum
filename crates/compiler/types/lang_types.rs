@@ -1,24 +1,8 @@
-use std::{
-  collections::{BTreeMap, HashMap},
-  fmt::{Debug, Display},
-};
+#![allow(non_upper_case_globals)]
 
-use super::{CMPLXId, NodeHandle, Numeric, RootNode, *};
+use std::fmt::{Debug, Display};
 
-macro_rules! create_primitive {
-  ($db:ident $index:ident) => { };
-  ($db:ident $index:ident $name:literal $($z:literal)*) => {
-    let n = $name.intern();
-    $db.name_to_entry.insert(n, $index);
-    create_primitive!($db $index $($rest)*)
-  };
-  ($db:ident $primitive_name:tt,  $size:literal  $ele_count:literal  $($name:literal)+) => {
-    let index = $db.types.len();
-    let ty = Type::Primitive(PrimitiveType{  base_ty: PrimitiveBaseType::$primitive_name,  base_index: index as u8,  byte_size: $size, ele_count: $ele_count   });
-    $db.types.push(TypeEntry { ty, node: None, offset_data:None, size: 0 });
-    create_primitive!($db index $($name)+)
-  };
-}
+use super::{CMPLXId, Numeric, *};
 
 pub const prim_ty_undefined: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Unsigned, base_index: 0, byte_size: 1, ele_count: 1 };
 pub const prim_ty_poison: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Poison, base_index: 1, byte_size: 1, ele_count: 1 };
@@ -38,6 +22,7 @@ pub const prim_ty_f32: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseTyp
 pub const prim_ty_f64: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 15, byte_size: 8, ele_count: 1 };
 pub const prim_ty_f128: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 16, byte_size: 8, ele_count: 1 };
 pub const prim_ty_addr: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Address, base_index: 17, byte_size: 8, ele_count: 1 };
+pub const prim_ty_type: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Type, base_index: 17, byte_size: 8, ele_count: 1 };
 
 pub const ty_undefined: TypeV = TypeV::prim(prim_ty_undefined);
 pub const ty_poison: TypeV = TypeV::prim(prim_ty_poison);
@@ -85,6 +70,10 @@ impl TypeV {
 
   pub const fn undefined() -> TypeV {
     Self(0)
+  }
+
+  pub const fn _type() -> TypeV {
+    Self::create(BaseType::Type, 0, 0)
   }
 
   pub const fn no_use() -> TypeV {
@@ -184,6 +173,7 @@ impl TypeV {
 
   pub fn type_data(&self) -> TypeData {
     match self.base_ty() {
+      BaseType::Type => TypeData::Type,
       BaseType::Undefined => TypeData::Undefined,
       BaseType::Primitive => TypeData::Primitive(self.prim_data()),
       BaseType::Complex => TypeData::Complex(self.cmplx_data().unwrap()),
@@ -283,6 +273,9 @@ impl Display for TypeV {
     }
 
     match self.base_ty() {
+      BaseType::Type => {
+        Display::fmt(&"type", f)?;
+      }
       BaseType::Primitive => {
         Display::fmt(&self.prim_data(), f)?;
       }
@@ -345,6 +338,7 @@ pub enum BaseType {
   Poison    = 6,
   MemCtx    = 7,
   Util      = 8,
+  Type      = 9,
 }
 
 pub enum TypeData {
@@ -357,6 +351,7 @@ pub enum TypeData {
   Poison,
   MemCtx,
   Util,
+  Type,
 }
 
 #[repr(u8)]

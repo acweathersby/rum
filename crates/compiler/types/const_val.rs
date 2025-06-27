@@ -225,15 +225,9 @@ impl ConstVal {
     let l = self;
     match l.ty.base_ty {
       PrimitiveBaseType::Unsigned => match l.ty.byte_size * 8 {
-        64 => {
-          ConstVal::new(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 8, ele_count: 1 }, 0).store(-(l.load::<u64>() as i64))
-        }
-        32 => {
-          ConstVal::new(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 4, ele_count: 1 }, 0).store(-(l.load::<u32>() as i32))
-        }
-        16 => {
-          ConstVal::new(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 2, ele_count: 1 }, 0).store(-(l.load::<u16>() as i16))
-        }
+        64 => ConstVal::new(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 8, ele_count: 1 }, 0).store(-(l.load::<u64>() as i64)),
+        32 => ConstVal::new(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 4, ele_count: 1 }, 0).store(-(l.load::<u32>() as i32)),
+        16 => ConstVal::new(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 2, ele_count: 1 }, 0).store(-(l.load::<u16>() as i16)),
         8 => ConstVal::new(PrimitiveType { base_ty: PrimitiveBaseType::Signed, base_index: 0, byte_size: 1, ele_count: 1 }, 0).store(-(l.load::<u8>() as i8)),
         _ => panic!(),
       },
@@ -368,7 +362,7 @@ fn to_int<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
 
 fn to_uint<T: Num + NumCast>(l_val: ConstVal, val: T) -> ConstVal {
   debug_assert!(l_val.ty.base_ty == PrimitiveBaseType::Unsigned);
-  match (l_val.ty.byte_size * 8) {
+  match l_val.ty.byte_size * 8 {
     8 => l_val.store(val.to_u8().unwrap()),
     16 => l_val.store(val.to_u16().unwrap()),
     32 => l_val.store(val.to_u32().unwrap()),

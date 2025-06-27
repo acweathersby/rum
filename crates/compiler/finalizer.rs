@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use rum_lang::Token;
 
 use crate::{
-  interpreter::get_op_type,
-  ir_compiler::{CALL_ID, CLAUSE_SELECTOR_ID, MATCH_ID},
+  _interpreter::get_op_type,
+  ir_compiler::{CLAUSE_SELECTOR_ID, MATCH_ID},
   types::{Op, OpId, Operation, PortType, SolveDatabase, SolveState},
 };
 
@@ -13,8 +13,6 @@ use crate::{
 pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
   for node in db.nodes.iter() {
     let node = node.get_mut().unwrap();
-
-    dbg!(&node);
 
     let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
     let mut used_ops = vec![false; node.operands.len()];
@@ -29,7 +27,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
       }));
 
       for node in &node.nodes {
-        if node.type_str == CLAUSE_SELECTOR_ID || node.type_str == CALL_ID {
+        if node.type_str == CLAUSE_SELECTOR_ID {
           op_queue.extend(node.ports.iter().map(|p| p.slot));
         }
       }
@@ -46,7 +44,14 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         }
 
         match &node.operands[op.usize()] {
-          Operation::Param(..) | Operation::Const(..) | Operation::Name(..) => {}
+          // These operations do not reference other ops.
+          Operation::Param(..) | Operation::Const(..) | Operation::Str(..) => {}
+          Operation::Call { args, mem_ctx_op, .. } => {
+            for op in args {
+              op_queue.push_back(*op);
+            }
+            op_queue.push_back(*mem_ctx_op);
+          }
           Operation::Op { op_name, operands } => {
             for op in operands {
               op_queue.push_back(*op);
@@ -60,6 +65,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
               op_queue.push_back(*op);
             }
           }
+
           d => unreachable!("{op:?} {d} \n {node:?}"),
         }
       }
@@ -166,6 +172,11 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
           node.operands[op_index] = Operation::Dead;
         } else {
           match &mut node.operands[op_index] {
+            Operation::Call { args, .. } => {
+              for arg in args {
+                update_op(&dissolved_ops, arg);
+              }
+            }
             Operation::Op { operands, .. } => {
               for target_op in operands {
                 update_op(&dissolved_ops, target_op);

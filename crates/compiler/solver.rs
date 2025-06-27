@@ -1,5 +1,5 @@
 use crate::{
-  ir_compiler::{CALL_ID, INTERFACE_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
+  ir_compiler::{INTERFACE_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
   types::*,
 };
 use radlr_rust_runtime::types::BlameColor;
@@ -20,7 +20,7 @@ enum CallArgType {
 pub enum GlobalConstraint {
   ExtractGlobals { node_id: CMPLXId },
   ResolveObjectConstraints { node_id: CMPLXId, constraints: Vec<NodeConstraint> },
-  ResolveFunction { host_node_id: CMPLXId, call_node_id: usize },
+  ResolveFunction { host_node_id: CMPLXId, call_op_id: OpId },
   ResolveMemoryRegion { routine_id: CMPLXId, heap_node_id: usize },
   VerifyInterface { implementation_id: CMPLXId, interface_id: CMPLXId },
 }
@@ -45,14 +45,7 @@ struct DependencyBinding {
 /// All bindings should be cleared by the time there are no variables.
 ///
 
-pub(crate) fn solve_node_calls(
-  call_node: NodeHandle,
-  db: &mut SolveDatabase,
-  constraint_queue: &mut VecDeque<GlobalConstraint>,
-  allow_poly_fill: bool,
-  errors: &mut Vec<String>,
-) {
-}
+pub(crate) fn solve_node_calls(call_node: NodeHandle, db: &mut SolveDatabase, constraint_queue: &mut VecDeque<GlobalConstraint>, allow_poly_fill: bool, errors: &mut Vec<String>) {}
 
 pub fn get_routine_type_or_none(routine: NodeHandle, arg_index: CallArgType) -> Option<TypeV> {
   let routine = routine.get().unwrap();
@@ -163,9 +156,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
                     let i_method_sig = get_signature(method_interface.get().unwrap());
 
-                    'method_lookup: for (_, method_candidate, constraints) in
-                      rdb.nodes.iter().filter(|(name, node, ..)| name == param_name && node.get_type() == ROUTINE_ID)
-                    {
+                    'method_lookup: for (_, method_candidate, constraints) in rdb.nodes.iter().filter(|(name, node, ..)| name == param_name && node.get_type() == ROUTINE_ID) {
                       let method_candidate_id = match db.add_generated_node(method_candidate.clone()) {
                         GetResult::Introduced((node_id, _)) => {
                           constraint_queue.push_back(GlobalConstraint::ResolveObjectConstraints { node_id, constraints: constraints.clone() });
@@ -181,12 +172,8 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                       let mut score = 0;
 
                       if candidate_sig.inputs.len() == i_method_sig.inputs.len() && candidate_sig.outputs.len() == i_method_sig.outputs.len() {
-                        for (_index, ((_, candidate_ty), (_, i_method_ty))) in candidate_sig
-                          .inputs
-                          .iter()
-                          .zip(i_method_sig.inputs.iter())
-                          .chain(candidate_sig.outputs.iter().zip(i_method_sig.outputs.iter()))
-                          .enumerate()
+                        for (_index, ((_, candidate_ty), (_, i_method_ty))) in
+                          candidate_sig.inputs.iter().zip(i_method_sig.inputs.iter()).chain(candidate_sig.outputs.iter().zip(i_method_sig.outputs.iter())).enumerate()
                         {
                           if candidate_ty != i_method_ty {
                             match (candidate_ty.is_generic(), i_method_ty.is_generic()) {
@@ -231,11 +218,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                       // and the compatibility of primitive types.
                     }
                   } else {
-                    panic!(
-                      "Interfaces only support primitive and function signature member types, this type is incompatible {} => {}",
-                      method_interface.get_type(),
-                      ty
-                    )
+                    panic!("Interfaces only support primitive and function signature member types, this type is incompatible {} => {}", method_interface.get_type(), ty)
                   }
                 }
                 _ => {
@@ -264,17 +247,14 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
             entries.insert(TypeV::cmplx(*implementation_id), interface_methods);
             // Reached a verified point. We should add a verification stamp to the target type to avoid repeating this work
           }
-          GlobalConstraint::ResolveFunction { host_node_id, call_node_id } => {
+          GlobalConstraint::ResolveFunction { host_node_id, call_op_id } => {
             let host_node = NodeHandle::from((*host_node_id, &*db));
 
             if let Some(host_node_ref) = host_node.get() {
-              let RootNode { nodes, .. } = host_node_ref;
-              let call_node = &nodes[*call_node_id];
+              let RootNode { operands, .. } = host_node_ref;
+              let Operation::Call { reference, args, .. } = &operands[call_op_id.usize()] else { unreachable!() };
 
-              let Some((index, function_name, call_op)) = call_node.ports.iter().enumerate().find_map(|(index, NodePort { ty, slot, id })| match id {
-                VarId::CallId(name) => Some((index, *name, *slot)),
-                _ => None,
-              }) else {
+              let Reference::UnresolvedName(function_name) = *reference else {
                 panic!("Call node defined without CallRef name");
               };
 
@@ -282,11 +262,9 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               let rdb = db.db.get_ref();
 
               // Build the signature
-              let caller_sig = get_internal_node_signature(host_node_ref, *call_node_id);
+              let caller_sig = get_call_op_signature(host_node_ref, *call_op_id);
 
-              'method_lookup: for (_, callee_node, constraints) in
-                rdb.nodes.iter().filter(|(name, node, _)| *name == function_name && matches!(node.get_type(), ROUTINE_ID | INTRINSIC_ROUTINE_ID))
-              {
+              'method_lookup: for (_, callee_node, constraints) in rdb.nodes.iter().filter(|(name, node, _)| *name == function_name && matches!(node.get_type(), ROUTINE_ID | INTRINSIC_ROUTINE_ID)) {
                 let mut callee_node = callee_node.clone();
 
                 let callee_node_id = match db.add_generated_node(callee_node.clone()) {
@@ -307,9 +285,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 let mut callee_constraints = vec![];
 
                 if callee_sig.inputs.len() == caller_sig.inputs.len() && callee_sig.outputs.len() == caller_sig.outputs.len() {
-                  for ((callee_op, callee_ty), (_, caller_ty)) in
-                    callee_sig.inputs.iter().zip(caller_sig.inputs.iter()).chain(callee_sig.outputs.iter().zip(caller_sig.outputs.iter()))
-                  {
+                  for ((callee_op, callee_ty), (_, caller_ty)) in callee_sig.inputs.iter().zip(caller_sig.inputs.iter()).chain(callee_sig.outputs.iter().zip(caller_sig.outputs.iter())) {
                     if callee_ty != caller_ty {
                       match (callee_ty.is_generic(), caller_ty.is_generic()) {
                         (true, true) => {
@@ -348,8 +324,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
                                 let Some(caller_node_id) = caller_ty.cmplx_data() else { unreachable!() };
 
-                                constraint_queue
-                                  .push_back(GlobalConstraint::VerifyInterface { implementation_id: caller_node_id, interface_id: interface_node_id });
+                                constraint_queue.push_back(GlobalConstraint::VerifyInterface { implementation_id: caller_node_id, interface_id: interface_node_id });
                               }
 
                               continue;
@@ -368,26 +343,26 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                   panic!("Mismatched types \ncaller: {caller_sig:?}, \ncallee: {callee_sig:?} \n{callee_node:?}")
                 }
 
-                if callee_node.get_type() == INTRINSIC_ROUTINE_ID {
-                  host_node.get_mut().unwrap().nodes[*call_node_id].ports[index].id = VarId::IntrinsicCallTarget(function_name);
+                if let Operation::Call { reference, args, .. } = &mut host_node.get_mut().unwrap().operands[call_op_id.usize()] {
+                  if callee_node.get_type() == INTRINSIC_ROUTINE_ID {
+                    *reference = Reference::Intrinsic(function_name);
+                  } else {
+                    *reference = Reference::Funct(callee_node_id);
+                  }
                 } else {
-                  host_node.get_mut().unwrap().nodes[*call_node_id].ports[index].id = VarId::CallTarget(callee_node_id);
+                  unreachable!()
                 }
 
                 match (caller_constraints.is_empty(), callee_constraints.is_empty()) {
                   (false, false) => {
-                    constraint_queue
-                      .push_front(GlobalConstraint::ResolveObjectConstraints { node_id: callee_node_id, constraints: callee_constraints.clone() });
-                    constraint_queue
-                      .push_front(GlobalConstraint::ResolveObjectConstraints { node_id: *host_node_id, constraints: caller_constraints.clone() });
+                    constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: callee_node_id, constraints: callee_constraints.clone() });
+                    constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: *host_node_id, constraints: caller_constraints.clone() });
                   }
                   (true, false) => {
-                    constraint_queue
-                      .push_front(GlobalConstraint::ResolveObjectConstraints { node_id: callee_node_id, constraints: callee_constraints.clone() });
+                    constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: callee_node_id, constraints: callee_constraints.clone() });
                   }
                   (false, true) => {
-                    constraint_queue
-                      .push_front(GlobalConstraint::ResolveObjectConstraints { node_id: *host_node_id, constraints: caller_constraints.clone() });
+                    constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: *host_node_id, constraints: caller_constraints.clone() });
                   }
                   _ => {}
                 }
@@ -395,7 +370,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 continue 'outer;
               }
 
-              panic!("Could not find suitable method that matches {function_name} => {caller_sig:?}  in node {host_node_ref:?} @ {call_node:?}",)
+              panic!("Could not find suitable method that matches {function_name} => {caller_sig:?}  in node {host_node_ref:?} @ {call_op_id:?}",)
             }
           }
           GlobalConstraint::ResolveMemoryRegion { routine_id, heap_node_id } => {
@@ -463,9 +438,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
             if let Some(RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, .. }) = node.get_mut() {
               for (index, node) in nodes.iter().enumerate() {
                 match node.type_str {
-                  CALL_ID => {
-                    next_stage_constraints.push(GlobalConstraint::ResolveFunction { host_node_id: *node_id, call_node_id: index });
-                  }
                   MEMORY_REGION_ID => {
                     next_stage_constraints.push(GlobalConstraint::ResolveMemoryRegion { routine_id: *node_id, heap_node_id: index });
                   }
@@ -491,9 +463,8 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
             }
           }
 
-          GlobalConstraint::ResolveObjectConstraints { node_id: node, constraints } => {
-            let node = NodeHandle::from((*node, &*db));
-            solve_node_intrinsics(node.clone(), constraints, &db);
+          GlobalConstraint::ResolveObjectConstraints { node_id, constraints } => {
+            solve_node_intrinsics(*node_id, constraints, &mut next_stage_constraints, &db);
 
             /*    let nodes = dependency_links.entry(node.clone()).or_default();
             let pending_nodes = nodes.drain(..).collect::<Vec<_>>();
@@ -533,7 +504,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
           let node = db.nodes[i].clone();
 
           if node.get().unwrap().solve_state() != SolveState::Solved {
-            // Change seeds to loads where appropriate
+            // Change CVRTs to loads where appropriate
             // Change sinks to stores where appropriate
             // Report incomplete types.
 
@@ -545,16 +516,16 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             for (i, op) in operands.iter().enumerate() {
               match op {
-                Operation::Op { op_name: a @ Op::SINK, operands: [op1, op2, _] } => {
+                /*  Operation::Op { op_name: a @ Op::SINK, operands: [op1, op2, _] } => {
                   if op1.is_valid() {
                     let var_src = get_root_var_mut(types[op1.usize()].generic_id().unwrap(), type_vars);
                     let var_dst = get_root_var_mut(types[op2.usize()].generic_id().unwrap(), type_vars);
 
                     var_dst.num |= var_src.num;
                   }
-                }
+                } */
                 Operation::Op { op_name: Op::SEED, operands: [op1, op2, _] } => {}
-                Operation::Heap(VarId::Heap) => {}
+                //Operation::Heap(VarId::Heap) => {}
                 _ => {}
               }
             }
@@ -608,7 +579,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
           let node = db.nodes[i].clone();
 
           if node.get().unwrap().solve_state() != SolveState::Solved {
-            // Change seeds to loads where appropriate
+            // Change CVRTs to loads where appropriate
             // Change sinks to stores where appropriate
 
             // solve_node_expressions(node);
@@ -657,13 +628,18 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
   }
 }
 
-pub(crate) fn solve_node_intrinsics(node: NodeHandle, constraints: &[NodeConstraint], db: &SolveDatabase) {
+pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstraint], next_stage_constrants: &mut Vec<GlobalConstraint>, db: &SolveDatabase) {
   let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
+
+  let node = NodeHandle::from((node_id, &*db));
 
   while let Some(constraint) = constraint_queue.pop_front() {
     let RootNode { nodes: nodes, operands, op_types: types, type_vars, source_tokens, heap_id, .. } = node.get_mut().unwrap();
 
     match constraint.clone() {
+      NodeConstraint::LinkCall(op) => {
+        next_stage_constrants.push(GlobalConstraint::ResolveFunction { host_node_id: node_id, call_op_id: op });
+      }
       NodeConstraint::Deref { ptr_ty, val_ty, mutable } => {
         let ptr_index = ptr_ty.generic_id().expect("ptr_ty should be generic");
         let val_index = val_ty.generic_id().expect("val_ty should be generic");

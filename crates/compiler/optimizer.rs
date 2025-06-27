@@ -1,5 +1,5 @@
 use crate::{
-  interpreter::get_op_type,
+  _interpreter::get_op_type,
   types::{NodePort, Op, OpId, OptimizeLevel, PortType, SolveDatabase, TypeV, VarId},
 };
 

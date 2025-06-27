@@ -41,6 +41,9 @@ op: POW  l [A]  r [B]  => out [C: numeric]
 op: MUL  l [A]  r [B]  => out [C: numeric]
 op: DIV  l [A]  r [B]  => out [C: numeric]
 
+op: BIT_AND  l [A]  r [B]  => out [C: numeric]
+op: BIT_OR  l [A]  r [B]  => out [C: numeric]
+
 op: SUB  l [A]  r [B]  => out [C: numeric]
 op: ADD  l [A]  r [B]  => out [C: numeric]
 
@@ -149,17 +152,20 @@ inter_op_gen!(
   POW,
   MUL,
   DIV,
+  BIT_AND,
   SUB,
   ADD,
   RET,
   SEL,
   SEED,
-  SINK,
   FREE,
   LEN,
   CONST,
   LOAD_CONST,
-  CALL,
   ARG,
-  TempMetaPhi
+  TempMetaPhi,
+  GetAlign_temp,
+  GetByteSize_temp,
+  MAX_temp,
+  ResolvedCall
 );
