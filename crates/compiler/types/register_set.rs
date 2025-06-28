@@ -1,7 +1,5 @@
 use std::fmt::Debug;
 
-use super::OpId;
-
 #[derive(Clone, Copy)]
 pub(crate) struct RegisterSet {
   pub(crate) acquired: u64,

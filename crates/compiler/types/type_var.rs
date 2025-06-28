@@ -24,7 +24,6 @@ pub enum NodeConstraint {
   /// routine scope.
   GlobalHeapReference(TypeV, IString, Token),
   GlobalNameReference(TypeV, IString, Token),
-  GlobalMemberReference(TypeV, IString, Token),
   OpToTy(OpId, TypeV),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.

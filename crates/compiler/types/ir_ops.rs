@@ -164,8 +164,6 @@ inter_op_gen!(
   LOAD_CONST,
   ARG,
   TempMetaPhi,
-  GetAlign_temp,
   GetByteSize_temp,
-  MAX_temp,
   ResolvedCall
 );

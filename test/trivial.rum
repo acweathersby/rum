@@ -1,21 +1,28 @@
-DD :: [ test: f32, rainbow: u32 ]
 
-
-
+#intrinsic
 aligned :: (offset: u32, alignment: u32) : u32
 
   (offset + ( alignment + 1 )) & (4294967295 - (alignment - 1))
 
-
+#intrinsic
 max :: (a:u32, b:u32) : u32 
 
   if a > b { a } otherwise { b }
 
-
+#intrinsic
 min :: (a:u32, b:u32) : u32 
 
   if a < b { a } otherwise { b }
 
+#intrinsic
+get_byte_size :: (a: type) : u32 
+
+  a.ele_byte_size
+
+
+// END META =============================================
+
+DD :: [ test: f32, rainbow: u32 ]
 
 #test
 trivial :: (u:u32) : DD {

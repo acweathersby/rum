@@ -13,6 +13,7 @@ use crate::{
 pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
   for node in db.nodes.iter() {
     let node = node.get_mut().unwrap();
+    dbg!(&node);
 
     let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
     let mut used_ops = vec![false; node.operands.len()];
@@ -45,13 +46,15 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
 
         match &node.operands[op.usize()] {
           // These operations do not reference other ops.
-          Operation::Param(..) | Operation::Const(..) | Operation::Str(..) => {}
+          Operation::Type(..) | Operation::Param(..) | Operation::Const(..) | Operation::Str(..) => {}
+          Operation::AggDecl { reference, mem_ctx_op } => {}
           Operation::Call { args, mem_ctx_op, .. } => {
             for op in args {
               op_queue.push_back(*op);
             }
             op_queue.push_back(*mem_ctx_op);
           }
+
           Operation::Op { op_name, operands } => {
             for op in operands {
               op_queue.push_back(*op);
@@ -198,6 +201,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         }
       }
     }
+    dbg!(&node);
   }
 
   db.clone()

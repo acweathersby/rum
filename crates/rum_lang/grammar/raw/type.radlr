@@ -37,27 +37,27 @@ IGNORE { c:sp c:nl }
 <> primitive_type
   > primitive_uint
   | primitive_int
-  | "f32"   :ast { t_Type_f32 }
-  | "f64"   :ast { t_Type_f64 }
-  | "f128"  :ast { t_Type_f128 }
-  | "f32v2" :ast { t_Type_f32v2 }
-  | "f32v3" :ast { t_Type_f32v3 }
-  | "f32v4" :ast { t_Type_f32v4 }
-  | "f32v8" :ast { t_Type_f32v8 }
-  | "f64v2" :ast { t_Type_f64v2 }
-  | "f64v4" :ast { t_Type_f64v4 }
+  | "f32"   :ast { t_Type_f32, tok }
+  | "f64"   :ast { t_Type_f64, tok }
+  | "f128"  :ast { t_Type_f128, tok }
+  | "f32v2" :ast { t_Type_f32v2, tok }
+  | "f32v3" :ast { t_Type_f32v3, tok }
+  | "f32v4" :ast { t_Type_f32v4, tok }
+  | "f32v8" :ast { t_Type_f32v8, tok }
+  | "f64v2" :ast { t_Type_f64v2, tok }
+  | "f64v4" :ast { t_Type_f64v4, tok }
 
 <> primitive_int 
-  > "i8"    :ast { t_Type_i8 }
-  | "i16"   :ast { t_Type_i16 }
-  | "i32"   :ast { t_Type_i32 }
-  | "i64"   :ast { t_Type_i64 }
+  > "i8"    :ast { t_Type_i8, tok }
+  | "i16"   :ast { t_Type_i16, tok }
+  | "i32"   :ast { t_Type_i32, tok }
+  | "i64"   :ast { t_Type_i64, tok }
 
 <> primitive_uint 
-  > "u8"    :ast { t_Type_u8 }
-  | "u16"   :ast { t_Type_u16 }
-  | "u32"   :ast { t_Type_u32 }
-  | "u64"   :ast { t_Type_u64 }
+  > "u8"    :ast { t_Type_u8, tok }
+  | "u16"   :ast { t_Type_u16, tok }
+  | "u32"   :ast { t_Type_u32, tok }
+  | "u64"   :ast { t_Type_u64, tok }
 
 <> array_type 
   

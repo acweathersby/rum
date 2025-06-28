@@ -596,7 +596,7 @@ pub fn encode_routine(sn: &mut RootNode, bb_fn: &BasicBlockFunction, db: &SolveD
           let Operation::Call { reference, .. } = &sn.operands[op.source.usize()] else { unreachable!() };
 
           match reference {
-            Reference::Funct(cmplx_id) => {
+            Reference::Object(cmplx_id) => {
               let cw_pack = encode_call_preamble(instr_bytes, op);
               // Get the complex id from node associated with the call.
 

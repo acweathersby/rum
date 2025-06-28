@@ -10,7 +10,7 @@ use std::{
   default,
   fmt::{Debug, Display},
   hash::{DefaultHasher, Hash, Hasher},
-  ptr::drop_in_place,
+  ptr::{drop_in_place, null},
   thread::sleep,
   time::Duration,
 };
@@ -257,8 +257,9 @@ pub(crate) struct NodePort {
 #[derive(Clone, Copy)]
 pub(crate) enum Reference {
   UnresolvedName(IString),
-  Funct(CMPLXId),
+  Object(CMPLXId),
   Intrinsic(IString),
+  Offset(usize),
 }
 
 impl Debug for Reference {
@@ -266,7 +267,8 @@ impl Debug for Reference {
     match self {
       Self::UnresolvedName(name) => f.write_fmt(format_args!("{name}?")),
       Self::Intrinsic(name) => f.write_fmt(format_args!("`{name}")),
-      Self::Funct(id) => f.write_fmt(format_args!("`{id:?}")),
+      Self::Object(id) => f.write_fmt(format_args!("{id:?}")),
+      Self::Offset(id) => f.write_fmt(format_args!("{id}")),
     }
   }
 }
@@ -283,6 +285,20 @@ pub(crate) enum Operation {
   Call {
     reference:  Reference,
     args:       Vec<OpId>,
+    mem_ctx_op: OpId,
+  },
+  AggDecl {
+    reference:  Reference,
+    mem_ctx_op: OpId,
+  },
+  NamePTR {
+    reference:  Reference,
+    base:       OpId,
+    mem_ctx_op: OpId,
+  },
+  IndexedPTR {
+    index:      OpId,
+    base:       OpId,
     mem_ctx_op: OpId,
   },
   Op {
@@ -307,7 +323,10 @@ impl Display for Operation {
     match self {
       Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::Type(name) => f.write_fmt(format_args!("type::{name}",)),
-      Operation::Call { reference, args, .. } => f.write_fmt(format_args!("{reference:?}({args:?})",)),
+      Operation::Call { reference, args, mem_ctx_op } => f.write_fmt(format_args!("{reference:?}({args:?}) @ {mem_ctx_op}",)),
+      Operation::NamePTR { reference, base, mem_ctx_op } => f.write_fmt(format_args!("{base}[{reference:?}] @ ({mem_ctx_op})",)),
+      Operation::IndexedPTR { index, base, mem_ctx_op } => f.write_fmt(format_args!("{base}[{index:?}] @ ({mem_ctx_op})",)),
+      Operation::AggDecl { reference, mem_ctx_op, .. } => f.write_fmt(format_args!("new {reference:?} ({mem_ctx_op:?})",)),
       // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
@@ -323,28 +342,32 @@ impl Display for Operation {
 
 #[derive(Clone)]
 pub(crate) struct RootNode {
-  pub(crate) nodes:         Vec<Node>,
-  pub(crate) annotations:   Vec<IString>,
-  pub(crate) operands:      Vec<Operation>,
+  pub(crate) nodes:               Vec<Node>,
+  pub(crate) annotations:         Vec<IString>,
+  pub(crate) operands:            Vec<Operation>,
   /// Maps operands to the node they belong to.
-  pub(crate) operand_node:  Vec<usize>,
-  pub(crate) op_types:      Vec<TypeV>,
-  pub(crate) type_vars:     Vec<TypeVar>,
-  pub(crate) heap_id:       Vec<usize>,
-  pub(crate) source_tokens: Vec<Token>,
+  pub(crate) operand_node:        Vec<usize>,
+  pub(crate) op_types:            Vec<TypeV>,
+  pub(crate) type_vars:           Vec<TypeVar>,
+  pub(crate) heap_id:             Vec<usize>,
+  pub(crate) source_tokens:       Vec<Token>,
+  pub(crate) compile_time_binary: *const u8,
+  pub(crate) root_id:             isize,
 }
 
 impl Default for RootNode {
   fn default() -> Self {
     RootNode {
-      nodes:         Vec::with_capacity(8),
-      annotations:   Vec::with_capacity(8),
-      operands:      Vec::with_capacity(8),
-      operand_node:  Vec::with_capacity(8),
-      op_types:      Vec::with_capacity(8),
-      type_vars:     Vec::with_capacity(8),
-      source_tokens: Vec::with_capacity(8),
-      heap_id:       Vec::with_capacity(8),
+      nodes:               Vec::with_capacity(8),
+      annotations:         Vec::with_capacity(8),
+      operands:            Vec::with_capacity(8),
+      operand_node:        Vec::with_capacity(8),
+      op_types:            Vec::with_capacity(8),
+      type_vars:           Vec::with_capacity(8),
+      source_tokens:       Vec::with_capacity(8),
+      heap_id:             Vec::with_capacity(8),
+      compile_time_binary: std::ptr::null(),
+      root_id:             -1,
     }
   }
 }
@@ -383,6 +406,8 @@ pub(crate) fn get_signature(node: &RootNode) -> Signature {
 pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
   let RootNode { nodes, op_types: types, type_vars, .. } = node;
   let call_node = &nodes[internal_node_index];
+
+  dbg!((&node, types, type_vars));
 
   Signature::new(
     &call_node

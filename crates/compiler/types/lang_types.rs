@@ -47,6 +47,8 @@ pub const ty_f128: TypeV = TypeV::prim(prim_ty_f128);
 
 pub const ty_addr: TypeV = TypeV::prim(prim_ty_addr);
 
+pub const ty_type: TypeV = TypeV::prim(prim_ty_type);
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, Hash)]
 pub struct TypeV(u64);
 
@@ -70,10 +72,6 @@ impl TypeV {
 
   pub const fn undefined() -> TypeV {
     Self(0)
-  }
-
-  pub const fn _type() -> TypeV {
-    Self::create(BaseType::Type, 0, 0)
   }
 
   pub const fn no_use() -> TypeV {
@@ -109,12 +107,17 @@ impl TypeV {
       5 => BaseType::NoUse,
       6 => BaseType::Poison,
       7 => BaseType::MemCtx,
+      9 => BaseType::Type,
       _ => BaseType::Undefined,
     }
   }
 
   pub fn is_array(&self) -> bool {
     ((self.0 >> Self::ARRAY_OFFSET) & Self::ARRAY_FLAG_BITS) > 0
+  }
+
+  pub fn is_type(&self) -> bool {
+    self.base_ty() == BaseType::Type
   }
 
   pub fn is_generic(&self) -> bool {
@@ -217,7 +220,7 @@ impl TypeV {
     }
   }
 
-  pub fn cmplx(cmplx_id: CMPLXId) -> TypeV {
+  pub const fn cmplx(cmplx_id: CMPLXId) -> TypeV {
     Self::create(BaseType::Complex, 0, unsafe { std::mem::transmute(cmplx_id) })
   }
 
@@ -229,7 +232,7 @@ impl TypeV {
     Self(self.0 & (!(Self::ARRAY_FLAG_BITS << Self::ARRAY_OFFSET)))
   }
 
-  pub fn incr_ptr(&self) -> TypeV {
+  pub const fn incr_ptr(&self) -> TypeV {
     self.to_ptr(self.ptr_depth() + 1)
   }
 
@@ -241,11 +244,11 @@ impl TypeV {
     ((self.0 >> Self::DATA_OFFSET) & Self::DATA_BITS) as u32
   }
 
-  pub fn ptr_depth(&self) -> i8 {
+  pub const fn ptr_depth(&self) -> i8 {
     ((self.0 >> Self::PTR_OFFSET) & Self::PTR_BITS) as i8
   }
 
-  pub fn to_ptr(&self, ptr_depth: i8) -> TypeV {
+  pub const fn to_ptr(&self, ptr_depth: i8) -> TypeV {
     Self((self.0 & !(Self::PTR_BITS << Self::PTR_OFFSET)) | ((ptr_depth as u8 as u64) << Self::PTR_OFFSET))
   }
 

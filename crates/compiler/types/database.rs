@@ -1,17 +1,15 @@
-use rum_common::{CachedString, IString};
-use rum_lang::parser::{self, script_parser::entry_Value};
-
 use super::RootNode;
 use crate::{
   finalizer::finalize,
-  ir_compiler::compile_struct,
+  ir_compiler::STRUCT_ID,
   optimizer::optimize,
   solver::{solve, GlobalConstraint},
   types::*,
 };
-
+use rum_common::{CachedString, IString};
+use rum_lang::parser::script_parser::entry_Value;
 use std::{
-  collections::{binary_heap::Iter, BTreeMap, HashMap, VecDeque},
+  collections::{BTreeMap, HashMap},
   sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -81,7 +79,7 @@ pub enum GetResult {
 
 impl<'a> SolveDatabase<'a> {
   pub fn new<'b>(db: &'b Database) -> SolveDatabase<'b> {
-    SolveDatabase {
+    let mut solve_db = SolveDatabase {
       db,
       roots: Default::default(),
       sig_lookup: Default::default(),
@@ -90,7 +88,27 @@ impl<'a> SolveDatabase<'a> {
       interface_instances: Default::default(),
       heap_map: Default::default(),
       heap_count: 0,
-    }
+    };
+
+    solve_db.add_object(
+      "ty_type".intern(),
+      NodeHandle::new(RootNode {
+        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
+        compile_time_binary: unsafe { std::mem::transmute(&RUM_EGG_BASE_TYPE) },
+        ..Default::default()
+      }),
+    );
+
+    solve_db.add_object(
+      "ty_prop_type".intern(),
+      NodeHandle::new(RootNode {
+        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
+        compile_time_binary: unsafe { std::mem::transmute(&RUM_PROP_BASE_TYPE) },
+        ..Default::default()
+      }),
+    );
+
+    solve_db
   }
 
   pub fn solve_for<'b>(solve_ty: &str, db: &'b Database) -> SolveDatabase<'b> {
@@ -118,7 +136,20 @@ impl<'a> SolveDatabase<'a> {
         }
       }
       entry_Value::NamedEntries(names) => {
-        todo!("{names:?}");
+        for name in &names.names {
+          let name = name.id.intern();
+          if let Some((node, node_constraints)) = db.get_object_mut(name) {
+            let node = node.duplicate();
+
+            let node_id = solver_db.add_object(name, node.clone());
+
+            if node_constraints.len() > 0 {
+              global_constraints.push(GlobalConstraint::ResolveObjectConstraints { node_id, constraints: node_constraints.clone() });
+            }
+
+            solver_db.add_root(RootType::Any, node_id);
+          }
+        }
       }
       entry_Value::RawRoutineDefinition(routine_sig) => {
         todo!("Routine sig");
@@ -180,11 +211,12 @@ impl<'a> SolveDatabase<'a> {
   }
 
   pub fn add_generated_node(&mut self, handle: NodeHandle) -> GetResult {
-    if let Some((i, _)) = self.nodes.iter().enumerate().find(|(_, n)| **n == handle) {
+    let root_id = handle.get().unwrap().root_id;
+    if let Some((i, _)) = self.nodes.iter().enumerate().find(|(_, n)| n.get().unwrap().root_id == root_id) {
       GetResult::Existing(CMPLXId(i as u32))
     } else {
       let id = CMPLXId(self.nodes.len() as u32);
-      self.nodes.push(handle.clone());
+      self.nodes.push(handle.duplicate());
       GetResult::Introduced((id, vec![]))
     }
   }
@@ -250,14 +282,68 @@ impl<'a> SolveDatabase<'a> {
   }
 }
 
+#[derive(Debug)]
+#[repr(C)]
+pub struct RumTypeProp {
+  pub name:        &'static str,
+  pub ty:          TypeV,
+  pub byte_offset: u32,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+pub struct RumTypeObject {
+  pub name:          &'static str,
+  pub ele_count:     u32,
+  pub ele_byte_size: u32,
+  pub alignment:     u32,
+  pub prop_count:    u32,
+  pub props:         [RumTypeProp; 6],
+}
+
+pub static RUM_EGG_BASE_TYPE: RumTypeObject = RumTypeObject {
+  name:          "ty_type",
+  ele_count:     1,
+  ele_byte_size: 224,
+  alignment:     1,
+  prop_count:    6,
+  props:         [
+    RumTypeProp { name: "name", ty: ty_u32, byte_offset: 0 },
+    RumTypeProp { name: "ele_count", ty: ty_u32, byte_offset: 8 },
+    RumTypeProp { name: "ele_byte_size", ty: ty_u32, byte_offset: 12 },
+    RumTypeProp { name: "alignment", ty: ty_u32, byte_offset: 16 },
+    RumTypeProp { name: "prop_count", ty: ty_u32, byte_offset: 20 },
+    RumTypeProp { name: "props", ty: TypeV::cmplx(CMPLXId(1)).incr_ptr(), byte_offset: 32 },
+  ],
+};
+
+pub static RUM_PROP_BASE_TYPE: RumTypeObject = RumTypeObject {
+  name:          "ty_type_prop",
+  ele_count:     0,
+  ele_byte_size: 0,
+  alignment:     1,
+  prop_count:    3,
+  props:         [
+    RumTypeProp { name: "name", ty: ty_u32, byte_offset: 0 },
+    RumTypeProp { name: "ty", ty: TypeV::cmplx(CMPLXId(0)).incr_ptr(), byte_offset: 8 },
+    RumTypeProp { name: "byte_offset", ty: ty_u32, byte_offset: 12 },
+    RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },
+  ],
+};
+
 #[derive(Clone, Debug)]
 pub struct Database(pub std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
 
 impl Default for Database {
   fn default() -> Self {
     let mut core = DatabaseCore { ops: Default::default(), nodes: Default::default(), parent: std::ptr::null(), name_map: Default::default() };
+
     add_ops_to_db(&mut core, &OP_DEFINITIONS);
-    Self(Arc::new(Mutex::new(core)))
+    let this = Self(Arc::new(Mutex::new(core)));
+
+    this
   }
 }
 
@@ -285,6 +371,8 @@ impl Database {
         //panic!("Incoming {node:?} would replace outgoing node {outgoing:?}");
       }
     }
+
+    node.get_mut().unwrap().root_id = db.nodes.len() as isize;
 
     db.nodes.push((name, node, constraints));
   }

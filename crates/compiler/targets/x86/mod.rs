@@ -7,7 +7,7 @@ use x86_binary_writer::{BinaryFunction, PatchType};
 
 use crate::{
   basic_block_compiler::{self, x86_spec_fn},
-  ir_compiler::ROUTINE_ID,
+  ir_compiler::{ROUTINE_ID, STRUCT_ID},
   types::{NodeHandle, SolveDatabase, TypeVar, VarId},
 };
 
@@ -43,7 +43,7 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
     if seen.insert(id) {
       let handle: NodeHandle = (id, db).into();
 
-      if handle.get_type() == ROUTINE_ID {
+      if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {
         let super_node = handle.get_mut().unwrap();
 
         // Collect complex node requirements
