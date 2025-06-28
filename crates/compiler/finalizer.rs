@@ -1,11 +1,13 @@
+#![allow(non_upper_case_globals)]
+
 use std::collections::VecDeque;
 
 use rum_lang::Token;
 
 use crate::{
   _interpreter::get_op_type,
-  ir_compiler::{CLAUSE_SELECTOR_ID, MATCH_ID},
-  types::{Op, OpId, Operation, PortType, SolveDatabase, SolveState},
+  ir_compiler::CLAUSE_SELECTOR_ID,
+  types::{NodeHandle, Op, OpId, Operation, PortType, Reference, RumTypeObject, SolveDatabase, SolveState},
 };
 
 /// Performs necessary transformations on active nodes, such as inserting convert instructions, etc.
@@ -47,15 +49,19 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         match &node.operands[op.usize()] {
           // These operations do not reference other ops.
           Operation::Type(..) | Operation::Param(..) | Operation::Const(..) | Operation::Str(..) => {}
-          Operation::AggDecl { reference, mem_ctx_op } => {}
+          Operation::AggDecl { .. } => {}
           Operation::Call { args, mem_ctx_op, .. } => {
             for op in args {
               op_queue.push_back(*op);
             }
             op_queue.push_back(*mem_ctx_op);
           }
+          Operation::NamePTR { base, mem_ctx_op, .. } => {
+            op_queue.push_back(*base);
+            op_queue.push_back(*mem_ctx_op);
+          }
 
-          Operation::Op { op_name, operands } => {
+          Operation::Op { operands, .. } => {
             for op in operands {
               op_queue.push_back(*op);
             }
@@ -82,6 +88,28 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         }
 
         match &node.operands[op_id.usize()] {
+          Operation::NamePTR { reference, base, mem_ctx_op } => {
+            let parent_type = get_op_type(node, *base);
+
+            if let Reference::UnresolvedName(name) = reference {
+              if let Some(cmplx_node) = parent_type.cmplx_data() {
+                let agg_node = NodeHandle::from((cmplx_node, db));
+                let agg_node = agg_node.get().unwrap();
+
+                if !agg_node.compile_time_binary.is_null() {
+                  let out: &RumTypeObject = unsafe { std::mem::transmute(agg_node.compile_time_binary) };
+
+                  if let Some(prop) = out.props.iter().find(|p| p.name == name.to_str().as_str()) {
+                    let offset = prop.byte_offset;
+                    node.operands[op_id.usize()] = Operation::NamePTR { reference: Reference::Offset(offset as _), base: *base, mem_ctx_op: *mem_ctx_op }
+                  }
+                }
+              } else {
+                dbg!(node);
+                panic!("Could not get base type of type at op {op_id}  base_type: {parent_type}")
+              }
+            }
+          }
           Operation::Op { op_name, operands } => {
             match *op_name {
               Op::SEED => {

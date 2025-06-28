@@ -302,34 +302,24 @@ pub fn encode_routine(sn: &mut RootNode, bb_fn: &BasicBlockFunction, db: &SolveD
 
           encode_call_postamble(instr_bytes, cw_pack);
         }
-        Op::NPTR => {
-          let VarVal::Reg(out_reg_id, _) = op.out else { unreachable!() };
-          let own_ptr = REGISTERS[out_reg_id as usize];
+        Op::MAP_BASE_TO_CHILD => {
+          let Operation::NamePTR { reference, .. } = &sn.operands[op.source.usize()] else { unreachable!() };
+          let Reference::Offset(offset) = reference else { unreachable!() };
 
-          // Get ptr offset
-          let Operation::Str(name) = sn.operands[op.ops[1].usize()] else { unreachable!("Should be a name op") };
-
-          let ty = get_op_type(sn, op.ops[0]).to_base_ty().cmplx_data().unwrap();
-
-          let node: NodeHandle = (ty, db).into();
-          let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
-          let offset = get_agg_offset(node.get().unwrap(), name, &mut ctx);
-
-          // Base pointer
           match op.args[0] {
-            VarVal::Stashed(offset) => {
-              todo!("Create pointer val from stashed pointer");
-            }
-            VarVal::Reg(reg_id, _) => {
-              let base_ptr = REGISTERS[reg_id as usize];
-              if offset > 0 {
-                encode_x86(instr_bytes, &lea, 64, own_ptr.as_reg_op(), Arg::MemRel(base_ptr, offset as _), Arg::None, Arg::None);
-              } else if own_ptr != base_ptr {
-                encode_x86(instr_bytes, &mov, 64, own_ptr.as_reg_op(), base_ptr.as_reg_op(), Arg::None, Arg::None);
+            VarVal::Stashed(..) => todo!("load ptr and create offset"),
+            VarVal::Reg(src_reg, ..) => {
+              let src_ptr = REGISTERS[src_reg as usize];
+              match op.out {
+                VarVal::Reg(dst_reg, _) => {
+                  let own_ptr = REGISTERS[dst_reg as usize];
+                  encode_x86(instr_bytes, &lea, 64, own_ptr.as_reg_op(), Arg::MemRel(src_ptr, *offset as _), Arg::None, Arg::None);
+                }
+                other => todo!("Map to {other:?}"),
               }
             }
             _ => unreachable!(),
-          }
+          };
         }
         Op::STORE => {
           let byte_size = get_op_type(sn, op.ops[1]).prim_data().byte_size as u64 * 8;

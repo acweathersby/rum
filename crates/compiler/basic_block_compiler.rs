@@ -8,7 +8,7 @@ use crate::{
     reg::Reg,
     x86::{x86_binary_writer::create_block_ordering, x86_types::*},
   },
-  types::{prim_ty_addr, prim_ty_u32, CMPLXId, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{prim_ty_addr, prim_ty_u32, CMPLXId, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, Reference, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
 };
 use std::{
   collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
@@ -289,7 +289,7 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
         })
       }
     }
-    Op::NPTR | Op::OPTR => Some(&SpecializationData {
+    Op::OPTR => Some(&SpecializationData {
       arg_usage:                    [Used, Used, NoUse],
       out_assign_req:               NoRequirement,
       arithimatic_const_commutable: false,
@@ -513,6 +513,21 @@ pub(crate) fn encode_function(
           vars[outer_var_id as usize].prefer = input_reg;
 
           //vars[inner_var_id as usize].register = VarVal::Reg(get_param_registers(*index as usize, op_prim_ty) as _);
+        }
+        Operation::NamePTR { reference, base, .. } => {
+          debug_assert!(matches!(reference, Reference::Offset(..)));
+
+          let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *base);
+          let out_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+          bb_funct.blocks[data.block as usize].ops2.push(BBop {
+            op_ty:   Op::MAP_BASE_TO_CHILD,
+            out:     VarVal::Var(out_var_id),
+            args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
+            ops:     [OpId::default(); 3],
+            source:  target_op,
+            prim_ty: op_prim_ty,
+            probe:   Probe::None,
+          });
         }
         Operation::Call { args, .. } => {
           let mut int_index = 0;
@@ -1205,6 +1220,12 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
       max_level = max_level.max(level);
 
       match &sn.operands[op.usize()] {
+        Operation::NamePTR { base, mem_ctx_op, .. } => {
+          op_data[op.usize()].block = level;
+
+          pending_ops.push_back((*mem_ctx_op, level));
+          pending_ops.push_back((*base, level));
+        }
         Operation::Call { args, mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
 

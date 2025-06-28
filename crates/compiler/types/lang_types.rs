@@ -22,7 +22,6 @@ pub const prim_ty_f32: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseTyp
 pub const prim_ty_f64: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 15, byte_size: 8, ele_count: 1 };
 pub const prim_ty_f128: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Float, base_index: 16, byte_size: 8, ele_count: 1 };
 pub const prim_ty_addr: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Address, base_index: 17, byte_size: 8, ele_count: 1 };
-pub const prim_ty_type: PrimitiveType = PrimitiveType { base_ty: PrimitiveBaseType::Type, base_index: 17, byte_size: 8, ele_count: 1 };
 
 pub const ty_undefined: TypeV = TypeV::prim(prim_ty_undefined);
 pub const ty_poison: TypeV = TypeV::prim(prim_ty_poison);
@@ -46,8 +45,6 @@ pub const ty_f64: TypeV = TypeV::prim(prim_ty_f64);
 pub const ty_f128: TypeV = TypeV::prim(prim_ty_f128);
 
 pub const ty_addr: TypeV = TypeV::prim(prim_ty_addr);
-
-pub const ty_type: TypeV = TypeV::prim(prim_ty_type);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, Hash)]
 pub struct TypeV(u64);
@@ -107,17 +104,12 @@ impl TypeV {
       5 => BaseType::NoUse,
       6 => BaseType::Poison,
       7 => BaseType::MemCtx,
-      9 => BaseType::Type,
       _ => BaseType::Undefined,
     }
   }
 
   pub fn is_array(&self) -> bool {
     ((self.0 >> Self::ARRAY_OFFSET) & Self::ARRAY_FLAG_BITS) > 0
-  }
-
-  pub fn is_type(&self) -> bool {
-    self.base_ty() == BaseType::Type
   }
 
   pub fn is_generic(&self) -> bool {
@@ -167,6 +159,14 @@ impl TypeV {
     }
   }
 
+  pub fn prim_data_for_print(&self) -> PrimitiveType {
+    match self.base_ty() {
+      BaseType::Primitive => unsafe { std::mem::transmute(self.data()) },
+      BaseType::Complex | BaseType::Heap => prim_ty_addr,
+      _ => prim_ty_undefined,
+    }
+  }
+
   pub fn cmplx_data(&self) -> Option<CMPLXId> {
     match self.base_ty() {
       BaseType::Complex => Some(unsafe { std::mem::transmute(self.data()) }),
@@ -176,7 +176,6 @@ impl TypeV {
 
   pub fn type_data(&self) -> TypeData {
     match self.base_ty() {
-      BaseType::Type => TypeData::Type,
       BaseType::Undefined => TypeData::Undefined,
       BaseType::Primitive => TypeData::Primitive(self.prim_data()),
       BaseType::Complex => TypeData::Complex(self.cmplx_data().unwrap()),
@@ -276,11 +275,8 @@ impl Display for TypeV {
     }
 
     match self.base_ty() {
-      BaseType::Type => {
-        Display::fmt(&"type", f)?;
-      }
       BaseType::Primitive => {
-        Display::fmt(&self.prim_data(), f)?;
+        Display::fmt(&self.prim_data_for_print(), f)?;
       }
       BaseType::Complex => {
         f.write_str("Π")?;
@@ -341,7 +337,6 @@ pub enum BaseType {
   Poison    = 6,
   MemCtx    = 7,
   Util      = 8,
-  Type      = 9,
 }
 
 pub enum TypeData {
@@ -367,7 +362,6 @@ pub enum PrimitiveBaseType {
   Float,
   Bool,
   Poison,
-  Type,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
@@ -393,7 +387,6 @@ impl Display for PrimitiveType {
       Bool => f.write_str("bool"),
       Poison => f.write_str("XXPOISONXX"),
       Address => f.write_str("addr"),
-      Type => f.write_str("type"),
       Signed => {
         if *ele_count > 1 {
           f.write_fmt(format_args!("s{}x{}", byte_size * 8, ele_count))

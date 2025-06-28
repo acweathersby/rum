@@ -69,6 +69,7 @@ pub fn add_module(db: &mut Database, module: &str) {
                 node.get_mut().unwrap().annotations.push(id);
               }
             }
+
             dbg!(&node);
 
             db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
@@ -112,8 +113,7 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 
     add_constraint(bp, NodeConstraint::GenTyToTy(str_type, ty_addr)); // TODO: Change string type to array reference
     add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty, ty_u32));
-    add_constraint(bp, NodeConstraint::GenTyToTy(type_ty, ty_type));
-    add_constraint(bp, NodeConstraint::GlobalNameReference(type_agg_ty, "ty_type".intern(), Default::default()));
+    add_constraint(bp, NodeConstraint::GlobalNameReference(type_agg_ty, "type".intern(), Default::default()));
 
     declare_top_scope_var(bp, VarId::Return, Default::default(), type_agg_ty).origin_node_index = -1;
 
@@ -133,16 +133,8 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 
       let prop_type_op = add_op(bp, Operation::Type(type_name), type_ty, Default::default());
 
-      let type_byte_size_op = add_op(
-        bp,
-        Operation::Call {
-          reference:  Reference::UnresolvedName("get_byte_size".intern()),
-          args:       vec![prop_type_op, Default::default(), Default::default()],
-          mem_ctx_op: Default::default(),
-        },
-        offset_ty,
-        Default::default(),
-      );
+      let type_byte_size_op =
+        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], mem_ctx_op: Default::default() }, offset_ty, Default::default());
       add_constraint(bp, NodeConstraint::LinkCall(type_byte_size_op));
 
       let (prev_offset, _) = get_var(bp, offset_id).unwrap();
@@ -247,8 +239,7 @@ fn create_member_pointer(bp: &mut BuildPack<'_>, agg_op: OpId, prop_name: IStrin
   let var = &mut bp.super_node.type_vars[agg_ty_index];
   var.add_mem(prop_name, mem_ty.clone(), Default::default());
 
-  let name_op = add_op(bp, Operation::Str(prop_name), TypeV::NoUse, Default::default());
-  let (ref_op, ref_ty) = process_op(Op::NPTR, &[agg_op, name_op], bp, Default::default());
+  let (ref_op, ref_ty) = create_member_ptr_op(bp, agg_op, prop_name, Default::default());
 
   add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty, mutable: false });
 
@@ -1079,7 +1070,6 @@ fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (OpId, TypeV)
 
   add_constraint(bp, NodeConstraint::LinkCall(call_out));
 
-  dbg!((call_out, ret_ty));
   (call_out, ret_ty)
 }
 
@@ -1111,7 +1101,7 @@ fn compile_aggregate_instantiation(bp: &mut BuildPack, agg_decl: &Arc<rum_lang::
 fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>, agg_ptr_op: OpId, agg_var_index: usize) {
   let ty_var = add_ty_var(bp);
   let addr_ty = ty_var.ty;
-  add_constraint(bp, NodeConstraint::GenTyToTy(addr_ty.clone(), ty_addr));
+  //add_constraint(bp, NodeConstraint::GenTyToTy(addr_ty.clone(), ty_addr));
 
   let mut indexed_mem_type = None;
 
@@ -1120,9 +1110,7 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
     if let Some(name_var) = &init.name {
       let name = name_var.id.intern();
 
-      let name_op = add_op(bp, Operation::Str(name), TypeV::NoUse, name_var.clone().into());
-      let (mem_ptr_op, ref_ty) = process_op(Op::NPTR, &[agg_ptr_op, name_op], bp, name_var.clone().into());
-      clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
+      let (mem_ptr_op, member_reference_ty) = create_member_ptr_op(bp, agg_ptr_op, name_var.id.intern(), name_var.clone().into());
 
       let mem_ty = add_ty_var(bp);
       mem_ty.add(VarAttribute::Member);
@@ -1130,7 +1118,7 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
 
       bp.super_node.type_vars[agg_var_index].add_mem(name, mem_ty.clone(), Default::default());
 
-      add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty.clone(), mutable: false });
+      add_constraint(bp, NodeConstraint::Deref { ptr_ty: member_reference_ty, val_ty: mem_ty.clone(), mutable: false });
 
       let (store_op, ty) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, init.clone().into());
 
@@ -1166,6 +1154,18 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
       //update_var(bp, VarId::ArrayMem(agg_var_index), store_op, ty);
     }
   }
+}
+
+fn create_member_ptr_op(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, name: IString, name_var: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> (OpId, TypeV) {
+  let member_reference_ty = add_ty_var(bp).ty;
+
+  let (mem_op, _) = get_mem_context(bp);
+
+  let mem_ptr_op = add_op(bp, Operation::NamePTR { reference: Reference::UnresolvedName(name), base: agg_ptr_op, mem_ctx_op: mem_op }, member_reference_ty, name_var);
+
+  clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
+
+  (mem_ptr_op, member_reference_ty)
 }
 
 fn get_heap_ty_from_lifime(lifetime: Option<&Arc<ScopedLifetime>>, bp: &mut BuildPack<'_>) -> TypeV {
@@ -1206,7 +1206,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
           member_group_Value::IndexedMember(index) => {
             let (expr_op, ty, _) = compile_expression(&index.expression, bp, None);
 
-            add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_addr));
+            //add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_addr));
 
             let var = &mut bp.super_node.type_vars[agg_ty_index];
 
@@ -1263,8 +1263,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
               mem_ptr_op = var;
               mem_ptr_ty = candidate_mem_ty;
             } else {
-              let name_op = add_op(bp, Operation::Str(name), TypeV::NoUse, name_node.clone().into());
-              let (ref_op, ref_ty) = process_op(Op::NPTR, &[mem_ptr_op, name_op], bp, name_node.clone().into());
+              let (ref_op, ref_ty) = create_member_ptr_op(bp, mem_ptr_op, name, name_node.clone().into());
 
               clone_op_heap(bp, mem_ptr_op, ref_op);
 
@@ -1287,6 +1286,7 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
           clone_op_heap(bp, mem_ptr_op, loaded_val_op);
           mem_ptr_op = loaded_val_op;
           mem_ptr_ty = loaded_val_ty;
+          agg_ty_index = loaded_val_ty.generic_id().unwrap();
         }
       }
 

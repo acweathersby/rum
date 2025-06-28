@@ -91,7 +91,7 @@ impl<'a> SolveDatabase<'a> {
     };
 
     solve_db.add_object(
-      "ty_type".intern(),
+      "type".intern(),
       NodeHandle::new(RootNode {
         nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
         compile_time_binary: unsafe { std::mem::transmute(&RUM_EGG_BASE_TYPE) },
@@ -100,7 +100,7 @@ impl<'a> SolveDatabase<'a> {
     );
 
     solve_db.add_object(
-      "ty_prop_type".intern(),
+      "type_prop".intern(),
       NodeHandle::new(RootNode {
         nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
         compile_time_binary: unsafe { std::mem::transmute(&RUM_PROP_BASE_TYPE) },
@@ -302,7 +302,7 @@ pub struct RumTypeObject {
 }
 
 pub static RUM_EGG_BASE_TYPE: RumTypeObject = RumTypeObject {
-  name:          "ty_type",
+  name:          "type",
   ele_count:     1,
   ele_byte_size: 224,
   alignment:     1,
@@ -318,14 +318,14 @@ pub static RUM_EGG_BASE_TYPE: RumTypeObject = RumTypeObject {
 };
 
 pub static RUM_PROP_BASE_TYPE: RumTypeObject = RumTypeObject {
-  name:          "ty_type_prop",
+  name:          "type_prop",
   ele_count:     0,
   ele_byte_size: 0,
   alignment:     1,
   prop_count:    3,
   props:         [
     RumTypeProp { name: "name", ty: ty_u32, byte_offset: 0 },
-    RumTypeProp { name: "ty", ty: TypeV::cmplx(CMPLXId(0)).incr_ptr(), byte_offset: 8 },
+    RumTypeProp { name: "ty", ty: TypeV::cmplx(CMPLXId(0)), byte_offset: 8 },
     RumTypeProp { name: "byte_offset", ty: ty_u32, byte_offset: 12 },
     RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },
     RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },

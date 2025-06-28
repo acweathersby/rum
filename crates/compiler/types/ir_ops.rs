@@ -131,7 +131,7 @@ inter_op_gen!(
   ARR_DECL,
   DECL,
   OPTR,
-  NPTR,
+  MAP_BASE_TO_CHILD,
   RPTR,
   CAS,
   PROP,

@@ -8,7 +8,7 @@ use super::*;
 use std::{
   alloc::Layout,
   default,
-  fmt::{Debug, Display},
+  fmt::{Debug, Display, Write},
   hash::{DefaultHasher, Hash, Hasher},
   ptr::{drop_in_place, null},
   thread::sleep,
@@ -622,10 +622,25 @@ impl Display for Node {
   }
 }
 
-#[derive(Debug)]
 pub struct Signature {
   pub inputs:  Vec<(OpId, TypeV)>,
   pub outputs: Vec<(OpId, TypeV)>,
+}
+
+impl Debug for Signature {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("(")?;
+    f.write_str(&self.inputs.iter().map(|(op, ty)| if op.is_valid() { format!("{op}:{ty}") } else { format!("XXXX") }).collect::<Vec<_>>().join(", "))?;
+    f.write_str(") => ")?;
+
+    if self.outputs.is_empty() {
+      f.write_str("XXXX")?;
+    } else {
+      f.write_str(&self.outputs.iter().map(|(op, ty)| if op.is_valid() { format!("{ty}") } else { format!("XXXX") }).collect::<Vec<_>>().join(" - "))?;
+    }
+
+    Ok(())
+  }
 }
 
 impl Signature {
