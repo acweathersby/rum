@@ -1,6 +1,7 @@
 #![feature(box_as_ptr)]
 #![feature(unsized_tuple_coercion)]
 #![feature(if_let_guard)]
+#![feature(str_from_raw_parts)]
 
 pub mod bitfield;
 

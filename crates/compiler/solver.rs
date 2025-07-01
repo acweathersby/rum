@@ -1,7 +1,10 @@
 use crate::{
   ir_compiler::{INTERFACE_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
   linker,
-  targets::{self, x86::print_instructions},
+  targets::{
+    self,
+    x86::{print_instructions, x86_eval},
+  },
   types::{self, *},
 };
 use radlr_rust_runtime::types::BlameColor;
@@ -259,9 +262,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 panic!("Call node defined without CallRef name");
               };
 
-              println!("================================");
-              dbg!(function_name);
-
               // Pull in and verify any method that matches the criteria of
               let rdb = db.db.get_ref();
 
@@ -271,7 +271,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               'method_lookup: for (_, callee_node, constraints) in rdb.nodes.iter().filter(|(name, node, _)| *name == function_name && matches!(node.get_type(), ROUTINE_ID | INTRINSIC_ROUTINE_ID)) {
                 let callee_node_id = match db.add_generated_node(callee_node.clone()) {
                   GetResult::Introduced((node_id, _)) => {
-                    dbg!(constraints);
                     constraint_queue.push_back(GlobalConstraint::ResolveObjectConstraints { node_id, constraints: constraints.clone() });
                     constraint_queue.push_back(GlobalConstraint::ExtractGlobals { node_id });
                     link_constraints.push(constraint);
@@ -294,9 +293,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 // Comparing the two
                 let mut caller_constraints = vec![];
                 let mut callee_constraints = vec![];
-
-                dbg!(&caller_sig, &callee_sig, &callee_node);
-                println!("================================");
 
                 if callee_sig.inputs.len() == caller_sig.inputs.len() && callee_sig.outputs.len() == caller_sig.outputs.len() {
                   for ((callee_op, callee_ty), (_, caller_ty)) in callee_sig.inputs.iter().zip(caller_sig.inputs.iter()).chain(callee_sig.outputs.iter().zip(caller_sig.outputs.iter())) {
@@ -363,8 +359,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 } else {
                   unreachable!()
                 }
-                println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA {caller_sig:?}");
-                dbg!((&caller_constraints, &callee_constraints));
 
                 match (caller_constraints.is_empty(), callee_constraints.is_empty()) {
                   (false, false) => {
@@ -382,8 +376,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
                 continue 'outer;
               }
-
-              dbg!(constraint_queue, &next_stage_constraints);
 
               panic!("Could not find suitable method that matches {function_name} => {caller_sig:?}  in node {host_node_ref:?} @ {call_op_id:?}",)
             }
@@ -479,7 +471,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
           }
 
           GlobalConstraint::ResolveObjectConstraints { node_id, constraints: c } => {
-            dbg!(&constraint, &constraint_queue, &next_stage_constraints, &link_constraints);
             solve_node_intrinsics(*node_id, c, &mut link_constraints, &db);
           }
 
@@ -759,12 +750,12 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
                   let out: &RumTypeObject = unsafe { std::mem::transmute(node.compile_time_binary) };
 
                   for member in members.iter() {
-                    if let Some(prop) = out.props.iter().find(|p| p.name == member.name.to_str().as_str()) {
+                    if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == member.name.to_str().as_str()) {
                       if !ty.is_open() {
-                        constraint_queue.push_back(NodeConstraint::GenTyToTy(member.ty, prop.ty));
+                        constraint_queue.push_back(NodeConstraint::GenTyToTy(member.ty, prop.ty.incr_ptr()));
                       }
                     } else {
-                      panic!("Complex type does not have member {}@{} {node:?}", member.name, member.ty)
+                      panic!("Complex type does not have member {}@{} {node:?} {out:#?}", member.name, member.ty)
                     }
                   }
                 } else {
@@ -773,8 +764,14 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
                   let sdb_opt = sdb_fin.optimize(types::OptimizeLevel::MemoryOperations_01);
                   let bin_functs = targets::x86::compile(&sdb_opt);
                   let (entry_offset, binary) = linker::link(bin_functs);
-                  println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
+                  let func = x86_eval::x86Function::new(&binary, entry_offset);
+                  println!("\n\n\n");
                   print_instructions(&binary, 0);
+                  let out = func.access_as_call::<fn() -> &'static RumTypeObject>()();
+                  println!("0x{:x}", out as *const _ as usize);
+                  dbg!(out);
+                  println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
+
                   //solve_
                   //compiler_rt_solver. (RootType::Any, node_id);
 
@@ -783,6 +780,7 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
               }
             }
           } else if ty.is_array() {
+            panic!("AA");
             let base_ty = ty.remove_array().to_base_ty();
             let mut base_mem = None;
 

@@ -70,18 +70,19 @@ pub fn add_module(db: &mut Database, module: &str) {
               }
             }
 
-            dbg!(&node);
-
             db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
           }
           routine_definition_Value::Type_Struct(strct) => {
-            let (node, constraints) = compile_struct(db, &strct.properties.iter().map(|p| (p.name.id.intern(), p.ty.clone())).collect::<Vec<_>>(), strct.heap.as_ref().map(|d| d.val.intern()));
+            let name = bound_ty.name.id.intern();
+            let (node, constraints) = compile_struct(db, name, &strct.properties.iter().map(|p| (p.name.id.intern(), p.ty.clone())).collect::<Vec<_>>(), strct.heap.as_ref().map(|d| d.val.intern()));
 
             if mem.annotation.as_ref().is_some_and(|a| a.val.as_str() == "interface") {
               node.get_mut().unwrap().nodes[0].type_str = INTERFACE_ID;
             }
 
-            db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
+            dbg!(&node, &constraints);
+
+            db.add_object(name, node.clone(), constraints);
           }
           _ => unreachable!(),
         },
@@ -93,7 +94,7 @@ pub fn add_module(db: &mut Database, module: &str) {
   }
 }
 
-pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<Token>)], heap_id: Option<IString>) -> (NodeHandle, Vec<NodeConstraint>) {
+pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IString, type_Value<Token>)], heap_id: Option<IString>) -> (NodeHandle, Vec<NodeConstraint>) {
   let mut super_node = RootNode::default();
 
   let mut bp = BuildPack { db: db.clone(), super_node: &mut super_node, node_stack: Default::default(), constraints: Vec::with_capacity(8) };
@@ -110,6 +111,7 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 
     let offset_id = VarId::Name("offset".intern());
     let align_id = VarId::Name("align".intern());
+    let prop_offset = VarId::Name("prop_offset".intern());
 
     add_constraint(bp, NodeConstraint::GenTyToTy(str_type, ty_addr)); // TODO: Change string type to array reference
     add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty, ty_u32));
@@ -131,7 +133,7 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 
       let type_name = src_ty.clone().to_ast().token().to_string().intern();
 
-      let prop_type_op = add_op(bp, Operation::Type(type_name), type_ty, Default::default());
+      let prop_type_op = add_op(bp, Operation::Type(Reference::UnresolvedName(type_name)), type_ty, Default::default());
 
       let type_byte_size_op =
         add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], mem_ctx_op: Default::default() }, offset_ty, Default::default());
@@ -167,11 +169,15 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 
     // Insert type agg decl. It will receive the size and type of the object as values
 
-    let type_agg_op = add_op(bp, Operation::AggDecl { reference: Reference::UnresolvedName("type".intern()), mem_ctx_op: Default::default() }, type_agg_ty, Default::default());
+    let alignment = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, 8u32)), offset_ty, Default::default());
+    let size = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, (props.len() * (8 + 8 + 4) + (8 + 4 + 4 + 4 + 4)) as u32)), offset_ty, Default::default());
+
+    let type_agg_op = add_op(bp, Operation::AggDecl { size, alignment, mem_ctx_op: Default::default() }, type_agg_ty, Default::default());
 
     update_mem_context(bp, type_agg_op);
 
     for (prop_name, expr_op) in [
+      ("name".intern(), add_op(bp, Operation::Str(name), str_type, Default::default())),
       ("ele_count".intern(), add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, 1u32)), offset_ty, Default::default())),
       ("ele_byte_size".intern(), get_var(bp, offset_id).unwrap().0),
       ("alignment".intern(), get_var(bp, align_id).unwrap().0),
@@ -186,13 +192,26 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 
     add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty, ty_u32));
 
+    // prop_type
+
+    let prop_type_op = add_op(bp, Operation::Type(Reference::UnresolvedName("type_prop".intern())), type_ty, Default::default());
+    let prop_type_size =
+      add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], mem_ctx_op: Default::default() }, offset_ty, Default::default());
+    add_constraint(bp, NodeConstraint::LinkCall(prop_type_size));
+
+    add_constraint(bp, NodeConstraint::GlobalNameReference(type_agg_ty, "type".intern(), Default::default()));
+
+    let prop_offset_init_value = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, 0u32)), offset_ty, Default::default());
+    declare_top_scope_var(bp, prop_offset, prop_offset_init_value, type_agg_ty).origin_node_index = -1;
+
     // Create a pointer for the property array
     let (ref_op, _) = create_member_pointer(bp, type_agg_op, "props".intern());
 
+    let props_len = props.len();
     for (index, prop_name, type_op, byte_offset) in props {
+      let (prop_offset_op, _) = get_var(bp, prop_offset).unwrap();
       // Create type_prop pointer offset
-      let offset_op = add_op(bp, Operation::Const(ConstVal::new(ty_u32.prim_data(), index as u64)), offset_ty, Default::default());
-      let (prop_op, _) = create_offset_member_ptr(bp, ref_op, offset_op, Default::default());
+      let (prop_op, _) = create_offset_member_ptr(bp, ref_op, prop_offset_op, Default::default());
 
       // let name
       let prop_name_op = add_op(bp, Operation::Str(prop_name), str_type, Default::default());
@@ -209,7 +228,15 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
       let (ref_op, _) = create_member_pointer(bp, prop_op, "offset".intern());
       let (op, _) = process_op(Op::STORE, &[ref_op, byte_offset], bp, Default::default());
       update_mem_context(bp, op);
+
+      if (index < props_len - 1) {
+        let (add_op, type_v) = process_op(Op::ADD, &[prop_offset_op, prop_type_size], bp, Default::default());
+        add_constraint(bp, NodeConstraint::GenTyToGenTy(offset_ty, type_v));
+        update_var(bp, prop_offset, add_op, Default::default());
+      }
     }
+
+    remove_var(bp, prop_offset);
 
     let (ctx_op, _) = get_mem_context(bp);
     let ret_op = add_op(bp, Operation::Op { op_name: Op::RET, operands: [type_agg_op, ctx_op, Default::default()] }, type_agg_ty, Default::default());
@@ -229,39 +256,35 @@ pub(crate) fn compile_struct(db: &Database, properties: &[(IString, type_Value<T
 }
 
 fn create_member_pointer(bp: &mut BuildPack<'_>, agg_op: OpId, prop_name: IString) -> (OpId, TypeV) {
-  let mem_ty = add_ty_var(bp);
-  mem_ty.add(VarAttribute::Member);
-
   // Add member to aggregate.
-  let mem_ty = mem_ty.ty;
-  let agg_ty = &mut bp.super_node.op_types[agg_op.usize()];
-  let agg_ty_index = agg_ty.generic_id().unwrap();
-  let var = &mut bp.super_node.type_vars[agg_ty_index];
-  var.add_mem(prop_name, mem_ty.clone(), Default::default());
 
   let (ref_op, ref_ty) = create_member_ptr_op(bp, agg_op, prop_name, Default::default());
 
-  add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: mem_ty, mutable: false });
-
-  (ref_op, mem_ty)
-}
-
-fn create_offset_member_ptr(bp: &mut BuildPack<'_>, agg_op: OpId, offset_val_op: OpId, prop_name: IString) -> (OpId, TypeV) {
-  let member_ty = add_ty_var(bp);
-  member_ty.add(VarAttribute::Member);
-
-  // Add member to aggregate.
-  let member_ty = member_ty.ty;
   let agg_ty = &mut bp.super_node.op_types[agg_op.usize()];
   let agg_ty_index = agg_ty.generic_id().unwrap();
   let var = &mut bp.super_node.type_vars[agg_ty_index];
-  var.add_mem(prop_name, member_ty.clone(), Default::default());
+  var.add_mem(prop_name, ref_ty.clone(), Default::default());
 
+  bp.super_node.type_vars[ref_ty.generic_id().unwrap()].add(VarAttribute::Member);
+
+  (ref_op, ref_ty)
+}
+
+fn create_offset_member_ptr(bp: &mut BuildPack<'_>, agg_op: OpId, offset_val_op: OpId, prop_name: IString) -> (OpId, TypeV) {
   let (ref_op, ref_ty) = process_op(Op::OPTR, &[agg_op, offset_val_op], bp, Default::default());
 
-  add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: member_ty, mutable: false });
+  let agg_ty = &mut bp.super_node.op_types[agg_op.usize()].clone();
 
-  (ref_op, member_ty)
+  add_constraint(bp, NodeConstraint::GenTyToGenTy(ref_ty, *agg_ty));
+
+  /*   let agg_ty = &mut bp.super_node.op_types[agg_op.usize()];
+   let agg_ty_index = agg_ty.generic_id().unwrap();
+   let var = &mut bp.super_node.type_vars[agg_ty_index];
+   var.add_mem(prop_name, ref_ty.clone(), Default::default());
+
+   bp.super_node.type_vars[ref_ty.generic_id().unwrap()].add(VarAttribute::Member);
+  */
+  (ref_op, ref_ty)
 }
 
 fn add_type_constraints(bp: &mut BuildPack<'_>, gen_ty: &TypeV, src_ty: &type_Value<Token>) {
@@ -1238,41 +1261,23 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
           member_group_Value::NamedMember(name_node) => {
             let name = name_node.name.id.intern();
             mem_var_id = VarId::MemName(agg_ty_index, name);
-            let var = &mut bp.super_node.type_vars[agg_ty_index];
-
-            let candidate_mem_ty = if let Some(mem) = var.members.iter().find(|m| m.name == name) {
-              mem.ty
-            } else {
-              let mem_ty = add_ty_var(bp);
-              mem_ty.add(VarAttribute::Member);
-              let mem_ty = mem_ty.ty;
-
-              let var = &mut bp.super_node.type_vars[agg_ty_index];
-              var.add_mem(name, mem_ty.clone(), Default::default());
-
-              mem_ty
-            };
-
-            if None == get_var(bp, mem_var_id) {
-              update_var(bp, mem_var_id, Default::default(), candidate_mem_ty.clone());
-            }
-
-            let var = get_var(bp, mem_var_id).unwrap().0;
-
-            if var.is_valid() {
+            if let Some((var, ty)) = get_var(bp, mem_var_id) {
               mem_ptr_op = var;
-              mem_ptr_ty = candidate_mem_ty;
+              mem_ptr_ty = ty;
             } else {
               let (ref_op, ref_ty) = create_member_ptr_op(bp, mem_ptr_op, name, name_node.clone().into());
 
+              bp.super_node.type_vars[ref_ty.generic_id().unwrap()].add(VarAttribute::Member);
+
+              let var = &mut bp.super_node.type_vars[agg_ty_index];
+              var.add_mem(name, ref_ty.clone(), Default::default());
+
               clone_op_heap(bp, mem_ptr_op, ref_op);
 
-              mem_ptr_ty = candidate_mem_ty.clone();
+              mem_ptr_ty = ref_ty.clone();
               mem_ptr_op = ref_op;
 
-              update_var(bp, mem_var_id, mem_ptr_op, candidate_mem_ty.clone());
-
-              add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: candidate_mem_ty, mutable: false });
+              update_var(bp, mem_var_id, mem_ptr_op, ref_ty.clone());
             }
           }
           _ => unreachable!(),

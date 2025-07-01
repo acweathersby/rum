@@ -1,13 +1,15 @@
 #![allow(non_upper_case_globals)]
 
-use std::collections::VecDeque;
+use core::str;
+use std::{collections::VecDeque, fmt::Debug};
 
+use libc::memcpy;
 use rum_lang::Token;
 
 use crate::{
   _interpreter::get_op_type,
   ir_compiler::CLAUSE_SELECTOR_ID,
-  types::{NodeHandle, Op, OpId, Operation, PortType, Reference, RumTypeObject, SolveDatabase, SolveState},
+  types::{GetResult, NodeHandle, Op, OpId, Operation, PortType, Reference, RumString, RumTypeObject, SolveDatabase, SolveState},
 };
 
 /// Performs necessary transformations on active nodes, such as inserting convert instructions, etc.
@@ -49,11 +51,15 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         match &node.operands[op.usize()] {
           // These operations do not reference other ops.
           Operation::Type(..) | Operation::Param(..) | Operation::Const(..) | Operation::Str(..) => {}
-          Operation::AggDecl { .. } => {}
           Operation::Call { args, mem_ctx_op, .. } => {
             for op in args {
               op_queue.push_back(*op);
             }
+            op_queue.push_back(*mem_ctx_op);
+          }
+          Operation::AggDecl { alignment, size, mem_ctx_op, .. } => {
+            op_queue.push_back(*size);
+            op_queue.push_back(*alignment);
             op_queue.push_back(*mem_ctx_op);
           }
           Operation::NamePTR { base, mem_ctx_op, .. } => {
@@ -88,6 +94,37 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         }
 
         match &node.operands[op_id.usize()] {
+          Operation::Str(str_value) => {
+            let comptime_str = RumString::new(str_value.to_str().as_str());
+
+            unsafe { dbg!(&*comptime_str) };
+
+            node.operands[op_id.usize()] = Operation::Type(Reference::Integer(comptime_str as _));
+          }
+          Operation::Type(type_name) => {
+            match type_name {
+              Reference::UnresolvedName(type_name) => {
+                if let GetResult::Existing(cplx) = db.get_type_by_name(*type_name) {
+                  let ty_node = NodeHandle::from((cplx, db));
+                  let ty_node = ty_node.get().unwrap();
+
+                  // This needs to be either compile at during compilation for use in compile time objects,
+                  // or linked at link time to be used as a runtime data structure. The is depends if we
+                  // are in comptime mode or in compile mode, which depends on the object we are finalizing
+                  // and the context mode which should be passed down
+                  if !ty_node.compile_time_binary.is_null() {
+                    let value = ty_node.compile_time_binary as usize;
+                    node.operands[op_id.usize()] = Operation::Type(Reference::Integer(value));
+                  } else {
+                    panic!("This is unstable")
+                  }
+                } else {
+                  panic!("Type {type_name} is not loaded into compiler's database");
+                }
+              }
+              _ => unreachable!(),
+            }
+          }
           Operation::NamePTR { reference, base, mem_ctx_op } => {
             let parent_type = get_op_type(node, *base);
 
@@ -99,9 +136,9 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
                 if !agg_node.compile_time_binary.is_null() {
                   let out: &RumTypeObject = unsafe { std::mem::transmute(agg_node.compile_time_binary) };
 
-                  if let Some(prop) = out.props.iter().find(|p| p.name == name.to_str().as_str()) {
+                  if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == name.to_str().as_str()) {
                     let offset = prop.byte_offset;
-                    node.operands[op_id.usize()] = Operation::NamePTR { reference: Reference::Offset(offset as _), base: *base, mem_ctx_op: *mem_ctx_op }
+                    node.operands[op_id.usize()] = Operation::NamePTR { reference: Reference::Integer(offset as _), base: *base, mem_ctx_op: *mem_ctx_op }
                   }
                 }
               } else {

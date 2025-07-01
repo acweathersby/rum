@@ -258,7 +258,7 @@ impl TypeV {
   const fn create(bt: BaseType, ptr: u8, data: u32) -> TypeV {
     Self((((bt as u64) & Self::BT_BITS) << Self::BT_OFFSET) | (((ptr as u64) & Self::PTR_BITS) << Self::PTR_OFFSET) | ((data as u64) << Self::DATA_OFFSET))
   }
-}
+} 
 
 impl Debug for TypeV {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -278,10 +278,19 @@ impl Display for TypeV {
       BaseType::Primitive => {
         Display::fmt(&self.prim_data_for_print(), f)?;
       }
-      BaseType::Complex => {
-        f.write_str("Π")?;
-        Debug::fmt(&self.cmplx_data().unwrap().0, f)?;
-      }
+      BaseType::Complex => match self.cmplx_data() {
+        Some(CMPLXId(0)) => {
+          f.write_str("type")?;
+        }
+        Some(CMPLXId(1)) => {
+          f.write_str("type_prop")?;
+        }
+        Some(id) => {
+          f.write_str("Π")?;
+          Debug::fmt(&self.cmplx_data().unwrap().0, f)?;
+        }
+        _ => unreachable!(),
+      },
       BaseType::Generic => {
         f.write_str("∀")?;
         Debug::fmt(&self.generic_id().unwrap(), f)?;

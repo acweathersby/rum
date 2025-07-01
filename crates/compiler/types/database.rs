@@ -108,6 +108,33 @@ impl<'a> SolveDatabase<'a> {
       }),
     );
 
+    solve_db.add_object(
+      "u32".intern(),
+      NodeHandle::new(RootNode {
+        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
+        compile_time_binary: unsafe { std::mem::transmute(&RUM_TEMP_U32_TYPE) },
+        ..Default::default()
+      }),
+    );
+
+    solve_db.add_object(
+      "f32".intern(),
+      NodeHandle::new(RootNode {
+        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
+        compile_time_binary: unsafe { std::mem::transmute(&RUM_TEMP_F32_TYPE) },
+        ..Default::default()
+      }),
+    );
+
+    solve_db.add_object(
+      "str".intern(),
+      NodeHandle::new(RootNode {
+        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
+        compile_time_binary: unsafe { std::mem::transmute(&RUM_TEMP_STRING_TYPE) },
+        ..Default::default()
+      }),
+    );
+
     solve_db
   }
 
@@ -281,57 +308,6 @@ impl<'a> SolveDatabase<'a> {
     None
   }
 }
-
-#[derive(Debug)]
-#[repr(C)]
-pub struct RumTypeProp {
-  pub name:        &'static str,
-  pub ty:          TypeV,
-  pub byte_offset: u32,
-}
-
-#[derive(Debug)]
-#[repr(C)]
-pub struct RumTypeObject {
-  pub name:          &'static str,
-  pub ele_count:     u32,
-  pub ele_byte_size: u32,
-  pub alignment:     u32,
-  pub prop_count:    u32,
-  pub props:         [RumTypeProp; 6],
-}
-
-pub static RUM_EGG_BASE_TYPE: RumTypeObject = RumTypeObject {
-  name:          "type",
-  ele_count:     1,
-  ele_byte_size: 224,
-  alignment:     1,
-  prop_count:    6,
-  props:         [
-    RumTypeProp { name: "name", ty: ty_u32, byte_offset: 0 },
-    RumTypeProp { name: "ele_count", ty: ty_u32, byte_offset: 8 },
-    RumTypeProp { name: "ele_byte_size", ty: ty_u32, byte_offset: 12 },
-    RumTypeProp { name: "alignment", ty: ty_u32, byte_offset: 16 },
-    RumTypeProp { name: "prop_count", ty: ty_u32, byte_offset: 20 },
-    RumTypeProp { name: "props", ty: TypeV::cmplx(CMPLXId(1)).incr_ptr(), byte_offset: 32 },
-  ],
-};
-
-pub static RUM_PROP_BASE_TYPE: RumTypeObject = RumTypeObject {
-  name:          "type_prop",
-  ele_count:     0,
-  ele_byte_size: 0,
-  alignment:     1,
-  prop_count:    3,
-  props:         [
-    RumTypeProp { name: "name", ty: ty_u32, byte_offset: 0 },
-    RumTypeProp { name: "ty", ty: TypeV::cmplx(CMPLXId(0)), byte_offset: 8 },
-    RumTypeProp { name: "byte_offset", ty: ty_u32, byte_offset: 12 },
-    RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },
-    RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },
-    RumTypeProp { name: "", ty: ty_undefined, byte_offset: 0 },
-  ],
-};
 
 #[derive(Clone, Debug)]
 pub struct Database(pub std::sync::Arc<std::sync::Mutex<DatabaseCore>>);

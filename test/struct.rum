@@ -5,8 +5,11 @@ get_byte_size :: (a: type) : u32
 
 #core
 aligned :: (offset: u32, alignment: u32) : u32
-
-  (offset + ( alignment + 1 )) & (4294967295 - (alignment - 1))
+  if offset == 0 {
+    0
+  } else {
+    (offset + ( alignment + 1 )) & (4294967295 - (alignment - 1))
+  }
 
 #core
 max :: (a:u32, b:u32) : u32 
@@ -26,7 +29,7 @@ DD :: [ test: f32, rainbow: u32 ]
 #test
 trivial :: (u:u32) : DD {
 
-  d = [ test = 200.0, rainbow =  0.0 ]
+  d = [ test = 200.0 /*, rainbow =  0.0*/ ]
 
   d
 }

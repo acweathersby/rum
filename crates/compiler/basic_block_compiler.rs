@@ -12,9 +12,7 @@ use crate::{
 };
 use std::{
   collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
-  default,
   fmt::Debug,
-  ops::ControlFlow,
   u32,
 };
 
@@ -144,7 +142,7 @@ pub const FFI_CALLER_SAVE_MASK: u64 = 0x000F_FFFF_FFFF_FFFF + (0b1101_1101_0000_
 pub const VEC_REG_MASK: u64 = !GP_REG_MASK;
 
 const FP_PARAM_REGISTERS: [usize; 12] = [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
-const PARAM_REGISTERS: [usize; 12] = [3, 4, 12, 2, 5, 7, 8, 9, 0, 10, 11, 12];
+const INT_PARAM_REGISTERS: [usize; 12] = [3, 4, 12, 2, 5, 7, 8, 9, 0, 10, 11, 12];
 
 pub const OUTPUT_REGISTERS: [usize; 4] = [5, 4, 2, 0];
 pub const FP_OUTPUT_REGISTERS: [usize; 4] = [13, 13, 13, 13];
@@ -153,16 +151,16 @@ pub fn get_param_registers(param_index: usize, ty: PrimitiveType) -> usize {
   if ty.base_ty == PrimitiveBaseType::Float {
     FP_PARAM_REGISTERS[param_index]
   } else {
-    PARAM_REGISTERS[param_index]
+    INT_PARAM_REGISTERS[param_index]
   }
 }
 
 pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Option<&'static SpecializationData> {
   use ArgRegType::{NeedAccessTo as NA, RequiredAs as RA, *};
   use AssignRequirement::*;
-  const ARG1: u8 = PARAM_REGISTERS[0] as _;
-  const ARG2: u8 = PARAM_REGISTERS[1] as _;
-  const ARG3: u8 = PARAM_REGISTERS[2] as _;
+  const ARG1: u8 = INT_PARAM_REGISTERS[0] as _;
+  const ARG2: u8 = INT_PARAM_REGISTERS[1] as _;
+  const ARG3: u8 = INT_PARAM_REGISTERS[2] as _;
   const RET1: u8 = OUTPUT_REGISTERS[0] as _;
 
   const DEFAULT_SPEC: SpecializationData = SpecializationData {
@@ -213,9 +211,9 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
     Op::ARG => {
       const BASE: SpecializationData = SpecializationData {
         arg_usage:                    [Used, NoUse, NoUse],
-        out_assign_req:               LookBackInherit(0),
+        out_assign_req:               NoRequirement,
         arithimatic_const_commutable: false,
-        look_ahead_inherit:           None,
+        look_ahead_inherit:           Some(0),
         constant_handler:             DEFAULT_CONST_HNDL,
       };
 
@@ -233,14 +231,14 @@ pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Optio
         }
       } else {
         match ops[1].meta() {
-          0 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[0] as _, false), ..BASE }),
-          1 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[1] as _, false), ..BASE }),
-          2 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[2] as _, false), ..BASE }),
-          3 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[3] as _, false), ..BASE }),
-          4 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[4] as _, false), ..BASE }),
-          5 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[5] as _, false), ..BASE }),
-          6 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[6] as _, false), ..BASE }),
-          7 => Some(&SpecializationData { out_assign_req: Forced(PARAM_REGISTERS[7] as _, false), ..BASE }),
+          0 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[0] as _, false), ..BASE }),
+          1 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[1] as _, false), ..BASE }),
+          2 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[2] as _, false), ..BASE }),
+          3 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[3] as _, false), ..BASE }),
+          4 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[4] as _, false), ..BASE }),
+          5 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[5] as _, false), ..BASE }),
+          6 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[6] as _, false), ..BASE }),
+          7 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[7] as _, false), ..BASE }),
           _ => None,
         }
       }
@@ -494,6 +492,25 @@ pub(crate) fn encode_function(
             probe:   Probe::None,
           });
         }
+        Operation::Type(type_data) => {
+          match type_data {
+            Reference::Integer(_) => {
+              //  let inner_var_id = create_var(&mut vars, get_op_type(sn, target_op));
+              let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+
+              bb_funct.blocks[data.block as usize].ops2.push(BBop {
+                op_ty:   Op::LOAD_TYPE_ADDRESS,
+                out:     VarVal::Var(outer_var_id),
+                args:    [VarVal::None, VarVal::None, VarVal::None],
+                ops:     [OpId::default(); 3],
+                source:  target_op,
+                prim_ty: op_prim_ty,
+                probe:   Probe::None,
+              });
+            }
+            _ => unreachable!(),
+          }
+        }
         Operation::Param(_, index) => {
           //  let inner_var_id = create_var(&mut vars, get_op_type(sn, target_op));
           let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
@@ -515,7 +532,7 @@ pub(crate) fn encode_function(
           //vars[inner_var_id as usize].register = VarVal::Reg(get_param_registers(*index as usize, op_prim_ty) as _);
         }
         Operation::NamePTR { reference, base, .. } => {
-          debug_assert!(matches!(reference, Reference::Offset(..)));
+          debug_assert!(matches!(reference, Reference::Integer(..)));
 
           let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *base);
           let out_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
@@ -524,6 +541,66 @@ pub(crate) fn encode_function(
             out:     VarVal::Var(out_var_id),
             args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
             ops:     [OpId::default(); 3],
+            source:  target_op,
+            prim_ty: op_prim_ty,
+            probe:   Probe::None,
+          });
+        }
+        Operation::AggDecl { alignment, size, .. } => {
+          let block = &mut bb_funct.blocks[data.block as usize];
+          bb_funct.makes_ffi_call = true;
+          for (index, arg) in [*size, *alignment].into_iter().enumerate() {
+            debug_assert!(arg.is_valid());
+            let prim_ty = get_op_type(sn, arg).prim_data();
+            match sn.operands[arg.usize()] {
+              Operation::Const(..) => {
+                block.ops2.push(BBop {
+                  op_ty:   Op::LOAD_CONST,
+                  out:     VarVal::Reg(INT_PARAM_REGISTERS[index] as _, prim_ty_addr),
+                  args:    [VarVal::Const, VarVal::None, VarVal::None],
+                  ops:     [arg, Default::default(), Default::default()],
+                  source:  arg,
+                  prim_ty: prim_ty,
+                  probe:   Probe::None,
+                });
+              }
+              Operation::Dead => unreachable!(),
+              _ => {
+                let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, arg);
+                block.ops2.push(BBop {
+                  op_ty:   Op::SEED,
+                  out:     VarVal::Reg(INT_PARAM_REGISTERS[index] as _, prim_ty_addr),
+                  args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
+                  ops:     [arg, Default::default(), Default::default()],
+                  source:  arg,
+                  prim_ty: prim_ty,
+                  probe:   Probe::None,
+                });
+              }
+            };
+          }
+
+          let out = VarVal::Reg(OUTPUT_REGISTERS[0] as _, prim_ty_addr);
+          let arg1 = VarVal::Reg(INT_PARAM_REGISTERS[0] as _, prim_ty_addr);
+          let arg2 = VarVal::Reg(INT_PARAM_REGISTERS[1] as _, prim_ty_addr);
+          let arg3 = VarVal::Reg(INT_PARAM_REGISTERS[1] as _, prim_ty_addr);
+
+          block.ops2.push(BBop {
+            op_ty:   Op::AGG_DECL,
+            out:     out,
+            args:    [arg1, arg2, arg3],
+            ops:     [OpId::default(); 3],
+            source:  target_op,
+            prim_ty: op_prim_ty,
+            probe:   Probe::Pending(create_var(&mut vars, TypeV::NoUse)),
+          });
+
+          let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
+          bb_funct.blocks[data.block as usize].ops2.push(BBop {
+            op_ty:   Op::SEED,
+            out:     VarVal::Var(outer_var_id),
+            args:    [out, VarVal::None, VarVal::None],
+            ops:     [target_op, OpId::default(), OpId::default()],
             source:  target_op,
             prim_ty: op_prim_ty,
             probe:   Probe::None,
@@ -542,7 +619,7 @@ pub(crate) fn encode_function(
             } else {
               let id = int_index;
               int_index += 1;
-              VarVal::Reg(PARAM_REGISTERS[id as usize] as _, arg_prim_ty)
+              VarVal::Reg(INT_PARAM_REGISTERS[id as usize] as _, arg_prim_ty)
             };
 
             let arg_v = if let Operation::Const(..) = &sn.operands[arg_op.usize()] { VarVal::Const } else { VarVal::Var(get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *arg_op)) };
@@ -748,7 +825,7 @@ pub(crate) fn encode_function(
             probe:   Probe::None,
           });
 
-          vars[op_to_var_map[op_index] as usize].register = VarVal::Reg(PARAM_REGISTERS[*index as usize] as _, get_op_type(sn, target_op).prim_data());
+          vars[op_to_var_map[op_index] as usize].register = VarVal::Reg(INT_PARAM_REGISTERS[*index as usize] as _, get_op_type(sn, target_op).prim_data());
         }
         _ => unreachable!(),
       }
@@ -1220,6 +1297,12 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
       max_level = max_level.max(level);
 
       match &sn.operands[op.usize()] {
+        Operation::AggDecl { size, alignment, mem_ctx_op, .. } => {
+          op_data[op.usize()].block = level;
+          pending_ops.push_back((*mem_ctx_op, level));
+          pending_ops.push_back((*size, level));
+          pending_ops.push_back((*alignment, level));
+        }
         Operation::NamePTR { base, mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
 

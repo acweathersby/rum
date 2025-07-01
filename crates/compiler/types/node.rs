@@ -259,7 +259,7 @@ pub(crate) enum Reference {
   UnresolvedName(IString),
   Object(CMPLXId),
   Intrinsic(IString),
-  Offset(usize),
+  Integer(usize),
 }
 
 impl Debug for Reference {
@@ -268,7 +268,7 @@ impl Debug for Reference {
       Self::UnresolvedName(name) => f.write_fmt(format_args!("{name}?")),
       Self::Intrinsic(name) => f.write_fmt(format_args!("`{name}")),
       Self::Object(id) => f.write_fmt(format_args!("{id:?}")),
-      Self::Offset(id) => f.write_fmt(format_args!("{id}")),
+      Self::Integer(id) => f.write_fmt(format_args!("{id}")),
     }
   }
 }
@@ -288,7 +288,8 @@ pub(crate) enum Operation {
     mem_ctx_op: OpId,
   },
   AggDecl {
-    reference:  Reference,
+    size:       OpId,
+    alignment:  OpId,
     mem_ctx_op: OpId,
   },
   NamePTR {
@@ -308,7 +309,7 @@ pub(crate) enum Operation {
   Const(ConstVal),
   //Data,
   Str(IString),
-  Type(IString),
+  Type(Reference),
   Dead,
 }
 
@@ -322,11 +323,11 @@ impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
-      Operation::Type(name) => f.write_fmt(format_args!("type::{name}",)),
+      Operation::Type(name) => f.write_fmt(format_args!("type::{name:?}",)),
       Operation::Call { reference, args, mem_ctx_op } => f.write_fmt(format_args!("{reference:?}({args:?}) @ {mem_ctx_op}",)),
       Operation::NamePTR { reference, base, mem_ctx_op } => f.write_fmt(format_args!("{base}[{reference:?}] @ ({mem_ctx_op})",)),
       Operation::IndexedPTR { index, base, mem_ctx_op } => f.write_fmt(format_args!("{base}[{index:?}] @ ({mem_ctx_op})",)),
-      Operation::AggDecl { reference, mem_ctx_op, .. } => f.write_fmt(format_args!("new {reference:?} ({mem_ctx_op:?})",)),
+      Operation::AggDecl { size, alignment, mem_ctx_op, .. } => f.write_fmt(format_args!("alloc (size:{size:?} align:{alignment}) @ {mem_ctx_op:?}",)),
       // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),

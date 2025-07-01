@@ -1,4 +1,5 @@
 mod const_val;
+mod core;
 mod database;
 mod interpreted_value;
 mod ir_ops;
@@ -8,6 +9,7 @@ mod register_set;
 mod type_var;
 
 pub use const_val::*;
+pub use core::*;
 pub use database::*;
 pub use interpreted_value::*;
 pub use ir_ops::*;

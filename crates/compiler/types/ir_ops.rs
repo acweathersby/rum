@@ -163,6 +163,7 @@ inter_op_gen!(
   CONST,
   LOAD_CONST,
   ARG,
+  LOAD_TYPE_ADDRESS,
   TempMetaPhi,
   GetByteSize_temp,
   ResolvedCall
