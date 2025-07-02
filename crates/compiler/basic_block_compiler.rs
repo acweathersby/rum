@@ -466,6 +466,75 @@ pub(crate) fn encode_function(
 
   let mut forced_vars = vec![];
 
+  {
+    // Alternate workflow -------
+
+    // gather ops per block
+    let mut op_blocks = vec![vec![]; bb_funct.blocks.len()];
+
+    for op_id in (0..sn.operands.len()).map(|op_index| OpId(op_index as u32)) {
+      let block_index = op_data[op_id.usize()].block;
+      if block_index >= 0 {
+        op_blocks[block_index as usize].push(op_id);
+      } else if block_index == -100 {
+        op_blocks[0].push(op_id);
+      }
+    }
+
+    dbg!(op_blocks);
+
+    // Calculate the input and output sets of all blocks
+
+    let mut bf = bitfield::BitFieldArena::new(bb_funct.blocks.len() * 2 + 1, sn.operands.len());
+    let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
+
+    let bf_working_set_id = bf.len - 1;
+
+    while let Some(block_id) = queue.pop_front() {
+      let block_ins_id = block_id << 1;
+      let block_outs_id = (block_id << 1) + 1;
+
+      bf.mov(bf_working_set_id, block_outs_id);
+
+      for op in bb_funct.blocks[block_id as usize].ops2.iter().rev() {
+        match op {
+          BBop { out: id, args: operands, source, probe, .. } => {
+            match id {
+              VarVal::Var(id) => {
+                bf.unset_bit(bf_working_set_id, *id as _);
+              }
+              _ => {}
+            }
+
+            for op in operands {
+              match op {
+                VarVal::Var(var_id) => {
+                  if *var_id == u32::MAX {
+                    continue;
+                  }
+                  debug_assert!(*var_id != u32::MAX, "{source} => ops:{:?} \n {:?}", operands, sn.operands[source.usize()]);
+
+                  bf.set_bit(bf_working_set_id, *var_id as _);
+                }
+                _ => {}
+              }
+            }
+          }
+        }
+      }
+
+      if bf.mov(block_ins_id, bf_working_set_id) {
+        for predecessor in &bb_funct.blocks[block_id as usize].predecessors {
+          let predecessor_outs_index = (*predecessor << 1) + 1;
+          bf.or(predecessor_outs_index, bf_working_set_id);
+          queue.push_back(*predecessor);
+        }
+      }
+    }
+
+    panic!("AAAA");
+  }
+
   // Map block data to var_ids
 
   // Add op references to blocks and sort dependencies
@@ -1084,7 +1153,14 @@ pub(crate) fn encode_function(
           .iter()
           .filter_map(|v| match v {
             VarVal::Var(v) => match &vars[*v as usize].register {
-              VarVal::Reg(..) => Some(vars[*v as usize]),
+              VarVal::Reg(..) => {
+                let size = vars[*v as usize].prim_ty.byte_size as u64;
+                let stashed_location = get_aligned_value(stash_offset, size);
+                vars[var_id].register = VarVal::Stashed(stashed_location as _);
+                stash_offset = stashed_location + size;
+                //Some(vars[*v as usize])
+                None
+              }
               _ => None,
             },
             _ => None,

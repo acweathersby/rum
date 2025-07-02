@@ -1,0 +1,25 @@
+// Create Object Table 
+// 
+// Row count 
+// 
+// Meta data row:
+// | row count: u32 | total_object_size: u32 | alignment_requirement: u32 |
+// 
+// Field row: 
+// | field_name: id_string (64 bit) | field_type: type_id | field_size: u32 | field_offset: u32 | field_alignment: u32 | 
+
+
+StructObjData :: [
+  matadata: StructDataMetadataRow,
+  fields: StructFieldRows
+]
+
+StructDataMetadataRow :: [
+  row_count   : u32,
+  size        : u32,
+  alignment   : u32,
+]
+
+StructFieldRows :: [ StructFieldRow ]
+
+StructFieldRow :: [  name:u64,  type:u32, size:u32, offset: u32 ]
