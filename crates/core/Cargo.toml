@@ -9,8 +9,8 @@ build = "./build.rs"
 path = "./lib.rs"
 
 [dependencies.radlr_rust_runtime]
-path = "../../../lib_radlr/crates/radlr-rust-runtime"
+workspace = true
 
 [build-dependencies.radlr_build]
-path = "../../../lib_radlr/crates/radlr-build"
+workspace = true
 

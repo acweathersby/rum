@@ -1,16 +1,17 @@
 [package]
 name = "rum_common"
-version = "0.0.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 
 [lib]
 path = "./lib.rs"
 
 [dependencies.radlr_rust_runtime]
-path = "../../../lib_radlr/crates/radlr-rust-runtime"
+workspace = true
 
 [build-dependencies.radlr_build]
-path = "../../../lib_radlr/crates/radlr-build"
+workspace = true
 
 [dependencies]
 libc = "0.2.154"

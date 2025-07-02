@@ -7,7 +7,14 @@ members = [
   "./crates/rum_lang"
 ]
 
+default-members = ["./crates/compiler"]
+
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Anthony Weathersby"]
+edition = "2021"
 
 [profile.dev]
 debug = 2
@@ -19,3 +26,9 @@ debug = 0
 [profile.release-with-debug]
 inherits = "release"
 debug = true
+
+[workspace.dependencies.radlr_rust_runtime]
+git = "https://github.com/acweathersby/radlr"
+
+[workspace.dependencies.radlr_build]
+git = "https://github.com/acweathersby/radlr"

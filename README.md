@@ -1,3 +1,13 @@
+## Install The Compiler
+
+> Perquisite: Insure the Rust toolkit before attempting the following. 
+
+> Perquisite: Follow the install steps at https://github.com/acweathersby/radlr to ensure there is a RADLR cli runtime on your system.
+
+```
+cargo install --git https://gitlab.com/anthonycweathersby/rum_lang
+```
+
 ## Example Code
 
 ### Fibonacci
@@ -17,8 +27,7 @@ fib ( n: u32 ) => u32
   // type sig: <∀3 => {x: u32, y: u32}>(x: u32, y: u32)[HeapCTX: mem_ctx] =>  ∀3 [HeapCTX: mem_ctx]
 ```
 
-
-# Major Concepts
+# Primary Aspirations
 
 ## Database as Code
   Using database techniques to store and manipulate code fragments as inter connected parts to form 

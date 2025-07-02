@@ -1,8 +1,8 @@
 [package]
 name = "rum_compiler"
-version = "0.0.0"
-edition = "2021"
-
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "rum"
@@ -19,10 +19,7 @@ rum_lang          = { path="../rum_lang" }
 num-traits        = "0.2.17"
 
 [dependencies.radlr_rust_runtime]
-path = "../../../lib_radlr/crates/radlr-rust-runtime"
-
-[build-dependencies.radlr_build]
-path = "../../../lib_radlr/crates/radlr-build"
+workspace = true
 
 [dependencies.iced-x86]
 version = "1.21.0"
