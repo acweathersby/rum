@@ -50,6 +50,8 @@ impl RumString {
     (unsafe { &mut *ptr }).len = len;
     unsafe { memcpy((ptr as *mut u8).offset(4) as _, string.as_bytes() as *const _ as _, len as _) };
 
+    dbg!(unsafe { &mut *ptr });
+
     ptr as _
   }
 
@@ -68,7 +70,6 @@ pub(crate) struct RumTypeProp {
 impl Debug for RumTypeProp {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut strct = f.debug_struct("Prop");
-    //println!("\nRumString({})\n", (&*self.name) as *const _ as usize);
     strct.field("name", &self.name);
     strct.field("ty", &self.ty);
     strct.field("byte_offset", &self.byte_offset);

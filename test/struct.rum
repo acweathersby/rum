@@ -1,14 +1,14 @@
 #core
 get_byte_size :: (a: type) : u32 
 
-  a.ele_byte_size
+  4
 
 #core
 aligned :: (offset: u32, alignment: u32) : u32
   if offset == 0 {
     0
   } else {
-    (offset + ( alignment + 1 )) & (4294967295 - (alignment - 1))
+    (offset + ( alignment - 1 )) & (4294967295 - (alignment - 1))
   }
 
 #core
@@ -24,7 +24,7 @@ min :: (a:u32, b:u32) : u32
 
 // END META =============================================
 
-DD :: [ test: f32, rainbow: u32 ]
+DD :: [ test: f32, rainbow: u32, ]
 
 #test
 trivial :: (u:u32) : DD {

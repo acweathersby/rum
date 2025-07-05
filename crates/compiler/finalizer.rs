@@ -1,23 +1,17 @@
 #![allow(non_upper_case_globals)]
-
-use core::str;
-use std::{collections::VecDeque, fmt::Debug};
-
-use libc::memcpy;
-use rum_lang::Token;
-
 use crate::{
   _interpreter::get_op_type,
   ir_compiler::CLAUSE_SELECTOR_ID,
   types::{GetResult, NodeHandle, Op, OpId, Operation, PortType, Reference, RumString, RumTypeObject, SolveDatabase, SolveState},
 };
+use rum_lang::Token;
+use std::collections::VecDeque;
 
 /// Performs necessary transformations on active nodes, such as inserting convert instructions, etc.
 /// (TODO: Add more examples to description)
 pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
   for node in db.nodes.iter() {
     let node = node.get_mut().unwrap();
-    dbg!(&node);
 
     let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
     let mut used_ops = vec![false; node.operands.len()];
@@ -51,26 +45,27 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         match &node.operands[op.usize()] {
           // These operations do not reference other ops.
           Operation::Type(..) | Operation::Param(..) | Operation::Const(..) | Operation::Str(..) => {}
-          Operation::Call { args, mem_ctx_op, .. } => {
+          Operation::Call { args, seq_op: mem_ctx_op, .. } => {
             for op in args {
               op_queue.push_back(*op);
             }
             op_queue.push_back(*mem_ctx_op);
           }
-          Operation::AggDecl { alignment, size, mem_ctx_op, .. } => {
+          Operation::AggDecl { alignment, size, seq_op: mem_ctx_op, .. } => {
             op_queue.push_back(*size);
             op_queue.push_back(*alignment);
             op_queue.push_back(*mem_ctx_op);
           }
-          Operation::NamePTR { base, mem_ctx_op, .. } => {
+          Operation::MemPTR { base, seq_op: mem_ctx_op, .. } => {
             op_queue.push_back(*base);
             op_queue.push_back(*mem_ctx_op);
           }
 
-          Operation::Op { operands, .. } => {
+          Operation::Op { operands, seq_op: mem_ctx_op, .. } => {
             for op in operands {
               op_queue.push_back(*op);
             }
+            op_queue.push_back(*mem_ctx_op);
           }
           Operation::Gamma(_, op) => {
             op_queue.push_back(*op);
@@ -97,7 +92,10 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
           Operation::Str(str_value) => {
             let comptime_str = RumString::new(str_value.to_str().as_str());
 
-            unsafe { dbg!(&*comptime_str) };
+            unsafe {
+              dbg!(&*comptime_str);
+              dbg!(comptime_str as usize)
+            };
 
             node.operands[op_id.usize()] = Operation::Type(Reference::Integer(comptime_str as _));
           }
@@ -125,7 +123,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
               _ => unreachable!(),
             }
           }
-          Operation::NamePTR { reference, base, mem_ctx_op } => {
+          Operation::MemPTR { reference, base, seq_op: mem_ctx_op } => {
             let parent_type = get_op_type(node, *base);
 
             if let Reference::UnresolvedName(name) = reference {
@@ -138,7 +136,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
 
                   if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == name.to_str().as_str()) {
                     let offset = prop.byte_offset;
-                    node.operands[op_id.usize()] = Operation::NamePTR { reference: Reference::Integer(offset as _), base: *base, mem_ctx_op: *mem_ctx_op }
+                    node.operands[op_id.usize()] = Operation::MemPTR { reference: Reference::Integer(offset as _), base: *base, seq_op: *mem_ctx_op }
                   }
                 }
               } else {
@@ -147,7 +145,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
               }
             }
           }
-          Operation::Op { op_name, operands } => {
+          Operation::Op { op_name, operands, .. } => {
             match *op_name {
               Op::SEED => {
                 let r_type = get_op_type(node, operands[0]);
@@ -266,7 +264,6 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         }
       }
     }
-    dbg!(&node);
   }
 
   db.clone()

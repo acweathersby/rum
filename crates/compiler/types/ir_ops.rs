@@ -153,6 +153,7 @@ inter_op_gen!(
   MUL,
   DIV,
   BIT_AND,
+  BIT_OR,
   SUB,
   ADD,
   RET,

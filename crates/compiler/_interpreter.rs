@@ -237,7 +237,7 @@ pub fn interprete_op(super_node: &RootNode, op: OpId, scratch: &mut Vec<(Value, 
         },
         _ => panic!("unexpected node type {op_ty}"),
       },
-      Operation::Op { op_name, operands } => match *op_name {
+      Operation::Op { op_name, operands, .. } => match *op_name {
         Op::CONVERT => {
           let val = interprete_op(super_node, operands[0], scratch, ctx, scope_data);
 

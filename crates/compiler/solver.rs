@@ -513,7 +513,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             for op in operands.iter() {
               match op {
-                Operation::Op { op_name: Op::SEED, operands: [op1, op2, _] } => {}
+                Operation::Op { op_name: Op::SEED, operands: [op1, op2, _], .. } => {}
                 _ => {}
               }
             }
@@ -597,7 +597,7 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
 
   for (index, op) in operands.iter().enumerate().rev() {
     match op {
-      Operation::Op { op_name, operands } => match *op_name {
+      Operation::Op { op_name, operands, .. } => match *op_name {
         Op::ADD => {
           let op_ty = &type_vars[types[index].generic_id().unwrap()].ty;
 

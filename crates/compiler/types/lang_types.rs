@@ -258,7 +258,7 @@ impl TypeV {
   const fn create(bt: BaseType, ptr: u8, data: u32) -> TypeV {
     Self((((bt as u64) & Self::BT_BITS) << Self::BT_OFFSET) | (((ptr as u64) & Self::PTR_BITS) << Self::PTR_OFFSET) | ((data as u64) << Self::DATA_OFFSET))
   }
-} 
+}
 
 impl Debug for TypeV {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -379,6 +379,12 @@ pub struct PrimitiveType {
   pub base_index: u8,
   pub byte_size:  u8,
   pub ele_count:  u8,
+}
+
+impl Default for PrimitiveType {
+  fn default() -> Self {
+    prim_ty_undefined
+  }
 }
 
 impl Debug for PrimitiveType {

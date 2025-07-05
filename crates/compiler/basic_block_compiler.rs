@@ -1,15 +1,18 @@
-use rum_common::get_aligned_value;
-
 use crate::{
   _interpreter::get_op_type,
   bitfield,
   ir_compiler::{CLAUSE_ID, CLAUSE_SELECTOR_ID, MATCH_ID},
   targets::{
     reg::Reg,
-    x86::{x86_binary_writer::create_block_ordering, x86_types::*},
+    x86::{
+      x86_binary_writer::{create_block_ordering, BlockOrderData},
+      x86_types::*,
+    },
   },
-  types::{prim_ty_addr, prim_ty_u32, CMPLXId, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, Reference, RegisterSet, RootNode, SolveDatabase, TypeV, VarId},
+  types::{CMPLXId, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, VarId},
 };
+use rum_common::get_aligned_value;
+use rum_lang::todo_note;
 use std::{
   collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
   fmt::Debug,
@@ -24,17 +27,19 @@ pub(crate) struct OpData {
 
 impl OpData {
   fn new() -> OpData {
-    OpData { dep_rank: 0, block: -1 }
+    OpData { dep_rank: -1, block: -1 }
   }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum VarVal {
+  #[default]
   None,
   Var(u32),
   Reg(u8, PrimitiveType),
   Const,
   Stashed(u32),
+  MemCalc,
 }
 
 impl Debug for VarVal {
@@ -42,6 +47,7 @@ impl Debug for VarVal {
     match self {
       VarVal::None => f.write_str("----  "),
       VarVal::Const => f.write_str("CONST "),
+      VarVal::MemCalc => f.write_str("MEM[] "),
       VarVal::Reg(r, t) => f.write_fmt(format_args!("r{r:02}[{t}] ")),
       VarVal::Var(v) => f.write_fmt(format_args!("v{v:03}     ")),
       VarVal::Stashed(v) => f.write_fmt(format_args!("[{v:04}]   ")),
@@ -49,31 +55,15 @@ impl Debug for VarVal {
   }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Var {
-  pub register: VarVal,
-  // Prefer to use the register assigned to the given variable_id
-  pub prefer:   VarVal,
-  pub prim_ty:  PrimitiveType,
-  // Masks out these register from use
-  pub mask:     u64,
-}
-
-impl Var {
-  fn create(prim_ty: PrimitiveType) -> Self {
-    Self { register: VarVal::None, prefer: VarVal::None, prim_ty, mask: 0 }
-  }
-}
-
 pub(crate) struct BasicBlock {
   pub id:           usize,
-  pub ops:          Vec<usize>,
-  pub ops2:         Vec<BBop>,
+  pub ops:          Vec<OpId>,
   pub pass:         isize,
   pub fail:         isize,
   pub predecessors: Vec<usize>,
   pub level:        usize,
   pub loop_head:    bool,
+  pub post_fixups:  Vec<FixUp>,
 }
 
 impl Default for BasicBlock {
@@ -85,8 +75,8 @@ impl Default for BasicBlock {
       level:        0,
       id:           0,
       ops:          Default::default(),
-      ops2:         Default::default(),
       loop_head:    false,
+      post_fixups:  vec![],
     }
   }
 }
@@ -96,7 +86,7 @@ impl Debug for BasicBlock {
     f.write_fmt(format_args!("#{:03} BLOCK - [{}] {}\n  ", self.id, self.level, self.loop_head))?;
 
     f.write_str("\n  ")?;
-    for op in &self.ops2 {
+    for op in &self.ops {
       op.fmt(f)?;
       f.write_str("\n  ")?;
     }
@@ -112,22 +102,12 @@ impl Debug for BasicBlock {
       f.write_str("  RET")?;
     }
 
+    f.write_fmt(format_args!("post fixups: {:?}", &self.post_fixups))?;
+
     f.write_str("\n")?;
 
     Ok(())
   }
-}
-
-type ConstHandler = dyn Fn(&RootNode, usize, &mut BasicBlockFunction, &mut Vec<Var>, usize, OpId) -> VarVal;
-
-#[derive(Clone, Copy)]
-pub(crate) struct SpecializationData {
-  out_assign_req:               AssignRequirement,
-  arg_usage:                    [ArgRegType; 3],
-  /// LOOK_AHEAD_INHERITANCE - Attempts to force arg at index to inherit the same register as out.
-  look_ahead_inherit:           Option<u8>,
-  arithimatic_const_commutable: bool,
-  constant_handler:             &'static ConstHandler,
 }
 
 pub const REGISTERS: [Reg; 44] = [
@@ -155,279 +135,7 @@ pub fn get_param_registers(param_index: usize, ty: PrimitiveType) -> usize {
   }
 }
 
-pub(crate) fn x86_spec_fn(op_id: Op, ty: PrimitiveType, ops: [OpId; 3]) -> Option<&'static SpecializationData> {
-  use ArgRegType::{NeedAccessTo as NA, RequiredAs as RA, *};
-  use AssignRequirement::*;
-  const ARG1: u8 = INT_PARAM_REGISTERS[0] as _;
-  const ARG2: u8 = INT_PARAM_REGISTERS[1] as _;
-  const ARG3: u8 = INT_PARAM_REGISTERS[2] as _;
-  const RET1: u8 = OUTPUT_REGISTERS[0] as _;
-
-  const DEFAULT_SPEC: SpecializationData = SpecializationData {
-    arg_usage:                    [NoUse; 3],
-    out_assign_req:               NoRequirement,
-    arithimatic_const_commutable: false,
-    look_ahead_inherit:           None,
-    constant_handler:             DEFAULT_CONST_HNDL,
-  };
-
-  /// Loads constant value into a register if the const is the first argument.
-  fn default_const_handler(sn: &RootNode, current_block: usize, bb_funct: &mut BasicBlockFunction, vars: &mut Vec<Var>, op_arg_index: usize, dep_op_id: OpId) -> VarVal {
-    let ty = get_op_type(sn, dep_op_id).prim_data();
-
-    if op_arg_index != 1 || ty.base_ty == PrimitiveBaseType::Float {
-      let require_var_id = vars.len();
-      let out = VarVal::Var(require_var_id as _);
-
-      bb_funct.blocks[current_block].ops2.push(BBop {
-        op_ty: Op::LOAD_CONST,
-        out,
-        args: [VarVal::Const, VarVal::None, VarVal::None],
-        ops: [dep_op_id, OpId::default(), OpId::default()],
-        source: Default::default(),
-        prim_ty: ty,
-        probe: Probe::None,
-      });
-
-      vars.push(Var { register: VarVal::None, prefer: VarVal::None, prim_ty: ty, mask: 0 });
-
-      out
-    } else {
-      VarVal::Const
-    }
-  }
-
-  const DEFAULT_CONST_HNDL: &'static ConstHandler = &default_const_handler;
-
-  match op_id {
-    Op::AGG_DECL | Op::ARR_DECL => Some(&SpecializationData { arg_usage: [NA(ARG1, prim_ty_addr), NA(ARG2, prim_ty_u32), NA(ARG3, prim_ty_u32)], out_assign_req: Forced(5, true), ..DEFAULT_SPEC }),
-    Op::FREE => Some(&SpecializationData {
-      arg_usage:                    [RA(ARG1), NA(ARG2, prim_ty_u32), NA(ARG3, prim_ty_u32)],
-      out_assign_req:               NoOutput,
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           None,
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::ARG => {
-      const BASE: SpecializationData = SpecializationData {
-        arg_usage:                    [Used, NoUse, NoUse],
-        out_assign_req:               NoRequirement,
-        arithimatic_const_commutable: false,
-        look_ahead_inherit:           Some(0),
-        constant_handler:             DEFAULT_CONST_HNDL,
-      };
-
-      if ty.base_ty == PrimitiveBaseType::Float {
-        match ops[1].meta() {
-          0 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[0] as _, false), ..BASE }),
-          1 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[1] as _, false), ..BASE }),
-          2 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[2] as _, false), ..BASE }),
-          3 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[3] as _, false), ..BASE }),
-          4 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[4] as _, false), ..BASE }),
-          5 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[5] as _, false), ..BASE }),
-          6 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[6] as _, false), ..BASE }),
-          7 => Some(&SpecializationData { out_assign_req: Forced(FP_PARAM_REGISTERS[7] as _, false), ..BASE }),
-          _ => None,
-        }
-      } else {
-        match ops[1].meta() {
-          0 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[0] as _, false), ..BASE }),
-          1 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[1] as _, false), ..BASE }),
-          2 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[2] as _, false), ..BASE }),
-          3 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[3] as _, false), ..BASE }),
-          4 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[4] as _, false), ..BASE }),
-          5 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[5] as _, false), ..BASE }),
-          6 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[6] as _, false), ..BASE }),
-          7 => Some(&SpecializationData { out_assign_req: Forced(INT_PARAM_REGISTERS[7] as _, false), ..BASE }),
-          _ => None,
-        }
-      }
-    }
-    Op::GR | Op::GE | Op::LS | Op::LE | Op::NE | Op::EQ => {
-      fn fp_check(sn: &RootNode, block: &mut BasicBlock, vars: &mut Vec<Var>, existing_var: VarVal, op: OpId) -> VarVal {
-        let prim_ty = get_op_type(sn, op).prim_data();
-        if prim_ty.base_ty == PrimitiveBaseType::Float {
-          // Create a new var for this type to act as a load.
-          let require_var_id = vars.len();
-          let out = VarVal::Var(require_var_id as _);
-
-          block.ops2.push(BBop {
-            op_ty:   Op::SEED,
-            out:     out,
-            args:    [existing_var, VarVal::None, VarVal::None],
-            ops:     [OpId::default(); 3],
-            source:  op,
-            prim_ty: get_op_type(sn, op).prim_data(),
-            probe:   Probe::None,
-          });
-
-          vars.push(Var { register: VarVal::None, prefer: VarVal::None, prim_ty, mask: 0 });
-
-          out
-        } else {
-          existing_var
-        }
-      }
-
-      if op_id == Op::EQ || op_id == Op::NE {
-        Some(&SpecializationData {
-          arg_usage:                    [Custom(&fp_check), Used, NoUse],
-          out_assign_req:               NoRequirement,
-          arithimatic_const_commutable: true,
-          look_ahead_inherit:           None,
-          constant_handler:             DEFAULT_CONST_HNDL,
-        })
-      } else {
-        Some(&SpecializationData {
-          arg_usage:                    [Custom(&fp_check), Used, NoUse],
-          out_assign_req:               NoRequirement,
-          arithimatic_const_commutable: false,
-          look_ahead_inherit:           None,
-          constant_handler:             DEFAULT_CONST_HNDL,
-        })
-      }
-    }
-    Op::OPTR => Some(&SpecializationData {
-      arg_usage:                    [Used, Used, NoUse],
-      out_assign_req:               NoRequirement,
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           None,
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::STORE => Some(&SpecializationData {
-      arg_usage:                    [Used, Used, NoUse],
-      out_assign_req:               NoOutput,
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           None,
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::SEED => Some(&SpecializationData {
-      arg_usage:                    [Used, NoUse, NoUse],
-      out_assign_req:               LookBackInherit(0),
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           None,
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::CONVERT => Some(&SpecializationData {
-      arg_usage:                    [Used, NoUse, NoUse],
-      out_assign_req:               NoRequirement,
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           None,
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::LOAD => Some(&SpecializationData {
-      arg_usage:                    [Used, NoUse, NoUse],
-      out_assign_req:               NoRequirement,
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           None,
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::RET => Some(&SpecializationData {
-      arg_usage:                    [Used, Used, NoUse],
-      out_assign_req:               Forced(RET1, false),
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           Some(0),
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::ADD | Op::MUL | Op::BIT_AND => Some(&SpecializationData {
-      arg_usage:                    [Used, Used, NoUse],
-      out_assign_req:               LookBackInherit(0),
-      arithimatic_const_commutable: true,
-      look_ahead_inherit:           None, //,
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::SUB => Some(&SpecializationData {
-      arg_usage:                    [Used, Used, NoUse],
-      out_assign_req:               LookBackInherit(0),
-      arithimatic_const_commutable: false,
-      look_ahead_inherit:           None, //Some(0),
-      constant_handler:             DEFAULT_CONST_HNDL,
-    }),
-    Op::DIV => {
-      if ty.base_ty == PrimitiveBaseType::Float {
-        Some(&SpecializationData {
-          arg_usage:                    [Used, Used, NoUse],
-          out_assign_req:               NoRequirement,
-          arithimatic_const_commutable: false,
-          look_ahead_inherit:           Some(0),
-          constant_handler:             DEFAULT_CONST_HNDL,
-        })
-      } else {
-        Some(&SpecializationData {
-          arg_usage:                    [RA(RET1), Used, NoUse],
-          out_assign_req:               Forced(RET1, true),
-          arithimatic_const_commutable: false,
-          look_ahead_inherit:           None,
-          constant_handler:             DEFAULT_CONST_HNDL,
-        })
-      }
-    }
-    op => todo!("handle operand {op}"),
-  }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum Probe {
-  None,
-  Pending(u32),
-  /// Registers that are active
-  ActiveRegs(Vec<Var>),
-}
-
 type X86registers = RegisterSet;
-pub(crate) struct BBop {
-  pub op_ty:   Op,
-  pub out:     VarVal,
-  pub args:    [VarVal; 3],
-  pub ops:     [OpId; 3],
-  pub source:  OpId,
-  pub prim_ty: PrimitiveType,
-  pub probe:   Probe,
-}
-
-impl Debug for BBop {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let BBop { op_ty, out: id, args: operands, source, prim_ty: ty_data, probe, .. } = self;
-    f.write_fmt(format_args!("{:<8} {id:?} <= {} {:6} {ty_data} {probe:?}", op_ty.to_string(), operands.iter().map(|s| { format!("{s:?}") }).collect::<Vec<_>>().join(" "), source.to_string()))
-  }
-}
-
-fn select_op_row<'ds, Row>(op: Op, map: &'ds [(Op, Row)]) -> Option<&'ds Row> {
-  for (key, index) in map {
-    if *key == op {
-      return Some(&index);
-    }
-  }
-
-  None
-}
-
-#[derive(Clone, Copy)]
-enum ArgRegType {
-  /// Operation has no use of this operand
-  NoUse,
-  /// The operation requires the register containing the value of operand at the given index
-  Used,
-  /// The operand needs to be in this register before reaching this operation
-  RequiredAs(u8),
-  /// This instruction needs free access to this register.
-  /// Any existing allocation to this register should be stashed or otherwise saved
-  /// before access is granted. The value of the operand itself is ignored.
-  NeedAccessTo(u8, PrimitiveType),
-  /// A special setup for handling odd cases such as needing to create temp v-register
-  Custom(&'static dyn Fn(&RootNode, &mut BasicBlock, &mut Vec<Var>, VarVal, OpId) -> VarVal),
-}
-
-#[derive(Clone, Copy)]
-enum AssignRequirement {
-  /// The output of the operand WILL be assigned to the given register.
-  /// If true, a temporary register will be used to prevent clobbering of existing assignments.
-  Forced(u8, bool),
-  NoRequirement,
-  NoOutput,
-  /// LOOK_BACK_INHERITANCE - attempts to force out value to inherite the same register as is used by and input arg.
-  LookBackInherit(u8),
-}
 
 #[derive(Debug)]
 pub(crate) struct BasicBlockFunction {
@@ -436,24 +144,319 @@ pub(crate) struct BasicBlockFunction {
   pub blocks:            Vec<BasicBlock>,
   pub makes_system_call: bool,
   pub makes_ffi_call:    bool,
+  pub op_to_var_map:     Vec<u32>,
+  pub vars:              Vec<VarOP>,
+}
+
+impl BasicBlockFunction {
+  pub fn iter_blocks<'a>(&'a self, sn: &'a RootNode) -> BlockOrderIterator<'a> {
+    // Optimization - Order blocks to decrease number of jumps
+
+    let blocks = &self.blocks;
+    let mut block_ordering = vec![BlockOrderData::default(); blocks.len()];
+    let mut block_tracker = vec![false; blocks.len()];
+    let first = blocks.iter().find(|b| b.predecessors.len() == 0).unwrap();
+
+    block_ordering.iter_mut().enumerate().for_each(|(i, block)| block.index = i);
+
+    let mut block_order_queue = VecDeque::from_iter([first.id as isize]);
+
+    let mut offset = 0;
+
+    while let Some(block_id) = block_order_queue.pop_front() {
+      if block_id < 0 || block_tracker[block_id as usize] {
+        continue;
+      }
+
+      block_tracker[block_id as usize] = true;
+      block_ordering[offset].block_id = block_id as _;
+      block_ordering[offset].pass = blocks[block_id as usize].pass;
+      block_ordering[offset].fail = blocks[block_id as usize].fail;
+
+      offset += 1;
+
+      let block = &blocks[block_id as usize];
+      block_order_queue.push_front(block.fail);
+      block_order_queue.push_front(block.pass);
+    }
+
+    // Filter out any zero length blocks
+    BlockOrderIterator {
+      bb: self,
+      sn,
+      counter: 0,
+      block_ordering: block_ordering
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut b)| {
+          b.index = i;
+          b
+        })
+        .collect::<Vec<_>>(),
+      vars: self.vars.clone(),
+      post_fixups: vec![],
+      pre_fixups: vec![],
+    }
+  }
+}
+
+fn get_vv_for_op_mut(sn: &RootNode, op_to_var_map: &mut Vec<u32>, vars: &mut Vec<VarOP>, op: OpId) -> usize {
+  if op_to_var_map[op.usize()] == u32::MAX {
+    op_to_var_map[op.usize()] = vars.len() as u32;
+    let mut var = VarOP::default();
+    var.ty = get_op_type(sn, op).prim_data();
+    vars.push(var);
+    op_to_var_map[op.usize()] as usize
+  } else {
+    op_to_var_map[op.usize()] as usize
+  }
+}
+
+fn get_vv_for_op(op_to_var_map: &Vec<u32>, op: OpId) -> usize {
+  op_to_var_map[op.usize()] as usize
+}
+
+pub(crate) struct BlockOrderIterator<'a> {
+  sn:             &'a RootNode,
+  bb:             &'a BasicBlockFunction,
+  counter:        usize,
+  block_ordering: Vec<BlockOrderData>,
+  vars:           Vec<VarOP>,
+  post_fixups:    Vec<FixUp>,
+  pre_fixups:     Vec<FixUp>,
+}
+
+impl<'a> Iterator for BlockOrderIterator<'a> {
+  type Item = (BlockOrderData, Option<BlockOrderData>, BasicBlockFunctionIter<'a>);
+
+  fn next(&mut self) -> Option<Self::Item> {
+    let Self { counter, sn, bb, block_ordering, vars, post_fixups, pre_fixups } = self;
+
+    let prev_val = *counter;
+    *counter += 1;
+    if prev_val >= block_ordering.len() {
+      None
+    } else {
+      unsafe {
+        let block = block_ordering[prev_val];
+        return Some((block, block_ordering.get(*counter).cloned(), BasicBlockFunctionIter {
+          bb,
+          sn,
+          vars: std::mem::transmute(vars),
+          post_fixups: std::mem::transmute(post_fixups),
+          pre_fixups: std::mem::transmute(pre_fixups),
+          current_op_index: 0,
+          current_block: block.block_id as _,
+          stack_ptr_offset: 0,
+        }));
+      }
+    }
+  }
+}
+
+pub(crate) struct BasicBlockFunctionIter<'a> {
+  sn:               &'a RootNode,
+  bb:               &'a BasicBlockFunction,
+  vars:             &'a mut Vec<VarOP>,
+  post_fixups:      &'a mut Vec<FixUp>,
+  pre_fixups:       &'a mut Vec<FixUp>,
+  current_op_index: isize,
+  current_block:    usize,
+  stack_ptr_offset: u64,
+}
+
+fn get_var_offset(vars: &mut [VarOP], stack_ptr_offset: &mut u64, var: usize) -> u64 {
+  let offset = if let Some(offset) = vars[var].stack_offset {
+    offset
+  } else {
+    let offset = get_aligned_value(*stack_ptr_offset, vars[var].ty.byte_size as _);
+    vars[var].stack_offset = Some(offset);
+    *stack_ptr_offset = offset + (vars[var].ty.byte_size as u64);
+    offset
+  };
+  offset
+}
+
+impl<'a> Iterator for BasicBlockFunctionIter<'a> {
+  type Item = (OpId, VarVal, [VarVal; 3], &'static [FixUp], &'static [FixUp], bool);
+  fn next(&mut self) -> Option<Self::Item> {
+    let BasicBlockFunctionIter { bb, post_fixups, pre_fixups, current_op_index, current_block, sn, vars, stack_ptr_offset } = self;
+
+    let op_index = *current_op_index as usize;
+    *current_op_index += 1;
+
+    post_fixups.clear();
+    pre_fixups.clear();
+
+    if op_index >= bb.blocks[*current_block].ops.len() {
+      if bb.blocks[*current_block].ops.len() == op_index && !bb.blocks[*current_block].post_fixups.is_empty() {
+        *current_op_index += 1;
+
+        for block_fixup in &bb.blocks[*current_block].post_fixups {
+          match block_fixup {
+            FixUp::UniPHI(phi_var_id, op_var_id) => {
+              let var_phi = vars[*phi_var_id].out;
+              let var_op = vars[*op_var_id].out;
+
+              if var_phi != var_op {
+                match var_op {
+                  VarVal::Reg(src, ty) => match var_phi {
+                    VarVal::Reg(dst, _) => {
+                      post_fixups.push(FixUp::Move { dst, src, ty });
+                    }
+                    VarVal::Stashed(offset) => {
+                      post_fixups.push(FixUp::Store(src, offset as _, ty));
+                    }
+                    _ => unreachable!(),
+                  },
+                  _ => unreachable!(),
+                }
+              }
+            }
+            _ => unreachable!(),
+          }
+        }
+
+        if post_fixups.len() > 0 {
+          return unsafe { Some((Default::default(), VarVal::None, [VarVal::default(); 3], std::mem::transmute(pre_fixups.as_slice()), std::mem::transmute(post_fixups.as_slice()), true)) };
+        }
+      }
+      return None;
+    };
+    let last_op = bb.blocks[*current_block].ops.len() == op_index + 1;
+    let op = bb.blocks[*current_block].ops[op_index];
+    let var_index = get_vv_for_op(&bb.op_to_var_map, op);
+
+    let out = if var_index < u32::MAX as usize {
+      pre_fixups.extend(vars[var_index].pre_fixes.iter().filter(|d| match d {
+        FixUp::TempStore(var) => vars[*var].active && !vars[*var].temp_store,
+        _ => true,
+      }));
+      post_fixups.extend(vars[var_index].post_fixes.iter());
+
+      vars[var_index].active = true;
+      vars[var_index].out
+    } else {
+      VarVal::None
+    };
+
+    let mut dependency_ops = [OpId::default(); 3];
+    let arg_ops = [VarVal::default(); 3];
+
+    let (dependency_ops, arg_ops) = match &sn.operands[op.usize()] {
+      Operation::MemPTR { base, .. } => {
+        dependency_ops[1] = *base;
+        (dependency_ops.as_slice(), [get_vv(bb, vars, base), Default::default(), Default::default()])
+      }
+      Operation::AggDecl { size, alignment, .. } => {
+        dependency_ops[0] = *size;
+        dependency_ops[1] = *alignment;
+        (dependency_ops.as_slice(), [get_vv(bb, vars, size), get_vv(bb, vars, alignment), Default::default()])
+      }
+      Operation::Call { args, .. } => (args.as_slice(), Default::default()),
+      Operation::Op { operands, .. } => {
+        dependency_ops = *operands;
+        (dependency_ops.as_slice(), [get_vv(bb, vars, &operands[0]), get_vv(bb, vars, &operands[1]), get_vv(bb, vars, &operands[2])])
+      }
+      Operation::Const(..) | Operation::Gamma(..) | Operation::Phi(..) | Operation::Type(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
+      Operation::Dead => unreachable!(),
+      op => todo!("{op:?}"),
+    };
+
+    for input in dependency_ops {
+      if input.is_valid() {
+        // Handle temp loads
+        let var_index = get_vv_for_op(&bb.op_to_var_map, *input);
+
+        let var = &vars[var_index];
+        if var.temp_store || var.stored {
+          match var.out {
+            VarVal::Reg(reg, ty) => {
+              let offset = get_var_offset(vars, stack_ptr_offset, var_index);
+
+              // If there is a subsequent move of a register after a load then we should
+              // just load into the target of the register and not remove temp store status
+              if let Some(fix_up) = pre_fixups.iter_mut().find(|fix_up| match fix_up {
+                FixUp::Move { dst, src, ty } => *src == reg,
+                _ => false,
+              }) {
+                let FixUp::Move { dst, src, ty: ty_a } = fix_up else { unreachable!() };
+                debug_assert!(*ty_a == ty);
+                let new_fixup = FixUp::Load(*dst, offset, ty);
+                *fix_up = new_fixup;
+              } else {
+                pre_fixups.insert(0, FixUp::Load(reg, offset, ty));
+                vars[var_index].temp_store = false;
+              }
+            }
+            VarVal::Const => {}
+            VarVal::MemCalc => {}
+            _ => unreachable!(),
+          }
+        }
+      }
+    }
+
+    for pre_fix in &pre_fixups.clone() {
+      match *pre_fix {
+        FixUp::TempStore(arg_index) => {
+          vars[arg_index].temp_store = true;
+          let offset = get_var_offset(vars, stack_ptr_offset, arg_index);
+          match vars[arg_index].out {
+            VarVal::Reg(reg, ty) => pre_fixups.insert(0, FixUp::Store(reg, offset, ty)),
+            VarVal::Const => {}
+            VarVal::MemCalc => {}
+            ty => unreachable!("{ty:?}"),
+          }
+        }
+        _ => {}
+      }
+    }
+
+    unsafe { Some((op, out, arg_ops, std::mem::transmute(pre_fixups.as_slice()), std::mem::transmute(post_fixups.as_slice()), last_op)) }
+  }
+}
+
+fn get_vv(bb: &mut &BasicBlockFunction, vars: &Vec<VarOP>, base: &OpId) -> VarVal {
+  if base.is_valid() {
+    vars.get(get_vv_for_op(&bb.op_to_var_map, *base)).map(|v| v.out).unwrap_or_default()
+  } else {
+    VarVal::None
+  }
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FixUp {
+  Move { dst: u8, src: u8, ty: PrimitiveType },
+  Load(u8, u64, PrimitiveType),
+  Store(u8, u64, PrimitiveType),
+  TempStore(usize),
+  UniPHI(usize, usize),
+}
+
+#[derive(Default, Debug, Clone)]
+struct VarOP {
+  out:          VarVal,
+  pre_fixes:    Vec<FixUp>,
+  post_fixes:   Vec<FixUp>,
+  active:       bool,
+  temp_store:   bool,
+  stored:       bool,
+  ty:           PrimitiveType,
+  stack_offset: Option<u64>,
+  phi:          Option<usize>,
 }
 
 /// Returns a vector of register assigned basic blocks.
-pub(crate) fn encode_function(
-  id: CMPLXId,
-  sn: &mut RootNode,
-  db: &SolveDatabase,
-  spec_lu_fn: &'static impl Fn(Op, PrimitiveType, [OpId; 3]) -> Option<&'static SpecializationData>,
-) -> BasicBlockFunction {
+pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase) -> BasicBlockFunction {
   let mut op_data = vec![OpData::new(); sn.operands.len()];
 
-  let mut bb_funct = BasicBlockFunction { id, blocks: vec![], stash_size: 0, makes_ffi_call: false, makes_system_call: false };
+  let mut bb_funct = BasicBlockFunction { id, blocks: vec![], stash_size: 0, makes_ffi_call: false, makes_system_call: false, vars: vec![], op_to_var_map: vec![u32::MAX; sn.operands.len()] };
 
   // Assign variable ids, starting with all output and input ops
-  let mut op_to_var_map = vec![u32::MAX; sn.operands.len()];
-  let mut vars = Vec::<Var>::new();
 
-  assign_ops_to_blocks(sn, &mut bb_funct.blocks, &mut op_data, &mut vars, &mut op_to_var_map);
+  assign_ops_to_blocks(sn, &mut bb_funct.blocks, &mut op_data, &mut bb_funct.vars, &mut bb_funct.op_to_var_map);
 
   // Set predecessors
   for block_id in 0..bb_funct.blocks.len() {
@@ -464,750 +467,552 @@ pub(crate) fn encode_function(
     }
   }
 
-  let mut forced_vars = vec![];
-
-  {
-    // Alternate workflow -------
-
-    // gather ops per block
-    let mut op_blocks = vec![vec![]; bb_funct.blocks.len()];
-
-    for op_id in (0..sn.operands.len()).map(|op_index| OpId(op_index as u32)) {
-      let block_index = op_data[op_id.usize()].block;
-      if block_index >= 0 {
-        op_blocks[block_index as usize].push(op_id);
-      } else if block_index == -100 {
-        op_blocks[0].push(op_id);
-      }
+  // Distribute ops to blocks.
+  for op_id in (0..sn.operands.len()).map(|op_index| OpId(op_index as u32)) {
+    let block_index = op_data[op_id.usize()].block;
+    if block_index >= 0 {
+      bb_funct.blocks[block_index as usize].ops.push(op_id);
+    } else if block_index == -100 {
+      bb_funct.blocks[0].ops.push(op_id);
     }
-
-    dbg!(op_blocks);
-
-    // Calculate the input and output sets of all blocks
-
-    let mut bf = bitfield::BitFieldArena::new(bb_funct.blocks.len() * 2 + 1, sn.operands.len());
-    let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
-
-    let bf_working_set_id = bf.len - 1;
-
-    while let Some(block_id) = queue.pop_front() {
-      let block_ins_id = block_id << 1;
-      let block_outs_id = (block_id << 1) + 1;
-
-      bf.mov(bf_working_set_id, block_outs_id);
-
-      for op in bb_funct.blocks[block_id as usize].ops2.iter().rev() {
-        match op {
-          BBop { out: id, args: operands, source, probe, .. } => {
-            match id {
-              VarVal::Var(id) => {
-                bf.unset_bit(bf_working_set_id, *id as _);
-              }
-              _ => {}
-            }
-
-            for op in operands {
-              match op {
-                VarVal::Var(var_id) => {
-                  if *var_id == u32::MAX {
-                    continue;
-                  }
-                  debug_assert!(*var_id != u32::MAX, "{source} => ops:{:?} \n {:?}", operands, sn.operands[source.usize()]);
-
-                  bf.set_bit(bf_working_set_id, *var_id as _);
-                }
-                _ => {}
-              }
-            }
-          }
-        }
-      }
-
-      if bf.mov(block_ins_id, bf_working_set_id) {
-        for predecessor in &bb_funct.blocks[block_id as usize].predecessors {
-          let predecessor_outs_index = (*predecessor << 1) + 1;
-          bf.or(predecessor_outs_index, bf_working_set_id);
-          queue.push_back(*predecessor);
-        }
-      }
-    }
-
-    panic!("AAAA");
   }
 
-  // Map block data to var_ids
+  dbg!(&bb_funct);
 
-  // Add op references to blocks and sort dependencies
-  for op_index in 0..sn.operands.len() {
-    let data = op_data[op_index];
-    let target_op = OpId(op_index as _);
-    let op_prim_ty = get_op_type(&sn, target_op).prim_data();
-    if data.block >= 0 {
-      // -- Filter out memory ordering operations.
+  // Sort ops based on dependency graph
+  {
+    let mut pending_ops = VecDeque::from_iter(sn.nodes[0].ports.iter().filter(|p| matches!(p.ty, PortType::Out | PortType::Passthrough | PortType::Merge)).map(|p| p.slot).map(|o| (o, 0)));
 
-      bb_funct.blocks[data.block as usize].ops.push(op_index);
+    while let Some((op, rank)) = pending_ops.pop_front() {
+      if op.is_invalid() {
+        continue;
+      }
 
-      match &sn.operands[op_index] {
-        Operation::Gamma(_, inner_op) => {
-          let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *inner_op);
-          let out_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-          bb_funct.blocks[data.block as usize].ops2.push(BBop {
-            op_ty:   Op::Meta,
-            out:     VarVal::Var(out_var_id),
-            args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
-            ops:     [OpId::default(); 3],
-            source:  target_op,
-            prim_ty: op_prim_ty,
-            probe:   Probe::None,
-          });
+      let current_rank = op_data[op.usize()].dep_rank;
+
+      if current_rank < rank {
+        op_data[op.usize()].dep_rank = rank;
+      } else {
+        continue;
+      }
+
+      match &sn.operands[op.usize()] {
+        Operation::Param(..) => {
+          // Params always receive the highest rank to ensure they are placed at the top of their
+          // basic block;
+          op_data[op.usize()].dep_rank = i32::MAX;
         }
-        Operation::Type(type_data) => {
-          match type_data {
-            Reference::Integer(_) => {
-              //  let inner_var_id = create_var(&mut vars, get_op_type(sn, target_op));
-              let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-
-              bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                op_ty:   Op::LOAD_TYPE_ADDRESS,
-                out:     VarVal::Var(outer_var_id),
-                args:    [VarVal::None, VarVal::None, VarVal::None],
-                ops:     [OpId::default(); 3],
-                source:  target_op,
-                prim_ty: op_prim_ty,
-                probe:   Probe::None,
-              });
-            }
-            _ => unreachable!(),
+        Operation::Op { operands, seq_op, .. } => {
+          for op in operands {
+            pending_ops.push_back((*op, rank + 1));
+          }
+          pending_ops.push_back((*seq_op, rank + 2000));
+        }
+        Operation::Call { reference, args, seq_op } => {
+          for op in args {
+            pending_ops.push_back((*op, rank + 1));
+          }
+          pending_ops.push_back((*seq_op, rank + 2000));
+        }
+        Operation::AggDecl { size, alignment, seq_op } => {
+          pending_ops.push_back((*size, rank + 1));
+          pending_ops.push_back((*alignment, rank + 1));
+          pending_ops.push_back((*seq_op, rank + 2000));
+        }
+        Operation::MemPTR { reference, base, seq_op } => {
+          pending_ops.push_back((*base, rank + 1));
+          pending_ops.push_back((*seq_op, rank + 2000));
+        }
+        Operation::Phi(_, ops) => {
+          for op in ops {
+            pending_ops.push_back((*op, rank + 20000));
           }
         }
-        Operation::Param(_, index) => {
-          //  let inner_var_id = create_var(&mut vars, get_op_type(sn, target_op));
-          let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
 
-          let input_reg = VarVal::Reg(get_param_registers(*index as usize, op_prim_ty) as _, op_prim_ty);
-
-          bb_funct.blocks[data.block as usize].ops2.push(BBop {
-            op_ty:   Op::PARAM,
-            out:     VarVal::Var(outer_var_id),
-            args:    [input_reg, VarVal::None, VarVal::None],
-            ops:     [OpId::default(); 3],
-            source:  target_op,
-            prim_ty: op_prim_ty,
-            probe:   Probe::None,
-          });
-
-          vars[outer_var_id as usize].prefer = input_reg;
-
-          //vars[inner_var_id as usize].register = VarVal::Reg(get_param_registers(*index as usize, op_prim_ty) as _);
-        }
-        Operation::NamePTR { reference, base, .. } => {
-          debug_assert!(matches!(reference, Reference::Integer(..)));
-
-          let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *base);
-          let out_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-          bb_funct.blocks[data.block as usize].ops2.push(BBop {
-            op_ty:   Op::MAP_BASE_TO_CHILD,
-            out:     VarVal::Var(out_var_id),
-            args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
-            ops:     [OpId::default(); 3],
-            source:  target_op,
-            prim_ty: op_prim_ty,
-            probe:   Probe::None,
-          });
-        }
-        Operation::AggDecl { alignment, size, .. } => {
-          let block = &mut bb_funct.blocks[data.block as usize];
-          bb_funct.makes_ffi_call = true;
-          for (index, arg) in [*size, *alignment].into_iter().enumerate() {
-            debug_assert!(arg.is_valid());
-            let prim_ty = get_op_type(sn, arg).prim_data();
-            match sn.operands[arg.usize()] {
-              Operation::Const(..) => {
-                block.ops2.push(BBop {
-                  op_ty:   Op::LOAD_CONST,
-                  out:     VarVal::Reg(INT_PARAM_REGISTERS[index] as _, prim_ty_addr),
-                  args:    [VarVal::Const, VarVal::None, VarVal::None],
-                  ops:     [arg, Default::default(), Default::default()],
-                  source:  arg,
-                  prim_ty: prim_ty,
-                  probe:   Probe::None,
-                });
-              }
-              Operation::Dead => unreachable!(),
-              _ => {
-                let inner_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, arg);
-                block.ops2.push(BBop {
-                  op_ty:   Op::SEED,
-                  out:     VarVal::Reg(INT_PARAM_REGISTERS[index] as _, prim_ty_addr),
-                  args:    [VarVal::Var(inner_var_id), VarVal::None, VarVal::None],
-                  ops:     [arg, Default::default(), Default::default()],
-                  source:  arg,
-                  prim_ty: prim_ty,
-                  probe:   Probe::None,
-                });
-              }
-            };
-          }
-
-          let out = VarVal::Reg(OUTPUT_REGISTERS[0] as _, prim_ty_addr);
-          let arg1 = VarVal::Reg(INT_PARAM_REGISTERS[0] as _, prim_ty_addr);
-          let arg2 = VarVal::Reg(INT_PARAM_REGISTERS[1] as _, prim_ty_addr);
-          let arg3 = VarVal::Reg(INT_PARAM_REGISTERS[1] as _, prim_ty_addr);
-
-          block.ops2.push(BBop {
-            op_ty:   Op::AGG_DECL,
-            out:     out,
-            args:    [arg1, arg2, arg3],
-            ops:     [OpId::default(); 3],
-            source:  target_op,
-            prim_ty: op_prim_ty,
-            probe:   Probe::Pending(create_var(&mut vars, TypeV::NoUse)),
-          });
-
-          let outer_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-          bb_funct.blocks[data.block as usize].ops2.push(BBop {
-            op_ty:   Op::SEED,
-            out:     VarVal::Var(outer_var_id),
-            args:    [out, VarVal::None, VarVal::None],
-            ops:     [target_op, OpId::default(), OpId::default()],
-            source:  target_op,
-            prim_ty: op_prim_ty,
-            probe:   Probe::None,
-          });
-        }
-        Operation::Call { args, .. } => {
-          let mut int_index = 0;
-          let mut flt_index = 0;
-          for arg_op in args {
-            let arg_prim_ty = get_op_type(sn, *arg_op).prim_data();
-
-            let out = if arg_prim_ty.base_ty == PrimitiveBaseType::Float {
-              let id = flt_index;
-              flt_index += 1;
-              VarVal::Reg(FP_PARAM_REGISTERS[id as usize] as _, arg_prim_ty)
-            } else {
-              let id = int_index;
-              int_index += 1;
-              VarVal::Reg(INT_PARAM_REGISTERS[id as usize] as _, arg_prim_ty)
-            };
-
-            let arg_v = if let Operation::Const(..) = &sn.operands[arg_op.usize()] { VarVal::Const } else { VarVal::Var(get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, *arg_op)) };
-
-            bb_funct.blocks[data.block as usize].ops2.push(BBop {
-              op_ty:   Op::SEED,
-              out:     out,
-              args:    [arg_v, VarVal::None, VarVal::None],
-              ops:     [*arg_op, OpId::default(), OpId::default()],
-              source:  *arg_op,
-              prim_ty: arg_prim_ty,
-              probe:   Probe::None,
-            });
-          }
-
-          let out = if op_prim_ty.base_ty == PrimitiveBaseType::Float { VarVal::Reg(FP_OUTPUT_REGISTERS[0] as _, op_prim_ty) } else { VarVal::Reg(OUTPUT_REGISTERS[0] as _, op_prim_ty) };
-
-          bb_funct.blocks[data.block as usize].ops2.push(BBop {
-            op_ty:   Op::ResolvedCall,
-            out:     out,
-            args:    [VarVal::None, VarVal::None, VarVal::None],
-            ops:     [OpId::default(); 3],
-            source:  target_op,
-            prim_ty: op_prim_ty,
-            probe:   Probe::Pending(create_var(&mut vars, TypeV::NoUse)),
-          });
-
-          bb_funct.blocks[data.block as usize].ops2.push(BBop {
-            op_ty:   Op::SEED,
-            out:     VarVal::Var(get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op)),
-            args:    [out, VarVal::None, VarVal::None],
-            ops:     [OpId::default(); 3],
-            source:  target_op,
-            prim_ty: op_prim_ty,
-            probe:   Probe::None,
-          });
-        }
-        Operation::Op { op_name: op_type, operands } => {
-          if let Some(SpecializationData { out_assign_req, arg_usage, look_ahead_inherit, arithimatic_const_commutable: arithmetic_const_commutable, constant_handler }) =
-            spec_lu_fn(*op_type, op_prim_ty, *operands).copied()
-          {
-            // Temporary
-            if *op_type == Op::AGG_DECL {
-              bb_funct.makes_ffi_call = true;
-            }
-
-            // Lookahead and Lookback inheritance should be active at the same time.
-            debug_assert!(look_ahead_inherit == None || !matches!(out_assign_req, AssignRequirement::LookBackInherit(..)));
-
-            let probe = if *op_type == Op::AGG_DECL { Probe::Pending(create_var(&mut vars, TypeV::NoUse)) } else { Probe::None };
-
-            let mut out_ops = [VarVal::None; 3];
-            let first_operand_is_constant = operands[0].is_valid() && matches!(sn.operands[operands[0].usize()], Operation::Const(..));
-            let second_operand_is_constant = operands[1].is_valid() && matches!(sn.operands[operands[1].usize()], Operation::Const(..));
-
-            if first_operand_is_constant && second_operand_is_constant {
-              panic!("Cannot resolve double operands: {:?}", sn.operands[op_index]);
-            }
-
-            let operands = if first_operand_is_constant && arithmetic_const_commutable {
-              // Swap first and second.
-              [operands[1], operands[0], operands[2]]
-            } else {
-              *operands
-            };
-
-            for ((arg_index, dep_op_id), mapping) in operands.iter().enumerate().zip(arg_usage) {
-              let is_const = dep_op_id.is_valid() && matches!(sn.operands[dep_op_id.usize()], Operation::Const(..));
-              let arg_prim_ty = get_op_type(&sn, *dep_op_id).prim_data();
-
-              if is_const {
-                out_ops[arg_index] = constant_handler(sn, data.block as _, &mut bb_funct, &mut vars, arg_index, *dep_op_id);
-              } else {
-                let operand_var_id = if operands[arg_index].is_valid() { op_to_var_map[operands[arg_index].usize()] } else { u32::MAX };
-
-                if operand_var_id != u32::MAX {
-                  out_ops[arg_index] = VarVal::Var(operand_var_id);
-                }
-
-                match mapping {
-                  ArgRegType::NeedAccessTo(reg, prim_ty) => out_ops[arg_index] = VarVal::Reg(reg, prim_ty),
-                  ArgRegType::RequiredAs(reg) if dep_op_id.is_valid() => {
-                    let require_var_id = vars.len();
-                    let out = VarVal::Var(require_var_id as _);
-
-                    forced_vars.push(require_var_id);
-
-                    bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                      op_ty:   Op::SEED,
-                      out:     out,
-                      args:    [VarVal::Var(operand_var_id), VarVal::None, VarVal::None],
-                      ops:     [OpId::default(); 3],
-                      source:  *dep_op_id,
-                      prim_ty: arg_prim_ty,
-                      probe:   Probe::None,
-                    });
-
-                    vars.push(Var { register: VarVal::Reg(reg, arg_prim_ty), prefer: VarVal::None, prim_ty: arg_prim_ty, mask: 0 });
-
-                    out_ops[arg_index] = VarVal::Reg(reg, arg_prim_ty);
-                  }
-                  ArgRegType::NoUse => {
-                    out_ops[arg_index] = VarVal::None;
-                  }
-                  ArgRegType::Custom(custom_fn) => {
-                    out_ops[arg_index] = custom_fn(sn, &mut bb_funct.blocks[data.block as usize], &mut vars, out_ops[arg_index], *dep_op_id);
-                  }
-                  _ => {}
-                }
-              }
-            }
-
-            let out = match out_assign_req {
-              AssignRequirement::NoOutput => {
-                bb_funct.blocks[data.block as usize].ops2.push(BBop { op_ty: *op_type, out: VarVal::None, args: out_ops, source: target_op, ops: operands, prim_ty: op_prim_ty, probe });
-                VarVal::None
-              }
-              AssignRequirement::Forced(reg, reassign) => {
-                let require_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-                let out = VarVal::Var(require_var_id);
-                forced_vars.push(require_var_id as _);
-
-                if !reassign {
-                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                    op_ty: *op_type,
-                    out: VarVal::Reg(reg, op_prim_ty),
-                    args: out_ops,
-                    source: target_op,
-                    ops: operands,
-                    prim_ty: op_prim_ty,
-                    probe,
-                  });
-
-                  out
-                } else {
-                  vars.push(Var { register: VarVal::Reg(reg, op_prim_ty), prefer: VarVal::None, prim_ty: op_prim_ty, mask: 0 });
-
-                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                    op_ty: *op_type,
-                    out: VarVal::Reg(reg, op_prim_ty),
-                    args: out_ops,
-                    source: target_op,
-                    ops: operands,
-                    prim_ty: op_prim_ty,
-                    probe,
-                  });
-
-                  bb_funct.blocks[data.block as usize].ops2.push(BBop {
-                    op_ty: Op::Meta,
-                    out,
-                    args: [VarVal::Reg(reg, op_prim_ty), VarVal::None, VarVal::None],
-                    source: target_op,
-                    ops: Default::default(),
-                    prim_ty: op_prim_ty,
-                    probe: Probe::None,
-                  });
-
-                  out
-                }
-              }
-              AssignRequirement::LookBackInherit(index) => {
-                let op_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-                let out = VarVal::Var(op_var_id);
-
-                bb_funct.blocks[data.block as usize].ops2.push(BBop { op_ty: *op_type, out, args: out_ops, source: target_op, ops: operands, prim_ty: op_prim_ty, probe });
-
-                if let v @ VarVal::Var(..) = out_ops[index as usize] {
-                  vars[op_var_id as usize].prefer = v;
-                }
-
-                out
-              }
-              _ => {
-                let op_var_id = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, target_op);
-                let out = VarVal::Var(op_var_id);
-
-                bb_funct.blocks[data.block as usize].ops2.push(BBop { op_ty: *op_type, out, args: out_ops, source: target_op, ops: operands, prim_ty: op_prim_ty, probe });
-
-                out
-              }
-            };
-
-            if let Some(index) = look_ahead_inherit {
-              debug_assert!(index <= 2);
-              let var = get_or_create_op_var(sn, &mut vars, &mut op_to_var_map, operands[index as usize]);
-              vars[var as usize].prefer = out;
-            }
-          }
-        }
         _ => {}
       }
-    } else if data.block == -100 {
-      // Param, add to root block
-      match &sn.operands[op_index] {
-        Operation::Param(_, index) => {
-          bb_funct.blocks[0 as usize].ops2.push(BBop {
-            op_ty:   Op::PARAM,
-            out:     VarVal::Var(op_to_var_map[op_index]),
-            args:    [VarVal::None; 3],
-            source:  target_op,
-            ops:     [OpId::default(); 3],
-            prim_ty: get_op_type(sn, target_op).prim_data(),
-            probe:   Probe::None,
-          });
+    }
 
-          vars[op_to_var_map[op_index] as usize].register = VarVal::Reg(INT_PARAM_REGISTERS[*index as usize] as _, get_op_type(sn, target_op).prim_data());
+    for block in &mut bb_funct.blocks {
+      block.ops.sort_by(|a, b| op_data[a.usize()].dep_rank.cmp(&op_data[b.usize()].dep_rank).reverse());
+    }
+  }
+
+  // Calculate the input and output sets of all blocks
+  let op_usage_offset = bb_funct.blocks.len() * 2 + 1;
+  let bf_alive_set_id = op_usage_offset - 1;
+  let op_interference_offset = op_usage_offset + sn.operands.len();
+  let bitfield_graph_row_count = op_interference_offset + sn.operands.len();
+
+  let mut block_op_bf = bitfield::BitFieldArena::new(bitfield_graph_row_count, sn.operands.len());
+  let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
+
+  fn process_call(sn: &RootNode, op_to_var_map: &mut Vec<u32>, op_interference_offset: usize, vars: &mut Vec<VarOP>, block_op_bf: &bitfield::BitFieldArena, op: OpId, args: &[OpId]) {
+    let out_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+
+    // Store variables that persist across this call.
+    for op in block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()) {
+      let op = OpId(op as _);
+      let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+      vars[out_index].pre_fixes.push(FixUp::TempStore(var_index));
+    }
+
+    let mut flt_index = 0;
+    let mut int_index = 0;
+
+    for arg in args {
+      let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *arg);
+      let arg_prim_ty = get_op_type(sn, *arg).prim_data();
+
+      let arg_reg = if arg_prim_ty.base_ty == PrimitiveBaseType::Float {
+        let id = flt_index;
+        flt_index += 1;
+        FP_PARAM_REGISTERS[id as usize]
+      } else {
+        let id = int_index;
+        int_index += 1;
+        INT_PARAM_REGISTERS[id as usize]
+      };
+
+      match vars[var_index].out {
+        VarVal::None | VarVal::Const => {
+          // Attempt allocate the arg register to the op.
+          if allocate_register(sn, op_to_var_map, op_interference_offset, vars, block_op_bf, *arg, Some(arg_reg)).is_none() {
+            // Failing that, get any register available and then move it to the arg reg
+            if let Some(alt_reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, block_op_bf, *arg, None) {
+              vars[out_index].pre_fixes.push(FixUp::Move { dst: arg_reg as _, src: alt_reg as _, ty: arg_prim_ty });
+            } else {
+              todo_note!("Insert load for {arg} at {op}");
+            }
+          }
+        }
+        VarVal::Reg(reg, ty) => {
+          if reg != arg_reg as _ {
+            vars[out_index].pre_fixes.push(FixUp::Move { src: reg as _, dst: arg_reg as _, ty });
+          }
         }
         _ => unreachable!(),
       }
     }
+
+    let ty = get_op_type(sn, op).prim_data();
+
+    match vars[out_index].out {
+      VarVal::Reg(reg, _) => {
+        if reg != OUTPUT_REGISTERS[0] as _ {
+          vars[out_index].post_fixes.push(FixUp::Move { src: OUTPUT_REGISTERS[0] as _, dst: reg, ty });
+        }
+      }
+      VarVal::Stashed(slot) => {
+        vars[out_index].post_fixes.push(FixUp::Store(OUTPUT_REGISTERS[0] as _, slot as _, ty));
+      }
+      VarVal::None => {}
+      _ => unreachable!(),
+    }
   }
 
-  // ===============================================================
-  // Calculate the input and output sets of all blocks
+  /// True if either the required register or any register, in the case there is no required register, could be assigned to the op's var.
+  fn allocate_register(
+    sn: &RootNode,
+    op_to_var_map: &mut Vec<u32>,
+    op_interference_offset: usize,
+    vars: &mut Vec<VarOP>,
+    block_op_bf: &bitfield::BitFieldArena,
+    target_op: OpId,
+    required: Option<usize>,
+  ) -> Option<usize> {
+    let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, target_op);
+    let mut reg_alloc = X86registers::new(44);
+    let ty_a = get_op_type(&sn, target_op).prim_data();
 
-  let mut bf = bitfield::BitFieldArena::new(bb_funct.blocks.len() * 2 + 1, vars.len());
-  let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
+    if ty_a.base_ty == PrimitiveBaseType::Float {
+      // Mask out all general purpose registers
+      reg_alloc.mask(!VEC_REG_MASK);
+    } else {
+      // Mask out all fp registers
+      reg_alloc.mask(VEC_REG_MASK);
+    }
 
-  let bf_working_set_id = bf.len - 1;
+    for other_op in block_op_bf.iter_set_indices_of_row(op_interference_offset + target_op.usize()) {
+      let other_op = OpId(other_op as _);
+
+      debug_assert_ne!(other_op, target_op);
+
+      let ty_b = get_op_type(&sn, other_op).prim_data();
+
+      let types_interfere = match (ty_a.base_ty, ty_b.base_ty) {
+        (PrimitiveBaseType::Signed, PrimitiveBaseType::Signed)
+        | (PrimitiveBaseType::Address, PrimitiveBaseType::Address)
+        | (PrimitiveBaseType::Address, PrimitiveBaseType::Signed)
+        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Address)
+        | (PrimitiveBaseType::Address, PrimitiveBaseType::Unsigned)
+        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Address)
+        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Unsigned)
+        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Signed)
+        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Unsigned)
+        | (PrimitiveBaseType::Float, PrimitiveBaseType::Float) => true,
+        _ => false,
+      };
+
+      if types_interfere {
+        let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, other_op);
+        match vars[var_index].out {
+          VarVal::Reg(reg_index, _) => {
+            reg_alloc.acquire_specific_register(reg_index as _);
+          }
+          _ => {}
+        }
+      }
+    }
+
+    if let Some(required) = required {
+      if reg_alloc.acquire_specific_register(required) {
+        vars[var_index].out = VarVal::Reg(required as _, ty_a);
+        Some(required)
+      } else {
+        None
+      }
+    } else if let Some(reg) = reg_alloc.acquire_random_register() {
+      vars[var_index].out = VarVal::Reg(reg as _, ty_a);
+      Some(reg)
+    } else {
+      None
+    }
+  }
 
   while let Some(block_id) = queue.pop_front() {
     let block_ins_id = block_id << 1;
     let block_outs_id = (block_id << 1) + 1;
 
-    bf.mov(bf_working_set_id, block_outs_id);
+    block_op_bf.mov(bf_alive_set_id, block_outs_id);
 
-    for op in bb_funct.blocks[block_id as usize].ops2.iter().rev() {
-      match op {
-        BBop { out: id, args: operands, source, probe, .. } => {
-          match id {
-            VarVal::Var(id) => {
-              bf.unset_bit(bf_working_set_id, *id as _);
-            }
-            _ => {}
-          }
+    for dst_op in bb_funct.blocks[block_id as usize].ops.iter().rev() {
+      let mut dependency_ops = [OpId::default(); 3];
+      let dependency_ops = match &sn.operands[dst_op.usize()] {
+        Operation::MemPTR { base, .. } => {
+          dependency_ops[1] = *base;
+          dependency_ops.as_slice()
+        }
+        Operation::AggDecl { size, alignment, .. } => {
+          dependency_ops[0] = *size;
+          dependency_ops[1] = *alignment;
+          dependency_ops.as_slice()
+        }
+        Operation::Call { args, .. } => args.as_slice(),
+        Operation::Op { operands, .. } => {
+          dependency_ops = *operands;
+          dependency_ops.as_slice()
+        }
+        Operation::Const(..) | Operation::Gamma(..) | Operation::Phi(..) | Operation::Type(..) | Operation::Param(..) => &dependency_ops,
+        Operation::Dead => unreachable!("{sn:?}"),
+        op => todo!("{op:?}"),
+      };
 
-          for op in operands {
-            match op {
-              VarVal::Var(var_id) => {
-                if *var_id == u32::MAX {
-                  continue;
-                }
-                debug_assert!(*var_id != u32::MAX, "{source} => ops:{:?} \n {:?}", operands, sn.operands[source.usize()]);
+      block_op_bf.unset_bit(bf_alive_set_id, dst_op.usize() as _);
 
-                bf.set_bit(bf_working_set_id, *var_id as _);
-              }
-              _ => {}
-            }
+      block_op_bf.or(op_interference_offset + dst_op.usize(), bf_alive_set_id);
+
+      for src_op in dependency_ops {
+        if src_op.is_valid() {
+          block_op_bf.set_bit(op_usage_offset + src_op.usize(), dst_op.usize());
+          block_op_bf.set_bit(bf_alive_set_id, src_op.usize() as _);
+        }
+      }
+
+      for src_op in dependency_ops {
+        if src_op.is_valid() {
+          let src_op_interference_index = op_interference_offset + src_op.usize();
+          block_op_bf.or(src_op_interference_index, bf_alive_set_id);
+          block_op_bf.unset_bit(src_op_interference_index, src_op.usize());
+
+          for op in block_op_bf.iter_set_indices_of_row(src_op_interference_index).collect::<Vec<_>>() {
+            block_op_bf.set_bit(op_interference_offset + op, src_op.usize());
           }
         }
       }
     }
 
-    if bf.mov(block_ins_id, bf_working_set_id) {
+    if block_op_bf.mov(block_ins_id, bf_alive_set_id) {
       for predecessor in &bb_funct.blocks[block_id as usize].predecessors {
         let predecessor_outs_index = (*predecessor << 1) + 1;
-        bf.or(predecessor_outs_index, bf_working_set_id);
+        block_op_bf.or(predecessor_outs_index, bf_alive_set_id);
         queue.push_back(*predecessor);
       }
     }
   }
 
-  // ===============================================================
-  // Create the interference graph
-  let mut interference_graph = vec![BTreeSet::<VarVal>::new(); vars.len()];
-
-  fn is_interference_value(arg_ty: PrimitiveType, out_ty: PrimitiveType) -> bool {
-    if arg_ty != out_ty {
-      match (arg_ty.base_ty, out_ty.base_ty) {
-        (a, b) if a == b => {}
-        (PrimitiveBaseType::Address, PrimitiveBaseType::Signed)
-        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Address)
-        | (PrimitiveBaseType::Address, PrimitiveBaseType::Unsigned)
-        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Address)
-        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Unsigned)
-        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Signed) => {}
-        (a, b) => {
-          return true;
-        }
-      }
-    }
-    false
-  }
-
-  for block in &bb_funct.blocks {
-    bf.mov(bf_working_set_id, ((block.id as usize) << 1) + 1);
-
-    for BBop { out, args, prim_ty, probe, .. } in block.ops2.iter().rev() {
-      match out {
-        VarVal::Var(id) => {
-          bf.unset_bit(bf_working_set_id, *id as _);
-        }
-        _ => {}
-      }
-
-      for arg in args {
-        match arg {
-          VarVal::Var(arg_var_id) => {
-            bf.set_bit(bf_working_set_id, *arg_var_id as _);
-            //outs.insert(*arg_var_id);
-
-            let arg_ty = vars[*arg_var_id as usize].prim_ty;
-
-            for out_var_id in bf.iter_set_indices_of_row(bf_working_set_id) {
-              let out_ty = vars[out_var_id].prim_ty;
-
-              if is_interference_value(arg_ty, out_ty) {
-                continue;
-              }
-
-              interference_graph[out_var_id].insert(*arg);
-              interference_graph[*arg_var_id as usize].insert(VarVal::Var(out_var_id as _));
-            }
-
-            interference_graph[*arg_var_id as usize].remove(arg);
-          }
-          VarVal::Reg(_, arg_ty) => {
-            for out_var_id in bf.iter_set_indices_of_row(bf_working_set_id) {
-              let out_ty = vars[out_var_id].prim_ty;
-
-              if is_interference_value(*arg_ty, out_ty) {
-                continue;
-              }
-
-              interference_graph[out_var_id].insert(*arg);
-            }
-          }
-          _ => {}
-        }
-      }
-
-      if let Probe::Pending(probe) = probe {
-        for out_var_id in bf.iter_set_indices_of_row(bf_working_set_id) {
-          interference_graph[*probe as usize].insert(VarVal::Var(out_var_id as _));
-        }
-      }
-    }
-  }
-
+  // Solve the graph
   for ordering in create_block_ordering(&bb_funct.blocks) {
-    let block_id = ordering.block_id as usize;
-    let outs = bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();
-    let ins = bf.iter_set_indices_of_row((block_id << 1)).collect::<Vec<_>>();
+    let BasicBlockFunction { id, stash_size, blocks, makes_system_call, makes_ffi_call, op_to_var_map, vars } = &mut bb_funct;
+    let block = &mut blocks[ordering.index as usize];
+    for op_position in (0..block.ops.len()).rev() {
+      let op = block.ops[op_position];
 
-    let block = &bb_funct.blocks[block_id];
+      match &sn.operands[op.usize()] {
+        Operation::Op { op_name, operands, .. } => match op_name {
+          Op::RET => {
+            let arg_op: OpId = operands[0];
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, arg_op);
+            let ty = get_op_type(sn, arg_op).prim_data();
+            vars[var_index].out = VarVal::Reg(OUTPUT_REGISTERS[0] as _, ty);
 
-    println!("BLOCK {}", block_id);
-
-    for op in &block.ops2 {
-      println!("   {op:?}");
-      if let VarVal::Var(index) = op.out {
-        let ig = &interference_graph[index as usize];
-        println!("    {index} => {ig:?}");
-      }
-    }
-
-    println!("  preds {:?} ", block.predecessors);
-
-    println!("\n    ins:  {ins:?} \n    outs: {outs:?}\n\n");
-  }
-
-  // ===============================================================
-  // Find a graph coloring solution
-  let mut stash_offset = 0;
-  let mut work_vec = VecDeque::from_iter(forced_vars.into_iter().chain(0..vars.len()));
-
-  while let Some(var_id) = work_vec.pop_front() {
-    let var = &vars[var_id];
-    let ty = var.prim_ty;
-
-    let pending_var = vars[var_id];
-
-    if matches!(pending_var.register, VarVal::None) {
-      match var.prefer {
-        VarVal::Var(preference) => {
-          if vars[preference as usize].register == VarVal::None {
-            work_vec.push_back(var_id);
-            continue;
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+            vars[var_index].out = VarVal::Reg(OUTPUT_REGISTERS[0] as _, ty);
+            // Set the require register of the output to RAX at this op_position
           }
-        }
-        _ => {}
-      }
+          Op::STORE => {
+            let mem_ptr = operands[0];
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, mem_ptr);
 
-      let mut reg_alloc = X86registers::new(44);
+            if vars[var_index].out == VarVal::None {
+              vars[var_index].out = VarVal::MemCalc;
+            }
 
-      // Mask operands based on the primitive type of the value
-      if var.prim_ty.base_ty == PrimitiveBaseType::Float {
-        // Mask out all general purpose registers
-        reg_alloc.mask(!VEC_REG_MASK);
-      } else {
-        // Mask out all fp registers
-        reg_alloc.mask(VEC_REG_MASK);
-      }
+            let val_ptr = operands[1];
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, val_ptr);
 
-      for other_id in &interference_graph[var_id] {
-        match other_id {
-          VarVal::Var(other_id) => {
-            let other_var = vars[*other_id as usize];
-            match other_var.register {
-              VarVal::Reg(reg, _) => {
-                reg_alloc.acquire_specific_register(reg as _);
-                if other_var.mask > 0 {
-                  reg_alloc.mask(other_var.mask as _);
+            if vars[var_index].out == VarVal::None {
+              match &sn.operands[val_ptr.usize()] {
+                Operation::Const(..) => {
+                  vars[var_index].out = VarVal::Const;
+                }
+                _ => {
+                  allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, val_ptr, None);
+                }
+              }
+            }
+          }
+          Op::LOAD => {
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+            if vars[var_index].out == VarVal::None {
+              allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None);
+            }
+
+            let val_ptr = operands[0];
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, val_ptr);
+            if vars[var_index].out == VarVal::None {
+              vars[var_index].out = VarVal::MemCalc;
+            }
+          }
+
+          Op::ADD | Op::MUL | Op::BIT_AND | Op::BIT_OR | Op::SUB => {
+            let own_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+
+            let left = operands[0];
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, left);
+
+            if vars[var_index].out == VarVal::None {
+              let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + left.usize()).count();
+
+              if users == 1 && matches!(vars[own_var_index].out, VarVal::Reg(..)) {
+                vars[var_index].out = vars[own_var_index].out;
+              } else {
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, left, None);
+              }
+            }
+
+            let right = operands[1];
+
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, right);
+            if let Operation::Const(..) = &sn.operands[right.usize()] {
+              vars[var_index].out = VarVal::Const;
+            } else {
+              if vars[var_index].out == VarVal::None {
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, right, None);
+              }
+            }
+          }
+          Op::EQ | Op::NEQ | Op::GR => {
+            let left = operands[0];
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, left);
+
+            if vars[var_index].out == VarVal::None {
+              allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, left, None);
+            }
+
+            let right = operands[1];
+
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, right);
+            if let Operation::Const(..) = &sn.operands[right.usize()] {
+              vars[var_index].out = VarVal::Const;
+            } else {
+              if vars[var_index].out == VarVal::None {
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, right, None);
+              }
+            }
+          }
+          Op::OPTR => {
+            let [base, index, _] = operands;
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+
+            // This requires a register from the source node. Allocate this pointer
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *base);
+            if vars[var_index].out == VarVal::None {
+              if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *base, None).is_none() {
+                panic!("Need to spill, how to do, how to do? This would also imply that MemCalc would need to be handled some other way")
+              }
+            }
+
+            match vars[var_index].out {
+              VarVal::MemCalc => {
+                let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).count();
+                if users > 1 {
+                  // this should be a regular register
+                  if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None).is_none() {
+                    panic!("Need to spill something, how to do, how to do?")
+                  }
+                }
+              }
+              VarVal::Reg(..) => {}
+              ty => {
+                panic!("{ty:?}");
+                // Use mem if user count is 1
+              }
+            }
+
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *index);
+
+            match vars[var_index].out {
+              VarVal::None => {
+                if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *index, None).is_none() {
+                  panic!("AAA");
                 }
               }
               _ => {}
             }
           }
-          VarVal::Reg(reg_index, _) => {
-            reg_alloc.acquire_specific_register(*reg_index as _);
-          }
-          _ => unreachable!(),
-        }
-      }
+          ty => todo!("{ty}"),
+        },
+        Operation::Param(var, i) => {
+          let src_reg = INT_PARAM_REGISTERS[*i as usize];
+          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+          let ty = get_op_type(sn, op).prim_data();
 
-      match pending_var.prefer {
-        VarVal::Var(preference_id) => {
-          if let VarVal::Reg(reg, _) = vars[preference_id as usize].register {
-            if reg_alloc.acquire_specific_register(reg as _) {
-              vars[var_id].register = VarVal::Reg(reg as _, ty);
-              continue;
+          match vars[var_index].out {
+            VarVal::Reg(out_reg, _) => {
+              if out_reg != src_reg as _ {
+                vars[var_index].post_fixes.push(FixUp::Move { dst: out_reg as _, src: src_reg as _, ty });
+              }
+            }
+            VarVal::None => {
+              if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, Some(src_reg)).is_none() {
+                if let Some(out_reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None) {
+                  vars[var_index].post_fixes.push(FixUp::Move { dst: out_reg as _, src: src_reg as _, ty });
+                } else {
+                  todo!("Handle store");
+                }
+              }
+            }
+            _ => {}
+          }
+        }
+        Operation::MemPTR { base, .. } => {
+          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+
+          match vars[var_index].out {
+            VarVal::MemCalc => {
+              let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).count();
+              if users > 1 {
+                // this should be a regular register
+                if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *base, None).is_none() {
+                  panic!("Need to spill something, how to do, how to do?")
+                }
+              } else {
+                // This requires a register from the source node. Allocate this pointer
+                let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *base);
+                if vars[var_index].out == VarVal::None {
+                  if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *base, None).is_none() {
+                    panic!("Need to spill, how to do, how to do? This would also imply that MemCalc would need to be handled some other way")
+                  }
+                }
+              }
+            }
+            VarVal::None => {}
+            _ => {
+              // Use mem if user count is 1
             }
           }
         }
-        VarVal::Reg(reg, _) => {
-          if reg_alloc.acquire_specific_register(reg as _) {
-            vars[var_id].register = VarVal::Reg(reg as _, ty);
-            continue;
-          }
+        Operation::AggDecl { size, alignment, seq_op } => {
+          *makes_ffi_call = true;
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, &[*size, *alignment]);
         }
-        _ => {}
-      }
-
-      if let Some(reg) = reg_alloc.acquire_random_register() {
-        vars[var_id].register = VarVal::Reg(reg as _, ty);
-      } else {
-        let size = pending_var.prim_ty.byte_size as u64;
-        let stashed_location = get_aligned_value(stash_offset, size);
-        vars[var_id].register = VarVal::Stashed(stashed_location as _);
-        stash_offset = stashed_location + size;
-        println!("Could not color graph: register collision on {:?}", interference_graph[var_id]);
-      }
-    }
-  }
-
-  // ===============================================================
-  // Convert var_ids to register indices
-
-  for block_id in 0..bb_funct.blocks.len() {
-    for (index, BBop { out, args: ins, probe, .. }) in bb_funct.blocks[block_id].ops2.iter_mut().enumerate().rev() {
-      match out {
-        VarVal::Var(var_id) => {
-          let out_var = vars[*var_id as usize];
-          *out = out_var.register
+        Operation::Call { args, .. } => {
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, args);
         }
-        _ => {}
-      }
+        Operation::Const(..) => {
+          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+        }
+        Operation::Gamma(..) => {
+          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+        }
+        Operation::Phi(_, nodes) => {
+          let ty = get_op_type(sn, op).prim_data();
+          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
 
-      if let Probe::Pending(prob_index) = probe {
-        let var_id = *prob_index as usize;
-        let var_ids = interference_graph[var_id]
-          .iter()
-          .filter_map(|v| match v {
-            VarVal::Var(v) => match &vars[*v as usize].register {
-              VarVal::Reg(..) => {
-                let size = vars[*v as usize].prim_ty.byte_size as u64;
-                let stashed_location = get_aligned_value(stash_offset, size);
-                vars[var_id].register = VarVal::Stashed(stashed_location as _);
-                stash_offset = stashed_location + size;
-                //Some(vars[*v as usize])
-                None
+          if let Some(reg) = match vars[var_index].out {
+            VarVal::Reg(reg, _) => Some(reg as usize),
+            _ => allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None),
+          } {
+            for child_op in nodes {
+              if child_op.is_valid() {
+                if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *child_op, Some(reg)).is_none() {
+                  if let Some(reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *child_op, None) {
+                    let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *child_op);
+                    vars[var_index].post_fixes.push(FixUp::Move { dst: reg as _, src: reg as _, ty });
+                  }
+                }
               }
-              _ => None,
-            },
-            _ => None,
-          })
-          .collect::<Vec<_>>();
-
-        *probe = Probe::ActiveRegs(var_ids);
-      }
-
-      for op in ins {
-        match op {
-          VarVal::Var(var_id) => {
-            let out_var = vars[*var_id as usize];
-            *op = out_var.register
+            }
+          } else {
+            panic!("Could not allocate phi")
           }
-          _ => {}
+
+          //todo!("Handle phi node");
+          //get_vv_for_op_mut(sn, op_to_var_map, vars, op);
         }
-      }
+        Operation::Param(..) | Operation::Type(..) => {
+          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+        }
+        Operation::Dead => unreachable!(),
+        opa => {
+          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+          todo_note!("{opa:?}");
+        }
+      };
     }
   }
 
-  for ordering in create_block_ordering(&bb_funct.blocks) {
-    let block_id = ordering.block_id as usize;
-    let outs = bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();
-    let ins = bf.iter_set_indices_of_row((block_id << 1)).collect::<Vec<_>>();
-
-    let block = &bb_funct.blocks[block_id];
+  dbg!(&sn);
+  /**
+  for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
+    let block_id = block.block_id as usize;
+    let outs = block_op_bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();
+    let ins = block_op_bf.iter_set_indices_of_row(block_id << 1).collect::<Vec<_>>();
 
     println!("BLOCK {}", block_id);
 
-    for op in &block.ops2 {
-      println!("   {op:?}");
-      if let VarVal::Var(index) = op.out {
-        let ig = &interference_graph[index as usize];
-        println!("    {index} => {ig:?}");
-      }
-    }
+    for (op, out_val, vals, pre_fixes, post_fixes, ..) in op_iter {
+      println!("{{{out_val:?}}}{op:?} {} [{:?}]  {} pre:{:?} post:{:?}", op_data[op.usize()].dep_rank, out_val, sn.operands[op.usize()], &pre_fixes, &post_fixes);
 
-    println!("  preds {:?} ", block.predecessors);
+      //if let VarVal::Var(index) = op.out {
+      let ig = &block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).collect::<Vec<_>>();
+      println!("     used_by   {ig:?}");
+
+      let ig = &block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()).collect::<Vec<_>>();
+      println!("     interfers_with   {ig:?}");
+      println!("");
+
+      //}
+    }
+    println!("  preds {:?} ", bb_funct.blocks[0].predecessors);
 
     println!("\n    ins:  {ins:?} \n    outs: {outs:?}\n\n");
-  }
-
+  } */
   bb_funct
 }
 
-fn assign_ops_to_blocks(sn: &RootNode, blocks: &mut Vec<BasicBlock>, op_data: &mut [OpData], vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> usize {
+fn assign_ops_to_blocks(sn: &RootNode, blocks: &mut Vec<BasicBlock>, op_data: &mut [OpData], vars: &mut Vec<VarOP>, op_var_map: &mut Vec<u32>) -> usize {
   // Start the root node and operation in th
   let routine_node = &sn.nodes[0];
 
@@ -1220,7 +1025,7 @@ fn assign_ops_to_blocks(sn: &RootNode, blocks: &mut Vec<BasicBlock>, op_data: &m
   head
 }
 
-fn process_match(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut Vec<BasicBlock>, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> (usize, usize) {
+fn process_match(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut Vec<BasicBlock>, vars: &mut Vec<VarOP>, op_var_map: &mut Vec<u32>) -> (usize, usize) {
   debug_assert!(node.type_str == MATCH_ID);
 
   let selectors = node.children.iter().filter_map(|id| (sn.nodes[*id].type_str == CLAUSE_SELECTOR_ID).then_some(&sn.nodes[*id])).collect::<Vec<_>>();
@@ -1284,7 +1089,7 @@ fn process_match(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mu
   (head as _, tail_id as _)
 }
 
-fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, index: usize, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> usize {
+fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, index: usize, vars: &mut Vec<VarOP>, op_var_map: &mut Vec<u32>) -> usize {
   let merge_id = blocks.len();
   let mut block = BasicBlock::default();
   for port in node.ports.iter() {
@@ -1292,36 +1097,14 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
       let ty = get_op_type(sn, port.slot);
 
       if let Operation::Phi(_, ops) = &sn.operands[port.slot.usize()] {
+        let phi_ty_var = get_vv_for_op_mut(sn, op_var_map, vars, port.slot);
         let op = ops[index];
-
         if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem()) {
-          let phi_ty_var = get_or_create_op_var(sn, vars, op_var_map, port.slot);
-
-          if let Operation::Const(..) = &sn.operands[op.usize()] {
-            block.ops2.push(BBop {
-              op_ty:   Op::LOAD_CONST,
-              out:     VarVal::Var(phi_ty_var),
-              args:    [VarVal::Const, VarVal::None, VarVal::None],
-              ops:     [op, Default::default(), Default::default()],
-              source:  port.slot,
-              prim_ty: ty.prim_data(),
-              probe:   Probe::None,
-            });
+          if let Operation::Phi(..) = &sn.operands[op.usize()] {
+            todo!("Handle compound PHIs");
           } else {
-            let op_ty_var = get_or_create_op_var(sn, vars, op_var_map, op);
-            block.ops2.push(BBop {
-              op_ty:   Op::TempMetaPhi,
-              out:     VarVal::Var(phi_ty_var),
-              args:    [VarVal::Var(op_ty_var), VarVal::None, VarVal::None],
-              ops:     [Default::default(); 3],
-              source:  port.slot,
-              prim_ty: ty.prim_data(),
-              probe:   Probe::None,
-            });
-
-            if let Operation::Phi(..) = &sn.operands[op.usize()] {
-              vars[phi_ty_var as usize].prefer = VarVal::Var(op_ty_var);
-            }
+            let var_id = get_vv_for_op_mut(sn, op_var_map, vars, op);
+            block.post_fixups.push(FixUp::UniPHI(phi_ty_var, var_id))
           }
         }
       };
@@ -1332,34 +1115,12 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
   merge_id
 }
 
-fn get_or_create_op_var(sn: &RootNode, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>, op: OpId) -> u32 {
-  let ty_var = if op_var_map[op.usize()] == u32::MAX { create_op_var(sn, vars, op_var_map, op) } else { get_op_var(op_var_map, op) };
-  ty_var
-}
-
-fn get_op_var(op_var_map: &mut Vec<u32>, op: OpId) -> u32 {
-  op_var_map[op.usize()]
-}
-
-fn create_op_var(sn: &RootNode, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>, op: OpId) -> u32 {
-  let var_id = vars.len() as _;
-  vars.push(Var::create(get_op_type(sn, op).prim_data()));
-  op_var_map[op.usize()] = var_id;
-  var_id
-}
-
-fn create_var(vars: &mut Vec<Var>, ty: TypeV) -> u32 {
-  let var_id = vars.len();
-  vars.push(Var::create(ty.prim_data()));
-  var_id as _
-}
-
-fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut Vec<BasicBlock>, outside_ops: &BTreeSet<OpId>, vars: &mut Vec<Var>, op_var_map: &mut Vec<u32>) -> (usize, usize) {
+fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut Vec<BasicBlock>, outside_ops: &BTreeSet<OpId>, vars: &mut Vec<VarOP>, op_var_map: &mut Vec<u32>) -> (usize, usize) {
   let block_start = blocks.len() as i32;
 
   let mut pending_ops = VecDeque::from_iter(node.ports.iter().filter(|p| matches!(p.ty, PortType::Out | PortType::Passthrough | PortType::Merge)).map(|p| p.slot).map(|o| (o, block_start)));
 
-  let mut max_level = block_start;
+  let mut active_block_id = block_start;
   let mut nodes: BTreeMap<u32, i32> = BTreeMap::new();
 
   while let Some((op, level)) = pending_ops.pop_front() {
@@ -1370,22 +1131,23 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
     }
 
     if !ty.is_poison() && !ty.is_undefined() && op.is_valid() && op_data[op.usize()].block < level {
-      max_level = max_level.max(level);
+      active_block_id = active_block_id.max(level);
 
       match &sn.operands[op.usize()] {
-        Operation::AggDecl { size, alignment, mem_ctx_op, .. } => {
+        Operation::AggDecl { size, alignment, seq_op: mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
+
           pending_ops.push_back((*mem_ctx_op, level));
           pending_ops.push_back((*size, level));
           pending_ops.push_back((*alignment, level));
         }
-        Operation::NamePTR { base, mem_ctx_op, .. } => {
+        Operation::MemPTR { base, seq_op: mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
 
           pending_ops.push_back((*mem_ctx_op, level));
           pending_ops.push_back((*base, level));
         }
-        Operation::Call { args, mem_ctx_op, .. } => {
+        Operation::Call { args, seq_op: mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
 
           pending_ops.push_back((*mem_ctx_op, level));
@@ -1408,18 +1170,17 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
             btree_map::Entry::Occupied(mut entry) => {
               if *entry.get() < level {
                 entry.insert(level + 1);
-                max_level = max_level.max(level + 1);
+                active_block_id = active_block_id.max(level + 1);
               }
             }
             btree_map::Entry::Vacant(entry) => {
               entry.insert(level + 1);
-              max_level = max_level.max(level + 1);
+              active_block_id = active_block_id.max(level + 1);
 
               for port in sub_node.ports.iter() {
                 match port.ty {
                   PortType::In | PortType::Passthrough => {
                     let op = port.slot;
-                    //op_data[op.usize()].block = level + 1;
                     pending_ops.push_back((op, level + 1));
                   }
                   PortType::Phi => {
@@ -1431,12 +1192,14 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
             }
           }
         }
-        Operation::Op { operands, .. } => {
+        Operation::Op { operands, seq_op, .. } => {
           op_data[op.usize()].block = level;
           for op in operands {
             pending_ops.push_back((*op, level));
           }
+          pending_ops.push_back((*seq_op, level));
         }
+        Operation::Dead => {}
         _ => {
           op_data[op.usize()].block = level;
         }
@@ -1446,7 +1209,7 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
 
   let mut slot_data = vec![];
 
-  for i in block_start..=max_level {
+  for i in block_start..=active_block_id {
     let mut block = BasicBlock::default();
     block.id = i as usize;
     blocks.push(block);
@@ -1471,5 +1234,5 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
     slot_data[head_block as usize] = (tail as _, block_tail);
   }
 
-  (max_level as usize, block_start as usize)
+  (active_block_id as usize, block_start as usize)
 }

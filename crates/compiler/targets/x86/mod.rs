@@ -6,7 +6,7 @@ use std::{
 use x86_binary_writer::{BinaryFunction, PatchType};
 
 use crate::{
-  basic_block_compiler::{self, x86_spec_fn},
+  basic_block_compiler::{self},
   ir_compiler::{ROUTINE_ID, STRUCT_ID},
   types::{NodeHandle, SolveDatabase, TypeVar, VarId},
 };
@@ -53,7 +53,7 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
           }
         }
 
-        let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db, &x86_spec_fn);
+        let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db);
 
         let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
 

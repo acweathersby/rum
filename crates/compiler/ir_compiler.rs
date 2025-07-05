@@ -136,26 +136,22 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
       let prop_type_op = add_op(bp, Operation::Type(Reference::UnresolvedName(type_name)), type_ty, Default::default());
 
       let type_byte_size_op =
-        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], mem_ctx_op: Default::default() }, offset_ty, Default::default());
+        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], seq_op: Default::default() }, offset_ty, Default::default());
       add_constraint(bp, NodeConstraint::LinkCall(type_byte_size_op));
 
       let (prev_offset, _) = get_var(bp, offset_id).unwrap();
 
-      let type_align_offset = add_op(
-        bp,
-        Operation::Call { reference: Reference::UnresolvedName("aligned".intern()), args: vec![prev_offset, type_byte_size_op], mem_ctx_op: Default::default() },
-        offset_ty,
-        Default::default(),
-      );
+      let type_align_offset =
+        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("aligned".intern()), args: vec![prev_offset, type_byte_size_op], seq_op: Default::default() }, offset_ty, Default::default());
       add_constraint(bp, NodeConstraint::LinkCall(type_align_offset));
 
-      let offset_op = add_op(bp, Operation::Op { op_name: Op::ADD, operands: [type_align_offset, type_byte_size_op, Default::default()] }, offset_ty, Default::default());
+      let offset_op = add_op(bp, Operation::Op { op_name: Op::ADD, operands: [type_align_offset, type_byte_size_op, Default::default()], seq_op: Default::default() }, offset_ty, Default::default());
       update_var(bp, offset_id, offset_op, Default::default());
 
       let (alignment, _) = get_var(bp, align_id).unwrap();
 
       let new_alignment =
-        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("max".intern()), args: vec![alignment, type_byte_size_op], mem_ctx_op: Default::default() }, offset_ty, Default::default());
+        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("max".intern()), args: vec![alignment, type_byte_size_op], seq_op: Default::default() }, offset_ty, Default::default());
       add_constraint(bp, NodeConstraint::LinkCall(new_alignment));
 
       update_var(bp, align_id, new_alignment, Default::default());
@@ -172,7 +168,7 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
     let alignment = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, 8u32)), offset_ty, Default::default());
     let size = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, (props.len() * (8 + 8 + 4) + (8 + 4 + 4 + 4 + 4)) as u32)), offset_ty, Default::default());
 
-    let type_agg_op = add_op(bp, Operation::AggDecl { size, alignment, mem_ctx_op: Default::default() }, type_agg_ty, Default::default());
+    let type_agg_op = add_op(bp, Operation::AggDecl { size, alignment, seq_op: Default::default() }, type_agg_ty, Default::default());
 
     update_mem_context(bp, type_agg_op);
 
@@ -196,7 +192,7 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
 
     let prop_type_op = add_op(bp, Operation::Type(Reference::UnresolvedName("type_prop".intern())), type_ty, Default::default());
     let prop_type_size =
-      add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], mem_ctx_op: Default::default() }, offset_ty, Default::default());
+      add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], seq_op: Default::default() }, offset_ty, Default::default());
     add_constraint(bp, NodeConstraint::LinkCall(prop_type_size));
 
     add_constraint(bp, NodeConstraint::GlobalNameReference(type_agg_ty, "type".intern(), Default::default()));
@@ -239,7 +235,7 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
     remove_var(bp, prop_offset);
 
     let (ctx_op, _) = get_mem_context(bp);
-    let ret_op = add_op(bp, Operation::Op { op_name: Op::RET, operands: [type_agg_op, ctx_op, Default::default()] }, type_agg_ty, Default::default());
+    let ret_op = add_op(bp, Operation::Op { op_name: Op::RET, operands: [type_agg_op, Default::default(), Default::default()], seq_op: ctx_op }, type_agg_ty, Default::default());
     update_var(bp, VarId::Return, ret_op, type_agg_ty);
 
     //clone_op_heap(&mut bp, out_op, ret_op);
@@ -408,8 +404,8 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
 
   if let Some((ret_ty, node)) = ret_data {
     if out_op.is_valid() {
-      let (ctx_op, _) = get_mem_context(&mut bp);
-      let ret_op = add_op(&mut bp, Operation::Op { op_name: Op::RET, operands: [out_op, ctx_op, Default::default()] }, ret_ty.clone(), node);
+      let (seq_op, _) = get_mem_context(&mut bp);
+      let ret_op = add_op(&mut bp, Operation::Op { op_name: Op::RET, operands: [out_op, Default::default(), Default::default()], seq_op }, ret_ty.clone(), node);
       update_var(&mut bp, VarId::Return, ret_op, ret_ty);
 
       add_constraint(&mut bp, NodeConstraint::GenTyToGenTy(ret_ty, out_gen_ty));
@@ -917,7 +913,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
                   assert!(var_op.is_valid(), "{:?}", bp);
 
-                  let sink_op = add_op(bp, Operation::Op { op_name: Op::SEED, operands: [/* var_op, */ expr_op, ctx_op, Default::default()] }, ty, assign.clone().into());
+                  let sink_op = add_op(bp, Operation::Op { op_name: Op::SEED, operands: [/* var_op, */ expr_op, Default::default(), Default::default()], seq_op: ctx_op }, ty, assign.clone().into());
                   update_mem_context(bp, sink_op);
                   clone_op_heap(bp, var_op, sink_op);
                   update_var(bp, VarId::Name(var_name), sink_op, ty);
@@ -972,7 +968,8 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, TypeV, O
 
             let (ctx_op, _) = get_mem_context(bp);
 
-            let arr_init_op = add_op(bp, Operation::Op { op_name: Op::ARR_DECL, operands: [size_expr_op, ctx_op, Default::default()] }, arr_var_ty, array_decl.clone().into());
+            let arr_init_op =
+              add_op(bp, Operation::Op { op_name: Op::ARR_DECL, operands: [size_expr_op, Default::default(), Default::default()], seq_op: ctx_op }, arr_var_ty, array_decl.clone().into());
 
             set_op_heap(bp, arr_init_op, heap.generic_id().unwrap());
 
@@ -1089,7 +1086,7 @@ fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (OpId, TypeV)
   // We push and pop the call node. It has no observable internal state (expressions), and is purely defined by it's port structure, so there's
   // no need to keep it on the processing stack after it has been created.
 
-  let call_out = add_op(bp, Operation::Call { reference: Reference::UnresolvedName(procedure_name), args, mem_ctx_op: mem_op }, ret_ty, call.clone().into());
+  let call_out = add_op(bp, Operation::Call { reference: Reference::UnresolvedName(procedure_name), args, seq_op: mem_op }, ret_ty, call.clone().into());
 
   add_constraint(bp, NodeConstraint::LinkCall(call_out));
 
@@ -1184,7 +1181,7 @@ fn create_member_ptr_op(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, name: IString,
 
   let (mem_op, _) = get_mem_context(bp);
 
-  let mem_ptr_op = add_op(bp, Operation::NamePTR { reference: Reference::UnresolvedName(name), base: agg_ptr_op, mem_ctx_op: mem_op }, member_reference_ty, name_var);
+  let mem_ptr_op = add_op(bp, Operation::MemPTR { reference: Reference::UnresolvedName(name), base: agg_ptr_op, seq_op: mem_op }, member_reference_ty, name_var);
 
   clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
 
@@ -1324,13 +1321,13 @@ macro_rules! algebraic_op {
 
     let out_ty = if let Some(dty) = rdty.clone().or(ldty.clone()) { dty } else { add_delta_var($bp).ty };
 
-    let (ctx_op, _) = get_mem_context($bp);
+    let (seq_op, _) = get_mem_context($bp);
 
     if ldty.is_none() {
       let num = get_var_from_gen_ty($bp, lty).num;
       get_var_from_gen_ty($bp, out_ty).num |= num;
       let old = left;
-      left = add_op($bp, Operation::Op { op_name: Op::SEED, operands: [left, ctx_op, Default::default()] }, out_ty.clone(), $node.left.clone().into());
+      left = add_op($bp, Operation::Op { op_name: Op::SEED, operands: [left, Default::default(), Default::default()], seq_op }, out_ty.clone(), $node.left.clone().into());
       clone_op_heap($bp, old, left);
     }
 
@@ -1338,7 +1335,7 @@ macro_rules! algebraic_op {
       let num = get_var_from_gen_ty($bp, rty).num;
       get_var_from_gen_ty($bp, out_ty).num |= num;
       let old = right;
-      right = add_op($bp, Operation::Op { op_name: Op::SEED, operands: [right, ctx_op, Default::default()] }, out_ty.clone(), $node.right.clone().into());
+      right = add_op($bp, Operation::Op { op_name: Op::SEED, operands: [right, Default::default(), Default::default()], seq_op }, out_ty.clone(), $node.right.clone().into());
       clone_op_heap($bp, old, right);
     }
 
@@ -1346,7 +1343,7 @@ macro_rules! algebraic_op {
       add_constraint($bp, NodeConstraint::GenTyToGenTy(ldty.unwrap(), rdty.unwrap()))
     }
 
-    let op = add_op($bp, Operation::Op { op_name: $op_id, operands: [left, right, Default::default()] }, out_ty.clone(), $node.clone().into());
+    let op = add_op($bp, Operation::Op { op_name: $op_id, operands: [left, right, Default::default()], seq_op: Default::default() }, out_ty.clone(), $node.clone().into());
 
     (op, out_ty.clone(), Some(out_ty))
   }};
@@ -1372,7 +1369,7 @@ pub(crate) fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildP
             ty_var.num = u32_numeric;
             ty_var.add(VarAttribute::Delta);
             let out_ty = ty_var.ty;
-            let right = add_op(bp, Operation::Op { op_name: Op::LEN, operands: [out.0, Default::default(), Default::default()] }, out_ty, Default::default());
+            let right = add_op(bp, Operation::Op { op_name: Op::LEN, operands: [out.0, Default::default(), Default::default()], seq_op: Default::default() }, out_ty, Default::default());
             (right, out_ty, Some(out_ty))
           }
           _ => unreachable!(),
@@ -1540,7 +1537,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, T
     let (op, output_ty, _) = compile_scope(&clause.scope, bp);
 
     if op.is_valid() {
-      let sink_op = add_op(bp, Operation::Op { op_name: Op::SEED, operands: [op, Default::default(), Default::default()] }, output_ty, Default::default());
+      let sink_op = add_op(bp, Operation::Op { op_name: Op::SEED, operands: [op, Default::default(), Default::default()], seq_op: Default::default() }, output_ty, Default::default());
       update_var(bp, VarId::OutputVal, sink_op, output_ty);
     } else {
       let (poison_op, output_ty) = process_op(Op::POISON, &[], bp, Default::default());
@@ -1662,6 +1659,7 @@ fn process_op(op_id: Op, inputs: &[OpId], bp: &mut BuildPack, node: rum_lang::pa
   let op_def = get_op_from_db(&bp.db, op_id).expect(&format!("{op_id} op not loaded"));
 
   let mut operands = [OpId::default(); 3];
+  let mut ctx_op = OpId::default();
   let mut ty_lu: HashMap<&str, TypeV> = HashMap::new();
   let mut op_index: isize = -1;
 
@@ -1680,7 +1678,7 @@ fn process_op(op_id: Op, inputs: &[OpId], bp: &mut BuildPack, node: rum_lang::pa
       }
       "read_ctx" => {
         let (op, _) = get_mem_context(bp);
-        operands[port_index] = op;
+        ctx_op = op;
       }
       type_ref_name => {
         op_inputs.push(port_index);
@@ -1716,7 +1714,7 @@ fn process_op(op_id: Op, inputs: &[OpId], bp: &mut BuildPack, node: rum_lang::pa
     }
   }
 
-  let op_id = add_op(bp, Operation::Op { op_name: op_id, operands }, Default::default(), node);
+  let op_id = add_op(bp, Operation::Op { op_name: op_id, operands, seq_op: ctx_op }, Default::default(), node);
   let mut ty = Default::default();
 
   let mut have_output = false;

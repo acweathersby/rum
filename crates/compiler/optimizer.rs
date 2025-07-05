@@ -71,10 +71,10 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
               if !node_escapes {
                 // Insert free
 
-                let (_, mem_op) = mem_context;
+                let (_, ctx_op) = mem_context;
 
                 let new_mem_op = OpId(node.operands.len() as u32);
-                node.operands.push(crate::types::Operation::Op { op_name: Op::FREE, operands: [op, mem_op, Default::default()] });
+                node.operands.push(crate::types::Operation::Op { op_name: Op::FREE, operands: [op, Default::default(), Default::default()], seq_op: ctx_op });
                 node.op_types.push(TypeV::util());
                 node.source_tokens.push(Default::default());
                 node.heap_id.push(node.heap_id[op.usize()]);
