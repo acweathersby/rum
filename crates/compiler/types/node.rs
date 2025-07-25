@@ -278,9 +278,7 @@ pub(crate) enum Operation {
   /// - VarId - Variable representing the param value.
   /// - u32   - List index position of the parameter
   Param(VarId, u32),
-  // Heap(VarId),
-  // MemCheck(OpId),
-  Phi(u32, Vec<OpId>),
+  Φ(u32, Vec<OpId>),
   Gamma(u32, OpId),
   Call {
     reference: Reference,
@@ -328,7 +326,7 @@ impl Display for Operation {
       //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
       Operation::Op { op_name, operands, seq_op } => f.write_fmt(format_args!("{op_name:12} [{seq_op}]  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  "))),
       Operation::Gamma(node, op) => f.write_fmt(format_args!("Gamma  {op:?} @ {node}",)),
-      Operation::Phi(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
+      Operation::Φ(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
       // Operation::Data => f.write_fmt(format_args!("DATA",)),
       Operation::Dead => f.write_fmt(format_args!("XXXX",)),

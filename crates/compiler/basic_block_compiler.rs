@@ -358,7 +358,7 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         dependency_ops = *operands;
         (dependency_ops.as_slice(), [get_vv(bb, vars, &operands[0]), get_vv(bb, vars, &operands[1]), get_vv(bb, vars, &operands[2])])
       }
-      Operation::Const(..) | Operation::Gamma(..) | Operation::Phi(..) | Operation::Type(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
+      Operation::Const(..) | Operation::Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
       Operation::Dead => unreachable!(),
       op => todo!("{op:?}"),
     };
@@ -477,11 +477,16 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
     }
   }
 
-  dbg!(&bb_funct);
-
   // Sort ops based on dependency graph
+
   {
     let mut pending_ops = VecDeque::from_iter(sn.nodes[0].ports.iter().filter(|p| matches!(p.ty, PortType::Out | PortType::Passthrough | PortType::Merge)).map(|p| p.slot).map(|o| (o, 0)));
+    let mut call_offset = 1000;
+
+    fn bump_offset(offset: &mut i32) -> i32 {
+      *offset += 1000;
+      *offset
+    }
 
     while let Some((op, rank)) = pending_ops.pop_front() {
       if op.is_invalid() {
@@ -506,26 +511,26 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           for op in operands {
             pending_ops.push_back((*op, rank + 1));
           }
-          pending_ops.push_back((*seq_op, rank + 2000));
+          pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
         Operation::Call { reference, args, seq_op } => {
           for op in args {
             pending_ops.push_back((*op, rank + 1));
           }
-          pending_ops.push_back((*seq_op, rank + 2000));
+          pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
         Operation::AggDecl { size, alignment, seq_op } => {
           pending_ops.push_back((*size, rank + 1));
           pending_ops.push_back((*alignment, rank + 1));
-          pending_ops.push_back((*seq_op, rank + 2000));
+          pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
         Operation::MemPTR { reference, base, seq_op } => {
           pending_ops.push_back((*base, rank + 1));
-          pending_ops.push_back((*seq_op, rank + 2000));
+          pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::Phi(_, ops) => {
+        Operation::Φ(_, ops) => {
           for op in ops {
-            pending_ops.push_back((*op, rank + 20000));
+            pending_ops.push_back((*op, rank + bump_offset(&mut call_offset)));
           }
         }
 
@@ -703,7 +708,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           dependency_ops = *operands;
           dependency_ops.as_slice()
         }
-        Operation::Const(..) | Operation::Gamma(..) | Operation::Phi(..) | Operation::Type(..) | Operation::Param(..) => &dependency_ops,
+        Operation::Const(..) | Operation::Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => &dependency_ops,
         Operation::Dead => unreachable!("{sn:?}"),
         op => todo!("{op:?}"),
       };
@@ -946,7 +951,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
         Operation::Gamma(..) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, op);
         }
-        Operation::Phi(_, nodes) => {
+        Operation::Φ(_, nodes) => {
           let ty = get_op_type(sn, op).prim_data();
           let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
 
@@ -971,7 +976,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           //todo!("Handle phi node");
           //get_vv_for_op_mut(sn, op_to_var_map, vars, op);
         }
-        Operation::Param(..) | Operation::Type(..) => {
+        Operation::Type(..) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, op);
         }
         Operation::Dead => unreachable!(),
@@ -983,7 +988,6 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
     }
   }
 
-  dbg!(&sn);
   /**
   for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
     let block_id = block.block_id as usize;
@@ -1019,7 +1023,9 @@ fn assign_ops_to_blocks(sn: &RootNode, blocks: &mut Vec<BasicBlock>, op_data: &m
   let (head, _) = process_node(sn, routine_node, op_data, blocks, &Default::default(), vars, op_var_map);
 
   for port in routine_node.get_inputs() {
-    op_data[port.0.usize()].block = head as _;
+    if port.0.is_valid() && !matches!(sn.operands[port.0.usize()], Operation::Dead) {
+      op_data[port.0.usize()].block = head as _;
+    }
   }
 
   head
@@ -1096,11 +1102,11 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
     if port.ty == PortType::Merge && port.id != VarId::MatchBooleanSelector {
       let ty = get_op_type(sn, port.slot);
 
-      if let Operation::Phi(_, ops) = &sn.operands[port.slot.usize()] {
+      if let Operation::Φ(_, ops) = &sn.operands[port.slot.usize()] {
         let phi_ty_var = get_vv_for_op_mut(sn, op_var_map, vars, port.slot);
         let op = ops[index];
         if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem()) {
-          if let Operation::Phi(..) = &sn.operands[op.usize()] {
+          if let Operation::Φ(..) = &sn.operands[op.usize()] {
             todo!("Handle compound PHIs");
           } else {
             let var_id = get_vv_for_op_mut(sn, op_var_map, vars, op);
@@ -1156,7 +1162,7 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
             pending_ops.push_back((*op, level));
           }
         }
-        Operation::Phi(node_id, ..) | Operation::Gamma(node_id, ..) => {
+        Operation::Φ(node_id, ..) | Operation::Gamma(node_id, ..) => {
           let sub_node = &sn.nodes[*node_id as usize];
 
           // Do not process outer slots: slots that are defined within parent scopes.

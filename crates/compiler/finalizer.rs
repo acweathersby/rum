@@ -5,7 +5,7 @@ use crate::{
   types::{GetResult, NodeHandle, Op, OpId, Operation, PortType, Reference, RumString, RumTypeObject, SolveDatabase, SolveState},
 };
 use rum_lang::Token;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Performs necessary transformations on active nodes, such as inserting convert instructions, etc.
 /// (TODO: Add more examples to description)
@@ -14,7 +14,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
     let node = node.get_mut().unwrap();
 
     let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
-    let mut used_ops = vec![false; node.operands.len()];
+    let mut used_ops: Vec<bool> = vec![false; node.operands.len()];
     let mut dissolved_operations = false;
 
     if node.solve_state() == SolveState::Solved {
@@ -31,6 +31,8 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         }
       }
 
+      let mut const_look_up = HashMap::new();
+
       while let Some(op) = op_queue.pop_front() {
         if !op.is_valid() {
           continue;
@@ -44,7 +46,18 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
 
         match &node.operands[op.usize()] {
           // These operations do not reference other ops.
-          Operation::Type(..) | Operation::Param(..) | Operation::Const(..) | Operation::Str(..) => {}
+          Operation::Const(c) => {
+            let key = (c, get_op_type(node, op).base_ty());
+            match const_look_up.entry(key) {
+              std::collections::hash_map::Entry::Occupied(entry) => {
+                dissolved_ops[op.usize()] = *entry.get();
+              }
+              std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(op);
+              }
+            }
+          }
+          Operation::Type(..) | Operation::Param(..) | Operation::Str(..) => {}
           Operation::Call { args, seq_op: mem_ctx_op, .. } => {
             for op in args {
               op_queue.push_back(*op);
@@ -70,7 +83,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
           Operation::Gamma(_, op) => {
             op_queue.push_back(*op);
           }
-          Operation::Phi(_, ops) => {
+          Operation::Φ(_, ops) => {
             for op in ops {
               op_queue.push_back(*op);
             }
@@ -103,15 +116,12 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
             match type_name {
               Reference::UnresolvedName(type_name) => {
                 if let GetResult::Existing(cplx) = db.get_type_by_name(*type_name) {
-                  let ty_node = NodeHandle::from((cplx, db));
-                  let ty_node = ty_node.get().unwrap();
-
                   // This needs to be either compile at during compilation for use in compile time objects,
                   // or linked at link time to be used as a runtime data structure. The is depends if we
                   // are in comptime mode or in compile mode, which depends on the object we are finalizing
                   // and the context mode which should be passed down
-                  if !ty_node.compile_time_binary.is_null() {
-                    let value = ty_node.compile_time_binary as usize;
+                  if let Some(value) = db.comptime_type_name_lookup_table.get(&cplx) {
+                    let value = db.comptime_type_table[*value] as usize;
                     node.operands[op_id.usize()] = Operation::Type(Reference::Integer(value));
                   } else {
                     panic!("This is unstable")
@@ -128,11 +138,9 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
 
             if let Reference::UnresolvedName(name) = reference {
               if let Some(cmplx_node) = parent_type.cmplx_data() {
-                let agg_node = NodeHandle::from((cmplx_node, db));
-                let agg_node = agg_node.get().unwrap();
-
-                if !agg_node.compile_time_binary.is_null() {
-                  let out: &RumTypeObject = unsafe { std::mem::transmute(agg_node.compile_time_binary) };
+                if let Some(value) = db.comptime_type_name_lookup_table.get(&cmplx_node) {
+                //if !agg_node.compile_time_binary.is_null() {
+                  let out: &RumTypeObject = unsafe { std::mem::transmute(db.comptime_type_table[*value]) };
 
                   if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == name.to_str().as_str()) {
                     let offset = prop.byte_offset;
@@ -140,7 +148,6 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
                   }
                 }
               } else {
-                dbg!(node);
                 panic!("Could not get base type of type at op {op_id}  base_type: {parent_type}")
               }
             }
@@ -156,7 +163,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
                   println!("{r_type} => {l_type}");
                   // TODO: Ensure operation is convertible.
                   *op_name = Op::CONVERT;
-                } else if !matches!(node.operands[operands[0].usize()], Operation::Phi(..)) {
+                } else if !matches!(node.operands[operands[0].usize()], Operation::Φ(..)) {
                   dissolved_ops[op_id.usize()] = operands[0];
                   dissolved_operations = true;
                 }
@@ -248,7 +255,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
                 update_op(&dissolved_ops, target_op);
               }
             }
-            Operation::Phi(_, operands) => {
+            Operation::Φ(_, operands) => {
               for target_op in operands {
                 update_op(&dissolved_ops, target_op);
               }

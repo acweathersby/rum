@@ -1621,7 +1621,7 @@ fn merge_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
   for (index, var_id) in outgoing_var_ids.iter().cloned().enumerate() {
     // Insert a merge node
     let var = get_var_data(bp, var_id).unwrap();
-    let op: OpId = add_op(bp, Operation::Phi(current_node_index as _, vec![]), var.ty, Default::default());
+    let op: OpId = add_op(bp, Operation::Φ(current_node_index as _, vec![]), var.ty, Default::default());
     bp.super_node.nodes[current_node_index].ports.push(NodePort { ty: PortType::Merge, slot: op, id: var_id });
     port_indices[index] = op as _;
   }
@@ -1638,7 +1638,7 @@ fn merge_nodes(outgoing_nodes: Vec<NodeScope>, bp: &mut BuildPack) {
       } else {
         unreachable!()
       };
-      let Operation::Phi(_, vec) = &mut bp.super_node.operands[current_node_port_index.usize()] else { unreachable!() };
+      let Operation::Φ(_, vec) = &mut bp.super_node.operands[current_node_port_index.usize()] else { unreachable!() };
       vec.push(op);
     }
   }
