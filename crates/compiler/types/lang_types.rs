@@ -373,6 +373,8 @@ pub enum PrimitiveBaseType {
   Poison,
 }
 
+/// Base values to represent a majority of primitive types that
+/// can be register resident.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct PrimitiveType {
   pub base_ty:    PrimitiveBaseType,

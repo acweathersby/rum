@@ -345,7 +345,6 @@ pub(crate) struct RootNode {
   pub(crate) type_vars:           Vec<TypeVar>,
   pub(crate) heap_id:             Vec<usize>,
   pub(crate) source_tokens:       Vec<Token>,
-  pub(crate) compile_time_binary: *const u8,
   pub(crate) root_id:             isize,
 }
 
@@ -360,7 +359,6 @@ impl Default for RootNode {
       type_vars:           Vec::with_capacity(8),
       source_tokens:       Vec::with_capacity(8),
       heap_id:             Vec::with_capacity(8),
-      compile_time_binary: std::ptr::null(),
       root_id:             -1,
     }
   }

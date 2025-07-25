@@ -1,14 +1,31 @@
 use std::fmt::{Debug, Display};
-
-use core_lang::parser::ast::ASTNode;
-use num_traits::{sign, Num, Pow, Zero};
+use num_traits::{Pow, Zero};
 use radlr_rust_runtime::types::Token;
 use rum_common::{ArrayVec, IString};
 use rum_lang::parser::script_parser::{self, parse_raw_number};
+use crate::types::{prim_ty_f64, prim_ty_s128};
+use super::{ConstVal, OpId, PrimitiveType, TypeV};
 
-use crate::types::{prim_ty_f64, prim_ty_s128, ty_f64, ty_s128, ty_u128};
+/// Store type data in a pointer sized (64 arch) object that can be transferred and stored in registers.
+/// This is used for both comptime and runtime systems, wherein `type_id` is
+/// used to lookup actual type data in "the" type repo. The comptime type
+/// repo store type information a volatile data structure, whereas the runtime
+/// type repo is a static structure? (Not sure about this, as this would preclude
+/// dynamically created runtime types, which might be a feature worth implementing
+/// and exploring )
+pub struct TypeNewV {
+  /// Stores primitive information such the pointer state of this type
+  raw_type: PrimitiveType,
+  /// The index in the TypeTable where the type's info pointer is stored.
+  type_id:  u32,
+}
 
-use super::{ConstVal, OpId, TypeV, VarId};
+
+// Typedata is stored as follows
+// NameLU = Hash(name_str, type_index)
+// Types = Table(type_index, *Type)
+
+
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct MemberEntry {

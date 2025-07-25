@@ -314,8 +314,8 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                             if interface_node.get_type() == INTERFACE_ID {
                               // Do some magic to handle the interface type. For now, just duplicate node and reset the
                               // node's input type.
-                              let new_type = callee_node.duplicate();
-                              callee_node = new_type;
+                              let NewType = callee_node.duplicate();
+                              callee_node = NewType;
 
                               match db.add_generated_node(callee_node.clone()) {
                                 GetResult::Existing(..) => unreachable!(),
@@ -324,9 +324,9 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
                               {
                                 // Reset the type
-                                let new_type = callee_node.get_mut().unwrap();
-                                let index = new_type.op_types[callee_op.usize()].generic_id().unwrap();
-                                new_type.type_vars[index].ty = TypeV::generic(index as u32);
+                                let NewType = callee_node.get_mut().unwrap();
+                                let index = NewType.op_types[callee_op.usize()].generic_id().unwrap();
+                                NewType.type_vars[index].ty = TypeV::generic(index as u32);
                                 callee_constraints.push(NodeConstraint::GenTyToTy(TypeV::generic(index as u32), caller_ty.clone()));
 
                                 let Some(caller_node_id) = caller_ty.cmplx_data() else { unreachable!() };
@@ -471,7 +471,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
           }
 
           GlobalConstraint::ResolveObjectConstraints { node_id, constraints: c } => {
-            solve_node_intrinsics(*node_id, c, &mut link_constraints, &db);
+            solve_node_intrinsics(*node_id, c, &mut link_constraints, db);
           }
 
           _ => unreachable!(),
@@ -614,7 +614,7 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
   }
 }
 
-pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstraint], link_constraints: &mut Vec<GlobalConstraint>, db: &SolveDatabase) {
+pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstraint], link_constraints: &mut Vec<GlobalConstraint>, db: &mut SolveDatabase) {
   let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
 
   let node = NodeHandle::from((node_id, &*db));
@@ -731,8 +731,8 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
           let ty = ty_b;
 
           if let Some(cmplx_node_id) = ty.cmplx_data() {
-            let node = NodeHandle::from((cmplx_node_id, db));
-            let node = node.get().unwrap();
+            let node_handle = NodeHandle::from((cmplx_node_id, &*db));
+            let node = node_handle.get().unwrap();
 
             // If the node is not compiled do so now
 
@@ -746,19 +746,12 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
               if node.nodes[0].type_str == INTERFACE_ID {
                 // Do not mark members
               } else {
-                if !node.compile_time_binary.is_null() {
-                  let out: &RumTypeObject = unsafe { std::mem::transmute(node.compile_time_binary) };
-
-                  for member in members.iter() {
-                    if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == member.name.to_str().as_str()) {
-                      if !ty.is_open() {
-                        constraint_queue.push_back(NodeConstraint::GenTyToTy(member.ty, prop.ty.incr_ptr()));
-                      }
-                    } else {
-                      panic!("Complex type does not have member {}@{} {node:?} {out:#?}", member.name, member.ty)
-                    }
-                  }
+                let id = "test".intern();
+                let index = if let Some(index) = db.comptime_type_name_lookup_table.get(&cmplx_node_id) {
+                  *index
                 } else {
+                  let node = node_handle.get_mut().unwrap();
+
                   let sdb = SolveDatabase::solve_for("DD", &db.db);
                   let sdb_fin = sdb.finalize();
                   let sdb_opt = sdb_fin.optimize(types::OptimizeLevel::MemoryOperations_01);
@@ -772,10 +765,26 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
                   dbg!(out);
                   println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
 
-                  //solve_
-                  //compiler_rt_solver. (RootType::Any, node_id);
+                  let index = db.comptime_type_table.len();
+                  db.comptime_type_table.push(unsafe { std::mem::transmute(out) });
+                  db.comptime_type_name_lookup_table.insert(cmplx_node_id, index);
+                  index
+                };
 
-                  panic!("Agg not ready for consumption, but ready for AGG build!")
+                let comptime_type = db.comptime_type_table[index];
+
+                let out: &RumTypeObject = unsafe { std::mem::transmute(comptime_type) };
+
+                for member in members.iter() {
+                  if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == member.name.to_str().as_str()) {
+                    if !ty.is_open() {
+
+                      dbg!(prop.ty);
+                      constraint_queue.push_back(NodeConstraint::GenTyToTy(member.ty, prop.ty.incr_ptr()));
+                    }
+                  } else {
+                    panic!("Complex type does not have member {}@{} {node:?} {out:#?}", member.name, member.ty)
+                  }
                 }
               }
             }

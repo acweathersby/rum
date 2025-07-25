@@ -1,30 +1,28 @@
-#core
-get_byte_size :: (a: type) : u32 
+// #core
+// get_type :: ( b: type_ref ) : type 
+//   __type_table__[type_ref.type_entry_index]
 
-  4
+#core
+// Returns the byte size of a `type` object
+get_byte_size :: (a: type) : u32 
+  a.ele_byte_size
 
 #core
 aligned :: (offset: u32, alignment: u32) : u32
-  if offset == 0 {
-    0
-  } else {
-    (offset + ( alignment - 1 )) & (4294967295 - (alignment - 1))
-  }
+  (offset + ( alignment - 1 )) & (4294967295 - (alignment -   1))
 
 #core
 max :: (a:u32, b:u32) : u32 
-
   if a > b { a } otherwise { b }
 
 #core
 min :: (a:u32, b:u32) : u32 
-
   if a < b { a } otherwise { b }
 
 
 // END META =============================================
 
-DD :: [ test: f32, rainbow: u32, ]
+DD :: [ test: u32, rainbow: u32, junberry: u32  ]
 
 #test
 trivial :: (u:u32) : DD {

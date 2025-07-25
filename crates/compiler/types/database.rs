@@ -59,6 +59,17 @@ pub struct SolveDatabase<'a> {
   pub roots:               Vec<(RootType, CMPLXId)>,
   pub sig_lookup:          Vec<(u64, CMPLXId)>,
   pub name_map:            Vec<(IString, CMPLXId)>,
+
+  /// Comptime type table. 
+  /// 
+  /// This is a parallel to the runtime time type table.
+  /// ---
+  /// Solver owns all type vars. Should destroy the objects of these pointers when this object
+  /// goes out of scope.
+  pub comptime_type_table:          Vec<*const RumTypeObject>,
+  /// Maps type name to an entry in the type_table.
+  pub comptime_type_name_lookup_table:    HashMap<CMPLXId, usize>,
+
   pub interface_instances: BTreeMap<TypeV, BTreeMap<TypeV, BTreeMap<u64, CMPLXId>>>,
   pub heap_map:            HashMap<IString, u32>,
   pub heap_count:          usize,
@@ -87,53 +98,29 @@ impl<'a> SolveDatabase<'a> {
       nodes: Default::default(),
       interface_instances: Default::default(),
       heap_map: Default::default(),
+      comptime_type_table: Default::default(),
+      comptime_type_name_lookup_table: Default::default(),
       heap_count: 0,
     };
 
-    solve_db.add_object(
-      "type".intern(),
-      NodeHandle::new(RootNode {
-        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
-        compile_time_binary: unsafe { std::mem::transmute(&RUM_EGG_BASE_TYPE) },
-        ..Default::default()
-      }),
-    );
-
-    solve_db.add_object(
-      "type_prop".intern(),
-      NodeHandle::new(RootNode {
-        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
-        compile_time_binary: unsafe { std::mem::transmute(&RUM_PROP_BASE_TYPE) },
-        ..Default::default()
-      }),
-    );
-
-    solve_db.add_object(
-      "u32".intern(),
-      NodeHandle::new(RootNode {
-        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
-        compile_time_binary: unsafe { std::mem::transmute(&RUM_TEMP_U32_TYPE) },
-        ..Default::default()
-      }),
-    );
-
-    solve_db.add_object(
-      "f32".intern(),
-      NodeHandle::new(RootNode {
-        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
-        compile_time_binary: unsafe { std::mem::transmute(&RUM_TEMP_F32_TYPE) },
-        ..Default::default()
-      }),
-    );
-
-    solve_db.add_object(
-      "str".intern(),
-      NodeHandle::new(RootNode {
-        nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
-        compile_time_binary: unsafe { std::mem::transmute(&RUM_TEMP_STRING_TYPE) },
-        ..Default::default()
-      }),
-    );
+    for (index, (name, type_struct )) in [
+      ("type".intern(), &RUM_EGG_BASE_TYPE),
+      ("type_prop".intern(), &RUM_PROP_BASE_TYPE),
+      ("u32".intern(), &RUM_TEMP_U32_TYPE),
+      ("f32".intern(), &RUM_TEMP_F32_TYPE),
+      ("u64".intern(), &RUM_TEMP_U64_TYPE),
+      ("str".intern(), &RUM_TEMP_STRING_TYPE),
+    ].into_iter().enumerate() {
+      let id = solve_db.add_object(
+        name,
+        NodeHandle::new(RootNode {
+          nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
+          ..Default::default()
+        }),
+      );
+      solve_db.comptime_type_table.push(unsafe { std::mem::transmute(type_struct) });
+     solve_db.comptime_type_name_lookup_table.insert(id, index);
+    }
 
     solve_db
   }

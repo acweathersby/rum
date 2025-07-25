@@ -71,7 +71,12 @@ impl Debug for RumTypeProp {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut strct = f.debug_struct("Prop");
     strct.field("name", &self.name);
-    strct.field("ty", &self.ty);
+
+    unsafe {
+      let ty: &RumTypeObject = std::mem::transmute::<_, _>(self.ty);
+
+      strct.field_with("ty", |f| ty.deep(f));
+    }
     strct.field("byte_offset", &self.byte_offset);
 
     strct.finish()
@@ -79,7 +84,7 @@ impl Debug for RumTypeProp {
 }
 
 #[repr(C)]
-pub(crate) struct RumTypeObject {
+pub struct RumTypeObject {
   pub name:          &'static RumString,
   pub ele_count:     u32,
   pub ele_byte_size: u32,
@@ -88,6 +93,24 @@ pub(crate) struct RumTypeObject {
   pub props:         [RumTypeProp; 6],
 }
 
+impl RumTypeObject {
+  fn deep(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let mut strct = f.debug_struct("Type");
+    //println!("\nRumString({})\n", (&*self.name) as *const _ as usize);
+    strct.field("name", &self.name);
+    strct.field("ele_count", &self.ele_count);
+    strct.field("ele_byte_size", &self.ele_byte_size);
+    strct.field("alignment", &self.alignment);
+    strct.field("prop_count", &self.prop_count);
+
+    /*    unsafe {
+      let true_props = std::slice::from_raw_parts(self.props.as_ptr(), self.prop_count as usize);
+      strct.field("props", &true_props);
+    }; */
+
+    strct.finish()
+  }
+}
 impl Debug for RumTypeObject {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut strct = f.debug_struct("Type");
@@ -171,6 +194,22 @@ pub(crate) static RUM_TEMP_U32_TYPE: RumTypeObject = RumTypeObject {
   ],
 };
 
+pub(crate) static RUM_TEMP_U64_TYPE: RumTypeObject = RumTypeObject {
+  name:          &RumString::from_static("u64"),
+  ele_count:     1,
+  ele_byte_size: 8,
+  alignment:     8,
+  prop_count:    0,
+  props:         [
+    RumTypeProp { name: &RumString::from_static("name"), ty: ty_u32, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static("ele_count"), ty: ty_u32, byte_offset: 8 },
+    RumTypeProp { name: &RumString::from_static("ele_byte_size"), ty: ty_u32, byte_offset: 12 },
+    RumTypeProp { name: &RumString::from_static("alignment"), ty: ty_u32, byte_offset: 16 },
+    RumTypeProp { name: &RumString::from_static("prop_count"), ty: ty_u32, byte_offset: 20 },
+    RumTypeProp { name: &RumString::from_static("props"), ty: TypeV::cmplx(CMPLXId(1)), byte_offset: 32 },
+  ],
+};
+
 pub(crate) static RUM_TEMP_STRING_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("str"),
   ele_count:     0,
@@ -186,3 +225,13 @@ pub(crate) static RUM_TEMP_STRING_TYPE: RumTypeObject = RumTypeObject {
     RumTypeProp { name: &RumString::from_static(""), ty: ty_u32, byte_offset: 32 },
   ],
 };
+
+
+// vector_size
+// is_primitive
+// is_integer
+// is_floating_point
+// exp_size
+// mantissa_size
+// significant_size
+// element_count

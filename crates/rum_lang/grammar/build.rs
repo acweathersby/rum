@@ -3,7 +3,7 @@ use std::{path::Path, process::Command};
 use radlr_build::RadlrResult;
 
 const GRAMMAR_PATH: &'static str = "./grammar";
-const RUM_SCRIPT_ROOT: &'static str = "rum_lang.radlr";
+const _RUM_SCRIPT_ROOT: &'static str = "rum_lang.radlr";
 const RAW_SCRIPT_ROOT: &'static str = "raw/raw.radlr";
 const BUILD_OUTPUT_PATH: &'static str = "./compiler/parser/";
 
