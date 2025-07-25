@@ -4,10 +4,12 @@ members = [
   "./crates/compiler",
   "./crates/core",
   "./crates/common",
-  "./crates/rum_lang"
+  "./crates/rum_lang",
+  "./crates/cli",
+  "./crates/test",
 ]
 
-default-members = ["./crates/compiler"]
+default-members = ["./crates/cli"]
 
 resolver = "2"
 

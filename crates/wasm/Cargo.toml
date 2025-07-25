@@ -1,0 +1,16 @@
+[package]
+name = "rum"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+build = "./grammar/build.rs"
+
+[[bin]]
+name = "rum"
+path = "./bin.rs"
+
+[dependencies]
+core_lang         = { path="../core" }
+rum_common        = { path="../common" }
+rum_lang          = { path="../rum_lang" }

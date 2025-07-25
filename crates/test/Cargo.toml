@@ -1,5 +1,5 @@
 [package]
-name = "rum_compiler"
+name = "tests"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,13 +12,3 @@ core_lang         = { path="../core" }
 libc = "0.2.154"
 rum_common        = { path="../common" }
 rum_lang          = { path="../rum_lang" }
-num-traits        = "0.2.17"
-
-[dependencies.radlr_rust_runtime]
-workspace = true
-
-[dependencies.iced-x86]
-version = "1.21.0"
-default-features = false
-# See below for all features
-features = ["std", "decoder", "masm", "code_asm"]

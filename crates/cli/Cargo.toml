@@ -1,0 +1,15 @@
+[package]
+name = "rum"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rum"
+path = "./bin.rs"
+
+[dependencies]
+core_lang         = { path="../core" }
+rum_common        = { path="../common" }
+rum_compiler        = { path="../compiler" }
+rum_lang          = { path="../rum_lang" }
