@@ -1,3 +1,6 @@
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+
 use std::fmt::{Debug, Display};
 
 pub(crate) const OP_DEFINITIONS: &'static str = r###"
@@ -76,7 +79,7 @@ macro_rules! op_name_str_list {
   };
 }
 
-macro_rules! op_list {
+macro_rules! _op_list {
   ($name:ident , $($rest:ident),*) => {
     stringify!($($rest),*) op_list!($($rest),*)
   };

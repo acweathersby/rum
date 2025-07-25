@@ -14,7 +14,7 @@ use std::{
 };
 
 #[derive(Debug)]
-pub struct DatabaseCore {
+pub(crate) struct DatabaseCore {
   pub parent:   *const Database,
   pub ops:      Vec<Arc<core_lang::parser::ast::Op>>,
   pub nodes:    Vec<(IString, NodeHandle, Vec<NodeConstraint>)>,
@@ -55,7 +55,7 @@ impl<'a> From<(CMPLXId, &'a SolveDatabase<'a>)> for NodeHandle {
 pub struct SolveDatabase<'a> {
   // Used to lookup
   pub db:                  &'a Database,
-  pub nodes:               Vec<NodeHandle>,
+  pub(crate) nodes:               Vec<NodeHandle>,
   pub roots:               Vec<(RootType, CMPLXId)>,
   pub sig_lookup:          Vec<(u64, CMPLXId)>,
   pub name_map:            Vec<(IString, CMPLXId)>,
@@ -66,11 +66,11 @@ pub struct SolveDatabase<'a> {
   /// ---
   /// Solver owns all type vars. Should destroy the objects of these pointers when this object
   /// goes out of scope.
-  pub comptime_type_table:          Vec<*const RumTypeObject>,
+  pub(crate) comptime_type_table:          Vec<*const RumTypeObject>,
   /// Maps type name to an entry in the type_table.
   pub comptime_type_name_lookup_table:    HashMap<CMPLXId, usize>,
 
-  pub interface_instances: BTreeMap<TypeV, BTreeMap<TypeV, BTreeMap<u64, CMPLXId>>>,
+  pub(crate) interface_instances: BTreeMap<TypeVNew, BTreeMap<TypeVNew, BTreeMap<u64, CMPLXId>>>,
   pub heap_map:            HashMap<IString, u32>,
   pub heap_count:          usize,
 }
@@ -82,7 +82,7 @@ pub enum OptimizeLevel {
   FunctionInlining_04,
 }
 
-pub enum GetResult {
+pub(crate) enum GetResult {
   Existing(CMPLXId),
   Introduced((CMPLXId, Vec<NodeConstraint>)),
   NotFound,
@@ -224,7 +224,7 @@ impl<'a> SolveDatabase<'a> {
     self.roots.push((root_ty, root));
   }
 
-  pub fn add_generated_node(&mut self, handle: NodeHandle) -> GetResult {
+  pub(crate) fn add_generated_node(&mut self, handle: NodeHandle) -> GetResult {
     let root_id = handle.get().unwrap().root_id;
     if let Some((i, _)) = self.nodes.iter().enumerate().find(|(_, n)| n.get().unwrap().root_id == root_id) {
       GetResult::Existing(CMPLXId(i as u32))
@@ -235,7 +235,7 @@ impl<'a> SolveDatabase<'a> {
     }
   }
 
-  pub fn get_type_by_name(&self, name: IString) -> GetResult {
+  pub(crate) fn get_type_by_name(&self, name: IString) -> GetResult {
     use GetResult::*;
 
     for ((root_ty, root)) in &self.roots {
@@ -257,7 +257,7 @@ impl<'a> SolveDatabase<'a> {
   }
 
   /// Returns a Type bound to a name in the user's binding namespace.
-  pub fn get_type_by_name_mut(&mut self, name: IString) -> GetResult {
+  pub(crate) fn get_type_by_name_mut(&mut self, name: IString) -> GetResult {
     use GetResult::*;
 
     for (root_ty, root) in &self.roots {
@@ -291,13 +291,13 @@ impl<'a> SolveDatabase<'a> {
   }
 
   // Returns any type that matches the given signature.
-  pub fn get_type_by_signature() -> Option<NodeHandle> {
+  pub(crate) fn get_type_by_signature() -> Option<NodeHandle> {
     None
   }
 }
 
 #[derive(Clone, Debug)]
-pub struct Database(pub std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
+pub struct Database(pub(crate) std::sync::Arc<std::sync::Mutex<DatabaseCore>>);
 
 impl Default for Database {
   fn default() -> Self {
@@ -317,15 +317,15 @@ impl Database {
     db
   }
 
-  pub fn get_mut_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<DatabaseCore> {
+  pub(crate) fn get_mut_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<'a, DatabaseCore, > {
     self.0.lock().expect("Failed to lock database")
   }
 
-  pub fn get_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<DatabaseCore> {
+  pub(crate) fn get_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<'a, DatabaseCore> {
     self.0.lock().expect("Failed to lock database")
   }
 
-  pub fn add_object(&self, name: IString, node: NodeHandle, constraints: Vec<NodeConstraint>) {
+  pub(crate) fn add_object(&self, name: IString, node: NodeHandle, constraints: Vec<NodeConstraint>) {
     let mut db = self.get_mut_ref();
     let obj = node.get().unwrap();
 
@@ -340,11 +340,11 @@ impl Database {
     db.nodes.push((name, node, constraints));
   }
 
-  pub fn get_object_mut_with_sig(&self, obj_name: IString, obj_sig: u64) -> Option<NodeHandle> {
+  pub(crate) fn get_object_mut_with_sig(&self, obj_name: IString, obj_sig: u64) -> Option<NodeHandle> {
     None
   }
 
-  pub fn get_object_mut<'a: 'b, 'b>(&'a self, fn_name: IString) -> Option<(NodeHandle, Vec<NodeConstraint>)> {
+  pub(crate) fn get_object_mut<'a: 'b, 'b>(&'a self, fn_name: IString) -> Option<(NodeHandle, Vec<NodeConstraint>)> {
     for (binding_name, node, constraints) in self.get_ref().nodes.iter_mut() {
       if *binding_name == fn_name {
         return Some((node.clone(), constraints.clone()));
@@ -360,7 +360,7 @@ impl Database {
 }
 
 /// TODO: Ops should be a constant static dataset
-pub fn add_ops_to_db(db: &mut DatabaseCore, ops: &str) {
+pub(crate) fn add_ops_to_db(db: &mut DatabaseCore, ops: &str) {
   for op in core_lang::parser::parse_ops(ops).expect("Failed to parse ops").ops.iter() {
     db.ops.push(op.clone());
   }

@@ -3,6 +3,12 @@
 #![feature(unsized_tuple_coercion)]
 #![feature(if_let_guard)]
 #![feature(str_from_raw_parts)]
+#![allow(mixed_script_confusables)]
+
+// Temporary
+#![allow(unused)]
+#![allow(non_camel_case_types)]
+#![allow(non_upper_case_globals)]
 
 pub mod bitfield;
 

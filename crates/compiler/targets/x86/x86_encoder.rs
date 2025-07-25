@@ -2,8 +2,8 @@ use crate::targets::x86::push_bytes;
 
 use super::{print_instruction, set_bytes, x86_types::*};
 
-pub type OpSignature = (u16, OperandType, OperandType, OperandType, OperandType);
-pub type OpEncoder = fn(binary: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, op2: Arg, op3: Arg, op4: Arg, ext: u8);
+pub(crate) type OpSignature = (u16, OperandType, OperandType, OperandType, OperandType);
+pub(crate) type OpEncoder = fn(binary: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, op1: Arg, op2: Arg, op3: Arg, op4: Arg, ext: u8);
 
 pub(crate) struct InstructionProps<'bin> {
   instruction_name:       &'static str,
@@ -336,7 +336,7 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
       _ => 0,
     },
     _ => match r_m {
-      Arg::MemRel(re, val) => {
+      Arg::MemRel(_, val) => {
         if (val & !0xFF) > 0 {
           mod_encoding = 0b10
         } else {
@@ -431,11 +431,11 @@ fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: u64, props:
     }
   }
 
-  let (vvvv, V) = match op3 {
+  let (vvvv, v) = match op3 {
     Arg::Reg(reg) if !op3.is_mask_register() => (!(reg.0 as u8) & 0xF, ((reg.is_upper_16_reg() as u8) ^ 0x1)),
     _ => (0xF, 0x1),
   };
-  let (vvvv, V) = (vvvv << 3, V << 3);
+  let (vvvv, v) = (vvvv << 3, v << 3);
 
   let z = 0 << 7;
   let ll = match bit_size {
@@ -449,7 +449,7 @@ fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: u64, props:
 
   let byte1 = rex_r | rex_x | rex_b | rex_r_prime | (0 << 3) | mmm;
   let byte2 = rex_w | vvvv | (1 << 2) | pp;
-  let byte3 = z | ll | _b | V | aaa;
+  let byte3 = z | ll | _b | v | aaa;
 
   insert_op_code_bytes(props.bin, byte1 as u32);
   insert_op_code_bytes(props.bin, byte2 as u32);

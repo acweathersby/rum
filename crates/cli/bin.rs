@@ -1,5 +1,4 @@
 #![allow(unused_variables, dead_code)]
-use std::{collections::HashMap, io::Write};
 
 use rum_compiler::{ir_compiler::add_module, linker, targets::{self, x86::{print_instructions, x86_eval}}, types::*};
 
@@ -41,7 +40,7 @@ fn main() {
 
       let out = func.access_as_call::<fn(u32) -> &'static (f32, u32)>()(1);
 
-      dbg!((out as *const _ as *const usize));
+      dbg!( out as *const _ as *const usize);
 
       assert_eq!(out, &(2f32, 3u32), "Failed to parse correctly");
 
@@ -49,7 +48,6 @@ fn main() {
 
       panic!("Finished: Have binary. Need to wrap in some kind of portable unit to allow progress of compilation and linking.");
 
-      todo!("Link bin functs");
 
     /*      let func = x86_eval::x86Function::new(&binary);
 

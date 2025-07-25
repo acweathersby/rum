@@ -1,24 +1,13 @@
+#![allow(non_upper_case_globals)]
+
 use std::fmt::{Debug, Display};
 use num_traits::{Pow, Zero};
 use radlr_rust_runtime::types::Token;
 use rum_common::{ArrayVec, IString};
-use rum_lang::parser::script_parser::{self, parse_raw_number};
-use crate::types::{prim_ty_f64, prim_ty_s128};
-use super::{ConstVal, OpId, PrimitiveType, TypeV};
+use rum_lang::parser::script_parser;
+use super::{prim_ty_f64_new, prim_ty_s128_new, ConstVal, OpId,  TypeVNew};
 
-/// Store type data in a pointer sized (64 arch) object that can be transferred and stored in registers.
-/// This is used for both comptime and runtime systems, wherein `type_id` is
-/// used to lookup actual type data in "the" type repo. The comptime type
-/// repo store type information a volatile data structure, whereas the runtime
-/// type repo is a static structure? (Not sure about this, as this would preclude
-/// dynamically created runtime types, which might be a feature worth implementing
-/// and exploring )
-pub struct TypeNewV {
-  /// Stores primitive information such the pointer state of this type
-  raw_type: PrimitiveType,
-  /// The index in the TypeTable where the type's info pointer is stored.
-  type_id:  u32,
-}
+
 
 
 // Typedata is stored as follows
@@ -28,20 +17,20 @@ pub struct TypeNewV {
 
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct MemberEntry {
+pub(crate) struct MemberEntry {
   pub name:      IString,
   pub origin_op: u32,
-  pub ty:        TypeV,
+  pub ty:        TypeVNew,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
-pub enum NodeConstraint {
+pub(crate) enum NodeConstraint {
   /// Used to bind a variable to a type that is not defined in the current
   /// routine scope.
-  GlobalHeapReference(TypeV, IString, Token),
-  GlobalNameReference(TypeV, IString, Token),
-  OpToTy(OpId, TypeV),
+  GlobalHeapReference(TypeVNew, IString, Token),
+  GlobalNameReference(TypeVNew, IString, Token),
+  OpToTy(OpId, TypeVNew),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
   OpToOp {
@@ -57,8 +46,8 @@ pub enum NodeConstraint {
     val_op: OpId,
   },
   Deref {
-    ptr_ty:  TypeV,
-    val_ty:  TypeV,
+    ptr_ty:  TypeVNew,
+    val_ty:  TypeVNew,
     mutable: bool,
   },
   Member {
@@ -68,9 +57,9 @@ pub enum NodeConstraint {
   },
   Mutable(u32, u32),
   Agg(OpId),
-  GenTyToTy(TypeV, TypeV),
-  GenTyToGenTy(TypeV, TypeV),
-  SetHeap(OpId, TypeV),
+  GenTyToTy(TypeVNew, TypeVNew),
+  GenTyToGenTy(TypeVNew, TypeVNew),
+  SetHeap(OpId, TypeVNew),
   OpConvertTo {
     src_op:       OpId,
     trg_op_index: usize,
@@ -79,8 +68,8 @@ pub enum NodeConstraint {
 }
 
 #[derive(Clone)]
-pub struct TypeVar {
-  pub ty:         TypeV,
+pub(crate) struct TypeVar {
+  pub ty:         TypeVNew,
   pub id:         u32,
   pub ref_id:     i32,
   pub num:        Numeric,
@@ -116,7 +105,7 @@ impl TypeVar {
     let _ = self.attributes.push_unique(constraint);
   }
 
-  pub fn add_mem(&mut self, name: IString, ty: TypeV, origin_node: u32) {
+  pub fn add_mem(&mut self, name: IString, ty: TypeVNew, origin_node: u32) {
     self.attributes.push_unique(VarAttribute::Agg).unwrap();
 
     // for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
@@ -129,7 +118,7 @@ impl TypeVar {
     let _ = self.members.insert_ordered(MemberEntry { name, origin_op: origin_node, ty });
   }
 
-  pub fn get_mem(&self, name: IString) -> Option<(u32, TypeV)> {
+  pub fn get_mem(&self, name: IString) -> Option<(u32, TypeVNew)> {
     for MemberEntry { name: n, origin_op: origin_node, ty } in self.members.iter() {
       if *n == name {
         return Some((*origin_node, *ty));
@@ -175,7 +164,7 @@ impl Display for TypeVar {
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Ord, Eq)]
-pub enum VarAttribute {
+pub(crate) enum VarAttribute {
   Alpha,
   Delta,
   Psi,
@@ -185,8 +174,8 @@ pub enum VarAttribute {
   Index(u32),
   Load(u32, u32),
   MemOp {
-    ptr_ty: TypeV,
-    val_ty: TypeV,
+    ptr_ty: TypeVNew,
+    val_ty: TypeVNew,
   },
   Convert {
     dst: OpId,
@@ -216,7 +205,7 @@ impl Debug for VarAttribute {
       Mutable => f.write_fmt(format_args!("mut",)),
       Index(index) => f.write_fmt(format_args!("*.[{index}]",)),
       HeapOp(op) => f.write_fmt(format_args!("heap_decl@{op}",)),
-      Global(ty, tok, ..) => f.write_fmt(format_args!("typeof({ty})",)),
+      Global(ty, ..) => f.write_fmt(format_args!("typeof({ty})",)),
     }
   }
 }
@@ -232,10 +221,6 @@ pub(crate) fn get_root_var<'a>(mut index: usize, type_vars: &'a [TypeVar]) -> &'
 
     &*var
   }
-}
-
-fn get_num_len(int_str: &str) -> usize {
-  int_str.len() - if int_str.starts_with("-") { 1 } else { 0 }
 }
 
 fn trailing_zeros(int_str: &str) -> usize {
@@ -258,7 +243,7 @@ fn leading_zeros(int_str: &str) -> usize {
 
 #[test]
 fn test_bounding() {
-  let Ok((num, val)) = Numeric::extract_data(&parse_raw_number("1.0100000323E8").unwrap()) else { panic!("Failed") };
+  let Ok((num, val)) = Numeric::extract_data(&rum_lang::parser::script_parser::parse_raw_number("1.0100000323E8").unwrap()) else { panic!("Failed") };
 
   dbg!(num, val);
 }
@@ -335,7 +320,7 @@ impl Numeric {
     let exp_bits = if is_fractional { ((tot_len - 1) * 4) as u128 } else { 0 };
 
     let mut int_num = (int_str.to_string() + &dec_str).parse::<u128>().expect("Could not parse string into integer");
-    let mut flt_num = (int_str.to_string() + &dec_str[0..dec_str.len().min(15 - int_str.len())]).parse::<u128>().expect("Could not parse string into integer");
+    let flt_num = (int_str.to_string() + &dec_str[0..dec_str.len().min(15 - int_str.len())]).parse::<u128>().expect("Could not parse string into integer");
 
     let val = if is_fractional {
       let mut flt_num = (int_str.to_string() + &dec_str[0..dec_str.len()]).parse::<f64>().expect("Could not parse string into float");
@@ -344,14 +329,13 @@ impl Numeric {
 
       flt_num *= 10.0.pow(fractional_pos);
 
-      ConstVal::new(prim_ty_f64, flt_num)
+      ConstVal::new(prim_ty_f64_new, flt_num)
     } else {
       int_num *= (10u128).pow((exp_len - dec_str.len()) as u32);
       let int_num = if is_neg { -(int_num as i128) } else { int_num as i128 };
-      ConstVal::new(prim_ty_s128, int_num)
+      ConstVal::new(prim_ty_s128_new, int_num)
     };
 
-    let int_bits = required_bits(int_num) + is_neg as u8;
     let sig_bits = required_bits(flt_num);
     let exp_bits = required_bits(exp_bits) as u8;
 

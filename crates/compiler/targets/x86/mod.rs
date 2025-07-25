@@ -45,9 +45,10 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
 
         // Collect complex node requirements
         for TypeVar { ty, .. } in super_node.type_vars.iter() {
-          if ty.is_cmplx() {
-            queue.push_back(ty.cmplx_data().unwrap());
-          }
+          todo!("Handle Complex Types");
+          //if ty.is_cmplx() {
+          //  queue.push_back(ty.cmplx_data().unwrap());
+          //}
         }
 
         let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db);

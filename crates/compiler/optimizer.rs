@@ -1,6 +1,6 @@
 use crate::{
   _interpreter::get_op_type,
-  types::{NodePort, Op, OpId, OptimizeLevel, PortType, SolveDatabase, TypeV, VarId},
+  types::{NodePort, Op, OpId, OptimizeLevel, PortType, SolveDatabase, VarId},
 };
 
 pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDatabase<'a> {
@@ -66,7 +66,7 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
               let ty = get_op_type(node, op);
 
               // Do not insert free if type is not a memory type.
-              node_escapes |= !ty.is_array() && !ty.is_cmplx() && ty.ptr_depth() == 0;
+              node_escapes |= !ty.is_complex() && ty.ptr_depth() == 0;
 
               if !node_escapes {
                 // Insert free
@@ -75,11 +75,13 @@ pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDa
 
                 let new_mem_op = OpId(node.operands.len() as u32);
                 node.operands.push(crate::types::Operation::Op { op_name: Op::FREE, operands: [op, Default::default(), Default::default()], seq_op: ctx_op });
-                node.op_types.push(TypeV::util());
+
+                //node.op_types.push(TypeVNew::util());
                 node.source_tokens.push(Default::default());
                 node.heap_id.push(node.heap_id[op.usize()]);
-
+                
                 new_nodes.push(NodePort { id: VarId::Freed, ty: PortType::Out, slot: new_mem_op });
+                todo!("Create type for Free");
               } else {
                 println!("TODO: Check that we are not in the entry process entry function, and ");
               }

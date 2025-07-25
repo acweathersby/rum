@@ -12,7 +12,7 @@ use crate::{
     reg::Reg,
     x86::x86_encoder::{encode_binary, encode_unary, OpEncoder, OpSignature},
   },
-  types::{CMPLXId, Op, Operation, PrimitiveBaseType, Reference, RootNode, SolveDatabase},
+  types::{CMPLXId, Op, Operation, PrimitiveBaseTypeNew, PrimitiveTypeNew, Reference, RootNode, SolveDatabase},
 };
 use std::{
   collections::{BTreeMap, VecDeque},
@@ -48,7 +48,7 @@ pub struct BinaryFunction {
   pub data_segment_size: usize,
   pub entry_offset:      usize,
   pub binary:            Vec<u8>,
-  pub patch_points:      Vec<(usize, PatchType)>,
+  pub(crate) patch_points:      Vec<(usize, PatchType)>,
 }
 
 impl BinaryFunction {
@@ -57,7 +57,7 @@ impl BinaryFunction {
   }
 }
 
-pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatabase, allocator_address: usize, allocator_free_address: usize) -> BinaryFunction {
+pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatabase, allocator_address: usize, allocator_free_address: usize) -> BinaryFunction {
   use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
   let blocks = &bb_fn.blocks;
 
@@ -94,8 +94,8 @@ pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatab
       //println!("----------- \n {op} => {:?}\n  {out:?} | {args:?} \n pre: {:?} \npost: {:?} \n ----------->", &sn.operands[op.usize()], pre_fixes, post_fixes);
 
       let op_prim_ty = get_op_type(&sn, op).prim_data();
-      let byte_size = op_prim_ty.byte_size as u64;
-      let bit_size = (op_prim_ty.byte_size << 3) as u64;
+      let byte_size = op_prim_ty.base_byte_size as u64;
+      let bit_size = (op_prim_ty.base_byte_size << 3) as u64;
 
       for pre_fix in pre_fixes {
         handle_fix_up(instr_bytes, *pre_fix);
@@ -149,7 +149,7 @@ pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatab
           }
           Operation::Const(val) => match out {
             VarVal::Reg(reg, ty) => {
-              if op_prim_ty.base_ty == PrimitiveBaseType::Float {
+              if op_prim_ty.base_ty == PrimitiveBaseTypeNew::Float {
                 // Store the primitive value in the data segment of the function.
 
                 let offset = data_store.len() as u64;
@@ -208,11 +208,11 @@ pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatab
               let operand_ty = get_op_type(sn, operands[0]);
               let cmpr_type = operand_ty.prim_data();
 
-              encode_binary(instr_bytes, &cmp, (cmpr_type.byte_size as u64) * 8, left_op, right_op);
+              encode_binary(instr_bytes, &cmp, (cmpr_type.base_byte_size as u64) * 8, left_op, right_op);
 
               if is_last_op {
                 let (fail_next, pass_next) = match cmpr_type.base_ty {
-                  PrimitiveBaseType::Float | PrimitiveBaseType::Unsigned => match op_name {
+                  PrimitiveBaseTypeNew::Float | PrimitiveBaseTypeNew::Unsigned => match op_name {
                     Op::NE => (&jne, &je),
                     Op::EQ => (&je, &jne),
                     Op::LS => (&jb, &jae),
@@ -221,7 +221,7 @@ pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatab
                     Op::GE => (&jae, &jb),
                     _ => unreachable!(),
                   },
-                  PrimitiveBaseType::Signed => match op_name {
+                  PrimitiveBaseTypeNew::Signed => match op_name {
                     Op::NE => (&jne, &je),
                     Op::EQ => (&je, &jne),
                     Op::LS => (&jl, &jge),
@@ -254,8 +254,8 @@ pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatab
               }
             }
             Op::ADD | Op::SUB | Op::MUL | Op::BIT_AND | Op::BIT_OR => {
-              if op_prim_ty.base_ty == PrimitiveBaseType::Float {
-                if op_prim_ty.ele_count == 1 {
+              if op_prim_ty.base_ty == PrimitiveBaseTypeNew::Float {
+                if op_prim_ty.base_vector_size == 1 {
                   let left_arg = match args[0] {
                     VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
                     VarVal::Stashed(stashed) => {
@@ -401,7 +401,7 @@ pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatab
             }
 
             Op::STORE => {
-              let bit_size = get_op_type(sn, operands[1]).prim_data().byte_size as u64 * 8;
+              let bit_size = get_op_type(sn, operands[1]).prim_data().base_byte_size as u64 * 8;
               let val_arg = match args[1] {
                 VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
                 VarVal::Stashed(val_stash_loc) => {
@@ -606,7 +606,7 @@ pub fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &SolveDatab
   BinaryFunction { id: bb_fn.id, data_segment_size: data_offset, entry_offset: data_offset, binary: data_store, patch_points }
 }
 
-fn get_const_arg(sn: &RootNode, op_prim_ty: crate::types::PrimitiveType, op: crate::types::OpId) -> Arg {
+fn get_const_arg(sn: &RootNode, op_prim_ty: PrimitiveTypeNew, op: crate::types::OpId) -> Arg {
   match &sn.operands[op.usize()] {
     Operation::Const(val) => Arg::Imm_Int(val.convert(op_prim_ty).load()),
     Operation::Type(Reference::Integer(val)) => Arg::Imm_Int(*val as _),
@@ -618,15 +618,15 @@ fn handle_fix_up(instr_bytes: &mut Vec<u8>, fix: FixUp) {
   use super::x86_instructions::{add, cmp, jmp, mov, ret, sub, *};
   match fix {
     FixUp::Store(reg, rsp_loc, ty) => {
-      encode_x86(instr_bytes, &mov, (ty.byte_size * 8) as _, Arg::RSP_REL(rsp_loc as _), REGISTERS[reg as usize].as_reg_op(), Arg::None, Arg::None);
+      encode_x86(instr_bytes, &mov, (ty.base_byte_size * 8) as _, Arg::RSP_REL(rsp_loc as _), REGISTERS[reg as usize].as_reg_op(), Arg::None, Arg::None);
     }
     FixUp::Move { src, dst, ty } => {
       if src != dst {
-        encode_x86(instr_bytes, &mov, (ty.byte_size * 8) as _, REGISTERS[dst as usize].as_reg_op(), REGISTERS[src as usize].as_reg_op(), Arg::None, Arg::None);
+        encode_x86(instr_bytes, &mov, (ty.base_byte_size * 8) as _, REGISTERS[dst as usize].as_reg_op(), REGISTERS[src as usize].as_reg_op(), Arg::None, Arg::None);
       }
     }
     FixUp::Load(reg, rsp_loc, ty) => {
-      encode_x86(instr_bytes, &mov, (ty.byte_size * 8) as _, REGISTERS[reg as usize].as_reg_op(), Arg::RSP_REL(rsp_loc as _), Arg::None, Arg::None);
+      encode_x86(instr_bytes, &mov, (ty.base_byte_size * 8) as _, REGISTERS[reg as usize].as_reg_op(), Arg::RSP_REL(rsp_loc as _), Arg::None, Arg::None);
     }
     FixUp::TempStore(..) => {}
     _fix => {

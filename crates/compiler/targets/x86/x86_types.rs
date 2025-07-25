@@ -207,13 +207,13 @@ impl Reg {
 
   /// Returns an Arg::Reg op for the given register. Panics if the Graphid is
   /// not a register
-  pub fn as_reg_op(&self) -> Arg {
+  pub(crate) fn as_reg_op(&self) -> Arg {
     Arg::Reg(*self)
   }
 
   /// Returns an Arg::Mem op for the given register. Panics if the Graphid is
   /// not a register
-  pub fn as_mem_op(&self) -> Arg {
+  pub(crate) fn as_mem_op(&self) -> Arg {
     Arg::Mem(*self)
   }
 }

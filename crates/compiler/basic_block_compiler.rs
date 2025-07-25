@@ -1,3 +1,5 @@
+
+
 use crate::{
   _interpreter::get_op_type,
   bitfield,
@@ -9,7 +11,7 @@ use crate::{
       x86_types::*,
     },
   },
-  types::{CMPLXId, Node, Op, OpId, Operation, PortType, PrimitiveBaseType, PrimitiveType, RegisterSet, RootNode, SolveDatabase, VarId},
+  types::{CMPLXId, Node, Op, OpId, Operation, PortType,  PrimitiveBaseTypeNew,  PrimitiveTypeNew, RegisterSet, RootNode, SolveDatabase, VarId},
 };
 use rum_common::get_aligned_value;
 use rum_lang::todo_note;
@@ -36,7 +38,7 @@ pub(crate) enum VarVal {
   #[default]
   None,
   Var(u32),
-  Reg(u8, PrimitiveType),
+  Reg(u8, PrimitiveTypeNew),
   Const,
   Stashed(u32),
   MemCalc,
@@ -48,7 +50,7 @@ impl Debug for VarVal {
       VarVal::None => f.write_str("----  "),
       VarVal::Const => f.write_str("CONST "),
       VarVal::MemCalc => f.write_str("MEM[] "),
-      VarVal::Reg(r, t) => f.write_fmt(format_args!("r{r:02}[{t}] ")),
+      VarVal::Reg(r, t) => f.write_fmt(format_args!("r{r:02}[{t:?}] ")),
       VarVal::Var(v) => f.write_fmt(format_args!("v{v:03}     ")),
       VarVal::Stashed(v) => f.write_fmt(format_args!("[{v:04}]   ")),
     }
@@ -127,8 +129,8 @@ const INT_PARAM_REGISTERS: [usize; 12] = [3, 4, 12, 2, 5, 7, 8, 9, 0, 10, 11, 12
 pub const OUTPUT_REGISTERS: [usize; 4] = [5, 4, 2, 0];
 pub const FP_OUTPUT_REGISTERS: [usize; 4] = [13, 13, 13, 13];
 
-pub fn get_param_registers(param_index: usize, ty: PrimitiveType) -> usize {
-  if ty.base_ty == PrimitiveBaseType::Float {
+pub fn get_param_registers(param_index: usize, ty: PrimitiveTypeNew) -> usize {
+  if ty.base_ty == PrimitiveBaseTypeNew::Float {
     FP_PARAM_REGISTERS[param_index]
   } else {
     INT_PARAM_REGISTERS[param_index]
@@ -269,9 +271,9 @@ fn get_var_offset(vars: &mut [VarOP], stack_ptr_offset: &mut u64, var: usize) ->
   let offset = if let Some(offset) = vars[var].stack_offset {
     offset
   } else {
-    let offset = get_aligned_value(*stack_ptr_offset, vars[var].ty.byte_size as _);
+    let offset = get_aligned_value(*stack_ptr_offset, vars[var].ty.base_byte_size as _);
     vars[var].stack_offset = Some(offset);
-    *stack_ptr_offset = offset + (vars[var].ty.byte_size as u64);
+    *stack_ptr_offset = offset + (vars[var].ty.base_byte_size as u64);
     offset
   };
   offset
@@ -358,7 +360,7 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         dependency_ops = *operands;
         (dependency_ops.as_slice(), [get_vv(bb, vars, &operands[0]), get_vv(bb, vars, &operands[1]), get_vv(bb, vars, &operands[2])])
       }
-      Operation::Const(..) | Operation::Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
+      Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
       Operation::Dead => unreachable!(),
       op => todo!("{op:?}"),
     };
@@ -377,10 +379,10 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
               // If there is a subsequent move of a register after a load then we should
               // just load into the target of the register and not remove temp store status
               if let Some(fix_up) = pre_fixups.iter_mut().find(|fix_up| match fix_up {
-                FixUp::Move { dst, src, ty } => *src == reg,
+                FixUp::Move {  src,.. } => *src == reg,
                 _ => false,
               }) {
-                let FixUp::Move { dst, src, ty: ty_a } = fix_up else { unreachable!() };
+                let FixUp::Move { dst,  ty: ty_a, .. } = fix_up else { unreachable!() };
                 debug_assert!(*ty_a == ty);
                 let new_fixup = FixUp::Load(*dst, offset, ty);
                 *fix_up = new_fixup;
@@ -428,28 +430,28 @@ fn get_vv(bb: &mut &BasicBlockFunction, vars: &Vec<VarOP>, base: &OpId) -> VarVa
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FixUp {
-  Move { dst: u8, src: u8, ty: PrimitiveType },
-  Load(u8, u64, PrimitiveType),
-  Store(u8, u64, PrimitiveType),
+  Move { dst: u8, src: u8, ty: PrimitiveTypeNew },
+  Load(u8, u64, PrimitiveTypeNew),
+  Store(u8, u64, PrimitiveTypeNew),
   TempStore(usize),
   UniPHI(usize, usize),
 }
 
 #[derive(Default, Debug, Clone)]
-struct VarOP {
+pub(crate) struct VarOP {
   out:          VarVal,
   pre_fixes:    Vec<FixUp>,
   post_fixes:   Vec<FixUp>,
   active:       bool,
   temp_store:   bool,
   stored:       bool,
-  ty:           PrimitiveType,
+  ty:           PrimitiveTypeNew,
   stack_offset: Option<u64>,
   phi:          Option<usize>,
 }
 
 /// Returns a vector of register assigned basic blocks.
-pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase) -> BasicBlockFunction {
+pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabase) -> BasicBlockFunction {
   let mut op_data = vec![OpData::new(); sn.operands.len()];
 
   let mut bb_funct = BasicBlockFunction { id, blocks: vec![], stash_size: 0, makes_ffi_call: false, makes_system_call: false, vars: vec![], op_to_var_map: vec![u32::MAX; sn.operands.len()] };
@@ -513,7 +515,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           }
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::Call { reference, args, seq_op } => {
+        Operation::Call {  args, seq_op, .. } => {
           for op in args {
             pending_ops.push_back((*op, rank + 1));
           }
@@ -524,7 +526,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           pending_ops.push_back((*alignment, rank + 1));
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::MemPTR { reference, base, seq_op } => {
+        Operation::MemPTR { base, seq_op, .. } => {
           pending_ops.push_back((*base, rank + 1));
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
@@ -569,7 +571,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
       let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *arg);
       let arg_prim_ty = get_op_type(sn, *arg).prim_data();
 
-      let arg_reg = if arg_prim_ty.base_ty == PrimitiveBaseType::Float {
+      let arg_reg = if arg_prim_ty.base_ty == PrimitiveBaseTypeNew::Float {
         let id = flt_index;
         flt_index += 1;
         FP_PARAM_REGISTERS[id as usize]
@@ -630,7 +632,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
     let mut reg_alloc = X86registers::new(44);
     let ty_a = get_op_type(&sn, target_op).prim_data();
 
-    if ty_a.base_ty == PrimitiveBaseType::Float {
+    if ty_a.base_ty == PrimitiveBaseTypeNew::Float {
       // Mask out all general purpose registers
       reg_alloc.mask(!VEC_REG_MASK);
     } else {
@@ -646,16 +648,16 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
       let ty_b = get_op_type(&sn, other_op).prim_data();
 
       let types_interfere = match (ty_a.base_ty, ty_b.base_ty) {
-        (PrimitiveBaseType::Signed, PrimitiveBaseType::Signed)
-        | (PrimitiveBaseType::Address, PrimitiveBaseType::Address)
-        | (PrimitiveBaseType::Address, PrimitiveBaseType::Signed)
-        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Address)
-        | (PrimitiveBaseType::Address, PrimitiveBaseType::Unsigned)
-        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Address)
-        | (PrimitiveBaseType::Signed, PrimitiveBaseType::Unsigned)
-        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Signed)
-        | (PrimitiveBaseType::Unsigned, PrimitiveBaseType::Unsigned)
-        | (PrimitiveBaseType::Float, PrimitiveBaseType::Float) => true,
+        (PrimitiveBaseTypeNew::Signed, PrimitiveBaseTypeNew::Signed)
+        | (PrimitiveBaseTypeNew::Address, PrimitiveBaseTypeNew::Address)
+        | (PrimitiveBaseTypeNew::Address, PrimitiveBaseTypeNew::Signed)
+        | (PrimitiveBaseTypeNew::Signed, PrimitiveBaseTypeNew::Address)
+        | (PrimitiveBaseTypeNew::Address, PrimitiveBaseTypeNew::Unsigned)
+        | (PrimitiveBaseTypeNew::Unsigned, PrimitiveBaseTypeNew::Address)
+        | (PrimitiveBaseTypeNew::Signed, PrimitiveBaseTypeNew::Unsigned)
+        | (PrimitiveBaseTypeNew::Unsigned, PrimitiveBaseTypeNew::Signed)
+        | (PrimitiveBaseTypeNew::Unsigned, PrimitiveBaseTypeNew::Unsigned)
+        | (PrimitiveBaseTypeNew::Float, PrimitiveBaseTypeNew::Float) => true,
         _ => false,
       };
 
@@ -708,7 +710,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           dependency_ops = *operands;
           dependency_ops.as_slice()
         }
-        Operation::Const(..) | Operation::Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => &dependency_ops,
+        Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => &dependency_ops,
         Operation::Dead => unreachable!("{sn:?}"),
         op => todo!("{op:?}"),
       };
@@ -748,7 +750,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
 
   // Solve the graph
   for ordering in create_block_ordering(&bb_funct.blocks) {
-    let BasicBlockFunction { id, stash_size, blocks, makes_system_call, makes_ffi_call, op_to_var_map, vars } = &mut bb_funct;
+    let BasicBlockFunction { blocks,  makes_ffi_call, op_to_var_map, vars, .. } = &mut bb_funct;
     let block = &mut blocks[ordering.index as usize];
     for op_position in (0..block.ops.len()).rev() {
       let op = block.ops[op_position];
@@ -848,7 +850,6 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           }
           Op::OPTR => {
             let [base, index, _] = operands;
-            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
 
             // This requires a register from the source node. Allocate this pointer
             let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *base);
@@ -888,7 +889,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
           }
           ty => todo!("{ty}"),
         },
-        Operation::Param(var, i) => {
+        Operation::Param(_var, i) => {
           let src_reg = INT_PARAM_REGISTERS[*i as usize];
           let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
           let ty = get_op_type(sn, op).prim_data();
@@ -938,7 +939,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
             }
           }
         }
-        Operation::AggDecl { size, alignment, seq_op } => {
+        Operation::AggDecl { size, alignment, .. } => {
           *makes_ffi_call = true;
           process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, &[*size, *alignment]);
         }
@@ -948,7 +949,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
         Operation::Const(..) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, op);
         }
-        Operation::Gamma(..) => {
+        Operation::_Gamma(..) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, op);
         }
         Operation::Φ(_, nodes) => {
@@ -988,7 +989,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, db: &SolveDatabase
     }
   }
 
-  /**
+  /*
   for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
     let block_id = block.block_id as usize;
     let outs = block_op_bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();
@@ -1105,7 +1106,7 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
       if let Operation::Φ(_, ops) = &sn.operands[port.slot.usize()] {
         let phi_ty_var = get_vv_for_op_mut(sn, op_var_map, vars, port.slot);
         let op = ops[index];
-        if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem()) {
+        if op.is_valid() && !(ty.is_poison() || ty.is_undefined() || ty.is_mem_ctx()) {
           if let Operation::Φ(..) = &sn.operands[op.usize()] {
             todo!("Handle compound PHIs");
           } else {
@@ -1162,7 +1163,7 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
             pending_ops.push_back((*op, level));
           }
         }
-        Operation::Φ(node_id, ..) | Operation::Gamma(node_id, ..) => {
+        Operation::Φ(node_id, ..) | Operation::_Gamma(node_id, ..) => {
           let sub_node = &sn.nodes[*node_id as usize];
 
           // Do not process outer slots: slots that are defined within parent scopes.

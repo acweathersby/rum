@@ -1,16 +1,12 @@
 use radlr_rust_runtime::types::Token;
 use rum_common::{CachedString, IString};
-
 use crate::_interpreter::get_op_type;
-
 use super::*;
-
 use std::{
   alloc::Layout,
-  default,
-  fmt::{Debug, Display, Write},
+  fmt::{Debug, Display},
   hash::{DefaultHasher, Hash, Hasher},
-  ptr::{drop_in_place, null},
+  ptr::drop_in_place,
   thread::sleep,
   time::Duration,
 };
@@ -31,7 +27,7 @@ struct NodeWrapper {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NodeHandle(*mut NodeWrapper);
+pub(crate) struct NodeHandle(*mut NodeWrapper);
 
 impl Default for NodeHandle {
   fn default() -> Self {
@@ -189,7 +185,7 @@ impl VarId {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct OpId(pub(crate) u32);
+pub struct OpId(pub(crate) u32);
 
 impl Debug for OpId {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -217,11 +213,6 @@ impl Default for OpId {
 }
 
 impl OpId {
-  pub(crate) fn create_meta(data: u32) -> Self {
-    debug_assert!(data < 0x1000_0000);
-    Self(0x1000_0000 | data)
-  }
-
   pub(crate) fn meta(&self) -> usize {
     (self.0 & !0x1000_0000) as usize
   }
@@ -279,7 +270,7 @@ pub(crate) enum Operation {
   /// - u32   - List index position of the parameter
   Param(VarId, u32),
   Φ(u32, Vec<OpId>),
-  Gamma(u32, OpId),
+  _Gamma(u32, OpId),
   Call {
     reference: Reference,
     args:      Vec<OpId>,
@@ -325,7 +316,7 @@ impl Display for Operation {
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
       Operation::Op { op_name, operands, seq_op } => f.write_fmt(format_args!("{op_name:12} [{seq_op}]  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  "))),
-      Operation::Gamma(node, op) => f.write_fmt(format_args!("Gamma  {op:?} @ {node}",)),
+      Operation::_Gamma(node, op) => f.write_fmt(format_args!("Gamma  {op:?} @ {node}",)),
       Operation::Φ(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
       // Operation::Data => f.write_fmt(format_args!("DATA",)),
@@ -341,7 +332,7 @@ pub(crate) struct RootNode {
   pub(crate) operands:            Vec<Operation>,
   /// Maps operands to the node they belong to.
   pub(crate) operand_node:        Vec<usize>,
-  pub(crate) op_types:            Vec<TypeV>,
+  pub(crate) op_types:            Vec<TypeVNew>,
   pub(crate) type_vars:           Vec<TypeVar>,
   pub(crate) heap_id:             Vec<usize>,
   pub(crate) source_tokens:       Vec<Token>,
@@ -417,7 +408,7 @@ pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: 
       .iter()
       .filter(|p| p.ty == PortType::Out)
       .filter_map(|p| match p.id {
-        VarId::VoidReturn => Some((p.slot, TypeV::NoUse)),
+        VarId::VoidReturn => Some((p.slot, TypeVNew::NoUse)),
         VarId::Return => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
         _ => None,
       })
@@ -426,13 +417,13 @@ pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: 
 }
 
 pub(crate) fn get_call_op_signature(node: &RootNode, call_op: OpId) -> Signature {
-  if let Operation::Call { reference, args, .. } = &node.operands[call_op.usize()] {
+  if let Operation::Call { args, .. } = &node.operands[call_op.usize()] {
     Signature::new(
       &args
         .iter()
         .filter_map(|op| {
           let ty = get_op_type(node, *op);
-          if ty.is_mem() {
+          if ty.is_mem_ctx() {
             None
           } else {
             Some((*op, ty))
@@ -450,8 +441,6 @@ impl Debug for RootNode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if self.nodes.len() > 0 {
       f.write_str("\n###################### \n")?;
-
-      let sig_node = &self.nodes[0];
 
       let vars = self
         .type_vars
@@ -518,11 +507,11 @@ impl Debug for RootNode {
 }
 
 impl RootNode {
-  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> TypeV {
+  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> TypeVNew {
     self.get_base_ty(self.op_types[op.usize()].clone())
   }
 
-  pub(crate) fn get_base_ty(&self, ty: TypeV) -> TypeV {
+  pub(crate) fn get_base_ty(&self, ty: TypeVNew) -> TypeVNew {
     if let Some(index) = ty.generic_id() {
       let r_ty = get_root_var(index, &self.type_vars).ty;
       if r_ty.is_open() {
@@ -614,9 +603,9 @@ impl Display for Node {
   }
 }
 
-pub struct Signature {
-  pub inputs:  Vec<(OpId, TypeV)>,
-  pub outputs: Vec<(OpId, TypeV)>,
+pub(crate) struct Signature {
+  pub inputs:  Vec<(OpId, TypeVNew)>,
+  pub outputs: Vec<(OpId, TypeVNew)>,
 }
 
 impl Debug for Signature {
@@ -636,13 +625,13 @@ impl Debug for Signature {
 }
 
 impl Signature {
-  pub fn new(inputs: &[(OpId, TypeV)], outputs: &[(OpId, TypeV)]) -> Self {
+  pub fn new(inputs: &[(OpId, TypeVNew)], outputs: &[(OpId, TypeVNew)]) -> Self {
     Self { inputs: inputs.to_vec(), outputs: outputs.to_vec() }
   }
 
   /// Changes the type of the givin paramater to `ty`, where index is
   /// a value in the range 0...(inputs.len + outputs.len)
-  pub fn set_param_ty(&mut self, index: usize, ty: TypeV) {
+  pub fn set_param_ty(&mut self, index: usize, ty: TypeVNew) {
     if index >= self.inputs.len() {
       let index = index - self.inputs.len();
       self.outputs[index].1 = ty;
