@@ -70,7 +70,7 @@ pub struct SolveDatabase<'a> {
   /// Maps type name to an entry in the type_table.
   pub comptime_type_name_lookup_table:    HashMap<CMPLXId, usize>,
 
-  pub(crate) interface_instances: BTreeMap<TypeVNew, BTreeMap<TypeVNew, BTreeMap<u64, CMPLXId>>>,
+  pub(crate) interface_instances: BTreeMap<RumType, BTreeMap<RumType, BTreeMap<u64, CMPLXId>>>,
   pub heap_map:            HashMap<IString, u32>,
   pub heap_count:          usize,
 }

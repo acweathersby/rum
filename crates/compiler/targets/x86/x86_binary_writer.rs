@@ -12,7 +12,7 @@ use crate::{
     reg::Reg,
     x86::x86_encoder::{encode_binary, encode_unary, OpEncoder, OpSignature},
   },
-  types::{CMPLXId, Op, Operation, PrimitiveBaseTypeNew, PrimitiveTypeNew, Reference, RootNode, SolveDatabase},
+  types::{CMPLXId, Op, Operation, RumPrimitiveBaseType, RumPrimitiveType, Reference, RootNode, SolveDatabase},
 };
 use std::{
   collections::{BTreeMap, VecDeque},
@@ -149,7 +149,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
           }
           Operation::Const(val) => match out {
             VarVal::Reg(reg, ty) => {
-              if op_prim_ty.base_ty == PrimitiveBaseTypeNew::Float {
+              if op_prim_ty.base_ty == RumPrimitiveBaseType::Float {
                 // Store the primitive value in the data segment of the function.
 
                 let offset = data_store.len() as u64;
@@ -212,7 +212,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
 
               if is_last_op {
                 let (fail_next, pass_next) = match cmpr_type.base_ty {
-                  PrimitiveBaseTypeNew::Float | PrimitiveBaseTypeNew::Unsigned => match op_name {
+                  RumPrimitiveBaseType::Float | RumPrimitiveBaseType::Unsigned => match op_name {
                     Op::NE => (&jne, &je),
                     Op::EQ => (&je, &jne),
                     Op::LS => (&jb, &jae),
@@ -221,7 +221,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                     Op::GE => (&jae, &jb),
                     _ => unreachable!(),
                   },
-                  PrimitiveBaseTypeNew::Signed => match op_name {
+                  RumPrimitiveBaseType::Signed => match op_name {
                     Op::NE => (&jne, &je),
                     Op::EQ => (&je, &jne),
                     Op::LS => (&jl, &jge),
@@ -254,7 +254,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
               }
             }
             Op::ADD | Op::SUB | Op::MUL | Op::BIT_AND | Op::BIT_OR => {
-              if op_prim_ty.base_ty == PrimitiveBaseTypeNew::Float {
+              if op_prim_ty.base_ty == RumPrimitiveBaseType::Float {
                 if op_prim_ty.base_vector_size == 1 {
                   let left_arg = match args[0] {
                     VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
@@ -606,7 +606,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
   BinaryFunction { id: bb_fn.id, data_segment_size: data_offset, entry_offset: data_offset, binary: data_store, patch_points }
 }
 
-fn get_const_arg(sn: &RootNode, op_prim_ty: PrimitiveTypeNew, op: crate::types::OpId) -> Arg {
+fn get_const_arg(sn: &RootNode, op_prim_ty: RumPrimitiveType, op: crate::types::OpId) -> Arg {
   match &sn.operands[op.usize()] {
     Operation::Const(val) => Arg::Imm_Int(val.convert(op_prim_ty).load()),
     Operation::Type(Reference::Integer(val)) => Arg::Imm_Int(*val as _),

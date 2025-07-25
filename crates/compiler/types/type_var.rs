@@ -5,7 +5,7 @@ use num_traits::{Pow, Zero};
 use radlr_rust_runtime::types::Token;
 use rum_common::{ArrayVec, IString};
 use rum_lang::parser::script_parser;
-use super::{prim_ty_f64_new, prim_ty_s128_new, ConstVal, OpId,  TypeVNew};
+use super::{prim_ty_f64, prim_ty_s128, ConstVal, OpId,  RumType};
 
 
 
@@ -20,7 +20,7 @@ use super::{prim_ty_f64_new, prim_ty_s128_new, ConstVal, OpId,  TypeVNew};
 pub(crate) struct MemberEntry {
   pub name:      IString,
   pub origin_op: u32,
-  pub ty:        TypeVNew,
+  pub ty:        RumType,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -28,9 +28,9 @@ pub(crate) struct MemberEntry {
 pub(crate) enum NodeConstraint {
   /// Used to bind a variable to a type that is not defined in the current
   /// routine scope.
-  GlobalHeapReference(TypeVNew, IString, Token),
-  GlobalNameReference(TypeVNew, IString, Token),
-  OpToTy(OpId, TypeVNew),
+  GlobalHeapReference(RumType, IString, Token),
+  GlobalNameReference(RumType, IString, Token),
+  OpToTy(OpId, RumType),
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
   OpToOp {
@@ -46,8 +46,8 @@ pub(crate) enum NodeConstraint {
     val_op: OpId,
   },
   Deref {
-    ptr_ty:  TypeVNew,
-    val_ty:  TypeVNew,
+    ptr_ty:  RumType,
+    val_ty:  RumType,
     mutable: bool,
   },
   Member {
@@ -57,9 +57,9 @@ pub(crate) enum NodeConstraint {
   },
   Mutable(u32, u32),
   Agg(OpId),
-  GenTyToTy(TypeVNew, TypeVNew),
-  GenTyToGenTy(TypeVNew, TypeVNew),
-  SetHeap(OpId, TypeVNew),
+  GenTyToTy(RumType, RumType),
+  GenTyToGenTy(RumType, RumType),
+  SetHeap(OpId, RumType),
   OpConvertTo {
     src_op:       OpId,
     trg_op_index: usize,
@@ -69,7 +69,7 @@ pub(crate) enum NodeConstraint {
 
 #[derive(Clone)]
 pub(crate) struct TypeVar {
-  pub ty:         TypeVNew,
+  pub ty:         RumType,
   pub id:         u32,
   pub ref_id:     i32,
   pub num:        Numeric,
@@ -105,7 +105,7 @@ impl TypeVar {
     let _ = self.attributes.push_unique(constraint);
   }
 
-  pub fn add_mem(&mut self, name: IString, ty: TypeVNew, origin_node: u32) {
+  pub fn add_mem(&mut self, name: IString, ty: RumType, origin_node: u32) {
     self.attributes.push_unique(VarAttribute::Agg).unwrap();
 
     // for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
@@ -118,7 +118,7 @@ impl TypeVar {
     let _ = self.members.insert_ordered(MemberEntry { name, origin_op: origin_node, ty });
   }
 
-  pub fn get_mem(&self, name: IString) -> Option<(u32, TypeVNew)> {
+  pub fn get_mem(&self, name: IString) -> Option<(u32, RumType)> {
     for MemberEntry { name: n, origin_op: origin_node, ty } in self.members.iter() {
       if *n == name {
         return Some((*origin_node, *ty));
@@ -174,8 +174,8 @@ pub(crate) enum VarAttribute {
   Index(u32),
   Load(u32, u32),
   MemOp {
-    ptr_ty: TypeVNew,
-    val_ty: TypeVNew,
+    ptr_ty: RumType,
+    val_ty: RumType,
   },
   Convert {
     dst: OpId,
@@ -329,11 +329,11 @@ impl Numeric {
 
       flt_num *= 10.0.pow(fractional_pos);
 
-      ConstVal::new(prim_ty_f64_new, flt_num)
+      ConstVal::new(prim_ty_f64, flt_num)
     } else {
       int_num *= (10u128).pow((exp_len - dec_str.len()) as u32);
       let int_num = if is_neg { -(int_num as i128) } else { int_num as i128 };
-      ConstVal::new(prim_ty_s128_new, int_num)
+      ConstVal::new(prim_ty_s128, int_num)
     };
 
     let sig_bits = required_bits(flt_num);

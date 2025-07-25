@@ -11,7 +11,7 @@ use crate::{
       x86_types::*,
     },
   },
-  types::{CMPLXId, Node, Op, OpId, Operation, PortType,  PrimitiveBaseTypeNew,  PrimitiveTypeNew, RegisterSet, RootNode, SolveDatabase, VarId},
+  types::{CMPLXId, Node, Op, OpId, Operation, PortType,  RumPrimitiveBaseType,  RumPrimitiveType, RegisterSet, RootNode, SolveDatabase, VarId},
 };
 use rum_common::get_aligned_value;
 use rum_lang::todo_note;
@@ -38,7 +38,7 @@ pub(crate) enum VarVal {
   #[default]
   None,
   Var(u32),
-  Reg(u8, PrimitiveTypeNew),
+  Reg(u8, RumPrimitiveType),
   Const,
   Stashed(u32),
   MemCalc,
@@ -129,8 +129,8 @@ const INT_PARAM_REGISTERS: [usize; 12] = [3, 4, 12, 2, 5, 7, 8, 9, 0, 10, 11, 12
 pub const OUTPUT_REGISTERS: [usize; 4] = [5, 4, 2, 0];
 pub const FP_OUTPUT_REGISTERS: [usize; 4] = [13, 13, 13, 13];
 
-pub fn get_param_registers(param_index: usize, ty: PrimitiveTypeNew) -> usize {
-  if ty.base_ty == PrimitiveBaseTypeNew::Float {
+pub fn get_param_registers(param_index: usize, ty: RumPrimitiveType) -> usize {
+  if ty.base_ty == RumPrimitiveBaseType::Float {
     FP_PARAM_REGISTERS[param_index]
   } else {
     INT_PARAM_REGISTERS[param_index]
@@ -430,9 +430,9 @@ fn get_vv(bb: &mut &BasicBlockFunction, vars: &Vec<VarOP>, base: &OpId) -> VarVa
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FixUp {
-  Move { dst: u8, src: u8, ty: PrimitiveTypeNew },
-  Load(u8, u64, PrimitiveTypeNew),
-  Store(u8, u64, PrimitiveTypeNew),
+  Move { dst: u8, src: u8, ty: RumPrimitiveType },
+  Load(u8, u64, RumPrimitiveType),
+  Store(u8, u64, RumPrimitiveType),
   TempStore(usize),
   UniPHI(usize, usize),
 }
@@ -445,7 +445,7 @@ pub(crate) struct VarOP {
   active:       bool,
   temp_store:   bool,
   stored:       bool,
-  ty:           PrimitiveTypeNew,
+  ty:           RumPrimitiveType,
   stack_offset: Option<u64>,
   phi:          Option<usize>,
 }
@@ -571,7 +571,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *arg);
       let arg_prim_ty = get_op_type(sn, *arg).prim_data();
 
-      let arg_reg = if arg_prim_ty.base_ty == PrimitiveBaseTypeNew::Float {
+      let arg_reg = if arg_prim_ty.base_ty == RumPrimitiveBaseType::Float {
         let id = flt_index;
         flt_index += 1;
         FP_PARAM_REGISTERS[id as usize]
@@ -632,7 +632,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
     let mut reg_alloc = X86registers::new(44);
     let ty_a = get_op_type(&sn, target_op).prim_data();
 
-    if ty_a.base_ty == PrimitiveBaseTypeNew::Float {
+    if ty_a.base_ty == RumPrimitiveBaseType::Float {
       // Mask out all general purpose registers
       reg_alloc.mask(!VEC_REG_MASK);
     } else {
@@ -648,16 +648,16 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       let ty_b = get_op_type(&sn, other_op).prim_data();
 
       let types_interfere = match (ty_a.base_ty, ty_b.base_ty) {
-        (PrimitiveBaseTypeNew::Signed, PrimitiveBaseTypeNew::Signed)
-        | (PrimitiveBaseTypeNew::Address, PrimitiveBaseTypeNew::Address)
-        | (PrimitiveBaseTypeNew::Address, PrimitiveBaseTypeNew::Signed)
-        | (PrimitiveBaseTypeNew::Signed, PrimitiveBaseTypeNew::Address)
-        | (PrimitiveBaseTypeNew::Address, PrimitiveBaseTypeNew::Unsigned)
-        | (PrimitiveBaseTypeNew::Unsigned, PrimitiveBaseTypeNew::Address)
-        | (PrimitiveBaseTypeNew::Signed, PrimitiveBaseTypeNew::Unsigned)
-        | (PrimitiveBaseTypeNew::Unsigned, PrimitiveBaseTypeNew::Signed)
-        | (PrimitiveBaseTypeNew::Unsigned, PrimitiveBaseTypeNew::Unsigned)
-        | (PrimitiveBaseTypeNew::Float, PrimitiveBaseTypeNew::Float) => true,
+        (RumPrimitiveBaseType::Signed, RumPrimitiveBaseType::Signed)
+        | (RumPrimitiveBaseType::Address, RumPrimitiveBaseType::Address)
+        | (RumPrimitiveBaseType::Address, RumPrimitiveBaseType::Signed)
+        | (RumPrimitiveBaseType::Signed, RumPrimitiveBaseType::Address)
+        | (RumPrimitiveBaseType::Address, RumPrimitiveBaseType::Unsigned)
+        | (RumPrimitiveBaseType::Unsigned, RumPrimitiveBaseType::Address)
+        | (RumPrimitiveBaseType::Signed, RumPrimitiveBaseType::Unsigned)
+        | (RumPrimitiveBaseType::Unsigned, RumPrimitiveBaseType::Signed)
+        | (RumPrimitiveBaseType::Unsigned, RumPrimitiveBaseType::Unsigned)
+        | (RumPrimitiveBaseType::Float, RumPrimitiveBaseType::Float) => true,
         _ => false,
       };
 

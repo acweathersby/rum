@@ -332,7 +332,7 @@ pub(crate) struct RootNode {
   pub(crate) operands:            Vec<Operation>,
   /// Maps operands to the node they belong to.
   pub(crate) operand_node:        Vec<usize>,
-  pub(crate) op_types:            Vec<TypeVNew>,
+  pub(crate) op_types:            Vec<RumType>,
   pub(crate) type_vars:           Vec<TypeVar>,
   pub(crate) heap_id:             Vec<usize>,
   pub(crate) source_tokens:       Vec<Token>,
@@ -408,7 +408,7 @@ pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: 
       .iter()
       .filter(|p| p.ty == PortType::Out)
       .filter_map(|p| match p.id {
-        VarId::VoidReturn => Some((p.slot, TypeVNew::NoUse)),
+        VarId::VoidReturn => Some((p.slot, RumType::NoUse)),
         VarId::Return => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
         _ => None,
       })
@@ -507,11 +507,11 @@ impl Debug for RootNode {
 }
 
 impl RootNode {
-  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> TypeVNew {
+  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> RumType {
     self.get_base_ty(self.op_types[op.usize()].clone())
   }
 
-  pub(crate) fn get_base_ty(&self, ty: TypeVNew) -> TypeVNew {
+  pub(crate) fn get_base_ty(&self, ty: RumType) -> RumType {
     if let Some(index) = ty.generic_id() {
       let r_ty = get_root_var(index, &self.type_vars).ty;
       if r_ty.is_open() {
@@ -604,8 +604,8 @@ impl Display for Node {
 }
 
 pub(crate) struct Signature {
-  pub inputs:  Vec<(OpId, TypeVNew)>,
-  pub outputs: Vec<(OpId, TypeVNew)>,
+  pub inputs:  Vec<(OpId, RumType)>,
+  pub outputs: Vec<(OpId, RumType)>,
 }
 
 impl Debug for Signature {
@@ -625,13 +625,13 @@ impl Debug for Signature {
 }
 
 impl Signature {
-  pub fn new(inputs: &[(OpId, TypeVNew)], outputs: &[(OpId, TypeVNew)]) -> Self {
+  pub fn new(inputs: &[(OpId, RumType)], outputs: &[(OpId, RumType)]) -> Self {
     Self { inputs: inputs.to_vec(), outputs: outputs.to_vec() }
   }
 
   /// Changes the type of the givin paramater to `ty`, where index is
   /// a value in the range 0...(inputs.len + outputs.len)
-  pub fn set_param_ty(&mut self, index: usize, ty: TypeVNew) {
+  pub fn set_param_ty(&mut self, index: usize, ty: RumType) {
     if index >= self.inputs.len() {
       let index = index - self.inputs.len();
       self.outputs[index].1 = ty;

@@ -505,32 +505,32 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                 if num.exp_bits > 0 || num.is_fractional() {
                   // Floating point
                   if num <= f32_numeric {
-                    var.ty = ty_f32_new
+                    var.ty = ty_f32
                   } else {
-                    var.ty = ty_f64_new
+                    var.ty = ty_f64
                   }
                 } else if num == Numeric::default() {
-                  var.ty = ty_f64_new
+                  var.ty = ty_f64
                 } else if num.is_signed() {
                   // Signed int
                   if num <= s8_numeric {
-                    var.ty = ty_s8_new
+                    var.ty = ty_s8
                   } else if num <= s16_numeric {
-                    var.ty = ty_s16_new
+                    var.ty = ty_s16
                   } else if num <= s32_numeric {
-                    var.ty = ty_s32_new
+                    var.ty = ty_s32
                   } else {
-                    var.ty = ty_s64_new
+                    var.ty = ty_s64
                   }
                 } else {
                   if num <= u8_numeric {
-                    var.ty = ty_u8_new
+                    var.ty = ty_u8
                   } else if num <= u16_numeric {
-                    var.ty = ty_u16_new
+                    var.ty = ty_u16
                   } else if num <= u32_numeric {
-                    var.ty = ty_u32_new
+                    var.ty = ty_u32
                   } else {
-                    var.ty = ty_u64_new
+                    var.ty = ty_u64
                   }
                 }
               }
@@ -631,8 +631,8 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
         let var_b = get_root_var_mut(b_index, type_vars);
 
         if var_a.ty.is_poison() || var_b.ty.is_poison() {
-          var_a.ty = ty_poison_new;
-          var_b.ty = ty_poison_new;
+          var_a.ty = ty_poison;
+          var_b.ty = ty_poison;
         }
 
         var_a.num |= var_b.num;
@@ -691,7 +691,7 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
           var.ty = ty_b;
           var.num |= ty_b.numeric();
           process_variable(var, &mut constraint_queue, db);
-        } else if var.ty == TypeVNew::NoUse {
+        } else if var.ty == RumType::NoUse {
         } else if var.ty != ty_b {
           println!("The type assigned to var [{var}], {}, is incompatable with the desired assignment {} \n\n {node:?}", ty_a, ty_b);
           for op_ty in types.iter().enumerate() {
@@ -751,7 +751,7 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
 
         /* let heap_ty = heap_id[op.usize()];
         if heap_ty != usize::MAX {
-          let heap_id = TypeVNew::generic(heap_ty_new as u32);
+          let heap_id = TypeVNew::generic(heap_ty as u32);
           constraint_queue.push_back(NodeConstraint::GenTyToTy(heap_id, heap));
         } else {
           panic!("Heap identifier not assigned to op at {op}")
@@ -776,7 +776,7 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
       var.ref_id = output_type_vars.len() as i32;
       output_type_vars.push(clone);
     }
-    out_map[index] = TypeVNew::generic(get_root_var(index, &node_ref.type_vars).ref_id as _);
+    out_map[index] = RumType::generic(get_root_var(index, &node_ref.type_vars).ref_id as _);
   }
 
   for var_ty in node_ref.op_types.iter_mut() {
@@ -808,7 +808,7 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
     }
 
     if var.ty.is_open() {
-      var.ty = TypeVNew::generic(index);
+      var.ty = RumType::generic(index);
     }
 
     var.attributes.sort();
