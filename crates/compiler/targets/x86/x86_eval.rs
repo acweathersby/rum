@@ -1,4 +1,3 @@
-use super::x86_binary_writer::BinaryFunction;
 
 pub struct x86Function {
   binary:       *const u8,

@@ -1,14 +1,11 @@
-use std::{
-  any::Any,
-  collections::{HashSet, VecDeque},
-};
+use std::collections::{HashSet, VecDeque};
 
 use x86_binary_writer::{BinaryFunction, PatchType};
 
 use crate::{
   basic_block_compiler::{self},
   ir_compiler::{ROUTINE_ID, STRUCT_ID},
-  types::{NodeHandle, SolveDatabase, TypeVar, VarId},
+  types::{NodeHandle, SolveDatabase, TypeVar},
 };
 
 //pub(crate) mod x86_compiler;
@@ -62,7 +59,6 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
             PatchType::Function(cmplx_id) => {
               queue.push_back(*cmplx_id);
             }
-            _ => unreachable!(),
           }
         }
 
