@@ -130,8 +130,6 @@ IMPORT ../common/comment as cmt
 
   > r_val
 
-  | call
-
   | "(" expression_types ")"
 
     :ast $2
@@ -142,23 +140,25 @@ IMPORT ../common/comment as cmt
 
   | member
 
+  | member ".*"
+
+    :ast { t_Load, member }
+
 <> l_val 
 
   > member
 
-<> call 
-
-  > member^member "("{1} expression(*",")^args ")"
-
-    :ast { t_RawCall, member, args, tok }
-
 <> member 
 
-  > member_root^root ( indexed_member | named_member )(*){1}^sub_members (".#" prim::id)?{1}^meta
+  > member_root^root ( call_member | indexed_member | named_member )(*){1}^sub_members
 
-    :ast { t_MemberCompositeAccess, root, sub_members, meta, tok }
+    :ast { t_MemberCompositeAccess, root, sub_members, tok }
 
-<> member_load > "[" member "]"
+<> call_member 
+
+  >   "("{2} expression(*",")^args ")"
+
+    :ast  { t_CallMember, args, tok }
 
 
 <> indexed_member 

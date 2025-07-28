@@ -2,9 +2,9 @@
 
   :ast { t_Label, id, tok }
 
-<> var > id  
+<> var > id ("@" id)^meta?
 
-  :ast { t_Var, id, tok }
+  :ast { t_Var, id, meta, tok }
 
 <> id 
 

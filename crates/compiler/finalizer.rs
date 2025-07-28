@@ -10,14 +10,22 @@ use std::collections::{HashMap, VecDeque};
 /// Performs necessary transformations on active nodes, such as inserting convert instructions, etc.
 /// (TODO: Add more examples to description)
 pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
+
   for node in db.nodes.iter() {
+    finalize_node(db, node);
+  }
+
+  db.clone()
+}
+
+pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::NodeHandle) {
     let node = node.get_mut().unwrap();
 
     let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
     let mut used_ops: Vec<bool> = vec![false; node.operands.len()];
     let mut dissolved_operations = false;
 
-    if node.solve_state() == SolveState::Solved {
+    if node.solve_state() == SolveState::Solved || true {
       // Create or report failed converts.
 
       let mut op_queue = VecDeque::from_iter(node.nodes[0].ports.iter().filter_map(|n| match n.ty {
@@ -57,8 +65,10 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
               }
             }
           }
-          Operation::Type(..) | Operation::Param(..) | Operation::Str(..) => {}
-          Operation::Call { args, seq_op: mem_ctx_op, .. } => {
+          Operation::Type(..) | Operation::Param(..) | Operation::Str(..) | Operation::Obj(..) => {}
+          Operation::Call { routine, args, seq_op: mem_ctx_op, .. } => {
+            op_queue.push_back(*routine);
+
             for op in args {
               op_queue.push_back(*op);
             }
@@ -130,7 +140,7 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
                   panic!("Type {type_name} is not loaded into compiler's database");
                 }
               }
-              _ => unreachable!(),
+              ty => unreachable!("{ty:?}"),
             }
           }
           Operation::MemPTR { reference, base, seq_op: mem_ctx_op } => {
@@ -243,7 +253,8 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
           node.operands[op_index] = Operation::Dead;
         } else {
           match &mut node.operands[op_index] {
-            Operation::Call { args, .. } => {
+            Operation::Call { routine, args, .. } => {
+              update_op(&dissolved_ops, routine);
               for arg in args {
                 update_op(&dissolved_ops, arg);
               }
@@ -269,9 +280,6 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
         }
       }
     }
-  }
-
-  db.clone()
 }
 
 fn update_op(dissolved_ops: &[OpId], target_op: &mut OpId) {

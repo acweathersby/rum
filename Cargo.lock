@@ -160,5 +160,6 @@ dependencies = [
  "core_lang",
  "libc",
  "rum_common",
+ "rum_compiler",
  "rum_lang",
 ]

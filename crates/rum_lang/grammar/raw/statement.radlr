@@ -119,7 +119,7 @@ IMPORT ../common/comment as cmt
 
 <> iter_statement 
 
-  > prim::var^var ( "in" | "=>" ) expr::call^iter block_expression^block
+  > prim::var^var ( "in" | "=>" ) expr::member^iter block_expression^block
 
     :ast { t_RawIterStatement, var, iter, block, tok }
 

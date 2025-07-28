@@ -1,20 +1,15 @@
 #![allow(non_upper_case_globals)]
 
-use std::fmt::{Debug, Display};
+use super::{prim_ty_f64, prim_ty_s128, ConstVal, OpId, RumType};
 use num_traits::{Pow, Zero};
 use radlr_rust_runtime::types::Token;
 use rum_common::{ArrayVec, IString};
 use rum_lang::parser::script_parser;
-use super::{prim_ty_f64, prim_ty_s128, ConstVal, OpId,  RumType};
-
-
-
+use std::fmt::{Debug, Display};
 
 // Typedata is stored as follows
 // NameLU = Hash(name_str, type_index)
 // Types = Table(type_index, *Type)
-
-
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) struct MemberEntry {
@@ -23,7 +18,7 @@ pub(crate) struct MemberEntry {
   pub ty:        RumType,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum NodeConstraint {
   /// Used to bind a variable to a type that is not defined in the current
@@ -34,10 +29,6 @@ pub(crate) enum NodeConstraint {
   // The type of op at src must match te type of the op at dst.
   // If both src and dst are resolved, a conversion must be made.
   OpToOp {
-    src: OpId,
-    dst: OpId,
-  },
-  BindOpToOp {
     src: OpId,
     dst: OpId,
   },
@@ -55,16 +46,35 @@ pub(crate) enum NodeConstraint {
     ref_dst: OpId,
     par:     OpId,
   },
-  Mutable(u32, u32),
   Agg(OpId),
-  GenTyToTy(RumType, RumType),
+  ResolveGenTy(RumType, RumType),
   GenTyToGenTy(RumType, RumType),
   SetHeap(OpId, RumType),
-  OpConvertTo {
+  /* OpConvertTo {
     src_op:       OpId,
     trg_op_index: usize,
-  },
+  }, */
   LinkCall(OpId),
+}
+
+impl Debug for NodeConstraint {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    use NodeConstraint::*;
+    match self {
+      GlobalHeapReference(ty, name, ..) => f.write_fmt(format_args!("{ty: >4} => GLOBAL_HEAP {name}")),
+      GlobalNameReference(ty, name, ..) => f.write_fmt(format_args!("{ty: >4} => GLOBAL_OBJ  {name}")),
+      OpToTy(op, ty) => f.write_fmt(format_args!("{op: >4} => {ty}")),
+      OpToOp { src, dst } => f.write_fmt(format_args!("{src: >4} = {dst}")),
+      MemOp { ptr_op, val_op } => f.write_fmt(format_args!("{val_op: >4} => *{ptr_op}")),
+      Deref { ptr_ty, val_ty, mutable } => f.write_fmt(format_args!("{ptr_ty: >4} loads {val_ty}")),
+      Member { name, ref_dst, par } => f.write_fmt(format_args!("{par}.{name} = {ref_dst}")),
+      ResolveGenTy(gen_ty, ty) =>f.write_fmt(format_args!("{gen_ty: >4} => {ty}")),
+      GenTyToGenTy(gen_ty, ty) =>f.write_fmt(format_args!("{gen_ty: >4} => {ty}")),
+      SetHeap(op, ty) => f.write_fmt(format_args!("{op: >4} => {ty}")),
+      LinkCall(op) => f.write_fmt(format_args!("link call {op: >4}")),
+      _ => unreachable!()
+    }
+  }
 }
 
 #[derive(Clone)]
@@ -167,6 +177,7 @@ impl Display for TypeVar {
 pub(crate) enum VarAttribute {
   Alpha,
   Delta,
+  Callable,
   Psi,
   Agg,
   Member,
@@ -181,8 +192,6 @@ pub(crate) enum VarAttribute {
     dst: OpId,
     src: OpId,
   },
-  Mutable,
-  ForeignType,
   Global(IString, Token),
   /// The operation that declares a heap variable
   HeapOp(OpId),
@@ -194,15 +203,14 @@ impl Debug for VarAttribute {
     match self {
       Alpha => f.write_str("Α"),
       Delta => f.write_str("Δ"),
+      Callable => f.write_str("()"),
       Psi => f.write_str("Ψ"),
       HeapType => f.write_str("Heap"),
-      ForeignType => f.write_str("FOREIGN"),
       MemOp { ptr_ty: ptr, val_ty: val } => f.write_fmt(format_args!("memop  *{ptr} = {val}",)),
       Load(a, b) => f.write_fmt(format_args!("load (@ `{a}, src: `{b})",)),
       Convert { dst, src } => f.write_fmt(format_args!("{src} => {dst}",)),
       Member => f.write_fmt(format_args!("*.X",)),
       Agg => f.write_fmt(format_args!("agg",)),
-      Mutable => f.write_fmt(format_args!("mut",)),
       Index(index) => f.write_fmt(format_args!("*.[{index}]",)),
       HeapOp(op) => f.write_fmt(format_args!("heap_decl@{op}",)),
       Global(ty, ..) => f.write_fmt(format_args!("typeof({ty})",)),

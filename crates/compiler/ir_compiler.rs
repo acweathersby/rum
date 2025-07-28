@@ -1,4 +1,7 @@
-use crate::types::{Numeric, *};
+use crate::{
+  solver::get_root_var_mut,
+  types::{Numeric, *},
+};
 use core_lang::parser::ast::annotation_Value;
 use radlr_rust_runtime::types::BlameColor;
 use rum_common::{CachedString, IString};
@@ -10,16 +13,16 @@ use rum_lang::{
     base_type_Value,
     bitwise_Value as expression_Value,
     block_expression_group_Value,
+    block_expression_list_2_Value,
     loop_statement_group_1_Value,
     match_condition_Value,
     member_group_Value,
     non_array_type_Value,
-    statement_Value,
     type_Value,
+    CallMember,
     MemberCompositeAccess,
     RawAggregateInstantiation,
     RawBlock,
-    RawCall,
     RawMatch,
     RawRoutineDefinition,
     RawRoutineType,
@@ -38,7 +41,7 @@ use std::{
 
 pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
 pub(crate) const INTRINSIC_ROUTINE_ID: &'static str = "---INTRINSIC_ROUTINE---";
-pub(crate) const _ROUTINE_SIGNATURE_ID: &'static str = "---ROUTINE_SIGNATURE---";
+pub(crate) const ROUTINE_SIGNATURE_ID: &'static str = "---ROUTINE_SIGNATURE---";
 pub(crate) const LOOP_ID: &'static str = "---LOOP---";
 pub(crate) const _ASM_ID: &'static str = "---ASM---";
 pub(crate) const MATCH_ID: &'static str = "---MATCH---";
@@ -79,6 +82,8 @@ pub fn add_module(db: &mut Database, module: &str) {
               node.get_mut().unwrap().nodes[0].type_str = INTERFACE_ID;
             }
 
+
+
             dbg!(&node, &constraints);
 
             db.add_object(name, node.clone(), constraints);
@@ -112,8 +117,8 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
     let align_id = VarId::Name("align".intern());
     let prop_offset = VarId::Name("prop_offset".intern());
 
-    add_constraint(bp, NodeConstraint::GenTyToTy(str_type, ty_str)); // TODO: Change string type to array reference
-    add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty, ty_u32));
+    add_constraint(bp, NodeConstraint::ResolveGenTy(str_type, ty_str)); // TODO: Change string type to array reference
+    add_constraint(bp, NodeConstraint::ResolveGenTy(offset_ty, ty_u32));
     add_constraint(bp, NodeConstraint::GlobalNameReference(type_agg_ty, "type".intern(), Default::default()));
 
     declare_top_scope_var(bp, VarId::Return, Default::default(), type_agg_ty).origin_node_index = -1;
@@ -134,24 +139,18 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
 
       let prop_type_op = add_op(bp, Operation::Type(Reference::UnresolvedName(type_name)), type_ty, Default::default());
 
-      let type_byte_size_op =
-        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], seq_op: Default::default() }, offset_ty, Default::default());
-      add_constraint(bp, NodeConstraint::LinkCall(type_byte_size_op));
+      let type_byte_size_op = create_call(bp, vec![prop_type_op], "get_byte_size".intern(), offset_ty);
 
       let (prev_offset, _) = get_var(bp, offset_id).unwrap();
 
-      let type_align_offset =
-        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("aligned".intern()), args: vec![prev_offset, type_byte_size_op], seq_op: Default::default() }, offset_ty, Default::default());
-      add_constraint(bp, NodeConstraint::LinkCall(type_align_offset));
+      let type_align_offset = create_call(bp, vec![prev_offset, type_byte_size_op], "aligned".intern(), offset_ty);
 
       let offset_op = add_op(bp, Operation::Op { op_name: Op::ADD, operands: [type_align_offset, type_byte_size_op, Default::default()], seq_op: Default::default() }, offset_ty, Default::default());
       update_var(bp, offset_id, offset_op, Default::default());
 
       let (alignment, _) = get_var(bp, align_id).unwrap();
 
-      let new_alignment =
-        add_op(bp, Operation::Call { reference: Reference::UnresolvedName("max".intern()), args: vec![alignment, type_byte_size_op], seq_op: Default::default() }, offset_ty, Default::default());
-      add_constraint(bp, NodeConstraint::LinkCall(new_alignment));
+      let new_alignment = create_call(bp, vec![alignment, type_byte_size_op], "max".intern(), offset_ty);
 
       update_var(bp, align_id, new_alignment, Default::default());
 
@@ -160,7 +159,7 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
 
     // Base offset value is
 
-    add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty.clone(), ty_u32));
+    add_constraint(bp, NodeConstraint::ResolveGenTy(offset_ty.clone(), ty_u32));
 
     // Insert type agg decl. It will receive the size and type of the object as values
 
@@ -185,14 +184,13 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
       update_mem_context(bp, op);
     }
 
-    add_constraint(bp, NodeConstraint::GenTyToTy(offset_ty, ty_u32));
+    add_constraint(bp, NodeConstraint::ResolveGenTy(offset_ty, ty_u32));
 
     // prop_type
 
     let prop_type_op = add_op(bp, Operation::Type(Reference::UnresolvedName("type_prop".intern())), type_ty, Default::default());
-    let prop_type_size =
-      add_op(bp, Operation::Call { reference: Reference::UnresolvedName("get_byte_size".intern()), args: vec![prop_type_op], seq_op: Default::default() }, offset_ty, Default::default());
-    add_constraint(bp, NodeConstraint::LinkCall(prop_type_size));
+
+    let prop_type_size = create_call(bp, vec![prop_type_op], "get_byte_size".intern(), offset_ty);
 
     add_constraint(bp, NodeConstraint::GlobalNameReference(type_agg_ty, "type".intern(), Default::default()));
 
@@ -250,6 +248,21 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
   (handle, constraints)
 }
 
+fn create_call(bp: &mut BuildPack<'_>, args: Vec<OpId>, fn_name: IString, ret_ty: RumType) -> OpId {
+  let var = add_ty_var(bp);
+  let routine_ty = var.ty;
+
+  let routine = add_op(bp, Operation::Obj(Reference::UnresolvedName(fn_name)), routine_ty, Default::default());
+  let fn_ret_op = add_op(bp, Operation::Call { routine, args, seq_op: Default::default() }, ret_ty, Default::default());
+
+  let var = get_var_from_gen_ty(bp, routine_ty);
+  var.attributes.push(VarAttribute::Global(fn_name, Default::default()));
+
+  add_constraint(bp, NodeConstraint::LinkCall(fn_ret_op));
+
+  fn_ret_op
+}
+
 fn create_member_pointer(bp: &mut BuildPack<'_>, agg_op: OpId, prop_name: IString) -> (OpId, RumType) {
   // Add member to aggregate.
 
@@ -290,7 +303,7 @@ fn add_type_constraints(bp: &mut BuildPack<'_>, gen_ty: &RumType, src_ty: &type_
   if !name.is_empty() {
     add_constraint(bp, NodeConstraint::GlobalNameReference(*gen_ty, name, src_ty.clone().to_ast().token()))
   } else {
-    add_constraint(bp, NodeConstraint::GenTyToTy(*gen_ty, defined_ty.clone()))
+    add_constraint(bp, NodeConstraint::ResolveGenTy(*gen_ty, defined_ty.clone()))
   }
 
   if defined_ty.ptr_depth() > 0 {
@@ -644,7 +657,7 @@ fn get_mem_context(bp: &mut BuildPack) -> (OpId, RumType) {
   } else {
     let mem_ctx_ty = add_ty_var(bp).ty;
     declare_var(bp, var_id, Default::default(), mem_ctx_ty.clone(), 0);
-    add_constraint(bp, NodeConstraint::GenTyToTy(mem_ctx_ty, RumType::mem_ctx(0)));
+    add_constraint(bp, NodeConstraint::ResolveGenTy(mem_ctx_ty, RumType::mem_ctx(0)));
     return get_mem_context(bp);
   }
 }
@@ -803,8 +816,10 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumType,
   }
 
   for stmt in block.statements.iter() {
+    type statement_Value = block_expression_list_2_Value<Token>;
+
     match stmt {
-      statement_Value::Expression(expr) => {
+      block_expression_list_2_Value::Expression(expr) => {
         output = compile_expression(&expr.expr, bp, None);
       }
       statement_Value::RawLoop(loop_expr) => match &loop_expr.scope {
@@ -887,7 +902,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumType,
             if new_var {
               if mem.sub_members.len() > 0 {
                 match get_or_create_mem_op(bp, mem, true, mem.root.tok.clone(), false) {
-                  VarLookup::Ptr { mem_ptr_op, ..} => {
+                  VarLookup::Ptr { mem_ptr_op, .. } => {
                     let (op, _) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, mem.clone().into());
                     eprintln!("TODO: Free old version of member variable");
                     clone_op_heap(bp, mem_ptr_op, op);
@@ -931,7 +946,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumType,
 
             if let Some((ty, _num)) = get_type(&decl.ty.clone().to_ast().into_type_Value().unwrap()) {
               declare_top_scope_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
-              add_constraint(bp, NodeConstraint::GenTyToTy(expr_ty.clone(), ty));
+              add_constraint(bp, NodeConstraint::ResolveGenTy(expr_ty.clone(), ty));
               //add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
             } else if let non_array_type_Value::Type_Variable(type_var) = &decl.ty {
               let var = add_ty_var(bp);
@@ -1042,58 +1057,6 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumType,
     output
   }
 }
-
-fn process_call(call: &Arc<RawCall<Token>>, bp: &mut BuildPack) -> (OpId, RumType) {
-  let mut args = Vec::new();
-
-  //let mut starting_op_index = 0;
-
-  let procedure_name = if call.member.sub_members.len() > 0 {
-    let mut mem = (*call.member).clone();
-    match mem.sub_members.pop().unwrap() {
-      member_group_Value::NamedMember(name) => {
-        let method_name = name.name.id.intern();
-
-        let (op, _ty) = match get_or_create_mem_op(bp, &mem, false, call.member.tok.clone(), true) {
-          VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, .. } => (mem_ptr_op, mem_ptr_ty),
-          VarLookup::Var(var_op, ty, ..) => (var_op, ty),
-        };
-
-        args.push(op/* , VarId::Param(starting_op_index, Default::default()) */);
-
-        //starting_op_index += 1;
-
-        method_name
-      }
-      _ => unreachable!(),
-    }
-  } else {
-    call.member.root.name.id.intern()
-  };
-
-  for arg in call.args.iter() {
-    let (op, _, _) = compile_expression(&arg.expr, bp, None);
-    args.push(op);
-  }
-
-  let (mem_op, _) = get_mem_context(bp);
-
-  ///////////////////////////////////
-
-  let ret_var = add_ty_var(bp);
-  ret_var.add(VarAttribute::ForeignType);
-  let ret_ty = ret_var.ty;
-
-  // We push and pop the call node. It has no observable internal state (expressions), and is purely defined by it's port structure, so there's
-  // no need to keep it on the processing stack after it has been created.
-
-  let call_out = add_op(bp, Operation::Call { reference: Reference::UnresolvedName(procedure_name), args, seq_op: mem_op }, ret_ty, call.clone().into());
-
-  add_constraint(bp, NodeConstraint::LinkCall(call_out));
-
-  (call_out, ret_ty)
-}
-
 enum VarLookup {
   Var(OpId, RumType, IString),
   Ptr { mem_ptr_op: OpId, mem_ptr_ty: RumType, mem_var_id: VarId, root_par_id: VarId },
@@ -1177,18 +1140,6 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
   }
 }
 
-fn create_member_ptr_op(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, name: IString, name_var: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> (OpId, RumType) {
-  let member_reference_ty = add_ty_var(bp).ty;
-
-  let (mem_op, _) = get_mem_context(bp);
-
-  let mem_ptr_op = add_op(bp, Operation::MemPTR { reference: Reference::UnresolvedName(name), base: agg_ptr_op, seq_op: mem_op }, member_reference_ty, name_var);
-
-  clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
-
-  (mem_ptr_op, member_reference_ty)
-}
-
 fn get_heap_ty_from_lifime(lifetime: Option<&Arc<ScopedLifetime>>, bp: &mut BuildPack<'_>) -> RumType {
   let name = get_heap_name_from_lt(lifetime);
   get_node_heap(bp, name, Default::default())
@@ -1205,107 +1156,6 @@ fn get_heap_name_from_lt(lifetime: Option<&Arc<ScopedLifetime>>) -> IString {
 fn has_var(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>) -> bool {
   let var_name = mem.root.name.id.intern();
   get_var_data(bp, VarId::Name(var_name)).is_some()
-}
-
-/// Returns either the underlying value assigned to a variable name, or the calculated pointer to the value.
-fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, local_only: bool, source_token: Token /* , get_pointer: bool */, load_required: bool) -> VarLookup {
-  let var_name = mem.root.name.id.intern();
-  if let Some(var) = get_var_data(bp, VarId::Name(var_name)) {
-    if mem.sub_members.is_empty() {
-      VarLookup::Var(var.val_op, var.ty, var_name)
-    } else {
-      // Ensure context is added to this node.
-      let mut agg_ty_index = var.ty.generic_id().expect("All vars should have generic ids");
-
-      let root_par_id = VarId::Name(var_name);
-
-      let mut mem_ptr_op = var.val_op;
-      let mut mem_ptr_ty = var.ty;
-      let mut mem_var_id = VarId::Undefined;
-      for mem_val in mem.sub_members.iter() {
-        match mem_val {
-          member_group_Value::IndexedMember(index) => {
-            let (expr_op, _, _) = compile_expression(&index.expression, bp, None);
-
-            //add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_addr));
-
-            let var = &mut bp.super_node.type_vars[agg_ty_index];
-
-            let candidate_mem_ty = if let Some(var) = var.get_mem(Default::default()) {
-              var.1
-            } else {
-              let mem_ty = add_ty_var(bp);
-              mem_ty.add(VarAttribute::Member);
-              let mem_ty = mem_ty.ty;
-
-              let var = &mut bp.super_node.type_vars[agg_ty_index];
-              var.add_mem(Default::default(), mem_ty.clone(), Default::default());
-
-              mem_ty
-            };
-
-            mem_var_id = VarId::ArrayMem(agg_ty_index);
-
-            let (ref_op, ref_ty) = process_op(Op::OPTR, &[mem_ptr_op, expr_op], bp, index.clone().into());
-            clone_op_heap(bp, mem_ptr_op, ref_op);
-
-            mem_ptr_ty = candidate_mem_ty.clone();
-            mem_ptr_op = ref_op;
-
-            clone_op_heap(bp, mem_ptr_op, ref_op);
-
-            add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: candidate_mem_ty, mutable: false });
-          }
-          member_group_Value::NamedMember(name_node) => {
-            let name = name_node.name.id.intern();
-            mem_var_id = VarId::MemName(agg_ty_index, name);
-            if let Some((var, ty)) = get_var(bp, mem_var_id) {
-              mem_ptr_op = var;
-              mem_ptr_ty = ty;
-            } else {
-              let (ref_op, ref_ty) = create_member_ptr_op(bp, mem_ptr_op, name, name_node.clone().into());
-
-              bp.super_node.type_vars[ref_ty.generic_id().unwrap()].add(VarAttribute::Member);
-
-              let var = &mut bp.super_node.type_vars[agg_ty_index];
-              var.add_mem(name, ref_ty.clone(), Default::default());
-
-              clone_op_heap(bp, mem_ptr_op, ref_op);
-
-              mem_ptr_ty = ref_ty.clone();
-              mem_ptr_op = ref_op;
-
-              update_var(bp, mem_var_id, mem_ptr_op, ref_ty.clone());
-            }
-          }
-          _ => unreachable!(),
-        }
-
-        agg_ty_index = var.ty.generic_id().unwrap();
-
-        if load_required {
-          // load the value of the pointer
-          let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
-          clone_op_heap(bp, mem_ptr_op, loaded_val_op);
-          mem_ptr_op = loaded_val_op;
-          mem_ptr_ty = loaded_val_ty;
-          agg_ty_index = loaded_val_ty.generic_id().unwrap();
-        }
-      }
-
-      VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, mem_var_id, root_par_id }
-    }
-  } else {
-    let ty = add_ty_var(bp).ty;
-
-    if !local_only {
-      add_constraint(bp, NodeConstraint::GlobalNameReference(ty, var_name, source_token.clone()));
-    }
-
-    declare_top_scope_var(bp, VarId::Name(mem.root.name.id.intern()), Default::default(), ty);
-
-    return get_or_create_mem_op(bp, mem, true, source_token, load_required);
-  }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Default)]
@@ -1350,11 +1200,260 @@ macro_rules! algebraic_op {
   }};
 }
 
+/// Returns either the underlying value assigned to a variable name, or the calculated pointer to the value.
+///
+///
+/// Parses the member object and returns the result var / value from the lookup.
+///
+/// This may process calls, in which case we may be dealing with complex chains of lookups.
+///  
+fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, local_only: bool, source_token: Token /* , get_pointer: bool */, load_required: bool) -> VarLookup {
+  let id = &mem.root.name;
+
+  let root_var_name = create_name_from_id(id);
+  let root_var_id = VarId::Name(root_var_name);
+
+  //  let var_name = mem.root.name.id.intern();
+  if let Some(root_var) = get_var_data(bp, root_var_id) {
+    if mem.sub_members.is_empty() {
+      VarLookup::Var(root_var.val_op, root_var.ty, root_var_name)
+    } else {
+      let mut op_info = vec![(OpId::default(), RumType::default(), VarId::default()); mem.sub_members.len() + 1];
+
+      // Ensure context is added to this node.
+      let mut agg_ty_index = root_var.ty.generic_id().expect("All vars should have generic ids");
+
+      let root_par_id = VarId::Name(root_var_name);
+
+      op_info[0].0 = root_var.val_op;
+      op_info[0].1 = root_var.ty;
+      op_info[0].2 = root_par_id;
+
+      let mut mem_ptr_op = op_info[0].0;
+      let mut mem_ptr_ty = op_info[0].1;
+      let mut mem_var_id = op_info[0].2;
+      let mut chain_count = 0;
+      let mut is_pointer = false;
+
+      for (index, mem_val) in mem.sub_members.iter().enumerate() {
+        chain_count += 1;
+        let prev_index = index;
+        let own_index = index + 1;
+
+        mem_ptr_op = op_info[prev_index].0;
+        mem_ptr_ty = op_info[prev_index].1;
+        mem_var_id = op_info[prev_index].2;
+
+        match mem_val {
+          member_group_Value::CallMember(call_node) => {
+            let CallMember { tok, args } = call_node.as_ref();
+
+            // The member chain is callable. Create a call expression and break the chain up
+
+            // TODO: add callable attribute to the previous member.
+
+            // If present, the previous member is the first argument of the call.
+
+            let mut call_args = Vec::new();
+
+            bp.super_node.type_vars[mem_ptr_ty.generic_id().unwrap()].add(VarAttribute::Callable);
+
+            let (routine_op) = match mem_var_id {
+              VarId::Name(procedure_name) => {
+                if index == 0 {
+                  mem_ptr_op
+                } else {
+                  let routine_var = add_ty_var(bp);
+                  routine_var.attributes.push(VarAttribute::Global(procedure_name, Default::default()));
+                  let routine_ty = routine_var.ty;
+                  add_op(bp, Operation::Obj(Reference::UnresolvedName(procedure_name)), routine_ty, Default::default())
+                }
+              }
+              _ => Default::default(),
+            };
+
+            //let mut starting_op_index = 0;
+            if chain_count > 1 {
+              call_args.push(op_info[prev_index - 1].0);
+              chain_count = 0;
+            }
+
+            for arg in args.iter() {
+              let (op, ..) = compile_expression(&arg.expr, bp, None);
+              call_args.push(op);
+            }
+
+            let (mem_op, _) = get_mem_context(bp);
+
+            ///////////////////////////////////
+
+            let ret_var = add_ty_var(bp);
+            let ret_ty = ret_var.ty;
+
+            // We push and pop the call node. It has no observable internal state (expressions), and is purely defined by it's port structure, so there's
+            // no need to keep it on the processing stack after it has been created.
+
+            let call_out = add_op(bp, Operation::Call { routine: routine_op, args: call_args, seq_op: mem_op }, ret_ty, call_node.clone().into());
+
+            add_constraint(bp, NodeConstraint::LinkCall(call_out));
+
+            mem_ptr_ty = ret_ty.clone();
+            mem_ptr_op = call_out;
+            mem_var_id = VarId::Undefined;
+
+            is_pointer = false;
+          }
+          member_group_Value::IndexedMember(index) => {
+            if is_pointer {
+              // load the value of the pointer
+              let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
+              clone_op_heap(bp, mem_ptr_op, loaded_val_op);
+              mem_ptr_op = loaded_val_op;
+              mem_ptr_ty = loaded_val_ty;
+              agg_ty_index = loaded_val_ty.generic_id().unwrap();
+            }
+
+            let index_name = "%%element".intern();
+
+            mem_var_id = VarId::MemName(agg_ty_index, index_name);
+
+            let (expr_op, ..) = compile_expression(&index.expression, bp, None);
+
+            let (mem_op, _) = get_mem_context(bp);
+
+            let member_ty = if let Some((_, member_ty)) = get_var(bp, mem_var_id) {
+              member_ty
+            } else {
+              let member_ty = add_ty_var(bp);
+              member_ty.add(VarAttribute::Member);
+              let member_ty = member_ty.ty;
+
+              let var = &mut bp.super_node.type_vars[agg_ty_index];
+              var.add_mem(index_name, member_ty.clone(), Default::default());
+
+              member_ty
+            };
+
+            let member_op = add_op(bp, Operation::Op { op_name: Op::OPTR, operands: [mem_ptr_op, expr_op, Default::default()], seq_op: mem_op }, member_ty, Default::default());
+
+            clone_op_heap(bp, mem_ptr_op, member_op);
+
+            mem_ptr_op = member_op;
+            mem_ptr_ty = member_ty;
+
+            is_pointer = true;
+          }
+          member_group_Value::NamedMember(name_node) => {
+            let name = name_node.name.id.intern();
+            mem_var_id = VarId::Name(name);
+
+            if let Some(member_group_Value::CallMember(..)) = mem.sub_members.get(index + 1) {
+              // This will be used as a name lookup.
+            } else {
+              if is_pointer {
+                // load the value of the previous object.
+                let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
+                clone_op_heap(bp, mem_ptr_op, loaded_val_op);
+                mem_ptr_op = loaded_val_op;
+                mem_ptr_ty = loaded_val_ty;
+                agg_ty_index = loaded_val_ty.generic_id().unwrap();
+              }
+
+              mem_var_id = VarId::MemName(agg_ty_index, name);
+
+              if let Some((var, ty)) = get_var(bp, mem_var_id) {
+                mem_ptr_op = var;
+                mem_ptr_ty = ty;
+              } else {
+                let (ref_op, ref_ty) = create_member_ptr_op(bp, mem_ptr_op, name, name_node.clone().into());
+
+                bp.super_node.type_vars[ref_ty.generic_id().unwrap()].add(VarAttribute::Member);
+
+                let var = &mut bp.super_node.type_vars[agg_ty_index];
+                var.add_mem(name, ref_ty.clone(), Default::default());
+
+                clone_op_heap(bp, mem_ptr_op, ref_op);
+
+                mem_ptr_ty = ref_ty.clone();
+                mem_ptr_op = ref_op;
+
+                update_var(bp, mem_var_id, mem_ptr_op, ref_ty.clone());
+              }
+
+              is_pointer = true;
+            }
+          }
+          _ => unreachable!(),
+        }
+
+        agg_ty_index = mem_ptr_ty.generic_id().unwrap();
+
+        op_info[own_index].0 = mem_ptr_op;
+        op_info[own_index].1 = mem_ptr_ty;
+        op_info[own_index].2 = mem_var_id;
+      }
+
+      if load_required {
+        // load the value of the pointer
+        let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[mem_ptr_op], bp, Default::default());
+        clone_op_heap(bp, mem_ptr_op, loaded_val_op);
+        mem_ptr_op = loaded_val_op;
+        mem_ptr_ty = loaded_val_ty;
+        agg_ty_index = loaded_val_ty.generic_id().unwrap();
+      }
+
+      VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, mem_var_id, root_par_id }
+    }
+  } else {
+    let root_var_ty = add_ty_var(bp).ty;
+
+    let op = add_op(bp, Operation::Obj(Reference::UnresolvedName(root_var_name)), root_var_ty, Default::default());
+
+    if !local_only {
+      add_constraint(bp, NodeConstraint::GlobalNameReference(root_var_ty, root_var_name, source_token.clone()));
+    } else {
+      todo!("Handle local only constraint: Should turn into an error")
+    }
+
+    declare_top_scope_var(bp, root_var_id, op, root_var_ty);
+
+    return get_or_create_mem_op(bp, mem, true, source_token, load_required);
+  }
+}
+
+fn create_member_ptr_op(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, name: IString, name_var: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> (OpId, RumType) {
+  let member_reference_ty = add_ty_var(bp).ty;
+
+  let (mem_op, _) = get_mem_context(bp);
+
+  let mem_ptr_op = add_op(bp, Operation::MemPTR { reference: Reference::UnresolvedName(name), base: agg_ptr_op, seq_op: mem_op }, member_reference_ty, name_var);
+
+  clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
+
+  (mem_ptr_op, member_reference_ty)
+}
+
+fn create_name_from_id(id: &Arc<rum_lang::parser::script_parser::Var<Token>>) -> IString {
+  let var_name = if let Some(meta) = &id.meta { format!("{}$${}", meta, &id.id).intern() } else { id.id.intern() };
+  var_name
+}
+
 fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildPack, delta_ty: Option<RumType>) -> (OpId, RumType, Option<RumType>) {
   match expr {
     expression_Value::RawBlock(block_scope) => compile_scope(&block_scope, bp),
     expression_Value::MemberCompositeAccess(mem) => {
-      let out = match get_or_create_mem_op(bp, mem, false, mem.tok.clone(), true) {
+      match get_or_create_mem_op(bp, mem, false, mem.tok.clone(), true) {
+        VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, .. } => (mem_ptr_op, mem_ptr_ty, None),
+        VarLookup::Var(op, ty, ..) => {
+          let var = get_var_from_gen_ty(bp, ty);
+          let is_delta_var = var.has(VarAttribute::Delta);
+          (op, ty, if is_delta_var { Some(ty) } else { None })
+        }
+      }
+    }
+    expression_Value::Load(load) => {
+      let mem = &load.member;
+      let (out_op, out_ty, _) = match get_or_create_mem_op(bp, mem, false, mem.tok.clone(), true) {
         VarLookup::Ptr { mem_ptr_op, mem_ptr_ty, .. } => (mem_ptr_op, mem_ptr_ty, None),
         VarLookup::Var(op, ty, ..) => {
           let var = get_var_from_gen_ty(bp, ty);
@@ -1363,21 +1462,10 @@ fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildPack, delta_
         }
       };
 
-      if let Some(meta) = mem.meta.as_ref() {
-        match meta.as_str() {
-          "len" => {
-            let ty_var = add_ty_var(bp);
-            ty_var.num = u32_numeric;
-            ty_var.add(VarAttribute::Delta);
-            let out_ty = ty_var.ty;
-            let right = add_op(bp, Operation::Op { op_name: Op::LEN, operands: [out.0, Default::default(), Default::default()], seq_op: Default::default() }, out_ty, Default::default());
-            (right, out_ty, Some(out_ty))
-          }
-          _ => unreachable!(),
-        }
-      } else {
-        out
-      }
+      let (loaded_val_op, loaded_val_ty) = process_op(Op::LOAD, &[out_op], bp, Default::default());
+      clone_op_heap(bp, out_op, loaded_val_op);
+
+      (loaded_val_op, loaded_val_ty, None)
     }
     expression_Value::Num(num) => match Numeric::extract_data(num) {
       Ok((numeric, const_val)) => {
@@ -1411,10 +1499,6 @@ fn compile_expression(expr: &expression_Value<Token>, bp: &mut BuildPack, delta_
       let (op, ty) = process_match(match_, bp).0;
       (op, ty, None)
     }
-    expression_Value::RawCall(call) => {
-      let (op, ty) = process_call(call, bp);
-      (op, ty, None)
-    }
     ty => todo!("{ty:#?}"),
   }
 }
@@ -1433,7 +1517,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, R
 
   let activation_ty = {
     let activation_ty = add_ty_var(bp).ty;
-    bp.constraints.push(NodeConstraint::GenTyToTy(activation_ty.clone(), ty_bool));
+    bp.constraints.push(NodeConstraint::ResolveGenTy(activation_ty.clone(), ty_bool));
     activation_ty
   };
 
@@ -1757,11 +1841,12 @@ fn add_op_constraints(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu
         }
       }
       annotation_Value::Converts(cvt) => {
-        if let Some(_target) = ty_lu.get(cvt.target.as_str()) {
+        todo!("Handle Convert");
+        /*   if let Some(_target) = ty_lu.get(cvt.target.as_str()) {
           if let Some(index) = op_index {
             add_constraint(bp, NodeConstraint::OpConvertTo { src_op: out_op, trg_op_index: index })
           }
-        }
+        } */
       }
       annotation_Value::MutDeref(val) => {
         if let Some(target) = ty_lu.get(val.target.as_str()) {
@@ -1770,18 +1855,18 @@ fn add_op_constraints(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu
       }
 
       annotation_Value::Annotation(val) => match val.name.as_str() {
-        "poison" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_poison)),
-        "bool" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_bool)),
-        "u8" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u8)),
-        "u16" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u16)),
-        "u32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u32)),
-        "u64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_u64)),
-        "i8" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s8)),
-        "i16" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s16)),
-        "i32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s32)),
-        "i64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_s64)),
-        "f32" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_f32)),
-        "f64" => add_constraint(bp, NodeConstraint::GenTyToTy(ty, ty_f64)),
+        "poison" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_poison)),
+        "bool" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_bool)),
+        "u8" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_u8)),
+        "u16" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_u16)),
+        "u32" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_u32)),
+        "u64" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_u64)),
+        "i8" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_s8)),
+        "i16" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_s16)),
+        "i32" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_s32)),
+        "i64" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_s64)),
+        "f32" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_f32)),
+        "f64" => add_constraint(bp, NodeConstraint::ResolveGenTy(ty, ty_f64)),
         _ => {}
       },
       _ => {}

@@ -170,5 +170,6 @@ inter_op_gen!(
   LOAD_TYPE_ADDRESS,
   TempMetaPhi,
   GetByteSize_temp,
-  ResolvedCall
+  ResolvedCall,
+  GLOBAL
 );

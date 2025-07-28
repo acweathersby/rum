@@ -1,7 +1,10 @@
+
 #![allow(non_upper_case_globals)]
 ///!
-///! Types required to bootstrap rum
+///! Types required to bootstrap rum. These objects act is bridges between
+///! rust code and rum code, as they are constructed to mirror their counterparts in rum.
 ///!
+
 use super::*;
 use libc::memcpy;
 use std::{ fmt::{Debug, Display}, str};
@@ -10,15 +13,20 @@ use std::{ fmt::{Debug, Display}, str};
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub enum RumPrimitiveBaseType {
   Undefined,
+  /// A positive binary integer
   Unsigned,
+  /// A general binary integer
   Signed,
+  /// A floating point encoded number
   Float,
+  /// A value representing "false" if its bit pattern is zero, and `true` otherwise
   Bool,
   Struct,
   Array,
   Routine,
   Poison,
   Generic,
+  /// The type information is irrelevant to the context
   NoUse,
   MemCtx,
   Address,
@@ -48,15 +56,15 @@ impl Debug for RumPrimitiveType {
     let byte_size = self.base_byte_size;
     match self.base_ty {
       RumPrimitiveBaseType::Array | RumPrimitiveBaseType::Struct => f.write_fmt(format_args!("{ptr_depth}Π")),
-      RumPrimitiveBaseType::Undefined => f.write_str("{ptr_depth}und"),
-      RumPrimitiveBaseType::Bool => f.write_str("{ptr_depth}bool"),
-      RumPrimitiveBaseType::Poison => f.write_str("{ptr_depth}x∅∅x"),
-      RumPrimitiveBaseType::Generic => f.write_str("{ptr_depth}∀"),
-      RumPrimitiveBaseType::NoUse => f.write_str("{ptr_depth}∅"),
-      RumPrimitiveBaseType::MemCtx => f.write_str("{ptr_depth}mem"),
-      RumPrimitiveBaseType::Routine => f.write_str("{ptr_depth}(){}"),
-      RumPrimitiveBaseType::Heap => f.write_str("{ptr_depth}heap"),
-      RumPrimitiveBaseType::Address => f.write_str("{ptr_depth}addr"),
+      RumPrimitiveBaseType::Undefined => f.write_fmt(format_args!("{ptr_depth}und")),
+      RumPrimitiveBaseType::Bool => f.write_fmt(format_args!("{ptr_depth}bool")),
+      RumPrimitiveBaseType::Poison => f.write_fmt(format_args!("{ptr_depth}x∅∅x")),
+      RumPrimitiveBaseType::Generic => f.write_fmt(format_args!("{ptr_depth}∀")),
+      RumPrimitiveBaseType::NoUse => f.write_fmt(format_args!("{ptr_depth}∅")),
+      RumPrimitiveBaseType::MemCtx => f.write_fmt(format_args!("{ptr_depth}mem")),
+      RumPrimitiveBaseType::Routine => f.write_fmt(format_args!("{ptr_depth}(){{}}")),
+      RumPrimitiveBaseType::Heap => f.write_fmt(format_args!("{ptr_depth}heap")),
+      RumPrimitiveBaseType::Address => f.write_fmt(format_args!("{ptr_depth}addr")),
       RumPrimitiveBaseType::Signed => {
         if ele_count > 1 {
           f.write_fmt(format_args!("{ptr_depth}s{}x{}", byte_size * 8, ele_count))
@@ -94,9 +102,9 @@ impl Debug for RumPrimitiveType {
 pub(crate) struct RumType {
   /// Stores primitive information such the pointer state of this type, the size of the object if less than some limit,
   /// the primitive type (u32, s16, f64, etc), the vector size, and the `is_primitive` flag
-  raw_type: RumPrimitiveType,
+  pub(crate) raw_type: RumPrimitiveType,
   /// The index in the TypeTable where the type's info pointer is stored.
-  type_id:  i32,
+  pub(crate) type_id:  i32,
 }
 
 impl Default for RumType {
@@ -143,7 +151,7 @@ impl RumType {
 
   pub fn _routine(id: usize) -> Self {
     debug_assert!(id <= i32::MAX as usize) ;
-    Self { raw_type: _prim_ty_routine, type_id: id as _ }
+    Self { raw_type: prim_ty_routine, type_id: id as _ }
   }
 
   pub fn mem_ctx(id: usize) -> Self {
@@ -202,14 +210,14 @@ impl RumType {
     self.raw_type.ptr_count as _
   }
 
-  pub fn increment_ptr(&self) -> Self {
+  pub const fn increment_ptr(&self) -> Self {
     let mut new = *self;
     debug_assert!(new.raw_type.ptr_count < u8::MAX, "Could not increment pointer count, would incur a loss of information.");
     new.raw_type.ptr_count += 1;
     new
   }
 
-  pub fn decrement_ptr(&self) -> Self {
+  pub const fn decrement_ptr(&self) -> Self {
     let mut new = *self;
     debug_assert!(new.raw_type.ptr_count > 0, "Could not decrement pointer count, would incur a loss of information.");
     new.raw_type.ptr_count -= 1;
@@ -244,6 +252,7 @@ impl RumType {
 // Primitive Base Types
 pub(crate) const prim_ty_undefined: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Undefined, base_vector_size: 1, base_byte_size: 0, ptr_count: 0 };
 pub(crate) const prim_ty_poison: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Poison, base_vector_size: 1, base_byte_size: 0, ptr_count: 0 };
+pub(crate) const prim_ty_heap: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Heap, base_vector_size: 1, base_byte_size: 0, ptr_count: 0 };
 pub(crate) const prim_ty_bool: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Bool, base_vector_size: 1, base_byte_size: 1, ptr_count: 0 };
 pub(crate) const prim_ty_u128: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Unsigned, base_vector_size: 1, base_byte_size: 16, ptr_count: 0 };
 pub(crate) const prim_ty_u64: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Unsigned, base_vector_size: 1, base_byte_size: 8, ptr_count: 0 };
@@ -262,8 +271,8 @@ pub(crate) const prim_ty_no_use: RumPrimitiveType = RumPrimitiveType { base_ty: 
 pub(crate) const prim_ty_mem_ctx: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::MemCtx, base_vector_size: 0, base_byte_size: 0, ptr_count: 0 };
 pub(crate) const _prim_ty_addr: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Address, base_vector_size: 0, base_byte_size: 0, ptr_count: 0 };
 
-pub(crate) const _prim_ty_routine: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Routine, base_vector_size: 1, base_byte_size: 0, ptr_count: 1 };
-pub(crate) const prim_ty_struct: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Struct, base_vector_size: 1, base_byte_size: 0, ptr_count: 1 };
+pub(crate) const prim_ty_routine: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Routine, base_vector_size: 1, base_byte_size: 0, ptr_count: 1 };
+pub(crate) const prim_ty_struct: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Struct, base_vector_size: 1, base_byte_size: 8, ptr_count: 0 };
 
 // Primitive Types
 pub(crate) const ty_undefined: RumType = RumType { raw_type: prim_ty_undefined, type_id: -1 };
@@ -284,7 +293,9 @@ pub(crate) const ty_nouse: RumType = RumType { raw_type: prim_ty_no_use, type_id
 // Base None Primitive Types
 pub(crate) const ty_type: RumType = RumType { raw_type: prim_ty_struct, type_id: 0 };
 pub(crate) const ty_type_prop: RumType = RumType { raw_type: prim_ty_struct, type_id: 1 };
-pub(crate) const ty_str: RumType = RumType { raw_type: prim_ty_struct, type_id: 2 };
+pub(crate) const ty_type_prim: RumType = RumType { raw_type: prim_ty_struct, type_id: 2 };
+pub(crate) const ty_type_ref: RumType = RumType { raw_type: prim_ty_struct, type_id: 3 };
+pub(crate) const ty_str: RumType = RumType { raw_type: prim_ty_struct, type_id: 4 };
 
 #[repr(C)]
 pub(crate) struct RumString {
@@ -353,11 +364,8 @@ impl Debug for RumTypeProp {
     let mut strct = f.debug_struct("Prop");
     strct.field("name", &self.name);
 
-    unsafe {
-      let ty: &RumTypeObject = std::mem::transmute::<_, _>(self.ty);
-
-      strct.field_with("ty", |f| ty.deep(f));
-    }
+    strct.field("ty", &self.ty);
+    
     strct.field("byte_offset", &self.byte_offset);
 
     strct.finish()
@@ -411,7 +419,56 @@ impl Debug for RumTypeObject {
   }
 }
 
-pub(crate) static RUM_EGG_BASE_TYPE: RumTypeObject = RumTypeObject {
+pub(crate) static RUM_TYPE_REF: RumTypeObject = RumTypeObject {
+  name:          &RumString::from_static("type_ref"),
+  ele_count:     1,
+  ele_byte_size: 8,
+  alignment:     4,
+  prop_count:    2,
+  props:         [
+    RumTypeProp { name: &RumString::from_static("prim_type"), ty: ty_type_prim, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static("type_id"), ty: ty_u32, byte_offset: 4 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+  ],
+};
+
+pub(crate) static RUM_TYPE_TABLE: RumTypeObject = RumTypeObject {
+  name:          &RumString::from_static("core$$type_table"),
+  ele_count:     0,
+  ele_byte_size: 0,
+  alignment:     8,
+  prop_count:    2,
+  props:         [
+    RumTypeProp { name: &RumString::from_static("length"), ty: ty_u32, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static("%%element"), ty: ty_type.increment_ptr(), byte_offset: 8 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+  ],
+};
+
+pub(crate) static RUM_PRIM_TYPE: RumTypeObject = RumTypeObject {
+  name:          &RumString::from_static("prim_type"),
+  ele_count:     1,
+  ele_byte_size: 4,
+  alignment:     1,
+  prop_count:    4,
+  props:         [
+    RumTypeProp { name: &RumString::from_static("base_ty"), ty: ty_u8, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static("base_vector_size"), ty: ty_u8, byte_offset: 1 },
+    RumTypeProp { name: &RumString::from_static("base_byte_size"), ty: ty_u8, byte_offset: 2 },
+    RumTypeProp { name: &RumString::from_static("ptr_count"), ty: ty_u8, byte_offset: 3 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+    RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
+  ],
+};
+
+
+pub(crate) static RUM_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("type"),
   ele_count:     1,
   ele_byte_size: 224,
@@ -427,7 +484,7 @@ pub(crate) static RUM_EGG_BASE_TYPE: RumTypeObject = RumTypeObject {
   ],
 };
 
-pub(crate) static RUM_PROP_BASE_TYPE: RumTypeObject = RumTypeObject {
+pub(crate) static RUM_TYPE_PROP: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("type_prop"),
   ele_count:     0,
   ele_byte_size: 24,
@@ -435,7 +492,7 @@ pub(crate) static RUM_PROP_BASE_TYPE: RumTypeObject = RumTypeObject {
   prop_count:    3,
   props:         [
     RumTypeProp { name: &RumString::from_static("name"), ty: ty_str, byte_offset: 0 },
-    RumTypeProp { name: &RumString::from_static("type"), ty: ty_type, byte_offset: 8 },
+    RumTypeProp { name: &RumString::from_static("type"), ty: ty_type_ref, byte_offset: 8 },
     RumTypeProp { name: &RumString::from_static("offset"), ty: ty_u32, byte_offset: 16 },
     RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
     RumTypeProp { name: &RumString::from_static(""), ty: ty_undefined, byte_offset: 0 },
@@ -506,12 +563,3 @@ pub(crate) static RUM_TEMP_STRING_TYPE: RumTypeObject = RumTypeObject {
     RumTypeProp { name: &RumString::from_static(""), ty: ty_u32, byte_offset: 32 },
   ],
 };
-
-// vector_size
-// is_primitive
-// is_integer
-// is_floating_point
-// exp_size
-// mantissa_size
-// significant_size
-// element_count

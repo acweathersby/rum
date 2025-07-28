@@ -32,21 +32,6 @@ pub fn parse_rs(input: &str) -> Result<ASTNode, String> {
   }
 }
 
-pub fn parse_raw_call(input: &str) -> Result<Arc<RawCall<Token>>, String> {
-  let parser_db = parser::ParserDB::new();
-  match parser_db.build_ast(
-    &mut StringInput::from(input),
-    parser_db.get_entry_data_from_name("raw_call").unwrap(),
-    ast::ReduceRules::<radlr_rust_runtime::types::Token>::new(),
-  ) {
-    Err(err) => {
-      println!("{err:?}");
-      Err("Failed to parse input".to_string())
-    }
-    Ok(node) => Ok(node.into_RawCall().unwrap()),
-  }
-}
-
 pub fn parse_raw_module(input: &str) -> Result<Arc<RawModule<Token>>, String> {
   let parser_db = parser::ParserDB::new();
   match parser_db.build_ast(

@@ -1,11 +1,17 @@
-// #core
-// get_type :: ( b: type_ref ) : type 
-//   __type_table__[type_ref.type_entry_index]
+#core
+get_type :: ( ref: type_ref ) : type 
+  type_table@core[ref.type_id].*
 
 #core
-// Returns the byte size of a `type` object
-get_byte_size :: (a: type) : u32 
+// Returns the byte size of a type
+get_byte_size :: ( a: type_ref ) : u32 
+  get_type(a).ele_byte_size
+
+#core
+// Returns the byte size of a type
+get_byte_size :: ( a: type ) : u32 
   a.ele_byte_size
+
 
 #core
 aligned :: (offset: u32, alignment: u32) : u32
@@ -22,7 +28,7 @@ min :: (a:u32, b:u32) : u32
 
 // END META =============================================
 
-DD :: [ test: u32, rainbow: u32, junberry: u32  ]
+DD :: [ test: u32, rainbow: u32  ]
 
 #test
 trivial :: (u:u32) : DD {

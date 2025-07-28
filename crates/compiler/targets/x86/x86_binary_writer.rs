@@ -12,7 +12,7 @@ use crate::{
     reg::Reg,
     x86::x86_encoder::{encode_binary, encode_unary, OpEncoder, OpSignature},
   },
-  types::{CMPLXId, Op, Operation, RumPrimitiveBaseType, RumPrimitiveType, Reference, RootNode, SolveDatabase},
+  types::{CMPLXId, Op, Operation, Reference, RootNode, RumPrimitiveBaseType, RumPrimitiveType, SolveDatabase},
 };
 use std::{
   collections::{BTreeMap, VecDeque},
@@ -44,11 +44,11 @@ pub(crate) enum PatchType {
 
 #[derive(Debug)]
 pub struct BinaryFunction {
-  pub id:                CMPLXId,
-  pub data_segment_size: usize,
-  pub entry_offset:      usize,
-  pub binary:            Vec<u8>,
-  pub(crate) patch_points:      Vec<(usize, PatchType)>,
+  pub id:                  CMPLXId,
+  pub data_segment_size:   usize,
+  pub entry_offset:        usize,
+  pub binary:              Vec<u8>,
+  pub(crate) patch_points: Vec<(usize, PatchType)>,
 }
 
 impl BinaryFunction {
@@ -103,13 +103,18 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
 
       if op.is_valid() {
         match &sn.operands[op.usize()] {
-          Operation::Call { reference, args, seq_op } => match reference {
-            Reference::Object(cmplx_id) => {
-              encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
-              patch_points.push((instr_bytes.len(), PatchType::Function(*cmplx_id)));
+          Operation::Call { routine, args, seq_op } => {
+            match &sn.operands[routine.usize()] {
+              Operation::Obj(reference) => match reference {
+                Reference::Object(cmplx_id) => {
+                  encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
+                  patch_points.push((instr_bytes.len(), PatchType::Function(*cmplx_id)));
+                }
+                tgt => panic!("Call target does not exist! {tgt:?}"),
+              },
+              _ => unreachable!(),
             }
-            tgt => panic!("Call target does not exist! {tgt:?}"),
-          },
+          }
           Operation::AggDecl { .. } => {
             let VarVal::Reg(out_reg_id, _) = out else { unreachable!() };
             let out_reg = REGISTERS[out_reg_id as usize];
@@ -493,7 +498,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
           }
 
           Operation::MemPTR { reference, base, seq_op } => {
-            let Reference::Integer(offset) = reference else { unreachable!() };
+            let Reference::Integer(offset) = reference else { unreachable!("Unknown ref type {reference:?}") };
 
             match args[0] {
               VarVal::Stashed(..) => todo!("load ptr and create offset"),

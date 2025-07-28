@@ -54,25 +54,25 @@ impl<'a> From<(CMPLXId, &'a SolveDatabase<'a>)> for NodeHandle {
 #[derive(Debug, Clone)]
 pub struct SolveDatabase<'a> {
   // Used to lookup
-  pub db:                  &'a Database,
-  pub(crate) nodes:               Vec<NodeHandle>,
-  pub roots:               Vec<(RootType, CMPLXId)>,
-  pub sig_lookup:          Vec<(u64, CMPLXId)>,
-  pub name_map:            Vec<(IString, CMPLXId)>,
+  pub db:           &'a Database,
+  pub(crate) nodes: Vec<NodeHandle>,
+  pub roots:        Vec<(RootType, CMPLXId)>,
+  pub sig_lookup:   Vec<(u64, CMPLXId)>,
+  pub name_map:     Vec<(IString, CMPLXId)>,
 
-  /// Comptime type table. 
-  /// 
+  /// Comptime type table.
+  ///
   /// This is a parallel to the runtime time type table.
   /// ---
   /// Solver owns all type vars. Should destroy the objects of these pointers when this object
   /// goes out of scope.
-  pub(crate) comptime_type_table:          Vec<*const RumTypeObject>,
+  pub(crate) comptime_type_table:      Vec<*const RumTypeObject>,
   /// Maps type name to an entry in the type_table.
-  pub comptime_type_name_lookup_table:    HashMap<CMPLXId, usize>,
+  pub comptime_type_name_lookup_table: HashMap<CMPLXId, usize>,
 
   pub(crate) interface_instances: BTreeMap<RumType, BTreeMap<RumType, BTreeMap<u64, CMPLXId>>>,
-  pub heap_map:            HashMap<IString, u32>,
-  pub heap_count:          usize,
+  pub heap_map:                   HashMap<IString, u32>,
+  pub heap_count:                 usize,
 }
 
 pub enum OptimizeLevel {
@@ -103,23 +103,30 @@ impl<'a> SolveDatabase<'a> {
       heap_count: 0,
     };
 
-    for (index, (name, type_struct )) in [
-      ("type".intern(), &RUM_EGG_BASE_TYPE),
-      ("type_prop".intern(), &RUM_PROP_BASE_TYPE),
-      ("u32".intern(), &RUM_TEMP_U32_TYPE),
-      ("f32".intern(), &RUM_TEMP_F32_TYPE),
-      ("u64".intern(), &RUM_TEMP_U64_TYPE),
-      ("str".intern(), &RUM_TEMP_STRING_TYPE),
-    ].into_iter().enumerate() {
+    for (index, (name, prim_ty, type_struct)) in [
+      ("type".intern(), prim_ty_struct, &RUM_TYPE),
+      ("type_prop".intern(), prim_ty_struct, &RUM_TYPE_PROP),
+      ("type_prim".intern(), prim_ty_struct, &RUM_PRIM_TYPE),
+      ("type_ref".intern(), prim_ty_struct, &RUM_TYPE_REF),
+      ("core$$type_table".intern(), prim_ty_struct, &RUM_TYPE_TABLE),
+      ("u32".intern(), prim_ty_u32, &RUM_TEMP_U32_TYPE),
+      ("f32".intern(), prim_ty_f32, &RUM_TEMP_F32_TYPE),
+      ("u64".intern(), prim_ty_u64, &RUM_TEMP_U64_TYPE),
+      ("str".intern(), prim_ty_struct, &RUM_TEMP_STRING_TYPE),
+    ]
+    .into_iter()
+    .enumerate()
+    {
       let id = solve_db.add_object(
         name,
         NodeHandle::new(RootNode {
           nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
+          ty: RumType { raw_type: prim_ty, type_id: index as _ },
           ..Default::default()
         }),
       );
       solve_db.comptime_type_table.push(unsafe { std::mem::transmute(type_struct) });
-     solve_db.comptime_type_name_lookup_table.insert(id, index);
+      solve_db.comptime_type_name_lookup_table.insert(id, index);
     }
 
     solve_db
@@ -317,7 +324,7 @@ impl Database {
     db
   }
 
-  pub(crate) fn get_mut_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<'a, DatabaseCore, > {
+  pub(crate) fn get_mut_ref<'a: 'b, 'b>(&'a self) -> MutexGuard<'a, DatabaseCore> {
     self.0.lock().expect("Failed to lock database")
   }
 

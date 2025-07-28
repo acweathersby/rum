@@ -1,11 +1,18 @@
 use crate::{
-  ir_compiler::MEMORY_REGION_ID,
-  types::{*},
+  finalizer::finalize_node,
+  ir_compiler::{INTERFACE_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
+  linker,
+  optimizer::{optimize, optimize_node_level_1},
+  targets::{
+    self,
+    x86::{compile_function, print_instructions, x86_eval},
+  },
+  types::*,
 };
 use radlr_rust_runtime::types::BlameColor;
 use rum_common::{CachedString, IString};
 use std::{
-  collections::VecDeque,
+  collections::{HashMap, HashSet, VecDeque},
   usize,
 };
 
@@ -21,7 +28,10 @@ pub(crate) enum GlobalConstraint {
 pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstraint>, _allow_poly_fill: bool) {
   let errors: Vec<String> = vec![];
 
-  // Extract calls from nodes.
+  // intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty, RumType::cmplx(node_id)));
+  let mut node_link_constraints = HashMap::<CMPLXId, Vec<(RumType, CMPLXId)>>::new();
+
+  let mut node_solved_dependencies = HashMap::<CMPLXId, HashSet<CMPLXId>>::new();
 
   {
     let mut constraint_queue: VecDeque<GlobalConstraint> = VecDeque::with_capacity(128);
@@ -55,8 +65,8 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               panic!("Interfaces can only be enforced on struct types");
             }
 
-            let target_ty = TypeVNew::cmplx(*implementation_id);
-            let interface_ty = TypeVNew::cmplx(*interface_id);
+            //let target_ty = RumType::cmplx(*implementation_id);
+            //let interface_ty = RumType::cmplx(*interface_id);
 
             if db.interface_instances.get(&interface_ty).is_some_and(|d| d.get(&target_ty).is_some()) {
               continue;
@@ -116,7 +126,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                               }
                               (false, false) => {
                                 // Case where the input type supplants the Interface placeholder
-                                if candidate_ty.clone() == TypeVNew::cmplx(*implementation_id) && i_method_ty.clone() == TypeVNew::cmplx(*interface_id) {
+                                if candidate_ty.clone() == RumType::cmplx(*implementation_id) && i_method_ty.clone() == RumType::cmplx(*interface_id) {
                                   score += 50;
                                   // Valid
                                 } else {
@@ -173,22 +183,27 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               }
             }
 
-            let entries = db.interface_instances.entry(TypeVNew::cmplx(interface_id.clone())).or_default();
-            entries.insert(TypeVNew::cmplx(*implementation_id), interface_methods);
-            // Reached a verified point. We should add a verification stamp to the target type to avoid repeating this work
-            */
+            let entries = db.interface_instances.entry(RumType::cmplx(interface_id.clone())).or_default();
+            entries.insert(RumType::cmplx(*implementation_id), interface_methods);
+            // Reached a verified point. We should add a verification stamp to the target type to avoid repeating this work */
           }
           GlobalConstraint::ResolveFunction { host_node_id, call_op_id } => {
-            todo!("Handle function resolution")
-            /* 
             let host_node = NodeHandle::from((*host_node_id, &*db));
 
             if let Some(host_node_ref) = host_node.get() {
               let RootNode { operands, .. } = host_node_ref;
-              let Operation::Call { reference, args, .. } = &operands[call_op_id.usize()] else { unreachable!() };
+              let Operation::Call { routine, args, .. } = &operands[call_op_id.usize()] else { unreachable!() };
 
-              let Reference::UnresolvedName(function_name) = *reference else {
-                panic!("Call node defined without CallRef name");
+              let function_name = match &operands[routine.usize()] {
+                Operation::Obj(reference) => match reference {
+                  Reference::UnresolvedName(name) => *name,
+                  _ => {
+                    unreachable!("Variable not assigned with Global name, @ {routine} in {host_node:?}")
+                  }
+                },
+                _ => {
+                  unreachable!("Variable not assigned with Global name, @ {routine} in {host_node:?}")
+                }
               };
 
               // Pull in and verify any method that matches the criteria of
@@ -232,12 +247,15 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                           panic!("open types {callee_ty}, {caller_ty}")
                         }
                         (false, true) | (true, false) => {
-                          caller_constraints.push(NodeConstraint::GenTyToTy(caller_ty.clone(), callee_ty.clone()));
+                          caller_constraints.push(NodeConstraint::ResolveGenTy(caller_ty.clone(), callee_ty.clone()));
                         }
                         (false, false) => {
                           // Check for an interface type.
 
-                          if let Some(interface_node_id) = callee_ty.cmplx_data() {
+                          let data = callee_ty.get_type_data(&db);
+
+                          /*  if  data.is_some_and(|ty| ty.is_interface() ) {
+                            //let Some(interface_node_id) =
                             let interface_node = NodeHandle::from((interface_node_id, &*db));
 
                             if interface_node.get_type() == INTERFACE_ID {
@@ -255,8 +273,8 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                                 // Reset the type
                                 let NewType = callee_node.get_mut().unwrap();
                                 let index = NewType.op_types[callee_op.usize()].generic_id().unwrap();
-                                NewType.type_vars[index].ty = TypeVNew::generic(index);
-                                callee_constraints.push(NodeConstraint::GenTyToTy(TypeVNew::generic(index), caller_ty.clone()));
+                                NewType.type_vars[index].ty = RumType::generic(index);
+                                callee_constraints.push(NodeConstraint::GenTyToTy(RumType::generic(index), caller_ty.clone()));
 
                                 let Some(caller_node_id) = caller_ty.cmplx_data() else { unreachable!() };
 
@@ -265,7 +283,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
                               continue;
                             }
-                          }
+                          } */
 
                           continue 'method_lookup;
                           // two incompatible types
@@ -279,11 +297,27 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                   panic!("Mismatched types \ncaller: {caller_sig:?}, \ncallee: {callee_sig:?} \n{callee_node:?}")
                 }
 
-                if let Operation::Call { reference, args, .. } = &mut host_node.get_mut().unwrap().operands[call_op_id.usize()] {
-                  if callee_node.get_type() == INTRINSIC_ROUTINE_ID {
-                    *reference = Reference::Intrinsic(function_name);
-                  } else {
-                    *reference = Reference::Object(callee_node_id);
+                dbg!((function_name, &callee_sig, &caller_sig));
+
+                let host_node = host_node.get_mut().unwrap();
+              
+                if let Operation::Call { routine, args, .. } = &host_node.operands[call_op_id.usize()] {
+                  let routine_index = routine.usize();
+                  let var_id = host_node.op_types[routine.usize()].generic_id().unwrap();
+                  let var = &mut host_node.type_vars[var_id];
+                  var.ty = RumType { raw_type: prim_ty_routine, type_id: -1 };
+
+                  match &mut host_node.operands[routine_index] {
+                    Operation::Obj(reference) => {
+                      if callee_node.get_type() == INTRINSIC_ROUTINE_ID {
+                        *reference = Reference::Intrinsic(function_name);
+                      } else {
+                        *reference = Reference::Object(callee_node_id);
+                      }
+                    }
+                    op => {
+                      let op = op.clone();
+                      unreachable!("Unexpected call target op {op:?} @ {host_node:?}")},
                   }
                 } else {
                   unreachable!()
@@ -296,22 +330,25 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
                   }
                   (true, false) => {
                     constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: callee_node_id, constraints: callee_constraints.clone() });
+                    constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: *host_node_id, constraints: vec![] });
                   }
                   (false, true) => {
                     constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: *host_node_id, constraints: caller_constraints.clone() });
                   }
-                  _ => {}
+                  _ => {
+                    constraint_queue.push_front(GlobalConstraint::ResolveObjectConstraints { node_id: *host_node_id, constraints: vec![] });
+                  }
                 }
 
                 continue 'outer;
               }
 
               panic!("Could not find suitable method that matches {function_name} => {caller_sig:?}  in node {host_node_ref:?} @ {call_op_id:?}",)
-            } */
+            }
           }
           GlobalConstraint::ResolveMemoryRegion { routine_id, heap_node_id } => {
             todo!("constraint: Resolve Memory Region")
-           /*  let routine = NodeHandle::from((*routine_id, &*db));
+            /*  let routine = NodeHandle::from((*routine_id, &*db));
             if resolve_stage == 0 {
               next_stage_constraints.push(constraint);
             } else {
@@ -388,15 +425,19 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
               for ty_var in type_vars {
                 for cstr in ty_var.attributes.iter() {
                   if let VarAttribute::Global(node_name, tok) = cstr {
-                    if let Some((_node_id, _)) = get_node(db, *node_name, &mut constraint_queue) {
-
-
-
-                      todo!("Create a constraint linkage between this node and the completion of the target node")
-                      //intrinsic_constraints.push(NodeConstraint::GenTyToTy(ty_var.ty, TypeVNew::cmplx(node_id)));
-
-
-
+                    dbg!(node_name);
+                    if let Some((depency_node_id, node)) = get_node(db, *node_name, &mut constraint_queue) {
+                      let node = node.get().unwrap();
+                      match node.solve_state() {
+                        SolveState::Solved => {
+                          debug_assert!(node.ty != ty_undefined);
+                          intrinsic_constraints.push(NodeConstraint::ResolveGenTy(ty_var.ty, node.ty));
+                        }
+                        _ => {
+                          let links = node_link_constraints.entry(depency_node_id).or_default();
+                          links.push((ty_var.ty, *node_id));
+                        }
+                      }
                     } else {
                       panic!("Could not find object {node_name} \n{}", tok.blame(1, 1, "inline_comment", BlameColor::RED))
                     }
@@ -411,43 +452,87 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
           }
 
           GlobalConstraint::ResolveObjectConstraints { node_id, constraints: c } => {
-            solve_node_intrinsics(*node_id, c, &mut link_constraints, db);
-            todo!("If there are no generics, create type prop. create a link constraint for any dependents");
+            match solve_node_intrinsics(*node_id, c, &mut link_constraints, db) {
+              SolveState::Solved => {
+                if let Some(dependencies) = node_solved_dependencies.get(node_id) {
+                  for dependency in dependencies {
+                    // 
+                    panic!("Queue up for resolution.")
+                  }
+                }
 
-                /*         let node_handle = NodeHandle::from((cmplx_node_id, &*db));
-            let node = node_handle.get().unwrap();
+                
+     /*            let node = NodeHandle::from((*node_id, &*db));
+                let mut bin_functs = vec![];
 
-            // If the node is not compiled do so now
-      /*       if node.solve_state() != SolveState::Solved {
-              // Attempt to compile this node.
-              //todo!("Compile incomplete node {node:?}");
-              link_constraints.push(GlobalConstraint::ResolveObjectConstraints { node_id, constraints: vec![constraint] });
-              continue;
-            } else { */
-              let id = "test".intern();
-              let index = if let Some(index) = db.comptime_type_name_lookup_table.get(&cmplx_node_id) {
-                *index
-              } else {
-                let node = node_handle.get_mut().unwrap();
+                let ty = if node.get_type() == STRUCT_ID {
+                  let node = node.get_mut().unwrap();
+                  debug_assert!(node.ty == ty_undefined);
+                  // Comptime solver
 
-                let sdb = SolveDatabase::solve_for("DD", &db.db);
-                let sdb_fin = sdb.finalize();
-                let sdb_opt = sdb_fin.optimize(types::OptimizeLevel::MemoryOperations_01);
-                let bin_functs = targets::x86::compile(&sdb_opt);
-                let (entry_offset, binary) = linker::link(bin_functs);
-                let func = x86_eval::x86Function::new(&binary, entry_offset);
-                println!("\n\n\n");
-                print_instructions(&binary, 0);
-                let out = func.access_as_call::<fn() -> &'static RumTypeObject>()();
-                println!("0x{:x}", out as *const _ as usize);
-                dbg!(out);
-                println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
+                  let mut nodes = HashMap::new();
+                  let mut queue = VecDeque::from_iter(vec![*node_id]);
 
-                let index = db.comptime_type_table.len();
-                db.comptime_type_table.push(unsafe { std::mem::transmute(out) });
-                db.comptime_type_name_lookup_table.insert(cmplx_node_id, index);
-                index
-              }; */
+                  while let Some(node_id) = queue.pop_front() {
+                    if nodes.insert(node_id, Option::<u32>::None).is_none() {
+                      let handle = NodeHandle::from((node_id, &*db));
+
+                      for op in &node.operands {
+                        match op {
+                          Operation::Obj(reference) => match reference {
+                            Reference::Object(obj) => {
+                              queue.push_back(*obj);
+                            }
+
+                            _ => {}
+                          },
+                          _ => {}
+                        }
+                      }
+
+                      //dbg!(&handle);
+                      finalize_node(db, &handle);
+                      optimize_node_level_1(&handle);
+                      dbg!(&handle);
+                     // compile_function(&db, &mut bin_functs, handle, node_id);
+                    }
+                  }
+
+                  panic!("AA");
+                  let (entry_offset, binary) = linker::link(bin_functs);
+                  let func = x86_eval::x86Function::new(&binary, entry_offset);
+                  println!("\n\n\n");
+                  print_instructions(&binary, 0);
+                  let out = func.access_as_call::<fn() -> &'static RumTypeObject>()();
+                  println!("0x{:x}", out as *const _ as usize);
+                  dbg!(out);
+                  println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
+
+                  panic!("TODO: Extract dependencies");
+
+                  let index = db.comptime_type_table.len();
+                  db.comptime_type_table.push(unsafe { std::mem::transmute(out) });
+                  db.comptime_type_name_lookup_table.insert(*node_id, index);
+
+                  node.ty = RumType { raw_type: prim_ty_struct, type_id: index as _ };
+
+                  panic!("Create type entry for struct {node:?}");
+                  todo!("If there are no generics, create type prop. create a link constraint for any dependents");
+                  node.ty
+                } else {
+                  ty_undefined
+                };
+
+                panic!("get Type");
+
+                if let Some(links) = node_link_constraints.remove(node_id) {
+                  for (var_ty, dependent_node) in links {
+                    link_constraints.push(GlobalConstraint::ResolveObjectConstraints { node_id: dependent_node, constraints: vec![NodeConstraint::ResolveGenTy(var_ty, ty)] });
+                  }
+                } */
+              }
+              _ => {}
+            }
           }
 
           _ => unreachable!(),
@@ -496,8 +581,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
 
             for var in type_vars {
               if var.has(VarAttribute::HeapType) {
-                todo!("Handle Heap Type");
-                //var.ty = TypeVNew::heap(Default::default());
+                var.ty = RumType { raw_type: prim_ty_undefined, type_id: -1 };
               } else if var.has(VarAttribute::Delta) && var.ty.is_open() {
                 let num = var.num;
 
@@ -555,6 +639,14 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<GlobalConstr
       resolve_stage += 1
     }
   }
+
+  for node in db.nodes.iter() {
+    dbg!(node);
+  }
+
+  panic!("AA");
+
+  dbg!(node_link_constraints);
 }
 
 fn get_node(db: &mut SolveDatabase<'_>, node_name: IString, constraint_queue: &mut VecDeque<GlobalConstraint>) -> Option<(CMPLXId, NodeHandle)> {
@@ -591,7 +683,7 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
   }
 }
 
-pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstraint], link_constraints: &mut Vec<GlobalConstraint>, db: &mut SolveDatabase) {
+pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstraint], link_constraints: &mut Vec<GlobalConstraint>, db: &mut SolveDatabase) -> SolveState {
   let mut constraint_queue = VecDeque::from_iter(constraints.iter().cloned());
 
   let node = NodeHandle::from((node_id, &*db));
@@ -610,14 +702,10 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
         let var_ptr = get_root_var_mut(ptr_index, type_vars);
         let var_val = get_root_var_mut(val_index, type_vars);
 
-        if mutable {
-          var_ptr.add(VarAttribute::Mutable);
-        }
-
         if !var_ptr.ty.is_open() {
-          constraint_queue.push_back(NodeConstraint::GenTyToTy(val_ty, var_ptr.ty.decrement_ptr()));
+          constraint_queue.push_back(NodeConstraint::ResolveGenTy(val_ty, var_ptr.ty.decrement_ptr()));
         } else if !var_val.ty.is_open() {
-          constraint_queue.push_back(NodeConstraint::GenTyToTy(ptr_ty, var_val.ty.increment_ptr()));
+          constraint_queue.push_back(NodeConstraint::ResolveGenTy(ptr_ty, var_val.ty.increment_ptr()));
         } else {
           let mem_op = VarAttribute::MemOp { ptr_ty, val_ty };
           var_ptr.add(mem_op.clone());
@@ -677,9 +765,9 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
       NodeConstraint::OpToTy(op, ty_a) => {
         let ty = types[op.usize()].clone();
 
-        constraint_queue.push_back(NodeConstraint::GenTyToTy(ty, ty_a));
+        constraint_queue.push_back(NodeConstraint::ResolveGenTy(ty, ty_a));
       }
-      NodeConstraint::GenTyToTy(ty_a, ty_b) => {
+      NodeConstraint::ResolveGenTy(ty_a, ty_b) => {
         debug_assert!(ty_a.is_generic());
         debug_assert!(!ty_b.is_open(), "Expected {ty_b} to be a non open type when resolving {ty_a} \n{node:#?}");
 
@@ -708,37 +796,44 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
           let ty = ty_b;
 
           if let Some(cmplx_node_id) = ty.get_type_data(db) {
-              let comptime_type = cmplx_node_id;
+            let comptime_type = cmplx_node_id;
 
-              let out: &RumTypeObject = unsafe { std::mem::transmute(comptime_type) };
+            let out: &RumTypeObject = cmplx_node_id;
 
-              for member in members.iter() {
-                if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == member.name.to_str().as_str()) {
-                  if !ty.is_open() {
-
-                    constraint_queue.push_back(NodeConstraint::GenTyToTy(member.ty, prop.ty.increment_ptr()));
-                  }
-                } else {
-                  panic!("Complex type does not have member {}@{} {node:?} {out:#?}", member.name, member.ty)
-                }
-              }
-          } /* else if ty.is_array() {
-            panic!("AA");
-            let base_ty = ty.remove_array().to_base_ty();
-            let mut base_mem = None;
+            dbg!(out);
 
             for member in members.iter() {
-              if let Some(base_id) = base_mem {
-                constraint_queue.push_back(NodeConstraint::GenTyToGenTy(member.ty, base_id));
+              let mem_str = member.name.to_str();
+              let lookup_name = mem_str.as_str();
+              //let lookup_name = if mem_str.is_empty() { "elements" } else  { mem_str };
+
+              if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == lookup_name) {
+                if !ty.is_open() {
+
+                  dbg!(prop.ty);
+                  constraint_queue.push_back(NodeConstraint::ResolveGenTy(member.ty, prop.ty.increment_ptr()));
+                }
               } else {
-                base_mem = Some(member.ty);
+                panic!("Complex type does not have member {}@{} {node:?} {out:#?}", member.name, member.ty)
               }
             }
+          } /* else if ty.is_array() {
+              panic!("AA");
+              let base_ty = ty.remove_array().to_base_ty();
+              let mut base_mem = None;
 
-            if let Some(s) = base_mem {
-              constraint_queue.push_back(NodeConstraint::GenTyToTy(s, base_ty));
-            }
-          } */
+              for member in members.iter() {
+                if let Some(base_id) = base_mem {
+                  constraint_queue.push_back(NodeConstraint::GenTyToGenTy(member.ty, base_id));
+                } else {
+                  base_mem = Some(member.ty);
+                }
+              }
+
+              if let Some(s) = base_mem {
+                constraint_queue.push_back(NodeConstraint::GenTyToTy(s, base_ty));
+              }
+            } */
         }
       }
       NodeConstraint::GlobalNameReference(ty, name, tok) => {
@@ -751,14 +846,11 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
 
         /* let heap_ty = heap_id[op.usize()];
         if heap_ty != usize::MAX {
-          let heap_id = TypeVNew::generic(heap_ty as u32);
+          let heap_id = RumType::generic(heap_ty as u32);
           constraint_queue.push_back(NodeConstraint::GenTyToTy(heap_id, heap));
         } else {
           panic!("Heap identifier not assigned to op at {op}")
         } */
-      }
-      NodeConstraint::OpConvertTo { src_op, trg_op_index } => {
-        eprintln!("Handle convert")
       }
       cs => todo!("Handle {cs:?}"),
     }
@@ -767,13 +859,19 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
   let node_ref = node.get_mut().unwrap();
   let mut out_map = vec![Default::default(); node_ref.type_vars.len()];
   let mut output_type_vars = vec![];
+  let mut solve_state = SolveState::Solved;
 
   for index in 0..node_ref.type_vars.len() {
     let var = &mut node_ref.type_vars[index];
     if var.id as usize == index {
       let mut clone = var.clone();
+
       clone.id = output_type_vars.len() as u32;
+
       var.ref_id = output_type_vars.len() as i32;
+
+      solve_state = if clone.ty.is_open() { SolveState::Unsolved } else { solve_state };
+
       output_type_vars.push(clone);
     }
     out_map[index] = RumType::generic(get_root_var(index, &node_ref.type_vars).ref_id as _);
@@ -815,6 +913,8 @@ pub(crate) fn solve_node_intrinsics(node_id: CMPLXId, constraints: &[NodeConstra
   }
 
   node_ref.type_vars = output_type_vars;
+
+  solve_state
 }
 
 pub(crate) fn get_root_var_mut<'a>(mut index: usize, type_vars: &mut [TypeVar]) -> &'a mut TypeVar {
@@ -863,7 +963,6 @@ pub(crate) fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConst
     for (index, constraint) in var.attributes.as_slice().to_vec().into_iter().enumerate().rev() {
       match constraint {
         VarAttribute::Convert { src, dst } => {
-          queue.push_back(NodeConstraint::BindOpToOp { dst, src });
           var.attributes.remove(index);
         }
         VarAttribute::MemOp { ptr_ty, val_ty } => {
@@ -873,7 +972,7 @@ pub(crate) fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConst
         VarAttribute::HeapOp(heap_op) => {
           todo!("Handle Heap Operation");
 
-     /*      let mut heap_set = false;
+          /*      let mut heap_set = false;
 
           if let Some(node) = ty.cmplx_data() {
             let node = NodeHandle::from((node, db));
@@ -897,7 +996,7 @@ pub(crate) fn process_variable(var: &mut TypeVar, queue: &mut VecDeque<NodeConst
 
           if !heap_set {
             todo!("Process Heap");
-            //queue.push_back(NodeConstraint::SetHeap(heap_op, TypeVNew::heap(Default::default())));
+            //queue.push_back(NodeConstraint::SetHeap(heap_op, RumType::heap(Default::default())));
           }
 
           var.attributes.remove(index); */

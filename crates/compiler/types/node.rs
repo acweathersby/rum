@@ -86,6 +86,11 @@ impl NodeHandle {
     }
   }
 
+  pub fn get_rum_ty(&self) -> RumType {
+    self.get().unwrap().ty
+  }
+
+
   pub fn get_type(&self) -> &'static str {
     self.get().unwrap().nodes[0].type_str
   }
@@ -249,6 +254,7 @@ pub(crate) struct NodePort {
 pub(crate) enum Reference {
   UnresolvedName(IString),
   Object(CMPLXId),
+  Type(RumType),
   Intrinsic(IString),
   Integer(usize),
 }
@@ -260,6 +266,7 @@ impl Debug for Reference {
       Self::Intrinsic(name) => f.write_fmt(format_args!("`{name}")),
       Self::Object(id) => f.write_fmt(format_args!("{id:?}")),
       Self::Integer(id) => f.write_fmt(format_args!("{id}")),
+      Self::Type(id) => f.write_fmt(format_args!("{id}")),
     }
   }
 }
@@ -272,7 +279,7 @@ pub(crate) enum Operation {
   Φ(u32, Vec<OpId>),
   _Gamma(u32, OpId),
   Call {
-    reference: Reference,
+    routine: OpId,
     args:      Vec<OpId>,
     seq_op:    OpId,
   },
@@ -294,7 +301,10 @@ pub(crate) enum Operation {
   Const(ConstVal),
   //Data,
   Str(IString),
+  /// Refernce to a non local type
   Type(Reference),
+  /// Reference to non local object
+  Obj(Reference),
   Dead,
 }
 
@@ -309,7 +319,8 @@ impl Display for Operation {
     match self {
       Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::Type(name) => f.write_fmt(format_args!("type::{name:?}",)),
-      Operation::Call { reference, args, seq_op } => f.write_fmt(format_args!("{reference:?}({args:?}) @ {seq_op}",)),
+      Operation::Obj(name) => f.write_fmt(format_args!("obj::{name:?}",)),
+      Operation::Call { routine: routine_op, args, seq_op } => f.write_fmt(format_args!("CALL {routine_op:?} ( {args:?} ) @ {seq_op}",)),
       Operation::MemPTR { reference, base, seq_op } => f.write_fmt(format_args!("{base}[{reference:?}] @ ({seq_op})",)),
       Operation::AggDecl { size, alignment, seq_op, .. } => f.write_fmt(format_args!("alloc (size:{size:?} align:{alignment}) @ {seq_op:?}",)),
       // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
@@ -337,6 +348,7 @@ pub(crate) struct RootNode {
   pub(crate) heap_id:             Vec<usize>,
   pub(crate) source_tokens:       Vec<Token>,
   pub(crate) root_id:             isize,
+  pub(crate) ty: RumType
 }
 
 impl Default for RootNode {
@@ -351,6 +363,7 @@ impl Default for RootNode {
       source_tokens:       Vec::with_capacity(8),
       heap_id:             Vec::with_capacity(8),
       root_id:             -1,
+      ty: Default::default()
     }
   }
 }
@@ -389,8 +402,6 @@ pub(crate) fn get_signature(node: &RootNode) -> Signature {
 pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: usize) -> Signature {
   let RootNode { nodes, op_types: types, type_vars, .. } = node;
   let call_node = &nodes[internal_node_index];
-
-  dbg!((&node, types, type_vars));
 
   Signature::new(
     &call_node

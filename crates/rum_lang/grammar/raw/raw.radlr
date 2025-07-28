@@ -11,7 +11,6 @@ IMPORT ../common/comment as cmt
 
 EXPORT raw_module as raw_module
 EXPORT raw_function_definition as raw_routine_def
-EXPORT expr::call as raw_call
 EXPORT ty::type as types
 EXPORT ty::type as types
 EXPORT prim::sci_num as sci_num

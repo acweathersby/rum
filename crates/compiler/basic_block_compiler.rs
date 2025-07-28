@@ -11,7 +11,7 @@ use crate::{
       x86_types::*,
     },
   },
-  types::{CMPLXId, Node, Op, OpId, Operation, PortType,  RumPrimitiveBaseType,  RumPrimitiveType, RegisterSet, RootNode, SolveDatabase, VarId},
+  types::{CMPLXId, Node, Op, OpId, Operation, PortType, RegisterSet, RootNode, RumPrimitiveBaseType, RumPrimitiveType, RumType, SolveDatabase, VarId},
 };
 use rum_common::get_aligned_value;
 use rum_lang::todo_note;
@@ -355,7 +355,7 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         dependency_ops[1] = *alignment;
         (dependency_ops.as_slice(), [get_vv(bb, vars, size), get_vv(bb, vars, alignment), Default::default()])
       }
-      Operation::Call { args, .. } => (args.as_slice(), Default::default()),
+      Operation::Call { routine, args, .. } => (args.as_slice(), Default::default()),
       Operation::Op { operands, .. } => {
         dependency_ops = *operands;
         (dependency_ops.as_slice(), [get_vv(bb, vars, &operands[0]), get_vv(bb, vars, &operands[1]), get_vv(bb, vars, &operands[2])])
@@ -515,7 +515,9 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           }
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::Call {  args, seq_op, .. } => {
+        Operation::Call {  routine, args, seq_op, .. } => {
+          pending_ops.push_back((*routine, rank + 1));
+
           for op in args {
             pending_ops.push_back((*op, rank + 1));
           }
@@ -640,6 +642,10 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       reg_alloc.mask(VEC_REG_MASK);
     }
 
+
+
+
+
     for other_op in block_op_bf.iter_set_indices_of_row(op_interference_offset + target_op.usize()) {
       let other_op = OpId(other_op as _);
 
@@ -647,19 +653,25 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
 
       let ty_b = get_op_type(&sn, other_op).prim_data();
 
-      let types_interfere = match (ty_a.base_ty, ty_b.base_ty) {
-        (RumPrimitiveBaseType::Signed, RumPrimitiveBaseType::Signed)
-        | (RumPrimitiveBaseType::Address, RumPrimitiveBaseType::Address)
-        | (RumPrimitiveBaseType::Address, RumPrimitiveBaseType::Signed)
-        | (RumPrimitiveBaseType::Signed, RumPrimitiveBaseType::Address)
-        | (RumPrimitiveBaseType::Address, RumPrimitiveBaseType::Unsigned)
-        | (RumPrimitiveBaseType::Unsigned, RumPrimitiveBaseType::Address)
-        | (RumPrimitiveBaseType::Signed, RumPrimitiveBaseType::Unsigned)
-        | (RumPrimitiveBaseType::Unsigned, RumPrimitiveBaseType::Signed)
-        | (RumPrimitiveBaseType::Unsigned, RumPrimitiveBaseType::Unsigned)
-        | (RumPrimitiveBaseType::Float, RumPrimitiveBaseType::Float) => true,
-        _ => false,
-      };
+      #[derive(Debug, PartialEq, Eq)]
+      enum RegisterClass {
+        FP,
+        INT
+      }
+
+      fn get_register_class(ty: RumPrimitiveType) -> RegisterClass {
+        if ty.ptr_count > 0 {
+          RegisterClass::INT
+        }  else {
+          match ty.base_ty {
+            RumPrimitiveBaseType::Undefined | RumPrimitiveBaseType::NoUse | RumPrimitiveBaseType::Poison => unreachable!(),
+            RumPrimitiveBaseType::Float => RegisterClass::FP,
+            _ => RegisterClass::INT
+          }
+        }
+      }
+
+      let types_interfere = get_register_class(ty_a) == get_register_class(ty_b);
 
       if types_interfere {
         let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, other_op);
@@ -747,6 +759,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       }
     }
   }
+
 
   // Solve the graph
   for ordering in create_block_ordering(&bb_funct.blocks) {
@@ -989,6 +1002,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
     }
   }
 
+  let var_map = bb_funct.op_to_var_map.clone();
   /*
   for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
     let block_id = block.block_id as usize;
@@ -997,8 +1011,9 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
 
     println!("BLOCK {}", block_id);
 
-    for (op, out_val, vals, pre_fixes, post_fixes, ..) in op_iter {
-      println!("{{{out_val:?}}}{op:?} {} [{:?}]  {} pre:{:?} post:{:?}", op_data[op.usize()].dep_rank, out_val, sn.operands[op.usize()], &pre_fixes, &post_fixes);
+    for (op, out_val, vals, pre_fixes, post_fixes, ..) in op_iter {  
+      let ty = sn.get_base_ty_from_op(op);
+      println!("{{{out_val:?}}}{op:?} {ty} {} [{:?}]  {} pre:{:?} post:{:?}", op_data[op.usize()].dep_rank, out_val, sn.operands[op.usize()], &pre_fixes, &post_fixes);
 
       //if let VarVal::Var(index) = op.out {
       let ig = &block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).collect::<Vec<_>>();
@@ -1013,7 +1028,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
     println!("  preds {:?} ", bb_funct.blocks[0].predecessors);
 
     println!("\n    ins:  {ins:?} \n    outs: {outs:?}\n\n");
-  } */
+  } // */
   bb_funct
 }
 

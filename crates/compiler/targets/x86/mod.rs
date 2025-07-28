@@ -39,7 +39,6 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
   while let Some(id) = queue.pop_front() {
     if seen.insert(id) {
       let handle: NodeHandle = (id, db).into();
-
       if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {
         let super_node = handle.get_mut().unwrap();
 
@@ -69,6 +68,18 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
   }
 
   functions
+}
+
+pub(crate) fn compile_function(db: &SolveDatabase<'_>, functions: &mut Vec<BinaryFunction>, handle: NodeHandle, id: crate::types::CMPLXId) {
+    if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {
+        let super_node = handle.get_mut().unwrap();
+
+        let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db);
+
+        let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
+
+        functions.push(binary);
+      }
 }
 
 #[inline]
