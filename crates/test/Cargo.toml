@@ -5,10 +5,11 @@ edition.workspace = true
 authors.workspace = true
 
 [lib]
-path = "./lib.rs"
+path = "./test.rs"
 
 [dependencies]
 core_lang         = { path="../core" }
 libc = "0.2.154"
 rum_common        = { path="../common" }
 rum_lang          = { path="../rum_lang" }
+rum_compiler        = { path="../compiler" }
