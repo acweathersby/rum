@@ -548,7 +548,7 @@ fn test_mov_le() {
   assert_eq!("cmovle r8,r11", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_reg_op()));
 
   assert_eq!("cmovle r8d,[r11]", test_enc_dos(&mov_le, 32, R8.as_reg_op(), R11.as_mem_op()));
-  assert_eq!("cmovle r8,[r11]", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_mem_op()));
+  assert_eq!("acmovle r8,[r11]", test_enc_dos(&mov_le, 64, R8.as_reg_op(), R11.as_mem_op()));
 }
 
 /// https://www.felixcloutier.com/x86/cmovcc
@@ -588,6 +588,7 @@ op_table!(cvrt_to_i64 [
   ((32, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0xF30F2D, 0x00, OpEncoding::VEX_RM_2{ w: true }, gen_multi_op as *const OpEncoder)),
 ]);
 
+#[test]
 fn test_cvrt_to_i32() {
   assert_eq!("cmovg r8d,r11d", test_enc_dos(&mov_g, 32, R8.as_reg_op(), R11.as_reg_op()));
   assert_eq!("cmovg r8,r11", test_enc_dos(&mov_g, 64, R8.as_reg_op(), R11.as_reg_op()));
@@ -640,8 +641,17 @@ op_table!(mov [
 ]);
 
 #[test]
-fn test_mov() {
-  assert_eq!("lea r8d,[r11]", test_enc_dos(&mov, 32, RCX.as_mem_op(), VEC0.as_reg_op()));
+fn test_mov__() {
+  // With sib
+  assert_eq!("mov r8d,[rdx+r8*1]", test_enc_dos(&mov, 32, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 0, disp: 0 }));
+  assert_eq!("mov r8d,[rdx+r8*2]", test_enc_dos(&mov, 32, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 2, disp: 0 }));
+  assert_eq!("mov r8d,[rdx+r8*4]", test_enc_dos(&mov, 32, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 4, disp: 0 }));
+  assert_eq!("mov r8d,[rdx+r8*8]", test_enc_dos(&mov, 32, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 8, disp: 0 }));
+
+  assert_eq!("mov r8,[rdx+r8*1]", test_enc_dos(&mov, 64, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 0, disp: 0 }));
+  assert_eq!("mov r8,[rdx+r8*2]", test_enc_dos(&mov, 64, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 2, disp: 0 }));
+  assert_eq!("mov r8,[rdx+r8*4]", test_enc_dos(&mov, 64, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 4, disp: 0 }));
+  assert_eq!("mov r8,[rdx+r8*8]", test_enc_dos(&mov, 64, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 8, disp: 0 }));
 }
 
 /// https://www.felixcloutier.com/x86/movd:movq
@@ -658,10 +668,10 @@ op_table!(mov_fp_scalar [
 
 /// https://www.felixcloutier.com/x86/lea
 op_table!(lea [
-  ((08, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
-  ((16, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
-  ((32, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
-  ((64, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+((08, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+((16, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+((32, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+((64, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
 ]);
 
 /// https://www.felixcloutier.com/x86/xchg
@@ -672,18 +682,19 @@ op_table!(xchg [
   ((64, OT::REG, OT::MEM, OT::NONE, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
 
   ((08, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0086, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
-  ((16, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
-  ((32, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
-  ((64, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+((16, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+((32, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
+((64, OT::REG, OT::REG, OT::NONE, OT::NONE), (0x0087, 0x00, OpEncoding::RM, gen_multi_op as *const OpEncoder)),
 
-  ((08, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
-  ((16, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
-  ((32, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
-  ((64, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+((08, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+((16, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+((32, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
+((64, OT::MEM, OT::REG,  OT::NONE, OT::NONE), (0x008D, 0x00, OpEncoding::MR, gen_multi_op as *const OpEncoder)),
 ]);
 
 #[test]
 fn test_lea() {
+  assert_eq!("lea r8d,[r11]", test_enc_dos(&mov, 32, RCX.as_mem_op(), VEC0.as_reg_op()));
   assert_eq!("lea r8d,[r11]", test_enc_dos(&lea, 32, R8.as_reg_op(), R11.as_reg_op().to_mem()));
   assert_eq!("lea r8,[rsp-128]", test_enc_dos(&lea, 64, R8.as_reg_op(), Arg::RSP_REL(-128)));
   assert_eq!("lea r8,[rax+45]", test_enc_dos(&lea, 64, R8.as_reg_op(), Arg::MemRel(RAX, 45)), "Relative to register");

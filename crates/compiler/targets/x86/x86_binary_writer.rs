@@ -1,4 +1,4 @@
-use rum_common::get_aligned_value;
+use rum_common::{get_aligned_value, CachedString};
 
 use super::{
   print_instructions,
@@ -12,7 +12,7 @@ use crate::{
     reg::Reg,
     x86::x86_encoder::{encode_binary, encode_unary, OpEncoder, OpSignature},
   },
-  types::{CMPLXId, Op, Operation, Reference, RootNode, RumPrimitiveBaseType, RumPrimitiveType, SolveDatabase},
+  types::{prim_ty_bool, CMPLXId, Op, Operation, Reference, RootNode, RumPrimitiveBaseType, RumPrimitiveType, SolveDatabase},
 };
 use std::{
   collections::{BTreeMap, VecDeque},
@@ -69,7 +69,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
   let instr_bytes = &mut binary_data;
   let header_bytes = &mut header_preamble;
 
-  // instr_bytes.push(0xCC); // Debugger break point
+   //instr_bytes.push(0xCC); // Debugger break point
 
   let mut block_binary_offsets = vec![0usize; blocks.len()];
 
@@ -103,18 +103,16 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
 
       if op.is_valid() {
         match &sn.operands[op.usize()] {
-          Operation::Call { routine, args, seq_op } => {
-            match &sn.operands[routine.usize()] {
-              Operation::Obj(reference) => match reference {
-                Reference::Object(cmplx_id) => {
-                  encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
-                  patch_points.push((instr_bytes.len(), PatchType::Function(*cmplx_id)));
-                }
-                tgt => panic!("Call target does not exist! {tgt:?}"),
-              },
-              _ => unreachable!(),
-            }
-          }
+          Operation::Call { routine, args, seq_op } => match &sn.operands[routine.usize()] {
+            Operation::StaticObj(reference) => match reference {
+              Reference::Object(cmplx_id) => {
+                encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
+                patch_points.push((instr_bytes.len(), PatchType::Function(*cmplx_id)));
+              }
+              tgt => panic!("Call target does not exist! {tgt:?}"),
+            },
+            _ => unreachable!(),
+          },
           Operation::AggDecl { .. } => {
             let VarVal::Reg(out_reg_id, _) = out else { unreachable!() };
             let out_reg = REGISTERS[out_reg_id as usize];
@@ -125,32 +123,97 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
             // Make a call to the allocator dispatcher.
             encode_x86(instr_bytes, &call_abs, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
           }
-          Operation::Type(reference) => {
-            let Reference::Integer(address) = reference else { unreachable!() };
-            match out {
-              VarVal::Reg(red, _) => {
-                // Store the primitive value in the data segment of the function.
+          Operation::StaticObj(reference) => {
+            match reference {
+              Reference::SmallObj(address) => {
+                // Store in IP and load at this point
 
-                let offset = data_store.len() as u64;
-                let aligned_offset = get_aligned_value(offset, byte_size as u64);
-
-                for _ in 0..aligned_offset - offset {
-                  data_store.push(0);
+                match out {
+                  VarVal::Reg(red, _) => {
+                    // Store the primitive value in the data segment of the function.
+    
+                    let offset = data_store.len() as u64;
+                    let aligned_offset = get_aligned_value(offset, byte_size as u64);
+    
+                    for _ in 0..aligned_offset - offset {
+                      data_store.push(0);
+                    }
+    
+                    for byte_index in address.to_le_bytes() {
+                      data_store.push(byte_index)
+                    }
+    
+                    let out_reg = REGISTERS[red as usize].as_reg_op();
+                    encode_binary(instr_bytes, &lea, 64, out_reg, Arg::RIP_REL(256));
+                    vec_rip_resolutions.push((instr_bytes.len(), aligned_offset));
+                  }
+                  VarVal::Stashed(..) => todo!(),
+                  VarVal::Const => {}
+                  _ => unreachable!(),
                 }
+              },
+              Reference::Integer(address) => {
+                // Store in IP and load at this point
 
-                for byte_index in address.to_le_bytes() {
-                  data_store.push(byte_index)
+                match out {
+                  VarVal::Reg(red, _) => {
+                    // Store the primitive value in the data segment of the function.
+    
+                    let offset = data_store.len() as u64;
+                    let aligned_offset = get_aligned_value(offset, byte_size as u64);
+    
+                    for _ in 0..aligned_offset - offset {
+                      data_store.push(0);
+                    }
+    
+                    for byte_index in address.to_le_bytes() {
+                      data_store.push(byte_index)
+                    }
+    
+                    let out_reg = REGISTERS[red as usize].as_reg_op();
+                    encode_binary(instr_bytes, &mov, 64, out_reg, Arg::RIP_REL(256));
+                    vec_rip_resolutions.push((instr_bytes.len(), aligned_offset));
+                  }
+                  VarVal::Stashed(..) => todo!(),
+                  VarVal::Const => {}
+                  _ => unreachable!(),
                 }
+              },
+              Reference::UnresolvedName(name) => {
+                let address: usize =  if *name == "core$$type_table".to_token() {
+                  db.comptime_type_table.as_ptr() as _
+                } else {
+                  panic!("AA");
+                };
 
-                let reg_arg = REGISTERS[red as usize].as_reg_op();
-
-                encode_x86(instr_bytes, &mov, 64, reg_arg, Arg::RIP_REL(256), Arg::None, Arg::None);
-                vec_rip_resolutions.push((instr_bytes.len(), aligned_offset));
+                match out {
+                  VarVal::Reg(red, _) => {
+                    // Store the primitive value in the data segment of the function.
+    
+                    let offset = data_store.len() as u64;
+                    let aligned_offset = get_aligned_value(offset, byte_size as u64);
+    
+                    for _ in 0..aligned_offset - offset {
+                      data_store.push(0);
+                    }
+    
+                    for byte_index in address.to_le_bytes() {
+                      data_store.push(byte_index)
+                    }
+    
+                    let out_reg = REGISTERS[red as usize].as_reg_op();
+                    encode_binary(instr_bytes, &mov, 64, out_reg, Arg::RIP_REL(256));
+                    vec_rip_resolutions.push((instr_bytes.len(), aligned_offset));
+                  }
+                  VarVal::Stashed(..) => todo!(),
+                  VarVal::Const => {}
+                  _ => unreachable!(),
+                }
               }
-              VarVal::Stashed(..) => todo!(),
-              VarVal::Const => {}
-              _ => unreachable!(),
-            }
+              reference => unreachable!("{reference:?}"),
+            };
+
+     
           }
           Operation::Const(val) => match out {
             VarVal::Reg(reg, ty) => {
@@ -366,7 +429,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                       _ => unreachable!(),
                     }
                   }
-                  _ => unreachable!(),
+                  out_var => unreachable!("Assign {op_name} to {out_var:?}"),
                 }
               }
             }
@@ -375,7 +438,8 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
               let val_arg = match out {
                 VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
                 VarVal::Stashed(val_stash_loc) => Arg::RSP_REL(val_stash_loc as _),
-                _ => unreachable!(),
+                VarVal::Mem(..) => todo!("Handle memory load of this val"),
+                val => unreachable!("{val:?}"),
               };
 
               match args[0] {
@@ -397,9 +461,15 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                     encode_x86(instr_bytes, &mov, bit_size, val_arg, TMP_REG.as_reg_op(), Arg::None, Arg::None);
                   }
                 }
-                VarVal::MemCalc => {
-                  let Some(mem_arg) = mem_args.get(&operands[0]) else { unreachable!() };
-                  encode_x86(instr_bytes, &mov, bit_size, val_arg, *mem_arg, Arg::None, Arg::None);
+                VarVal::Mem(..) => {
+                  let mem_arg = *(mem_args.get(&operands[0]).expect(&format!("Could not find mem data for op {} {mem_args:#?}", operands[0])));
+                  if !val_arg.is_reg() {
+                    let temp_reg = REGISTERS[9].as_reg_op();
+                    encode_x86(instr_bytes, &mov, bit_size, temp_reg, val_arg, Arg::None, Arg::None);
+                    encode_x86(instr_bytes, &mov, bit_size, mem_arg, temp_reg, Arg::None, Arg::None);
+                  } else {
+                    encode_x86(instr_bytes, &mov, bit_size, val_arg, mem_arg, Arg::None, Arg::None);
+                  }
                 }
                 _ => unreachable!(),
               }
@@ -424,12 +494,29 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                   encode_x86(instr_bytes, &mov, bit_size, base_ptr_reg.as_mem_op(), val_arg, Arg::None, Arg::None);
                 }
                 VarVal::Stashed(_) => todo!("Store using stashed base pointer"),
-                VarVal::MemCalc => {
+                VarVal::Mem(..) => {
                   let Some(mem_arg) = mem_args.get(&operands[0]) else { unreachable!() };
                   encode_x86(instr_bytes, &mov, bit_size, *mem_arg, val_arg, Arg::None, Arg::None);
                 }
                 _ => unreachable!(),
               }
+            }
+            Op::COPY => {
+
+              let src_reg = match args[1] {
+                VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
+                v => unreachable!("{op:?} {v:?}"),
+              };
+
+              let dst_reg = match args[0] {
+                VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
+                v => unreachable!("{op:?} {v:?}"),
+              };
+
+              // load source into source
+              encode_x86(instr_bytes, &mov, bit_size, TMP_REG.as_reg_op(), src_reg.to_mem(), Arg::None, Arg::None);
+              encode_x86(instr_bytes, &mov, bit_size, dst_reg.to_mem(), TMP_REG.as_reg_op(), Arg::None, Arg::None);
+
             }
             Op::RET => {
               if args[0] != VarVal::None && args[0] != out {
@@ -460,44 +547,65 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                 }
               }
             }
-            Op::OPTR => {
-              let offset_arg = match args[1] {
-                VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
-                val => todo!("Handleo OPTR offset arg type of  {val:?}"),
-              };
-
-              match args[0] {
-                VarVal::Stashed(..) => todo!("load ptr and create offset"),
-                VarVal::Reg(base_ptr, ..) => {
-                  let base_ptr = REGISTERS[base_ptr as usize].as_reg_op();
-                  match out {
-                    VarVal::Reg(dst_reg, _) => {
-                      let out_ptr = REGISTERS[dst_reg as usize].as_reg_op();
-                      if out_ptr != base_ptr {
-                        encode_x86(instr_bytes, &mov, 64, out_ptr, base_ptr, Arg::None, Arg::None);
-                      }
-                      encode_x86(instr_bytes, &add, 64, out_ptr, offset_arg, Arg::None, Arg::None);
-                    }
-                    VarVal::MemCalc => {
-                      todo!("Mem calc")
-                    }
-                    other => todo!("Map to {other:?}"),
-                  }
-                }
-                arg => unreachable!("{arg:?}"),
-              };
-            }
 
             op => {
               print_instructions(&instr_bytes, 0);
               unreachable!("{op}")
             }
           },
+
           Operation::Param(..) | Operation::Φ(..) => {
             // all work is performed in fixup operations.
           }
 
-          Operation::MemPTR { reference, base, seq_op } => {
+
+          Operation::CalcOffsetPtr  { index, base, seq_op } => {
+            let mut offset_arg = match args[1] {
+              VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
+              val => todo!("Handleo OPTR offset arg type of  {val:?}"),
+            };
+
+            match args[0] {
+              VarVal::Stashed(..) => todo!("load ptr and create offset"),
+              VarVal::Reg(base_ptr, ..) => {
+                match out {
+                  VarVal::Reg(dst_reg, _) => {
+                    let base_ptr = REGISTERS[base_ptr as usize].as_reg_op();
+                    let out_ptr = REGISTERS[dst_reg as usize].as_reg_op();
+                    if out_ptr != base_ptr {
+                      if out_ptr == offset_arg {
+                        offset_arg = base_ptr;
+                      } else {
+                        encode_x86(instr_bytes, &mov, 64, out_ptr, base_ptr, Arg::None, Arg::None);
+                      }
+                    }
+                    encode_x86(instr_bytes, &add, 64, out_ptr, offset_arg, Arg::None, Arg::None);
+                  }
+                  VarVal::Mem(..) => {
+                    let offset_arg = match args[1] {
+                      VarVal::Reg(reg, _) => {
+                        let index =  REGISTERS[reg as usize];
+                        let base =  REGISTERS[base_ptr as usize];
+
+                        let scale = op_prim_ty.base_byte_size;
+
+                        if scale > 8 {
+                          panic!("Need to calculate offset value");
+                        }
+
+                        mem_args.insert(op, Arg::SIBAddress { base, index, scale, disp: 0 });
+                      },
+                      val => todo!("Handleo OPTR offset arg type of  {val:?}"),
+                    };
+                  }
+                  other => todo!("Map to {other:?}"),
+                }
+              }
+              arg => unreachable!("{arg:?}"),
+            };
+          }
+
+          Operation::NamedOffsetPtr { reference, base, seq_op } => {
             let Reference::Integer(offset) = reference else { unreachable!("Unknown ref type {reference:?}") };
 
             match args[0] {
@@ -509,7 +617,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                     let own_ptr = REGISTERS[dst_reg as usize];
                     encode_x86(instr_bytes, &lea, 64, own_ptr.as_reg_op(), Arg::MemRel(src_ptr, *offset as _), Arg::None, Arg::None);
                   }
-                  VarVal::MemCalc => {
+                  VarVal::Mem(..) => {
                     mem_args.insert(op, Arg::MemRel(src_ptr, *offset as _));
                   }
                   other => todo!("Map to {other:?}"),
@@ -529,7 +637,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
         handle_fix_up(instr_bytes, *post_fix);
       }
 
-      //print_instructions(&instr_bytes[prev_offset as usize..], 0);
+      print_instructions(&instr_bytes[prev_offset as usize..], 0);
       prev_offset = instr_bytes.len() as _;
     }
 
@@ -605,8 +713,8 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
   for (offset, _) in &mut patch_points {
     *offset += fn_offset
   }
-  // println!("\n\n");
-  // print_instructions(&data_store, 0);
+  println!("\n\n");
+  print_instructions(&data_store, 0);
 
   BinaryFunction { id: bb_fn.id, data_segment_size: data_offset, entry_offset: data_offset, binary: data_store, patch_points }
 }
@@ -614,7 +722,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
 fn get_const_arg(sn: &RootNode, op_prim_ty: RumPrimitiveType, op: crate::types::OpId) -> Arg {
   match &sn.operands[op.usize()] {
     Operation::Const(val) => Arg::Imm_Int(val.convert(op_prim_ty).load()),
-    Operation::Type(Reference::Integer(val)) => Arg::Imm_Int(*val as _),
+    Operation::StaticObj(Reference::Integer(val)) => Arg::Imm_Int(*val as _),
     _ => panic!("Could not load constant value"),
   }
 }

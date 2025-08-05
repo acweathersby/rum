@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use crate::targets::x86::{
+use crate::{targets::x86::{
   print_instructions,
   x86_binary_writer::{BinaryFunction, PatchType},
-};
+}, types::SolveDatabase};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Endianess {
@@ -11,7 +11,7 @@ pub enum Endianess {
   Little,
 }
 
-pub fn link(mut bin_functs: Vec<BinaryFunction>) -> (usize, Vec<u8>) {
+pub fn link(mut bin_functs: Vec<BinaryFunction>, db: &SolveDatabase) -> (usize, Vec<u8>) {
   let total_size = bin_functs.iter().fold(0, |size, f| f.byte_size() + size);
 
   let mut binary = vec![0u8; total_size];
@@ -48,7 +48,10 @@ pub fn link(mut bin_functs: Vec<BinaryFunction>) -> (usize, Vec<u8>) {
             let ptr = binary[instr_offset - 4..].as_mut_ptr();
             unsafe { ptr.copy_from(&(relative_offset) as *const _ as *const u8, 4) }
           } else {
-            panic!("Could not find offset for {id:?}")
+            let node = &db.nodes[id.0 as usize];
+
+
+            panic!("Could not find offset for {id:?} {node:?}")
           }
         }
       }

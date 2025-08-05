@@ -1,0 +1,536 @@
+
+/*
+for (i, op) in block.ops2.iter().enumerate() {
+  let is_last_op = i == block.ops2.len() - 1;
+  let ty = op.source.is_valid().then(|| get_op_type(sn, op.source)).unwrap_or_default();
+  let op_prim_ty = op.prim_ty;
+  let byte_size = (op_prim_ty.byte_size as u64) * 8;
+
+  match &op.op_ty {
+    /*         Op::SINK => {
+      if op.args[1] != op.out {
+        match op.args[1] {
+          VarVal::Stashed(_) => match op.out {
+            VarVal::Stashed(_) => {
+              todo!("move store to store")
+            }
+            VarVal::Reg(reg, _) => {
+              todo!("load from memory")
+            }
+            _ => {}
+          },
+          VarVal::Reg(reg, _) => {
+            let in_reg = REGISTERS[reg as usize];
+            match op.out {
+              VarVal::Stashed(_) => {
+                todo!("store to stash")
+              }
+              VarVal::Reg(reg, _) => {
+                let out_reg = REGISTERS[reg as usize];
+                encode_x86(instr_bytes, &mov, byte_size, out_reg.as_reg_op(), in_reg.as_reg_op(), Arg::None, Arg::None);
+              }
+              _ => {}
+            }
+          }
+          VarVal::Const => match op.out {
+            VarVal::Stashed(_) => {
+              todo!("Store value")
+            }
+            VarVal::Reg(reg, _) => {
+              let o_reg = REGISTERS[reg as usize];
+              let Operation::Op { op_name: op_id, operands } = &sn.operands[op.source.usize()] else { unreachable!() };
+              let Operation::Const(val) = &sn.operands[operands[1].usize()] else { panic!("Could not load constant value") };
+              encode_x86(instr_bytes, &mov, (byte_size as u64), o_reg.as_reg_op(), Arg::Imm_Int(val.convert(op_prim_ty).load()), Arg::None, Arg::None);
+            }
+            _ => {}
+          },
+          _ => {}
+        }
+      }
+    } */
+    Op::Meta | Op::RET | Op::SEED | Op::PARAM | Op::ARG | Op::TempMetaPhi => {
+      if op.args[0] != VarVal::None && op.args[0] != op.out {
+        let from_op = match op.args[0] {
+          VarVal::Const => {
+            let Operation::Const(val) = &sn.operands[op.ops[0].usize()] else { panic!("Could not load constant value") };
+            Arg::Imm_Int(val.convert(op_prim_ty).load())
+          }
+          VarVal::Stashed(offset) => Arg::RSP_REL(offset as _),
+          VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
+          v => unreachable!("{op:?} {v:?}"),
+        };
+
+        match op.out {
+          VarVal::Stashed(out_offset) => {
+            if from_op.is_reg() {
+              encode_x86(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_offset as _), from_op, Arg::None, Arg::None);
+            } else {
+              encode_x86(instr_bytes, &mov, byte_size, TMP_REG.as_reg_op(), from_op, Arg::None, Arg::None);
+              encode_x86(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_offset as _), TMP_REG.as_reg_op(), Arg::None, Arg::None);
+            }
+          }
+          VarVal::Reg(reg, _) => {
+            let to_op = REGISTERS[reg as usize].as_reg_op();
+            encode_x86(instr_bytes, &mov, byte_size, to_op, from_op, Arg::None, Arg::None);
+          }
+          _ => unreachable!(),
+        }
+      }
+    }
+    Op::FREE => {
+      todo_note!(" FREE");
+    }
+    Op::CONVERT => {
+      let from_ty = get_op_type(sn, op.ops[0]).prim_data();
+      let to_ty = get_op_type(sn, op.source).prim_data();
+
+      let from_op = match op.args[0] {
+        VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
+        VarVal::Stashed(offset) => {
+          let target_reg = match from_ty {
+            prim_ty_f64 | prim_ty_f32 => Arg::RSP_REL(offset as _),
+            ty => unreachable!("Get temp register for type {ty}"),
+          };
+          target_reg
+        }
+        VarVal::Const => {
+          todo!("CONST should have been loaded into register");
+        }
+        _ => unreachable!(),
+      };
+
+      let to_op = match op.out {
+        VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
+        VarVal::Stashed(offset) => {
+          todo!("Handle store");
+        }
+        _ => unreachable!(),
+      };
+
+      match (to_ty, from_ty) {
+        (prim_ty_u32, prim_ty_f32 | prim_ty_f64) => {
+          encode_x86(instr_bytes, &cvrt_to_i32, from_ty.byte_size as u64 * 8, to_op, from_op, Arg::None, Arg::None);
+        }
+        cvrt => todo!("Handle conversion of {cvrt:?}"),
+      }
+    }
+    /* Op::FREE => {
+        let sub_op = operands[0];
+        // Get the type that is to be freed.
+      match &sn.operands[sub_op.usize()] {
+        Operation::Op { op_id: Op::ARR_DECL, operands } => {
+          todo!("Handle array");
+        }
+        Operation::Op { op_id: Op::AGG_DECL, .. } => {
+          // Load the size and alignement in to the first and second registers
+          let ptr_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 0, binary);
+          let size_reg_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 1, binary);
+          let allocator_id = get_arg_register(sn, registers, OpId(*op as u32), operands, 2, binary);
+
+          let out_ptr = registers[*op].own.reg_id().unwrap();
+          let own_ptr = REGISTERS[out_ptr as usize];
+
+          let ptr_reg = REGISTERS[ptr_reg_id];
+          let size_reg = REGISTERS[size_reg_id];
+          let alloc_id_reg = REGISTERS[allocator_id];
+
+          let ty = get_op_type(sn, sub_op).cmplx_data().unwrap();
+          let node: NodeHandle = (ty, db).into();
+          let mut ctx = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
+          let size = get_agg_size(node.get().unwrap(), &mut ctx);
+
+          encode_x86(binary, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None);
+          encode_x86(binary, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None);
+
+          // Load Rax with the location for the allocator pointer.
+          encode_x86(binary, &mov, 64, own_ptr.as_reg_op(), Arg::Imm_Int(allocator_free_address as _), Arg::None);
+
+          // Make a call to the allocator dispatcher.
+          encode_x86(binary, &call, 64, own_ptr.as_reg_op(), Arg::None, Arg::None);
+        }
+        _ => unreachable!(),
+      }
+    } */
+    Op::LOAD_TYPE_ADDRESS => {
+      let Operation::Type(reference) = sn.operands[op.source.usize()] else { unreachable!() };
+      let Reference::Integer(address) = reference else { unreachable!() };
+      match op.out {
+        VarVal::Reg(red, _) => {
+          let reg_arg = REGISTERS[red as usize].as_reg_op();
+          encode_x86(instr_bytes, &mov, 64, reg_arg, Arg::Imm_Int(address as _), Arg::None, Arg::None);
+        }
+        VarVal::Stashed(..) => todo!(),
+        _ => unreachable!(),
+      }
+    }
+    Op::AGG_DECL => {
+      let cw_pack = encode_call_preamble(instr_bytes, op);
+
+      let VarVal::Reg(out_reg_id, _) = op.out else { unreachable!() };
+      let out_reg = REGISTERS[out_reg_id as usize];
+
+      // Load Rax with the location for the allocator pointer.
+      encode_x86(instr_bytes, &mov, 64, out_reg.as_reg_op(), Arg::Imm_Int(allocator_address as _), Arg::None, Arg::None);
+
+      // Make a call to the allocator dispatcher.
+      encode_x86(instr_bytes, &call_abs, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
+
+      encode_call_postamble(instr_bytes, cw_pack);
+    }
+    Op::ARR_DECL => {
+      // Load the size and alignment in to the first and second registers
+
+      let [VarVal::Reg(size_reg_id, _), VarVal::Reg(align_reg_id, _), VarVal::Reg(allocator_id, _)] = op.args else { unreachable!() };
+      let size_reg = REGISTERS[size_reg_id as usize];
+      let align_reg = REGISTERS[align_reg_id as usize];
+      let alloc_id_reg = REGISTERS[allocator_id as usize];
+
+      let node: NodeHandle = (ty.cmplx_data().unwrap(), db).into();
+      let mut ctx: RuntimeSystem<'_, '_> = RuntimeSystem { db, heaps: Default::default(), allocator_interface: TypeV::Undefined };
+      let size = 16; // get_agg_size(node.get().unwrap(), &mut ctx);
+
+      let cw_pack = encode_call_preamble(instr_bytes, op);
+
+      encode_x86(instr_bytes, &mov, 8 * 8, size_reg.as_reg_op(), Arg::Imm_Int(size as _), Arg::None, Arg::None);
+      encode_x86(instr_bytes, &mov, 8 * 8, align_reg.as_reg_op(), Arg::Imm_Int(8), Arg::None, Arg::None);
+      encode_x86(instr_bytes, &mov, 8 * 8, alloc_id_reg.as_reg_op(), Arg::Imm_Int(0), Arg::None, Arg::None);
+
+      let VarVal::Reg(out_reg_id, _) = op.out else { unreachable!() };
+      let out_reg = REGISTERS[out_reg_id as usize];
+
+      // Load Rax with the location for the allocator pointer.
+      encode_x86(instr_bytes, &mov, 64, out_reg.as_reg_op(), Arg::Imm_Int(allocator_address as _), Arg::None, Arg::None);
+
+      // Make a call to the allocator dispatcher.
+      encode_x86(instr_bytes, &call_abs, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
+
+      encode_call_postamble(instr_bytes, cw_pack);
+    }
+    Op::MAP_BASE_TO_CHILD => {
+      let Operation::NamePTR { reference, .. } = &sn.operands[op.source.usize()] else { unreachable!() };
+      let Reference::Integer(offset) = reference else { unreachable!() };
+
+      match op.args[0] {
+        VarVal::Stashed(..) => todo!("load ptr and create offset"),
+        VarVal::Reg(src_reg, ..) => {
+          let src_ptr = REGISTERS[src_reg as usize];
+          match op.out {
+            VarVal::Reg(dst_reg, _) => {
+              let own_ptr = REGISTERS[dst_reg as usize];
+              encode_x86(instr_bytes, &lea, 64, own_ptr.as_reg_op(), Arg::MemRel(src_ptr, *offset as _), Arg::None, Arg::None);
+            }
+            other => todo!("Map to {other:?}"),
+          }
+        }
+        _ => unreachable!(),
+      };
+    }
+    Op::OPTR => {
+      let base_op = match op.args[0] {
+        VarVal::Stashed(offset) => {
+          encode_x86(instr_bytes, &mov, byte_size, TMP_REG.as_reg_op(), Arg::RSP_REL(offset as _), Arg::None, Arg::None);
+          TMP_REG
+        }
+        VarVal::Reg(reg, _) => REGISTERS[reg as usize],
+        v => unreachable!("{op:?} {v:?}"),
+      };
+
+      let offset_op = match op.args[1] {
+        VarVal::Const => {
+          let Operation::Const(val) = &sn.operands[op.ops[1].usize()] else { panic!("Could not load constant value") };
+          Arg::MemRel(base_op, val.convert(prim_ty_s64).load())
+        }
+        VarVal::Reg(reg, _) => {
+          let off_ptr = REGISTERS[reg as usize];
+          encode_x86(instr_bytes, &add, byte_size, off_ptr.as_reg_op(), base_op.as_reg_op(), Arg::None, Arg::None);
+          off_ptr.as_mem_op()
+        }
+        v => unreachable!("{op:?} {v:?}"),
+      };
+
+      match op.out {
+        VarVal::Stashed(out_offset) => {
+          encode_x86(instr_bytes, &lea, byte_size, TMP_REG.as_reg_op(), offset_op, Arg::None, Arg::None);
+          encode_x86(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_offset as _), TMP_REG.as_reg_op(), Arg::None, Arg::None);
+        }
+        VarVal::Reg(reg, _) => {
+          let to_op = REGISTERS[reg as usize].as_reg_op();
+          encode_x86(instr_bytes, &lea, byte_size, to_op, offset_op, Arg::None, Arg::None);
+        }
+        _ => unreachable!(),
+      }
+    }
+    Op::STORE => {
+      let byte_size = get_op_type(sn, op.ops[1]).prim_data().byte_size as u64 * 8;
+      let val_arg = match op.args[1] {
+        VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
+        VarVal::Stashed(val_stash_loc) => {
+          encode_x86(instr_bytes, &mov, byte_size, TMP_REG.as_reg_op(), Arg::RSP_REL(val_stash_loc as _), Arg::None, Arg::None);
+          TMP_REG.as_reg_op()
+        }
+        VarVal::Const => {
+          let Operation::Const(val) = &sn.operands[op.ops[1].usize()] else { panic!("Could not load constant value") };
+          Arg::Imm_Int(val.convert(op_prim_ty).load())
+        }
+        v => unreachable!("{op:?} {v:?}"),
+      };
+
+      match op.args[0] {
+        VarVal::Reg(base_ptr_id, _) => {
+          let base_ptr_reg = REGISTERS[base_ptr_id as usize];
+
+          encode_x86(instr_bytes, &mov, byte_size, base_ptr_reg.as_mem_op(), val_arg, Arg::None, Arg::None);
+        }
+        VarVal::Stashed(_) => todo!("Store using stashed base pointer"),
+        _ => unreachable!(),
+      }
+    }
+    Op::LOAD => {
+      let val_arg = match op.out {
+        VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
+        VarVal::Stashed(val_stash_loc) => Arg::RSP_REL(val_stash_loc as _),
+        _ => unreachable!(),
+      };
+
+      match op.args[0] {
+        VarVal::Reg(base_ptr_id, _) => {
+          let base_ptr_reg = REGISTERS[base_ptr_id as usize];
+          if val_arg.is_reg() {
+            encode_x86(instr_bytes, &mov, byte_size, val_arg, base_ptr_reg.as_mem_op(), Arg::None, Arg::None);
+          } else {
+            encode_x86(instr_bytes, &mov, byte_size, TMP_REG.as_reg_op(), base_ptr_reg.as_mem_op(), Arg::None, Arg::None);
+            encode_x86(instr_bytes, &mov, byte_size, val_arg, TMP_REG.as_reg_op(), Arg::None, Arg::None);
+          }
+        }
+        VarVal::Stashed(base_ptr_offset) => {
+          if val_arg.is_reg() {
+            encode_x86(instr_bytes, &mov, byte_size, val_arg, Arg::RSP_REL(base_ptr_offset as _), Arg::None, Arg::None);
+            encode_x86(instr_bytes, &mov, byte_size, val_arg, val_arg.to_mem(), Arg::None, Arg::None);
+          } else {
+            encode_x86(instr_bytes, &mov, byte_size, TMP_REG.as_reg_op(), Arg::RSP_REL(base_ptr_offset as _), Arg::None, Arg::None);
+            encode_x86(instr_bytes, &mov, byte_size, val_arg, TMP_REG.as_reg_op(), Arg::None, Arg::None);
+          }
+        }
+        _ => unreachable!(),
+      }
+    }
+    Op::DIV => {
+      if op_prim_ty.base_ty == PrimitiveBaseType::Float {
+        todo!("Handle floating point operations")
+      } else {
+        // Clear RDX
+        todo!("DIV")
+
+        /* encode_x86(binary, &xor, byte_size, RDX.as_reg_op(), RDX.as_reg_op(), Arg::None);
+
+        match op_reg_data.ops[1] {
+          OperandRegister::Reg(r) => {
+            let r_reg = REGISTERS[r as usize];
+            encode_x86(binary, &div, byte_size, r_reg.as_reg_op(), Arg::None, Arg::None);
+          }
+          OperandRegister::ConstReg(temp_reg) => {
+            let t_reg = REGISTERS[temp_reg as usize];
+            let Operation::Const(const_val) = &sn.operands[operands[1].usize()] else { unreachable!() };
+            // If the value is 10, a power of 2, or some other constant we can optimize this for minimal cycle counts.
+            encode_x86(binary, &mov, byte_size, t_reg.as_reg_op(), Arg::Imm_Int(const_val.convert(prim).load()), Arg::None);
+            encode_x86(binary, &div, byte_size, t_reg.as_reg_op(), Arg::None, Arg::None);
+          }
+          other => unreachable!("{other:?}"),
+        } */
+      }
+    }
+    Op::ADD | Op::SUB | Op::MUL | Op::BIT_AND => {
+      if op_prim_ty.base_ty == PrimitiveBaseType::Float {
+        if op_prim_ty.ele_count == 1 {
+          let left_arg = match op.args[0] {
+            VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
+            VarVal::Stashed(stashed) => {
+              todo!("Load f32/f64 into SSE/AVX register");
+            }
+            ty => unreachable!("{ty:?} not supported"),
+          };
+
+          let right_arg = match op.args[1] {
+            VarVal::Reg(reg, _) => REGISTERS[reg as usize].as_reg_op(),
+            VarVal::Stashed(stash_offset) => Arg::RSP_REL(stash_offset as _),
+            ty => unreachable!("{ty:?} not supported"),
+          };
+
+          match op.out {
+            VarVal::Reg(reg, _) => {
+              let out_arg = REGISTERS[reg as usize].as_reg_op();
+              encode_x86(instr_bytes, &add_fp_scalar, byte_size, out_arg, left_arg, right_arg, Arg::None);
+            }
+            VarVal::Stashed(stash_offset) => {
+              todo!("Handle stash of floating point value")
+            }
+            ty => unreachable!("{ty:?} not supported"),
+          }
+        } else {
+          todo!("Handle vector mathematics");
+        }
+      } else {
+        type OpTable = (&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]);
+        let (op_table, is_commutative): (&OpTable, bool) = match op.op_ty {
+          Op::ADD => (&add, true),
+          Op::MUL => (&imul, true),
+          Op::SUB => (&sub, false),
+          Op::BIT_AND => (&and, true),
+          _ => unreachable!(),
+        };
+
+        if op.op_ty == Op::BIT_AND {
+          dbg!(op);
+        }
+
+        let temp_reg = TMP_REG.as_reg_op();
+
+        let mut r_arg = match op.args[1] {
+          VarVal::Reg(r_reg, _) => REGISTERS[r_reg as usize].as_reg_op(),
+          VarVal::Stashed(right_loc) => {
+            encode_binary(instr_bytes, &mov, byte_size, temp_reg, Arg::RSP_REL(right_loc as _));
+            temp_reg
+          }
+          VarVal::Const => {
+            let Operation::Const(val) = &sn.operands[op.ops[1].usize()] else { panic!("Could not load constant value") };
+            Arg::Imm_Int(val.convert(op_prim_ty).load())
+          }
+          _ => unreachable!(),
+        };
+
+        match op.out {
+          VarVal::Reg(out_reg, _) => {
+            let mut out_reg = REGISTERS[out_reg as usize].as_reg_op();
+            // LEFT ===================
+            match op.args[0] {
+              VarVal::Reg(left_reg, _) => {
+                let left_arg = REGISTERS[left_reg as usize].as_reg_op();
+                if out_reg != left_arg {
+                  if r_arg == out_reg {
+                    if !is_commutative {
+                      encode_binary(instr_bytes, &xchg, byte_size, r_arg, left_arg);
+                    }
+                    out_reg = r_arg;
+                    r_arg = left_arg;
+                  } else {
+                    encode_binary(instr_bytes, &mov, byte_size, out_reg, left_arg);
+                  }
+                }
+              }
+              VarVal::Stashed(left_loc) => {
+                encode_binary(instr_bytes, &mov, byte_size, out_reg, Arg::RSP_REL(left_loc as _));
+              }
+              ty => unreachable!("{ty:?}"),
+            }
+
+            encode_binary(instr_bytes, &op_table, byte_size, out_reg, r_arg);
+          }
+          VarVal::Stashed(out_loc) => {
+            // LEFT ===================
+            match op.args[0] {
+              VarVal::Reg(left_reg, _) => {
+                let left_reg = REGISTERS[left_reg as usize];
+                encode_binary(instr_bytes, &op_table, byte_size, left_reg.as_reg_op(), r_arg);
+                encode_binary(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_loc as _), left_reg.as_reg_op());
+              }
+              VarVal::Stashed(left_loc) => {
+                if left_loc == out_loc {
+                  if r_arg.is_reg() {
+                    encode_binary(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_loc as _), r_arg);
+                  } else {
+                    encode_binary(instr_bytes, &mov, byte_size, temp_reg, r_arg);
+                    encode_binary(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_loc as _), temp_reg);
+                  }
+                } else {
+                  encode_binary(instr_bytes, &mov, byte_size, temp_reg, Arg::RSP_REL(left_loc as _));
+                  encode_binary(instr_bytes, &op_table, byte_size, temp_reg, r_arg);
+                  encode_binary(instr_bytes, &mov, byte_size, Arg::RSP_REL(out_loc as _), temp_reg);
+                }
+              }
+              _ => unreachable!(),
+            }
+          }
+          _ => unreachable!(),
+        }
+      }
+    }
+
+
+    Op::ResolvedCall => {
+      let Operation::Call { reference, .. } = &sn.operands[op.source.usize()] else { unreachable!() };
+
+      match reference {
+        Reference::Object(cmplx_id) => {
+          let cw_pack = encode_call_preamble(instr_bytes, op);
+          // Get the complex id from node associated with the call.
+
+          //encode_binary(instr_bytes, &mov, 64, call_reg.as_reg_op(), Arg::Imm_Int(0));
+          encode_unary(instr_bytes, &call_rel, 32, Arg::Imm_Int(0));
+
+          patch_points.push((instr_bytes.len(), PatchType::Function(*cmplx_id)));
+
+          encode_call_postamble(instr_bytes, cw_pack);
+          //print_instructions(&instr_bytes, 0);
+        }
+        tgt => panic!("Call target does not exist! {tgt:?}"),
+      }
+    }
+    Op::LOAD_CONST => {
+      let Operation::Const(val) = sn.operands[op.ops[0].usize()] else { unreachable!() };
+      if op_prim_ty.base_ty == PrimitiveBaseType::Float {
+        // Store the primitive value in the data segment of the function.
+
+        let byte_size = op_prim_ty.byte_size;
+
+        let offset = data_store.len() as u64;
+        let aligned_offset = get_aligned_value(offset, byte_size as u64);
+
+        for _ in 0..aligned_offset - offset {
+          data_store.push(0);
+        }
+
+        let new_val = val.convert(op_prim_ty);
+        for byte_index in 0..byte_size as usize {
+          data_store.push(new_val.val[byte_index])
+        }
+
+        match op.out {
+          VarVal::Reg(reg, _) => {
+            let out_reg = REGISTERS[reg as usize];
+            encode_binary(instr_bytes, &mov_fp_scalar, byte_size as u64 * 8, out_reg.as_reg_op(), Arg::RIP_REL(256));
+            vec_rip_resolutions.push((instr_bytes.len(), aligned_offset));
+          }
+          _ => unreachable!(),
+        }
+      } else {
+        match op.out {
+          VarVal::Reg(reg, _) => {
+            let out_reg = REGISTERS[reg as usize];
+
+            // Can move value directly into memory if the value has 32 significant bits or less.
+            // Otherwise, we must move the value into a temporary register first.
+
+            let raw_ty = op.prim_ty;
+
+            if byte_size < 32 {
+              encode_binary(instr_bytes, &xor, 64, out_reg.as_reg_op(), out_reg.as_reg_op());
+            }
+
+            dbg!(val);
+            dbg!(ty, raw_ty);
+            dbg!(byte_size);
+            dbg!(val.convert(raw_ty));
+
+            encode_binary(instr_bytes, &mov, byte_size, out_reg.as_reg_op(), Arg::Imm_Int(val.convert(raw_ty).load()));
+          }
+          _ => unreachable!(),
+        }
+      }
+    }
+    op => {
+      print_instructions(&instr_bytes, 0);
+      todo!("Process {op}");
+    }
+    _ => {}
+  }
+} */

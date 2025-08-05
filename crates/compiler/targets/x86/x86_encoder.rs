@@ -32,20 +32,11 @@ impl<'bin> InstructionProps<'bin> {
   }
 }
 
-pub(crate) fn encode_zero<'bin>(
-  binary: &'bin mut Vec<u8>,
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-) -> InstructionProps<'bin> {
+pub(crate) fn encode_zero<'bin>(binary: &'bin mut Vec<u8>, table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64) -> InstructionProps<'bin> {
   encode_x86(binary, table, bit_size, Arg::None, Arg::None, Arg::None, Arg::None)
 }
 
-pub(crate) fn encode_unary<'bin>(
-  binary: &'bin mut Vec<u8>,
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-  op1: Arg,
-) -> InstructionProps<'bin> {
+pub(crate) fn encode_unary<'bin>(binary: &'bin mut Vec<u8>, table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg) -> InstructionProps<'bin> {
   encode_x86(binary, table, bit_size, op1, Arg::None, Arg::None, Arg::None)
 }
 
@@ -55,25 +46,14 @@ pub(crate) fn test_enc_uno<'bin>(table: &(&'static str, [(OpSignature, (u32, u8,
   print_instruction(&bin)
 }
 
-pub(crate) fn test_enc_dos<'bin>(
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-  op1: Arg,
-  op2: Arg,
-) -> String {
+pub(crate) fn test_enc_dos<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg) -> String {
   let mut bin = vec![];
   encode_x86(&mut bin, table, bit_size, op1, op2, Arg::None, Arg::None);
   //println!("{:02X?}", &bin);
   print_instruction(&bin)
 }
 
-pub(crate) fn test_enc_tres<'bin>(
-  table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]),
-  bit_size: u64,
-  op1: Arg,
-  op2: Arg,
-  op3: Arg,
-) -> String {
+pub(crate) fn test_enc_tres<'bin>(table: &(&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]), bit_size: u64, op1: Arg, op2: Arg, op3: Arg) -> String {
   let mut bin = vec![];
   encode_x86(&mut bin, table, bit_size, op1, op2, op3, Arg::None);
   //println!("{:02X?}", &bin);
@@ -111,21 +91,13 @@ pub(crate) fn encode_x86<'bin>(
 
   for (sig, (op_code, ext, encoding, encoder)) in &table.1 {
     if *sig == signature {
-      let mut props = InstructionProps {
-        instruction_name:      table.0,
-        bin:                   binary,
-        displacement_index:    0,
-        displacement_bit_size: 0,
-      };
+      let mut props = InstructionProps { instruction_name: table.0, bin: binary, displacement_index: 0, displacement_bit_size: 0 };
       unsafe { (std::mem::transmute::<_, OpEncoder>(*encoder))(&mut props, *op_code, bit_size, *encoding, op1, op2, op3, op4, *ext) };
       return props;
     }
   }
 
-  panic!(
-    "Could not find operation for {signature:?} in encoding table \n\n{}",
-    format!("{}:\n{}", table.0, table.1.iter().map(|v| format!("{:?} {:?}", v.0, v.1)).collect::<Vec<_>>().join("\n"))
-  );
+  panic!("Could not find operation for {signature:?} in encoding table \n\n{}", format!("{}:\n{}", table.0, table.1.iter().map(|v| format!("{:?} {:?}", v.0, v.1)).collect::<Vec<_>>().join("\n")));
 }
 
 pub(crate) fn gen_zero_op(props: &mut InstructionProps, op_code: u32, bit_size: u64, enc: OpEncoding, _: Arg, _: Arg, _: Arg, _: Arg, ext: u8) {
@@ -288,79 +260,103 @@ pub(crate) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
 
 fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
   const SIB_SCALE_OFFSET: u8 = 6;
-  const SIB_INDEX_OFFSET: u8 = 3;
   const SIB_INDEX_NOT_USED: u8 = 0b100;
   const SIB_NO_INDEX_SCALE: u8 = 0b00 << SIB_SCALE_OFFSET;
   const DISPLACEMENT_INDEX: u8 = 0b101;
   const MOD_IMM_8_FOLLOWS: u8 = 0b10;
   const MOD_IMM_32_FOLLOWS: u8 = 0b01;
 
-  let mut mod_encoding = 0b00;
+  let mut mod_bits = 0b00;
   let mut displace_val = 0 as i64;
-  let rm_index = r_m.reg_index();
 
-  let sib = match rm_index {
-    4 => match r_m {
-      Arg::Mem(RSP) | Arg::Mem(R12) => {
-        // use sib index to access the RSP/R12 register
-        (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
-      }
+  let (sib_byte, rm_bits) = if let Arg::SIBAddress { base, index, scale, disp } = r_m {
 
-      Arg::RSP_REL(val) | Arg::MemRel(_, val) => {
-        if (val & !0xFF) > 0 {
-          mod_encoding = MOD_IMM_8_FOLLOWS;
-        } else {
-          mod_encoding = MOD_IMM_32_FOLLOWS;
+    mod_bits = match disp {
+      0 => 0,
+      1..254 | -255..0 => 0b01,
+      _ => 0b10,
+    };
+
+    let scale_bits = match scale  {
+      0 | 1 => 0b00,
+      2 => 0b01,
+      4 => 0b10,
+      _ => 0b11,
+    };
+
+    let index = index.as_reg_op().reg_index() & 0b111;
+    let base = base.as_reg_op().reg_index() & 0b111;
+
+    let sib = scale_bits << 6 | index << 3 | base;
+    
+
+    (sib, 0b100)
+  } else {
+    let rm_index = r_m.reg_index();
+    let sib = match rm_index {
+      4 => match r_m {
+        Arg::Mem(RSP) | Arg::Mem(R12) => {
+          // use sib index to access the RSP/R12 register
+          (SIB_NO_INDEX_SCALE | SIB_INDEX_NOT_USED | (RSP.0 & 7) as u8) as u8
         }
 
-        displace_val = val;
+        Arg::RSP_REL(val) | Arg::MemRel(_, val) => {
+          if (val & !0xFF) > 0 {
+            mod_bits = MOD_IMM_8_FOLLOWS;
+          } else {
+            mod_bits = MOD_IMM_32_FOLLOWS;
+          }
 
-        let sib_scale = 0b00 << 6;
-        let sib_index = SIB_INDEX_NOT_USED << 3;
-        let sib_base = ((RSP.0 & 7) as u8) << 0;
+          displace_val = val;
 
-        sib_scale | sib_index | sib_base
-      }
-      _ => 0,
-    },
-    5 => match r_m {
-      Arg::RIP_REL(val) | Arg::MemRel(_, val) => {
-        displace_val = val;
-        0
-      }
-      Arg::Mem(RBP) | Arg::Mem(R13) => {
-        // use sib index to access the RSP register
-        mod_encoding = 0b01;
-        (SIB_NO_INDEX_SCALE | (0b000 << 3) | 0b000) as u8
-      }
-      _ => 0,
-    },
-    _ => match r_m {
-      Arg::MemRel(_, val) => {
-        if (val & !0xFF) > 0 {
-          mod_encoding = 0b10
-        } else {
-          mod_encoding = 0b01;
+          let sib_scale = 0b00 << 6;
+          let sib_index = SIB_INDEX_NOT_USED << 3;
+          let sib_base = ((RSP.0 & 7) as u8) << 0;
+
+          sib_scale | sib_index | sib_base
         }
+        _ => 0,
+      },
+      5 => match r_m {
+        Arg::RIP_REL(val) | Arg::MemRel(_, val) => {
+          displace_val = val;
+          0
+        }
+        Arg::Mem(RBP) | Arg::Mem(R13) => {
+          // use sib index to access the RSP register
+          mod_bits = 0b01;
+          (SIB_NO_INDEX_SCALE | (0b000 << 3) | 0b000) as u8
+        }
+        _ => 0,
+      },
+      _ => match r_m {
+        Arg::MemRel(_, val) => {
+          if (val & !0xFF) > 0 {
+            mod_bits = 0b10
+          } else {
+            mod_bits = 0b01;
+          }
 
-        displace_val = val;
+          displace_val = val;
 
-        0
-      }
-      _ => 0,
-    },
+          0
+        }
+        _ => 0,
+      },
+    };
+    (sib, rm_index)
   };
 
   let mod_bits = match r_m {
-    Arg::RSP_REL(_) | Arg::RIP_REL(_) | Arg::Mem(_) | Arg::MemRel(..) => mod_encoding,
+    Arg::RSP_REL(_) | Arg::RIP_REL(_) | Arg::Mem(_) | Arg::MemRel(..) => mod_bits,
     Arg::Reg(_) => 0b11,
-    op => panic!("Invalid r_m operand {op:?}"),
+    op => mod_bits,
   };
 
-  props.bin.push(((mod_bits & 0b11) << 6) | ((reg.reg_index() & 0x7) << 3) | (rm_index & 0x7));
+  props.bin.push((mod_bits << 6) | ((reg.reg_index() & 0x7) << 3) | (rm_bits & 0x7));
 
-  if sib != 0 {
-    props.bin.push(sib)
+  if sib_byte != 0 {
+    props.bin.push(sib_byte)
   }
 
   match mod_bits {
@@ -369,7 +365,7 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
       props.displacement_bit_size = 8;
       push_bytes(props.bin, displace_val as u64 as u8);
     }
-    0b00 if rm_index == DISPLACEMENT_INDEX => {
+    0b00 if rm_bits == DISPLACEMENT_INDEX => {
       props.displacement_index = props.bin.len();
       props.displacement_bit_size = 32;
       push_bytes(props.bin, displace_val as u64 as u32);
@@ -388,14 +384,26 @@ fn encode_rex(props: &mut InstructionProps, bit_size: u64, r_m: Arg, reg: Arg) {
   const REX_R_REG_EX: u8 = 0b0100_0100;
   const REX_X_SIP: u8 = 0b0100_0010;
   const REX_B_MEM_REG_EX: u8 = 0b0100_0001;
-
+  
   let mut rex = 0;
   rex |= (bit_size == 64).then_some(REX_W_64B).unwrap_or(0);
-  rex |= (r_m.is_upper_8_reg()).then_some(REX_B_MEM_REG_EX).unwrap_or(0);
   rex |= (reg.is_upper_8_reg()).then_some(REX_R_REG_EX).unwrap_or(0);
+
+  match (r_m, reg) {
+    (Arg::SIBAddress { base, index, scale, disp }, _) |(_, Arg::SIBAddress { base, index, scale, disp }) =>{
+      rex |= (base.is_upper_8_reg()).then_some(REX_B_MEM_REG_EX).unwrap_or(0);
+      rex |= (index.is_upper_8_reg()).then_some(REX_X_SIP).unwrap_or(0);
+    }
+    _ => {
+      rex |= (r_m.is_upper_8_reg()).then_some(REX_B_MEM_REG_EX).unwrap_or(0);
+    }
+  }
+  
   if rex > 0 {
     props.bin.push(rex);
   }
+
+
 }
 
 fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: u64, props: &mut InstructionProps<'_>, w: u8) -> u32 {

@@ -1,6 +1,6 @@
 #![allow(non_upper_case_globals)]
 
-use super::{prim_ty_f64, prim_ty_s128, ConstVal, OpId, RumType};
+use super::{prim_ty_f64, prim_ty_s128, ConstVal, OpId, RumTypeRef};
 use num_traits::{Pow, Zero};
 use radlr_rust_runtime::types::Token;
 use rum_common::{ArrayVec, IString};
@@ -15,73 +15,15 @@ use std::fmt::{Debug, Display};
 pub(crate) struct MemberEntry {
   pub name:      IString,
   pub origin_op: u32,
-  pub ty:        RumType,
+  pub ty:        RumTypeRef,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum NodeConstraint {
-  /// Used to bind a variable to a type that is not defined in the current
-  /// routine scope.
-  GlobalHeapReference(RumType, IString, Token),
-  GlobalNameReference(RumType, IString, Token),
-  OpToTy(OpId, RumType),
-  // The type of op at src must match te type of the op at dst.
-  // If both src and dst are resolved, a conversion must be made.
-  OpToOp {
-    src: OpId,
-    dst: OpId,
-  },
-  MemOp {
-    ptr_op: OpId,
-    val_op: OpId,
-  },
-  Deref {
-    ptr_ty:  RumType,
-    val_ty:  RumType,
-    mutable: bool,
-  },
-  Member {
-    name:    IString,
-    ref_dst: OpId,
-    par:     OpId,
-  },
-  Agg(OpId),
-  ResolveGenTy(RumType, RumType),
-  GenTyToGenTy(RumType, RumType),
-  SetHeap(OpId, RumType),
-  /* OpConvertTo {
-    src_op:       OpId,
-    trg_op_index: usize,
-  }, */
-  LinkCall(OpId),
-}
-
-impl Debug for NodeConstraint {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    use NodeConstraint::*;
-    match self {
-      GlobalHeapReference(ty, name, ..) => f.write_fmt(format_args!("{ty: >4} => GLOBAL_HEAP {name}")),
-      GlobalNameReference(ty, name, ..) => f.write_fmt(format_args!("{ty: >4} => GLOBAL_OBJ  {name}")),
-      OpToTy(op, ty) => f.write_fmt(format_args!("{op: >4} => {ty}")),
-      OpToOp { src, dst } => f.write_fmt(format_args!("{src: >4} = {dst}")),
-      MemOp { ptr_op, val_op } => f.write_fmt(format_args!("{val_op: >4} => *{ptr_op}")),
-      Deref { ptr_ty, val_ty, mutable } => f.write_fmt(format_args!("{ptr_ty: >4} loads {val_ty}")),
-      Member { name, ref_dst, par } => f.write_fmt(format_args!("{par}.{name} = {ref_dst}")),
-      ResolveGenTy(gen_ty, ty) =>f.write_fmt(format_args!("{gen_ty: >4} => {ty}")),
-      GenTyToGenTy(gen_ty, ty) =>f.write_fmt(format_args!("{gen_ty: >4} => {ty}")),
-      SetHeap(op, ty) => f.write_fmt(format_args!("{op: >4} => {ty}")),
-      LinkCall(op) => f.write_fmt(format_args!("link call {op: >4}")),
-      _ => unreachable!()
-    }
-  }
-}
 
 #[derive(Clone)]
 pub(crate) struct TypeVar {
-  pub ty:         RumType,
+  pub ty:         RumTypeRef,
   pub id:         u32,
-  pub ref_id:     i32,
+  pub ori_id:     u32,
   pub num:        Numeric,
   pub attributes: ArrayVec<1, VarAttribute>,
   pub members:    ArrayVec<1, MemberEntry>,
@@ -91,7 +33,7 @@ impl Default for TypeVar {
   fn default() -> Self {
     Self {
       id:         Default::default(),
-      ref_id:     -1,
+      ori_id:     Default::default(),
       num:        Numeric::default(),
       ty:         Default::default(),
       attributes: Default::default(),
@@ -102,7 +44,7 @@ impl Default for TypeVar {
 
 impl TypeVar {
   pub fn new(id: u32) -> Self {
-    Self { id: id, ..Default::default() }
+    Self { id: id, ori_id: id, ..Default::default() }
   }
 
   #[track_caller]
@@ -115,7 +57,7 @@ impl TypeVar {
     let _ = self.attributes.push_unique(constraint);
   }
 
-  pub fn add_mem(&mut self, name: IString, ty: RumType, origin_node: u32) {
+  pub fn add_mem(&mut self, name: IString, ty: RumTypeRef, origin_node: u32) {
     self.attributes.push_unique(VarAttribute::Agg).unwrap();
 
     // for (index, MemberEntry { name: n, origin_op: origin_node, ty }) in self.members.iter().enumerate() {
@@ -128,7 +70,7 @@ impl TypeVar {
     let _ = self.members.insert_ordered(MemberEntry { name, origin_op: origin_node, ty });
   }
 
-  pub fn get_mem(&self, name: IString) -> Option<(u32, RumType)> {
+  pub fn get_mem(&self, name: IString) -> Option<(u32, RumTypeRef)> {
     for MemberEntry { name: n, origin_op: origin_node, ty } in self.members.iter() {
       if *n == name {
         return Some((*origin_node, *ty));
@@ -146,12 +88,17 @@ impl Debug for TypeVar {
 
 impl Display for TypeVar {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let Self { id, ty, attributes: constraints, members, ref_id, .. } = self;
+    let Self { id, ty, attributes: constraints, members, .. } = self;
 
-    if ty.is_generic() {
-      f.write_fmt(format_args!("[{id}] {}{ty:10} | {}", if *ref_id >= 0 { "*" } else { "" }, self.num))?;
+    if self.id != self.ori_id {
+      f.write_fmt(format_args!("see {}", self.id))?;
     } else {
-      f.write_fmt(format_args!("[{id}] {}v{id}: {ty:10} | {}", if *ref_id >= 0 { "*" } else { "" }, self.num))?;
+
+      
+      if ty.is_generic() {
+        f.write_fmt(format_args!("[{id}] {ty:10} | {}",  self.num))?;
+      } else {
+      f.write_fmt(format_args!("[{id}] v{id}: {ty:10} | {}", self.num))?;
     }
     if !constraints.is_empty() {
       f.write_str(" <")?;
@@ -160,7 +107,7 @@ impl Display for TypeVar {
       }
       f.write_str(">")?;
     }
-
+    
     if !members.is_empty() {
       f.write_str(" [\n")?;
       for MemberEntry { name, origin_op: origin_node, ty } in members.iter() {
@@ -168,6 +115,7 @@ impl Display for TypeVar {
       }
       f.write_str("]")?;
     }
+  }
 
     Ok(())
   }
@@ -185,16 +133,21 @@ pub(crate) enum VarAttribute {
   Index(u32),
   Load(u32, u32),
   MemOp {
-    ptr_ty: RumType,
-    val_ty: RumType,
+    ptr_ty: RumTypeRef,
+    val_ty: RumTypeRef,
   },
   Convert {
     dst: OpId,
     src: OpId,
   },
+  /// This var represents an instance of the type defined at the given node.
+  Deref {
+    op: OpId
+  },
   Global(IString, Token),
   /// The operation that declares a heap variable
   HeapOp(OpId),
+  TypeRef(OpId)
 }
 
 impl Debug for VarAttribute {
@@ -209,11 +162,13 @@ impl Debug for VarAttribute {
       MemOp { ptr_ty: ptr, val_ty: val } => f.write_fmt(format_args!("memop  *{ptr} = {val}",)),
       Load(a, b) => f.write_fmt(format_args!("load (@ `{a}, src: `{b})",)),
       Convert { dst, src } => f.write_fmt(format_args!("{src} => {dst}",)),
+      TypeRef(op) => f.write_fmt(format_args!("instanceof {op}",)),
       Member => f.write_fmt(format_args!("*.X",)),
       Agg => f.write_fmt(format_args!("agg",)),
       Index(index) => f.write_fmt(format_args!("*.[{index}]",)),
       HeapOp(op) => f.write_fmt(format_args!("heap_decl@{op}",)),
       Global(ty, ..) => f.write_fmt(format_args!("typeof({ty})",)),
+      _ => {Ok(())}
     }
   }
 }

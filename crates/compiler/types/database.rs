@@ -1,7 +1,7 @@
 use super::RootNode;
 use crate::{
   finalizer::finalize,
-  ir_compiler::STRUCT_ID,
+  ir_compiler::{INTERNAL_STRUCT_ID, STRUCT_ID},
   optimizer::optimize,
   solver::{solve, GlobalConstraint},
   types::*,
@@ -47,7 +47,9 @@ impl<'a> From<&'a mut SolveDatabase<'a>> for CMPLXId {
 impl<'a> From<(CMPLXId, &'a SolveDatabase<'a>)> for NodeHandle {
   fn from((id, db): (CMPLXId, &'a SolveDatabase)) -> Self {
     let index = id.0 as usize;
-    db.nodes[index].clone()
+    let mut handle = db.nodes[index].clone();
+    handle.1 = id.0 as _;
+    handle
   }
 }
 
@@ -70,7 +72,7 @@ pub struct SolveDatabase<'a> {
   /// Maps type name to an entry in the type_table.
   pub comptime_type_name_lookup_table: HashMap<CMPLXId, usize>,
 
-  pub(crate) interface_instances: BTreeMap<RumType, BTreeMap<RumType, BTreeMap<u64, CMPLXId>>>,
+  pub(crate) interface_instances: BTreeMap<RumTypeRef, BTreeMap<RumTypeRef, BTreeMap<u64, CMPLXId>>>,
   pub heap_map:                   HashMap<IString, u32>,
   pub heap_count:                 usize,
 }
@@ -109,10 +111,10 @@ impl<'a> SolveDatabase<'a> {
       ("type_prim".intern(), prim_ty_struct, &RUM_PRIM_TYPE),
       ("type_ref".intern(), prim_ty_struct, &RUM_TYPE_REF),
       ("core$$type_table".intern(), prim_ty_struct, &RUM_TYPE_TABLE),
+      ("str".intern(), prim_ty_struct, &RUM_TEMP_STRING_TYPE),
       ("u32".intern(), prim_ty_u32, &RUM_TEMP_U32_TYPE),
       ("f32".intern(), prim_ty_f32, &RUM_TEMP_F32_TYPE),
       ("u64".intern(), prim_ty_u64, &RUM_TEMP_U64_TYPE),
-      ("str".intern(), prim_ty_struct, &RUM_TEMP_STRING_TYPE),
     ]
     .into_iter()
     .enumerate()
@@ -120,8 +122,8 @@ impl<'a> SolveDatabase<'a> {
       let id = solve_db.add_object(
         name,
         NodeHandle::new(RootNode {
-          nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: STRUCT_ID }],
-          ty: RumType { raw_type: prim_ty, type_id: index as _ },
+          nodes: vec![Node { children: vec![], index: 0, loop_type: LoopType::None, parent: -1, ports: vec![], type_str: INTERNAL_STRUCT_ID }],
+          ty: RumTypeRef { raw_type: prim_ty, type_id: index as _ },
           ..Default::default()
         }),
       );
@@ -149,7 +151,7 @@ impl<'a> SolveDatabase<'a> {
           let node_id = solver_db.add_object(*name, node.clone());
 
           if node_constraints.len() > 0 {
-            global_constraints.push(GlobalConstraint::ResolveObjectConstraints { node_id, constraints: node_constraints.clone() });
+            global_constraints.push((node_id, GlobalConstraint::ResolveLocalConstraints { constraints: node_constraints.clone() }));
           }
 
           solver_db.add_root(RootType::Any, node_id);
@@ -165,7 +167,7 @@ impl<'a> SolveDatabase<'a> {
             let node_id = solver_db.add_object(name, node.clone());
 
             if node_constraints.len() > 0 {
-              global_constraints.push(GlobalConstraint::ResolveObjectConstraints { node_id, constraints: node_constraints.clone() });
+              global_constraints.push((node_id, GlobalConstraint::ResolveLocalConstraints { constraints: node_constraints.clone() }));
             }
 
             solver_db.add_root(RootType::Any, node_id);

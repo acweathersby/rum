@@ -31,7 +31,7 @@ fn main() {
 
       // LINKER ====================================================
 
-      let (entry_offset, binary) = linker::link(bin_functs);
+      let (entry_offset, binary) = linker::link(bin_functs, &sdb_opt);
 
       println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
       print_instructions(&binary, 0);

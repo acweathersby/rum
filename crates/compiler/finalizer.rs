@@ -1,6 +1,6 @@
 #![allow(non_upper_case_globals)]
 use crate::{
-  _interpreter::get_op_type,
+  _interpreter::{get_op_type, get_resolved_ty},
   ir_compiler::CLAUSE_SELECTOR_ID,
   types::{GetResult, Op, OpId, Operation, PortType, Reference, RumString, RumTypeObject, SolveDatabase, SolveState},
 };
@@ -10,7 +10,6 @@ use std::collections::{HashMap, VecDeque};
 /// Performs necessary transformations on active nodes, such as inserting convert instructions, etc.
 /// (TODO: Add more examples to description)
 pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
-
   for node in db.nodes.iter() {
     finalize_node(db, node);
   }
@@ -19,227 +18,299 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
 }
 
 pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::NodeHandle) {
-    let node = node.get_mut().unwrap();
+  let node = node.get_mut().unwrap();
 
-    let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
-    let mut used_ops: Vec<bool> = vec![false; node.operands.len()];
-    let mut dissolved_operations = false;
+  dbg!(&node);
 
-    if node.solve_state() == SolveState::Solved || true {
-      // Create or report failed converts.
+  let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
+  let mut used_ops: Vec<bool> = vec![false; node.operands.len()];
+  let mut dissolved_operations = false;
 
-      let mut op_queue = VecDeque::from_iter(node.nodes[0].ports.iter().filter_map(|n| match n.ty {
-        PortType::Out => Some(n.slot),
-        _ => None,
-      }));
+  if node.solve_state() == SolveState::Solved || true {
+    // Create or report failed converts.
 
-      for node in &node.nodes {
-        if node.type_str == CLAUSE_SELECTOR_ID {
-          op_queue.extend(node.ports.iter().map(|p| p.slot));
-        }
+    let mut op_queue = VecDeque::from_iter(node.nodes[0].ports.iter().filter_map(|n| match n.ty {
+      PortType::Out => Some(n.slot),
+      _ => None,
+    }));
+
+    for node in &node.nodes {
+      if node.type_str == CLAUSE_SELECTOR_ID {
+        op_queue.extend(node.ports.iter().map(|p| p.slot));
+      }
+    }
+
+    let mut const_look_up = HashMap::new();
+
+    while let Some(op) = op_queue.pop_front() {
+      if !op.is_valid() {
+        continue;
       }
 
-      let mut const_look_up = HashMap::new();
+      if !used_ops[op.usize()] {
+        used_ops[op.usize()] = true;
+      } else {
+        continue;
+      }
 
-      while let Some(op) = op_queue.pop_front() {
-        if !op.is_valid() {
-          continue;
+      match &node.operands[op.usize()] {
+        // These operations do not reference other ops.
+        Operation::Const(c) => {
+          let key = (c, get_op_type(node, op).base_type());
+          match const_look_up.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+              dissolved_ops[op.usize()] = *entry.get();
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+              entry.insert(op);
+            }
+          }
         }
+        Operation::MetaTypeRef(..) | Operation::Param(..) | Operation::Str(..) | Operation::StaticObj(..) => {}
+        Operation::Call { routine, args, seq_op: mem_ctx_op, .. } => {
+          op_queue.push_back(*routine);
 
-        if !used_ops[op.usize()] {
-          used_ops[op.usize()] = true;
-        } else {
-          continue;
-        }
-
-        match &node.operands[op.usize()] {
-          // These operations do not reference other ops.
-          Operation::Const(c) => {
-            let key = (c, get_op_type(node, op).base_type());
-            match const_look_up.entry(key) {
-              std::collections::hash_map::Entry::Occupied(entry) => {
-                dissolved_ops[op.usize()] = *entry.get();
-              }
-              std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(op);
-              }
-            }
-          }
-          Operation::Type(..) | Operation::Param(..) | Operation::Str(..) | Operation::Obj(..) => {}
-          Operation::Call { routine, args, seq_op: mem_ctx_op, .. } => {
-            op_queue.push_back(*routine);
-
-            for op in args {
-              op_queue.push_back(*op);
-            }
-            op_queue.push_back(*mem_ctx_op);
-          }
-          Operation::AggDecl { alignment, size, seq_op: mem_ctx_op, .. } => {
-            op_queue.push_back(*size);
-            op_queue.push_back(*alignment);
-            op_queue.push_back(*mem_ctx_op);
-          }
-          Operation::MemPTR { base, seq_op: mem_ctx_op, .. } => {
-            op_queue.push_back(*base);
-            op_queue.push_back(*mem_ctx_op);
-          }
-
-          Operation::Op { operands, seq_op: mem_ctx_op, .. } => {
-            for op in operands {
-              op_queue.push_back(*op);
-            }
-            op_queue.push_back(*mem_ctx_op);
-          }
-          Operation::_Gamma(_, op) => {
+          for op in args {
             op_queue.push_back(*op);
           }
-          Operation::Φ(_, ops) => {
-            for op in ops {
-              op_queue.push_back(*op);
-            }
-          }
-
-          d => unreachable!("{op:?} {d} \n {node:?}"),
+          op_queue.push_back(*mem_ctx_op);
         }
+        Operation::AggDecl { alignment, size, seq_op: mem_ctx_op, ty_ref_op } => {
+          op_queue.push_back(*size);
+          op_queue.push_back(*alignment);
+          op_queue.push_back(*mem_ctx_op);
+          op_queue.push_back(*ty_ref_op);
+        }
+        Operation::NamedOffsetPtr { base, seq_op: mem_ctx_op, .. } => {
+          op_queue.push_back(*base);
+          op_queue.push_back(*mem_ctx_op);
+        }
+        Operation::CalcOffsetPtr { base, index, seq_op: mem_ctx_op, .. } => {
+          op_queue.push_back(*base);
+          op_queue.push_back(*index);
+          op_queue.push_back(*mem_ctx_op);
+        }
+
+        Operation::Op { operands, seq_op: mem_ctx_op, .. } => {
+          for op in operands {
+            op_queue.push_back(*op);
+          }
+          op_queue.push_back(*mem_ctx_op);
+        }
+        Operation::_Gamma(_, op) => {
+          op_queue.push_back(*op);
+        }
+        Operation::Φ(_, ops) => {
+          for op in ops {
+            op_queue.push_back(*op);
+          }
+        }
+
+        d => unreachable!("{op:?} {d} \n {node:?}"),
+      }
+    }
+
+    for op_index in 0..node.operands.len() {
+      let op_id = OpId(op_index as _);
+
+      if !used_ops[op_index] {
+        node.operands[op_index] = Operation::Dead;
+        continue;
       }
 
-      for op_index in 0..node.operands.len() {
-        let op_id = OpId(op_index as _);
+      match &node.operands[op_id.usize()] {
+        Operation::Str(str_value) => {
+          let comptime_str = RumString::new(str_value.to_str().as_str());
 
-        if !used_ops[op_index] {
-          node.operands[op_index] = Operation::Dead;
-          continue;
+          unsafe {
+            dbg!(&*comptime_str);
+            dbg!(comptime_str as usize)
+          };
+
+          node.operands[op_id.usize()] = Operation::StaticObj(Reference::Integer(comptime_str as _));
         }
+        Operation::MetaTypeRef(base_ty) => {
+          let ty = get_resolved_ty(node, base_ty);
 
-        match &node.operands[op_id.usize()] {
-          Operation::Str(str_value) => {
-            let comptime_str = RumString::new(str_value.to_str().as_str());
+          // Convert the MetaTypeRef to an actual RUM type ref value. This may need to be adjusted depending
+          // on whether the compilation is for comptime or runtime.
 
-            unsafe {
-              dbg!(&*comptime_str);
-              dbg!(comptime_str as usize)
-            };
+          node.operands[op_id.usize()] = Operation::StaticObj(Reference::SmallObj(ty.as_ref()));
 
-            node.operands[op_id.usize()] = Operation::Type(Reference::Integer(comptime_str as _));
-          }
-          Operation::Type(type_name) => {
-            match type_name {
-              Reference::UnresolvedName(type_name) => {
-                if let GetResult::Existing(cplx) = db.get_type_by_name(*type_name) {
-                  // This needs to be either compile at during compilation for use in compile time objects,
-                  // or linked at link time to be used as a runtime data structure. The is depends if we
-                  // are in comptime mode or in compile mode, which depends on the object we are finalizing
-                  // and the context mode which should be passed down
-                  if let Some(value) = db.comptime_type_name_lookup_table.get(&cplx) {
-                    let value = db.comptime_type_table[*value] as usize;
-                    node.operands[op_id.usize()] = Operation::Type(Reference::Integer(value));
-                  } else {
-                    panic!("This is unstable")
-                  }
+          /*     match type_name {
+            Reference::UnresolvedName(type_name) => {
+              if let GetResult::Existing(cplx) = db.get_type_by_name(*type_name) {
+                // This needs to be either compile at during compilation for use in compile time objects,
+                // or linked at link time to be used as a runtime data structure. The is depends if we
+                // are in comptime mode or in compile mode, which depends on the object we are finalizing
+                // and the context mode which should be passed down
+                if let Some(value) = db.comptime_type_name_lookup_table.get(&cplx) {
+                  let value = db.comptime_type_table[*value] as usize;
+                  node.operands[op_id.usize()] = Operation::MetaTypeRef(Reference::Integer(value));
                 } else {
-                  panic!("Type {type_name} is not loaded into compiler's database");
-                }
-              }
-              ty => unreachable!("{ty:?}"),
-            }
-          }
-          Operation::MemPTR { reference, base, seq_op: mem_ctx_op } => {
-            let parent_type = get_op_type(node, *base);
-
-            if let Reference::UnresolvedName(name) = reference {
-              if let Some(cmplx_node) = parent_type.get_type_data(db) {
-                //if !agg_node.compile_time_binary.is_null() {
-                let out: &RumTypeObject = cmplx_node;
-
-                if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == name.to_str().as_str()) {
-                  let offset = prop.byte_offset;
-                  node.operands[op_id.usize()] = Operation::MemPTR { reference: Reference::Integer(offset as _), base: *base, seq_op: *mem_ctx_op }
+                  panic!("This is unstable")
                 }
               } else {
-                panic!("Could not get base type of type at op {op_id}  base_type: {parent_type}")
+                panic!("Type {type_name} is not loaded into compiler's database");
               }
             }
+            ty => unreachable!("{ty:?}"),
+          } */
+        }
+        Operation::NamedOffsetPtr { reference, base, seq_op: mem_ctx_op } => {
+          let parent_type = get_op_type(node, *base);
+
+          if let Reference::UnresolvedName(name) = reference {
+            if let Some(cmplx_node) = parent_type.get_type_data(db) {
+              //if !agg_node.compile_time_binary.is_null() {
+              let out: &RumTypeObject = cmplx_node;
+
+              if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == name.to_str().as_str()) {
+                let offset = prop.byte_offset;
+                node.operands[op_id.usize()] = Operation::NamedOffsetPtr { reference: Reference::Integer(offset as _), base: *base, seq_op: *mem_ctx_op }
+              }
+            } else {
+              panic!("Could not get base type of type at op {op_id}  base_type: {parent_type} {node:#?}")
+            }
           }
-          Operation::Op { op_name, operands, .. } => {
-            match *op_name {
-              Op::SEED => {
-                let r_type = get_op_type(node, operands[0]);
-                let l_type = get_op_type(node, op_id);
+        }
+        Operation::Op { op_name, operands, seq_op } => {
+          match *op_name {
+            Op::SEED => {
+              let r_type = get_op_type(node, operands[0]);
+              let l_type = get_op_type(node, op_id);
 
-                if r_type != l_type {
-                  let Operation::Op { op_name, .. } = &mut node.operands[op_id.usize()] else { unreachable!() };
-                  println!("{r_type} => {l_type}");
-                  // TODO: Ensure operation is convertible.
-                  *op_name = Op::CONVERT;
-                } else if !matches!(node.operands[operands[0].usize()], Operation::Φ(..)) {
-                  dissolved_ops[op_id.usize()] = operands[0];
-                  dissolved_operations = true;
-                }
+              if r_type != l_type {
+                let Operation::Op { op_name, .. } = &mut node.operands[op_id.usize()] else { unreachable!() };
+                println!("{r_type} => {l_type}");
+                // TODO: Ensure operation is convertible.
+                *op_name = Op::CONVERT;
+              } else if !matches!(node.operands[operands[0].usize()], Operation::Φ(..)) {
+                dissolved_ops[op_id.usize()] = operands[0];
+                dissolved_operations = true;
               }
-              // Constant fold pass 1.
-              Op::ADD | Op::SUB | Op::DIV | Op::MUL => {
-                let left_op_index = operands[0].usize();
-                let right_op_index = operands[1].usize();
-                let ty = get_op_type(node, op_id).prim_data();
-                // Const expression elimination
-                match (&node.operands[left_op_index], &node.operands[right_op_index]) {
-                  (Operation::Const(left), Operation::Const(right)) => {
-                    use crate::types::*;
-                    node.operands[op_index] = match (op_name, ty) {
-                      (Op::ADD, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() + right.convert(ty).load::<f64>())),
-                      (Op::ADD, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() + right.convert(ty).load::<f32>())),
-                      (Op::ADD, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() + right.convert(ty).load::<u64>())),
-                      (Op::ADD, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() + right.convert(ty).load::<u32>())),
-                      (Op::ADD, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() + right.convert(ty).load::<u16>())),
-                      (Op::ADD, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() + right.convert(ty).load::<u8>())),
-                      (Op::ADD, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() + right.convert(ty).load::<i64>())),
-                      (Op::ADD, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() + right.convert(ty).load::<i32>())),
-                      (Op::ADD, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() + right.convert(ty).load::<i16>())),
-                      (Op::ADD, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() + right.convert(ty).load::<i8>())),
-                      //
-                      (Op::SUB, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() - right.convert(ty).load::<f64>())),
-                      (Op::SUB, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() - right.convert(ty).load::<f32>())),
-                      (Op::SUB, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() - right.convert(ty).load::<u64>())),
-                      (Op::SUB, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() - right.convert(ty).load::<u32>())),
-                      (Op::SUB, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() - right.convert(ty).load::<u16>())),
-                      (Op::SUB, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() - right.convert(ty).load::<u8>())),
-                      (Op::SUB, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() - right.convert(ty).load::<i64>())),
-                      (Op::SUB, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() - right.convert(ty).load::<i32>())),
-                      (Op::SUB, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() - right.convert(ty).load::<i16>())),
-                      (Op::SUB, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() - right.convert(ty).load::<i8>())),
-                      //
-                      (Op::DIV, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() / right.convert(ty).load::<f64>())),
-                      (Op::DIV, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() / right.convert(ty).load::<f32>())),
-                      (Op::DIV, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() / right.convert(ty).load::<u64>())),
-                      (Op::DIV, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() / right.convert(ty).load::<u32>())),
-                      (Op::DIV, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() / right.convert(ty).load::<u16>())),
-                      (Op::DIV, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() / right.convert(ty).load::<u8>())),
-                      (Op::DIV, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() / right.convert(ty).load::<i64>())),
-                      (Op::DIV, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() / right.convert(ty).load::<i32>())),
-                      (Op::DIV, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() / right.convert(ty).load::<i16>())),
-                      (Op::DIV, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() / right.convert(ty).load::<i8>())),
-                      //
-                      (Op::MUL, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() * right.convert(ty).load::<f64>())),
-                      (Op::MUL, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() * right.convert(ty).load::<f32>())),
-                      (Op::MUL, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() * right.convert(ty).load::<u64>())),
-                      (Op::MUL, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() * right.convert(ty).load::<u32>())),
-                      (Op::MUL, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() * right.convert(ty).load::<u16>())),
-                      (Op::MUL, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() * right.convert(ty).load::<u8>())),
-                      (Op::MUL, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() * right.convert(ty).load::<i64>())),
-                      (Op::MUL, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() * right.convert(ty).load::<i32>())),
-                      (Op::MUL, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() * right.convert(ty).load::<i16>())),
-                      (Op::MUL, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() * right.convert(ty).load::<i8>())),
-                      _ => unreachable!(),
-                    };
+            }
+            Op::STORE => {
+              let slot_ty = get_op_type(node, operands[0]);
+              let src_ty = get_op_type(node, operands[1]);
 
-                    node.source_tokens[op_index] = Token::from_range(&node.source_tokens[left_op_index], &node.source_tokens[right_op_index]);
-                    node.operands[left_op_index] = Operation::Dead;
-                    node.operands[right_op_index] = Operation::Dead;
-                  }
-                  _ => {}
+              if slot_ty.ptr_depth() == src_ty.ptr_depth() && slot_ty.ptr_depth() == 1 {
+
+                let byte_size = if let Some(data) = slot_ty.get_type_data(db) {
+                  println!("SRC => {:?} {}", data.name, data.ele_byte_size);
+                  data.ele_byte_size
+                } else {
+                  slot_ty.prim_data().base_byte_size as _
+                };
+
+                if let Some(data) = src_ty.get_type_data(db) {
+                  println!("SLOT => {:?} {}", data.name, data.ele_byte_size);
                 }
+
+
+                const GENERAL_REGISTER_BYTE_SIZE: u32 = 8;
+
+                if byte_size <= GENERAL_REGISTER_BYTE_SIZE {
+                  node.operands[op_id.usize()] = Operation::Op{ op_name: Op::COPY, operands: *operands, seq_op: *seq_op  };
+                } else {
+                  todo!("Convert to copy")
+                }
+
+              } else {
+                // do nothing?
               }
-              _ => {}
+            }
+            // Constant fold pass 1.
+            Op::ADD | Op::SUB | Op::DIV | Op::MUL => {
+              let left_op_index = operands[0].usize();
+              let right_op_index = operands[1].usize();
+              let ty = get_op_type(node, op_id).prim_data();
+              // Const expression elimination
+              match (&node.operands[left_op_index], &node.operands[right_op_index]) {
+                (Operation::Const(left), Operation::Const(right)) => {
+                  use crate::types::*;
+                  node.operands[op_index] = match (op_name, ty) {
+                    (Op::ADD, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() + right.convert(ty).load::<f64>())),
+                    (Op::ADD, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() + right.convert(ty).load::<f32>())),
+                    (Op::ADD, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() + right.convert(ty).load::<u64>())),
+                    (Op::ADD, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() + right.convert(ty).load::<u32>())),
+                    (Op::ADD, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() + right.convert(ty).load::<u16>())),
+                    (Op::ADD, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() + right.convert(ty).load::<u8>())),
+                    (Op::ADD, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() + right.convert(ty).load::<i64>())),
+                    (Op::ADD, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() + right.convert(ty).load::<i32>())),
+                    (Op::ADD, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() + right.convert(ty).load::<i16>())),
+                    (Op::ADD, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() + right.convert(ty).load::<i8>())),
+                    //
+                    (Op::SUB, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() - right.convert(ty).load::<f64>())),
+                    (Op::SUB, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() - right.convert(ty).load::<f32>())),
+                    (Op::SUB, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() - right.convert(ty).load::<u64>())),
+                    (Op::SUB, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() - right.convert(ty).load::<u32>())),
+                    (Op::SUB, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() - right.convert(ty).load::<u16>())),
+                    (Op::SUB, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() - right.convert(ty).load::<u8>())),
+                    (Op::SUB, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() - right.convert(ty).load::<i64>())),
+                    (Op::SUB, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() - right.convert(ty).load::<i32>())),
+                    (Op::SUB, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() - right.convert(ty).load::<i16>())),
+                    (Op::SUB, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() - right.convert(ty).load::<i8>())),
+                    //
+                    (Op::DIV, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() / right.convert(ty).load::<f64>())),
+                    (Op::DIV, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() / right.convert(ty).load::<f32>())),
+                    (Op::DIV, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() / right.convert(ty).load::<u64>())),
+                    (Op::DIV, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() / right.convert(ty).load::<u32>())),
+                    (Op::DIV, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() / right.convert(ty).load::<u16>())),
+                    (Op::DIV, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() / right.convert(ty).load::<u8>())),
+                    (Op::DIV, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() / right.convert(ty).load::<i64>())),
+                    (Op::DIV, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() / right.convert(ty).load::<i32>())),
+                    (Op::DIV, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() / right.convert(ty).load::<i16>())),
+                    (Op::DIV, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() / right.convert(ty).load::<i8>())),
+                    //
+                    (Op::MUL, prim_ty_f64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f64>() * right.convert(ty).load::<f64>())),
+                    (Op::MUL, prim_ty_f32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<f32>() * right.convert(ty).load::<f32>())),
+                    (Op::MUL, prim_ty_u64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u64>() * right.convert(ty).load::<u64>())),
+                    (Op::MUL, prim_ty_u32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u32>() * right.convert(ty).load::<u32>())),
+                    (Op::MUL, prim_ty_u16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u16>() * right.convert(ty).load::<u16>())),
+                    (Op::MUL, prim_ty_u8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<u8>() * right.convert(ty).load::<u8>())),
+                    (Op::MUL, prim_ty_s64) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i64>() * right.convert(ty).load::<i64>())),
+                    (Op::MUL, prim_ty_s32) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i32>() * right.convert(ty).load::<i32>())),
+                    (Op::MUL, prim_ty_s16) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i16>() * right.convert(ty).load::<i16>())),
+                    (Op::MUL, prim_ty_s8) => Operation::Const(ConstVal::new(ty, left.convert(ty).load::<i8>() * right.convert(ty).load::<i8>())),
+                    _ => unreachable!(),
+                  };
+
+                  node.source_tokens[op_index] = Token::from_range(&node.source_tokens[left_op_index], &node.source_tokens[right_op_index]);
+                  node.operands[left_op_index] = Operation::Dead;
+                  node.operands[right_op_index] = Operation::Dead;
+                }
+                _ => {}
+              }
+            }
+            _ => {}
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+
+  if dissolved_operations {
+    for op_index in 0..node.operands.len() {
+      if dissolved_ops[op_index].is_valid() {
+        node.operands[op_index] = Operation::Dead;
+      } else {
+        match &mut node.operands[op_index] {
+          Operation::Call { routine, args, .. } => {
+            update_op(&dissolved_ops, routine);
+            for arg in args {
+              update_op(&dissolved_ops, arg);
+            }
+          }
+          Operation::Op { operands, .. } => {
+            for target_op in operands {
+              update_op(&dissolved_ops, target_op);
+            }
+          }
+          Operation::Φ(_, operands) => {
+            for target_op in operands {
+              update_op(&dissolved_ops, target_op);
             }
           }
           _ => {}
@@ -247,39 +318,12 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
       }
     }
 
-    if dissolved_operations {
-      for op_index in 0..node.operands.len() {
-        if dissolved_ops[op_index].is_valid() {
-          node.operands[op_index] = Operation::Dead;
-        } else {
-          match &mut node.operands[op_index] {
-            Operation::Call { routine, args, .. } => {
-              update_op(&dissolved_ops, routine);
-              for arg in args {
-                update_op(&dissolved_ops, arg);
-              }
-            }
-            Operation::Op { operands, .. } => {
-              for target_op in operands {
-                update_op(&dissolved_ops, target_op);
-              }
-            }
-            Operation::Φ(_, operands) => {
-              for target_op in operands {
-                update_op(&dissolved_ops, target_op);
-              }
-            }
-            _ => {}
-          }
-        }
-      }
-
-      for node in &mut node.nodes {
-        for port in &mut node.ports {
-          update_op(&dissolved_ops, &mut port.slot);
-        }
+    for node in &mut node.nodes {
+      for port in &mut node.ports {
+        update_op(&dissolved_ops, &mut port.slot);
       }
     }
+  }
 }
 
 fn update_op(dissolved_ops: &[OpId], target_op: &mut OpId) {

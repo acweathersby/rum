@@ -197,7 +197,7 @@ impl Reg {
   }
 
   /// The register is one of R8-R15
-  pub(crate) fn is_ext_8_reg(&self) -> bool {
+  pub(crate) fn is_upper_8_reg(&self) -> bool {
     (self.real_index() & 0b1111_1000) >= 8
   }
 
@@ -235,6 +235,7 @@ pub(crate) enum Arg {
   RSP_REL(i64),
   RIP_REL(i64),
   MemRel(Reg, i64),
+  SIBAddress { base: Reg, index: Reg, scale: u8, disp: i32 },
   Imm_Int(i64),
   OpExt(u8),
   None,
@@ -257,6 +258,7 @@ impl Arg {
       Arg::MemRel(..) => OperandType::MEM,
       Arg::RSP_REL(..) => OperandType::MEM,
       Arg::RIP_REL(..) => OperandType::MEM,
+      Arg::SIBAddress { .. } => OperandType::MEM,
       _ => OperandType::NONE,
     }
   }
@@ -281,7 +283,6 @@ impl Arg {
       Arg::RSP_REL(_) => 0x4,
       Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, ..) => reg.real_index() as u8,
       Self::OpExt(index) => *index,
-
       arg => unreachable!("{arg:?}"),
     }
   }
@@ -295,7 +296,7 @@ impl Arg {
 
   pub(crate) fn is_upper_8_reg(&self) -> bool {
     match self {
-      Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, _) => reg.is_ext_8_reg(),
+      Arg::Reg(reg) | Arg::Mem(reg) | Arg::MemRel(reg, _) => reg.is_upper_8_reg(),
       _ => false,
     }
   }

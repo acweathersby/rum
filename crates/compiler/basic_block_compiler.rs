@@ -1,5 +1,3 @@
-
-
 use crate::{
   _interpreter::get_op_type,
   bitfield,
@@ -11,7 +9,7 @@ use crate::{
       x86_types::*,
     },
   },
-  types::{CMPLXId, Node, Op, OpId, Operation, PortType, RegisterSet, RootNode, RumPrimitiveBaseType, RumPrimitiveType, RumType, SolveDatabase, VarId},
+  types::{CMPLXId, Node, Op, OpId, Operation, PortType, RegisterSet, RootNode, RumPrimitiveBaseType, RumPrimitiveType, RumTypeRef, SolveDatabase, VarId},
 };
 use rum_common::get_aligned_value;
 use rum_lang::todo_note;
@@ -39,9 +37,10 @@ pub(crate) enum VarVal {
   None,
   Var(u32),
   Reg(u8, RumPrimitiveType),
+  // Represents a memery offset relative to the value of the given pointer
+  Mem(u8, RumPrimitiveType),
   Const,
   Stashed(u32),
-  MemCalc,
 }
 
 impl Debug for VarVal {
@@ -49,8 +48,8 @@ impl Debug for VarVal {
     match self {
       VarVal::None => f.write_str("----  "),
       VarVal::Const => f.write_str("CONST "),
-      VarVal::MemCalc => f.write_str("MEM[] "),
       VarVal::Reg(r, t) => f.write_fmt(format_args!("r{r:02}[{t:?}] ")),
+      VarVal::Mem(r, t) => f.write_fmt(format_args!("[r{r:02} + *][{t:?}]")),
       VarVal::Var(v) => f.write_fmt(format_args!("v{v:03}     ")),
       VarVal::Stashed(v) => f.write_fmt(format_args!("[{v:04}]   ")),
     }
@@ -281,6 +280,7 @@ fn get_var_offset(vars: &mut [VarOP], stack_ptr_offset: &mut u64, var: usize) ->
 
 impl<'a> Iterator for BasicBlockFunctionIter<'a> {
   type Item = (OpId, VarVal, [VarVal; 3], &'static [FixUp], &'static [FixUp], bool);
+
   fn next(&mut self) -> Option<Self::Item> {
     let BasicBlockFunctionIter { bb, post_fixups, pre_fixups, current_op_index, current_block, sn, vars, stack_ptr_offset } = self;
 
@@ -325,6 +325,7 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
       }
       return None;
     };
+
     let last_op = bb.blocks[*current_block].ops.len() == op_index + 1;
     let op = bb.blocks[*current_block].ops[op_index];
     let var_index = get_vv_for_op(&bb.op_to_var_map, op);
@@ -346,9 +347,14 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
     let arg_ops = [VarVal::default(); 3];
 
     let (dependency_ops, arg_ops) = match &sn.operands[op.usize()] {
-      Operation::MemPTR { base, .. } => {
+      Operation::NamedOffsetPtr { base, .. } => {
         dependency_ops[1] = *base;
         (dependency_ops.as_slice(), [get_vv(bb, vars, base), Default::default(), Default::default()])
+      }
+      Operation::CalcOffsetPtr { index, base, .. } => {
+        dependency_ops[1] = *base;
+        dependency_ops[2] = *index;
+        (dependency_ops.as_slice(), [get_vv(bb, vars, base), get_vv(bb, vars, index), Default::default()])
       }
       Operation::AggDecl { size, alignment, .. } => {
         dependency_ops[0] = *size;
@@ -360,7 +366,7 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         dependency_ops = *operands;
         (dependency_ops.as_slice(), [get_vv(bb, vars, &operands[0]), get_vv(bb, vars, &operands[1]), get_vv(bb, vars, &operands[2])])
       }
-      Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
+      Operation::StaticObj(..) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeRef(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
       Operation::Dead => unreachable!(),
       op => todo!("{op:?}"),
     };
@@ -379,10 +385,10 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
               // If there is a subsequent move of a register after a load then we should
               // just load into the target of the register and not remove temp store status
               if let Some(fix_up) = pre_fixups.iter_mut().find(|fix_up| match fix_up {
-                FixUp::Move {  src,.. } => *src == reg,
+                FixUp::Move { src, .. } => *src == reg,
                 _ => false,
               }) {
-                let FixUp::Move { dst,  ty: ty_a, .. } = fix_up else { unreachable!() };
+                let FixUp::Move { dst, ty: ty_a, .. } = fix_up else { unreachable!() };
                 debug_assert!(*ty_a == ty);
                 let new_fixup = FixUp::Load(*dst, offset, ty);
                 *fix_up = new_fixup;
@@ -391,8 +397,8 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
                 vars[var_index].temp_store = false;
               }
             }
+            VarVal::Mem(..) => {}
             VarVal::Const => {}
-            VarVal::MemCalc => {}
             _ => unreachable!(),
           }
         }
@@ -407,7 +413,7 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
           match vars[arg_index].out {
             VarVal::Reg(reg, ty) => pre_fixups.insert(0, FixUp::Store(reg, offset, ty)),
             VarVal::Const => {}
-            VarVal::MemCalc => {}
+            VarVal::Mem(..) => {}
             ty => unreachable!("{ty:?}"),
           }
         }
@@ -515,7 +521,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           }
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::Call {  routine, args, seq_op, .. } => {
+        Operation::Call { routine, args, seq_op, .. } => {
           pending_ops.push_back((*routine, rank + 1));
 
           for op in args {
@@ -523,13 +529,19 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           }
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::AggDecl { size, alignment, seq_op } => {
+        Operation::AggDecl { size, alignment, seq_op, ty_ref_op: ty_op } => {
           pending_ops.push_back((*size, rank + 1));
           pending_ops.push_back((*alignment, rank + 1));
+          pending_ops.push_back((*ty_op, rank + 1));
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::MemPTR { base, seq_op, .. } => {
+        Operation::NamedOffsetPtr { base, seq_op, .. } => {
           pending_ops.push_back((*base, rank + 1));
+          pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
+        }
+        Operation::CalcOffsetPtr { base, seq_op, index, .. } => {
+          pending_ops.push_back((*base, rank + 1));
+          pending_ops.push_back((*index, rank + 1));
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
         Operation::Φ(_, ops) => {
@@ -642,10 +654,6 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       reg_alloc.mask(VEC_REG_MASK);
     }
 
-
-
-
-
     for other_op in block_op_bf.iter_set_indices_of_row(op_interference_offset + target_op.usize()) {
       let other_op = OpId(other_op as _);
 
@@ -656,17 +664,17 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       #[derive(Debug, PartialEq, Eq)]
       enum RegisterClass {
         FP,
-        INT
+        INT,
       }
 
       fn get_register_class(ty: RumPrimitiveType) -> RegisterClass {
         if ty.ptr_count > 0 {
           RegisterClass::INT
-        }  else {
+        } else {
           match ty.base_ty {
             RumPrimitiveBaseType::Undefined | RumPrimitiveBaseType::NoUse | RumPrimitiveBaseType::Poison => unreachable!(),
             RumPrimitiveBaseType::Float => RegisterClass::FP,
-            _ => RegisterClass::INT
+            _ => RegisterClass::INT,
           }
         }
       }
@@ -676,8 +684,11 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       if types_interfere {
         let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, other_op);
         match vars[var_index].out {
-          VarVal::Reg(reg_index, _) => {
-            reg_alloc.acquire_specific_register(reg_index as _);
+          VarVal::Reg(reg_index, _) | VarVal::Mem(reg_index, _) => {
+            if reg_index != 255 {
+
+              reg_alloc.acquire_specific_register(reg_index as _);
+            }
           }
           _ => {}
         }
@@ -708,8 +719,13 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
     for dst_op in bb_funct.blocks[block_id as usize].ops.iter().rev() {
       let mut dependency_ops = [OpId::default(); 3];
       let dependency_ops = match &sn.operands[dst_op.usize()] {
-        Operation::MemPTR { base, .. } => {
+        Operation::NamedOffsetPtr { base, .. } => {
           dependency_ops[1] = *base;
+          dependency_ops.as_slice()
+        }
+        Operation::CalcOffsetPtr { index, base, .. } => {
+          dependency_ops[1] = *base;
+          dependency_ops[2] = *index;
           dependency_ops.as_slice()
         }
         Operation::AggDecl { size, alignment, .. } => {
@@ -722,7 +738,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           dependency_ops = *operands;
           dependency_ops.as_slice()
         }
-        Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::Type(..) | Operation::Param(..) => &dependency_ops,
+        Operation::StaticObj(_) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeRef(..) | Operation::Param(..) => &dependency_ops,
         Operation::Dead => unreachable!("{sn:?}"),
         op => todo!("{op:?}"),
       };
@@ -760,15 +776,14 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
     }
   }
 
-
   // Solve the graph
   for ordering in create_block_ordering(&bb_funct.blocks) {
-    let BasicBlockFunction { blocks,  makes_ffi_call, op_to_var_map, vars, .. } = &mut bb_funct;
+    let BasicBlockFunction { blocks, makes_ffi_call, op_to_var_map, vars, .. } = &mut bb_funct;
     let block = &mut blocks[ordering.index as usize];
     for op_position in (0..block.ops.len()).rev() {
-      let op = block.ops[op_position];
+      let out_op = block.ops[op_position];
 
-      match &sn.operands[op.usize()] {
+      match &sn.operands[out_op.usize()] {
         Operation::Op { op_name, operands, .. } => match op_name {
           Op::RET => {
             let arg_op: OpId = operands[0];
@@ -776,16 +791,25 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             let ty = get_op_type(sn, arg_op).prim_data();
             vars[var_index].out = VarVal::Reg(OUTPUT_REGISTERS[0] as _, ty);
 
-            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
             vars[var_index].out = VarVal::Reg(OUTPUT_REGISTERS[0] as _, ty);
             // Set the require register of the output to RAX at this op_position
           }
+          Op::COPY => {
+            let dst_ptr = operands[0];
+            let dst_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, dst_ptr);
+            allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, dst_ptr, None);
+
+            let src_ptr = operands[1];
+            let src_index = get_vv_for_op_mut(sn, op_to_var_map, vars, src_ptr);
+            allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, src_ptr, None);
+          }
           Op::STORE => {
             let mem_ptr = operands[0];
-            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, mem_ptr);
+            let mem_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, mem_ptr);
 
-            if vars[var_index].out == VarVal::None {
-              vars[var_index].out = VarVal::MemCalc;
+            if vars[mem_var_index].out == VarVal::None {
+              vars[mem_var_index].out = VarVal::Mem(255, Default::default());
             }
 
             let val_ptr = operands[1];
@@ -803,20 +827,31 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             }
           }
           Op::LOAD => {
-            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
-            if vars[var_index].out == VarVal::None {
-              allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None);
+            let out_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+
+            match vars[out_var_index].out {
+              VarVal::None => {
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, None);
+              }
+              VarVal::Mem(reg, ty) => {
+                vars[out_var_index].out = VarVal::Reg(reg, ty);
+              }
+              _ => {}
             }
 
             let val_ptr = operands[0];
-            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, val_ptr);
-            if vars[var_index].out == VarVal::None {
-              vars[var_index].out = VarVal::MemCalc;
+            let val_ptr_index = get_vv_for_op_mut(sn, op_to_var_map, vars, val_ptr);
+
+            if vars[val_ptr_index].out == VarVal::None {
+              if let Some(reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, val_ptr, None) {
+                let ty_a = get_op_type(&sn, val_ptr).prim_data();
+                vars[val_ptr_index].out = VarVal::Mem(reg as _, ty_a);
+              }
             }
           }
 
           Op::ADD | Op::MUL | Op::BIT_AND | Op::BIT_OR | Op::SUB => {
-            let own_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+            let own_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
 
             let left = operands[0];
             let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, left);
@@ -861,51 +896,12 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
               }
             }
           }
-          Op::OPTR => {
-            let [base, index, _] = operands;
-
-            // This requires a register from the source node. Allocate this pointer
-            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *base);
-            if vars[var_index].out == VarVal::None {
-              if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *base, None).is_none() {
-                panic!("Need to spill, how to do, how to do? This would also imply that MemCalc would need to be handled some other way")
-              }
-            }
-
-            match vars[var_index].out {
-              VarVal::MemCalc => {
-                let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).count();
-                if users > 1 {
-                  // this should be a regular register
-                  if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None).is_none() {
-                    panic!("Need to spill something, how to do, how to do?")
-                  }
-                }
-              }
-              VarVal::Reg(..) => {}
-              ty => {
-                panic!("{ty:?}");
-                // Use mem if user count is 1
-              }
-            }
-
-            let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *index);
-
-            match vars[var_index].out {
-              VarVal::None => {
-                if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *index, None).is_none() {
-                  panic!("AAA");
-                }
-              }
-              _ => {}
-            }
-          }
           ty => todo!("{ty}"),
         },
         Operation::Param(_var, i) => {
           let src_reg = INT_PARAM_REGISTERS[*i as usize];
-          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
-          let ty = get_op_type(sn, op).prim_data();
+          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+          let ty = get_op_type(sn, out_op).prim_data();
 
           match vars[var_index].out {
             VarVal::Reg(out_reg, _) => {
@@ -914,8 +910,8 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
               }
             }
             VarVal::None => {
-              if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, Some(src_reg)).is_none() {
-                if let Some(out_reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None) {
+              if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, Some(src_reg)).is_none() {
+                if let Some(out_reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, None) {
                   vars[var_index].post_fixes.push(FixUp::Move { dst: out_reg as _, src: src_reg as _, ty });
                 } else {
                   todo!("Handle store");
@@ -925,12 +921,83 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             _ => {}
           }
         }
-        Operation::MemPTR { base, .. } => {
-          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+        &Operation::CalcOffsetPtr { base, index, .. } => {
+          // This requires a register from the source node. Allocate this pointer
+          let index_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, index);
+          match vars[index_var_index].out {
+            VarVal::Mem(..) => {
+              let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + out_op.usize()).count();
+              if users > 1 {
+                // this should be a regular register
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, index, None);
+              }
+            }
+            VarVal::None => {
+              allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, index, None);
+            }
+            _ => {}
+          }
 
-          match vars[var_index].out {
-            VarVal::MemCalc => {
-              let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).count();
+
+          let base_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, base);
+          match vars[base_var_index].out {
+            VarVal::Mem(..) => {
+              let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + out_op.usize()).count();
+              if users > 1 {
+                // this should be a regular register
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, base, None);
+              }
+            }
+            VarVal::Reg(..) => {}
+            ty => {
+              allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, base, None);
+            }
+          }
+
+          let out_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+
+          match vars[out_var_index].out {
+            VarVal::Mem(reg, ty) => {
+              let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + out_op.usize()).count();
+              if users > 1 {
+                // this should be a regular register
+                if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, base, None).is_none() {
+                  panic!("Need to spill something, how to do, how to do?")
+                }
+              } else {
+                // This requires a register from the source node. Allocate this pointer
+                let base_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, base);
+
+                match vars[base_var_index].out {
+                  VarVal::None => {
+                    if let Some(reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, base, None) {
+                      vars[out_var_index].out == VarVal::Mem(reg as _, ty);
+                    } else {
+                      panic!("Need to spill, how to do, how to do? This would also imply that MemCalc would need to be handled some other way")
+                    }
+                  }
+                  VarVal::Reg(reg, _) => {
+                    vars[out_var_index].out == VarVal::Mem(reg as _, ty);
+                  }
+                  VarVal::Mem(..) => {
+                    allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, None);
+                  }
+                  _ => unreachable!(),
+                }
+              }
+            }
+            VarVal::None => {}
+            _ => {
+              // Use mem if user count is 1
+            }
+          }
+        }
+        Operation::NamedOffsetPtr { base, .. } => {
+          let out_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+
+          match vars[out_var_index].out {
+            VarVal::Mem(reg, ty) => {
+              let users = block_op_bf.iter_set_indices_of_row(op_usage_offset + out_op.usize()).count();
               if users > 1 {
                 // this should be a regular register
                 if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *base, None).is_none() {
@@ -938,11 +1005,24 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
                 }
               } else {
                 // This requires a register from the source node. Allocate this pointer
-                let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *base);
-                if vars[var_index].out == VarVal::None {
-                  if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *base, None).is_none() {
-                    panic!("Need to spill, how to do, how to do? This would also imply that MemCalc would need to be handled some other way")
+                let base_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *base);
+
+                match vars[base_var_index].out {
+                  VarVal::None => {
+                    if let Some(reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *base, None) {
+                      vars[out_var_index].out == VarVal::Mem(reg as _, ty);
+                    } else {
+                      panic!("Need to spill, how to do, how to do? This would also imply that MemCalc would need to be handled some other way")
+                    }
                   }
+                  VarVal::Reg(reg, _) => {
+                    vars[out_var_index].out == VarVal::Mem(reg as _, ty);
+                  }
+                  VarVal::Mem(..) => {
+                    // Base is already memory relative, so we should load into a register instead
+                    allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, None);
+                  }
+                  _ => unreachable!(),
                 }
               }
             }
@@ -954,24 +1034,24 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
         }
         Operation::AggDecl { size, alignment, .. } => {
           *makes_ffi_call = true;
-          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, &[*size, *alignment]);
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, &[*size, *alignment]);
         }
         Operation::Call { args, .. } => {
-          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, args);
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, args);
         }
         Operation::Const(..) => {
-          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+          get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
         }
         Operation::_Gamma(..) => {
-          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+          get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
         }
         Operation::Φ(_, nodes) => {
-          let ty = get_op_type(sn, op).prim_data();
-          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+          let ty = get_op_type(sn, out_op).prim_data();
+          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
 
           if let Some(reg) = match vars[var_index].out {
             VarVal::Reg(reg, _) => Some(reg as usize),
-            _ => allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, op, None),
+            _ => allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, None),
           } {
             for child_op in nodes {
               if child_op.is_valid() {
@@ -990,12 +1070,15 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           //todo!("Handle phi node");
           //get_vv_for_op_mut(sn, op_to_var_map, vars, op);
         }
-        Operation::Type(..) => {
-          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+        Operation::StaticObj(_) => {
+          get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+        }
+        Operation::MetaTypeRef(..) => {
+          get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
         }
         Operation::Dead => unreachable!(),
         opa => {
-          get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+          get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
           todo_note!("{opa:?}");
         }
       };
@@ -1003,7 +1086,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
   }
 
   let var_map = bb_funct.op_to_var_map.clone();
-  /*
+  //*
   for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
     let block_id = block.block_id as usize;
     let outs = block_op_bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();
@@ -1011,21 +1094,27 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
 
     println!("BLOCK {}", block_id);
 
-    for (op, out_val, vals, pre_fixes, post_fixes, ..) in op_iter {  
-      let ty = sn.get_base_ty_from_op(op);
-      println!("{{{out_val:?}}}{op:?} {ty} {} [{:?}]  {} pre:{:?} post:{:?}", op_data[op.usize()].dep_rank, out_val, sn.operands[op.usize()], &pre_fixes, &post_fixes);
+    for (op, out_val, vals, pre_fixes, post_fixes, ..) in op_iter {
+      if op.is_valid() {
+        debug_assert!(op.is_valid(), "Invalid op id encountered, {op:?} {:?} {bb_funct:#?}", bb_funct.blocks[block.block_id as usize].ops);
+        let ty = get_op_type(sn, op);
+        println!("{{{out_val:?}}}{op:?} {ty} {} [{:?}]  {} pre:{:?} post:{:?}", op_data[op.usize()].dep_rank, out_val, sn.operands[op.usize()], &pre_fixes, &post_fixes);
 
-      //if let VarVal::Var(index) = op.out {
-      let ig = &block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).collect::<Vec<_>>();
-      println!("     used_by   {ig:?}");
+        //if let VarVal::Var(index) = op.out {
+        let ig = &block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).collect::<Vec<_>>();
+        println!("     used_by   {ig:?}");
 
-      let ig = &block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()).collect::<Vec<_>>();
-      println!("     interfers_with   {ig:?}");
-      println!("");
+        let ig = &block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()).collect::<Vec<_>>();
+        println!("     interfers_with   {ig:?}");
+        println!("");
 
-      //}
+        //}
+      } else {
+        println!("pre:{:?} post:{:?}", &pre_fixes, &post_fixes);
+      }
     }
-    println!("  preds {:?} ", bb_funct.blocks[0].predecessors);
+    println!("  preds {:?} ", bb_funct.blocks[block.block_id as usize].predecessors);
+    println!("  fixups {:?} ", bb_funct.blocks[block.block_id as usize].post_fixups);
 
     println!("\n    ins:  {ins:?} \n    outs: {outs:?}\n\n");
   } // */
@@ -1163,9 +1252,16 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
           pending_ops.push_back((*size, level));
           pending_ops.push_back((*alignment, level));
         }
-        Operation::MemPTR { base, seq_op: mem_ctx_op, .. } => {
+        Operation::NamedOffsetPtr { base, seq_op: mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
 
+          pending_ops.push_back((*mem_ctx_op, level));
+          pending_ops.push_back((*base, level));
+        }
+        Operation::CalcOffsetPtr { base, seq_op: mem_ctx_op, index, .. } => {
+          op_data[op.usize()].block = level;
+
+          pending_ops.push_back((*index, level));
           pending_ops.push_back((*mem_ctx_op, level));
           pending_ops.push_back((*base, level));
         }

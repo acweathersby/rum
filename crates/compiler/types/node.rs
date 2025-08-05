@@ -1,7 +1,7 @@
+use super::*;
+use crate::_interpreter::get_op_type;
 use radlr_rust_runtime::types::Token;
 use rum_common::{CachedString, IString};
-use crate::_interpreter::get_op_type;
-use super::*;
 use std::{
   alloc::Layout,
   fmt::{Debug, Display},
@@ -9,6 +9,7 @@ use std::{
   ptr::drop_in_place,
   thread::sleep,
   time::Duration,
+  usize,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
@@ -27,16 +28,20 @@ struct NodeWrapper {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct NodeHandle(*mut NodeWrapper);
+pub(crate) struct NodeHandle(*mut NodeWrapper, pub usize);
 
 impl Default for NodeHandle {
   fn default() -> Self {
-    NodeHandle(std::ptr::null_mut())
+    NodeHandle(std::ptr::null_mut(), usize::MAX)
   }
 }
 impl Debug for NodeHandle {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_fmt(format_args!("\n{:16X} => \n", self as *const _ as usize,))?;
+    if self.1 != usize::MAX {
+      f.write_fmt(format_args!("\nCMPLXid({}) => \n", self.1))?;
+    } else {
+      f.write_fmt(format_args!("\n{:16X} => \n", self.0 as *const _ as usize,))?;
+    }
     let r = unsafe { self.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
     r.node.fmt(f)
   }
@@ -44,7 +49,7 @@ impl Debug for NodeHandle {
 
 impl Clone for NodeHandle {
   fn clone(&self) -> Self {
-    let other = Self(self.0);
+    let other = Self(self.0, self.1);
 
     let r = unsafe { other.0.as_ref().expect("Invalid internal pointer for NodeHandle") };
 
@@ -82,14 +87,13 @@ impl NodeHandle {
       std::mem::swap(ptr.as_mut().unwrap(), &mut wrapper);
       std::mem::forget(wrapper);
 
-      Self(ptr)
+      Self(ptr, usize::MAX)
     }
   }
 
-  pub fn get_rum_ty(&self) -> RumType {
+  pub fn get_rum_ty(&self) -> RumTypeRef {
     self.get().unwrap().ty
   }
-
 
   pub fn get_type(&self) -> &'static str {
     self.get().unwrap().nodes[0].type_str
@@ -109,7 +113,7 @@ impl NodeHandle {
       std::mem::swap(ptr.as_mut().unwrap(), &mut wrapper);
       std::mem::forget(wrapper);
 
-      Self(ptr)
+      Self(ptr, self.1)
     }
   }
 
@@ -254,9 +258,11 @@ pub(crate) struct NodePort {
 pub(crate) enum Reference {
   UnresolvedName(IString),
   Object(CMPLXId),
-  Type(RumType),
+  Type(RumTypeRef),
   Intrinsic(IString),
   Integer(usize),
+  SmallObj(usize),
+  Unknown,
 }
 
 impl Debug for Reference {
@@ -266,7 +272,9 @@ impl Debug for Reference {
       Self::Intrinsic(name) => f.write_fmt(format_args!("`{name}")),
       Self::Object(id) => f.write_fmt(format_args!("{id:?}")),
       Self::Integer(id) => f.write_fmt(format_args!("{id}")),
+      Self::SmallObj(id) => f.write_fmt(format_args!("Obj{id}")),
       Self::Type(id) => f.write_fmt(format_args!("{id}")),
+      Self::Unknown => f.write_fmt(format_args!("??")),
     }
   }
 }
@@ -280,16 +288,22 @@ pub(crate) enum Operation {
   _Gamma(u32, OpId),
   Call {
     routine: OpId,
-    args:      Vec<OpId>,
-    seq_op:    OpId,
+    args:    Vec<OpId>,
+    seq_op:  OpId,
   },
   AggDecl {
     size:      OpId,
     alignment: OpId,
+    ty_ref_op: OpId,
     seq_op:    OpId,
   },
-  MemPTR {
+  NamedOffsetPtr {
     reference: Reference,
+    base:      OpId,
+    seq_op:    OpId,
+  },
+  CalcOffsetPtr {
+    index:  OpId,
     base:      OpId,
     seq_op:    OpId,
   },
@@ -301,10 +315,12 @@ pub(crate) enum Operation {
   Const(ConstVal),
   //Data,
   Str(IString),
-  /// Refernce to a non local type
-  Type(Reference),
+  /// Provides a TypeReference object for a given type reference
+  MetaTypeRef(RumTypeRef),
+  // Extracts type information from operation
+  InlineTypeRef(OpId),
   /// Reference to non local object
-  Obj(Reference),
+  StaticObj(Reference),
   Dead,
 }
 
@@ -318,11 +334,13 @@ impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
-      Operation::Type(name) => f.write_fmt(format_args!("type::{name:?}",)),
-      Operation::Obj(name) => f.write_fmt(format_args!("obj::{name:?}",)),
-      Operation::Call { routine: routine_op, args, seq_op } => f.write_fmt(format_args!("CALL {routine_op:?} ( {args:?} ) @ {seq_op}",)),
-      Operation::MemPTR { reference, base, seq_op } => f.write_fmt(format_args!("{base}[{reference:?}] @ ({seq_op})",)),
-      Operation::AggDecl { size, alignment, seq_op, .. } => f.write_fmt(format_args!("alloc (size:{size:?} align:{alignment}) @ {seq_op:?}",)),
+      Operation::MetaTypeRef(ty) => f.write_fmt(format_args!("type_ref_of::{ty}",)),
+      Operation::InlineTypeRef(op) => f.write_fmt(format_args!("type_ref_of::{op}",)),
+      Operation::StaticObj(name) => f.write_fmt(format_args!("obj::{name:?}",)),
+      Operation::Call { routine: routine_op, args, seq_op } => f.write_fmt(format_args!("{routine_op:?} ( {args:?} ) @ {seq_op}",)),
+      Operation::NamedOffsetPtr { reference, base, seq_op } => f.write_fmt(format_args!("MEM [{base} + {reference:?}] @ ({seq_op})",)),
+      Operation::CalcOffsetPtr { index, base, seq_op } => f.write_fmt(format_args!("MEM [{base} + {index:?}] @ ({seq_op})",)),
+      Operation::AggDecl { size, alignment, seq_op, ty_ref_op: ty_op, .. } => f.write_fmt(format_args!("alloc (size:{size:?} align:{alignment}) of {ty_op} @ {seq_op:?}",)),
       // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
@@ -338,32 +356,34 @@ impl Display for Operation {
 
 #[derive(Clone)]
 pub(crate) struct RootNode {
-  pub(crate) nodes:               Vec<Node>,
-  pub(crate) annotations:         Vec<IString>,
-  pub(crate) operands:            Vec<Operation>,
+  pub(crate) nodes:             Vec<Node>,
+  pub(crate) annotations:       Vec<IString>,
+  pub(crate) operands:          Vec<Operation>,
   /// Maps operands to the node they belong to.
-  pub(crate) operand_node:        Vec<usize>,
-  pub(crate) op_types:            Vec<RumType>,
-  pub(crate) type_vars:           Vec<TypeVar>,
-  pub(crate) heap_id:             Vec<usize>,
-  pub(crate) source_tokens:       Vec<Token>,
-  pub(crate) root_id:             isize,
-  pub(crate) ty: RumType
+  pub(crate) operand_node:      Vec<usize>,
+  pub(crate) op_types:          Vec<RumTypeRef>,
+  pub(crate) type_vars:         Vec<TypeVar>,
+  pub(crate) heap_id:           Vec<usize>,
+  pub(crate) source_tokens:     Vec<Token>,
+  pub(crate) global_references: Vec<ExternalReference>,
+  pub(crate) root_id:           isize,
+  pub(crate) ty:                RumTypeRef,
 }
 
 impl Default for RootNode {
   fn default() -> Self {
     RootNode {
-      nodes:               Vec::with_capacity(8),
-      annotations:         Vec::with_capacity(8),
-      operands:            Vec::with_capacity(8),
-      operand_node:        Vec::with_capacity(8),
-      op_types:            Vec::with_capacity(8),
-      type_vars:           Vec::with_capacity(8),
-      source_tokens:       Vec::with_capacity(8),
-      heap_id:             Vec::with_capacity(8),
-      root_id:             -1,
-      ty: Default::default()
+      nodes:             Vec::with_capacity(8),
+      annotations:       Vec::with_capacity(8),
+      operands:          Vec::with_capacity(8),
+      operand_node:      Vec::with_capacity(8),
+      op_types:          Vec::with_capacity(8),
+      type_vars:         Vec::with_capacity(8),
+      source_tokens:     Vec::with_capacity(8),
+      global_references: Vec::with_capacity(8),
+      heap_id:           Vec::with_capacity(8),
+      root_id:           -1,
+      ty:                Default::default(),
     }
   }
 }
@@ -409,8 +429,8 @@ pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: 
       .iter()
       .filter(|p| p.ty == PortType::In)
       .filter_map(|p| match p.id {
-        VarId::Param(..) => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
-        VarId::Name(_) => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
+        VarId::Param(..) => Some((p.slot, get_op_type(node, p.slot))),
+        VarId::Name(_) => Some((p.slot, get_op_type(node, p.slot))),
         _ => None,
       })
       .collect::<Vec<_>>(),
@@ -419,8 +439,8 @@ pub(crate) fn get_internal_node_signature(node: &RootNode, internal_node_index: 
       .iter()
       .filter(|p| p.ty == PortType::Out)
       .filter_map(|p| match p.id {
-        VarId::VoidReturn => Some((p.slot, RumType::NoUse)),
-        VarId::Return => Some((p.slot, type_vars[types[p.slot.usize()].generic_id().unwrap()].ty)),
+        VarId::VoidReturn => Some((p.slot, RumTypeRef::NoUse)),
+        VarId::Return => Some((p.slot, get_op_type(node, p.slot))),
         _ => None,
       })
       .collect::<Vec<_>>(),
@@ -457,7 +477,9 @@ impl Debug for RootNode {
         .type_vars
         .iter()
         .filter_map(|f| {
-          if f.ty.is_open() {
+          if f.ori_id != f.id {
+            None
+          } else if f.ty.is_open() {
             if f.has(VarAttribute::Agg) {
               Some(write_agg(f, &self.type_vars))
             } else {
@@ -477,8 +499,16 @@ impl Debug for RootNode {
 
       f.write_str("(")?;
 
+      let args = self.nodes[0].ports.iter().filter(|p| p.ty == PortType::In).map(|s| format!("{}", get_op_type(&self, s.slot))).collect::<Vec<_>>().join(", ");
+
+      f.write_str(&args);
+
       f.write_str(")")?;
       f.write_str(" => ")?;
+
+      let returns = self.nodes[0].ports.iter().filter(|p| p.ty == PortType::Out).map(|s| format!("{}", get_op_type(&self, s.slot))).collect::<Vec<_>>().join("- ");
+
+      f.write_str(&returns);
 
       f.write_str("\n###################### \n")?;
     }
@@ -513,16 +543,18 @@ impl Debug for RootNode {
       }
     }
 
+    Debug::fmt(&self.global_references, f);
+
     Ok(())
   }
 }
 
 impl RootNode {
-  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> RumType {
+  pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> RumTypeRef {
     self.get_base_ty(self.op_types[op.usize()].clone())
   }
 
-  pub(crate) fn get_base_ty(&self, ty: RumType) -> RumType {
+  pub(crate) fn get_base_ty(&self, ty: RumTypeRef) -> RumTypeRef {
     if let Some(index) = ty.generic_id() {
       let r_ty = get_root_var(index, &self.type_vars).ty;
       if r_ty.is_open() {
@@ -615,8 +647,8 @@ impl Display for Node {
 }
 
 pub(crate) struct Signature {
-  pub inputs:  Vec<(OpId, RumType)>,
-  pub outputs: Vec<(OpId, RumType)>,
+  pub inputs:  Vec<(OpId, RumTypeRef)>,
+  pub outputs: Vec<(OpId, RumTypeRef)>,
 }
 
 impl Debug for Signature {
@@ -636,13 +668,13 @@ impl Debug for Signature {
 }
 
 impl Signature {
-  pub fn new(inputs: &[(OpId, RumType)], outputs: &[(OpId, RumType)]) -> Self {
+  pub fn new(inputs: &[(OpId, RumTypeRef)], outputs: &[(OpId, RumTypeRef)]) -> Self {
     Self { inputs: inputs.to_vec(), outputs: outputs.to_vec() }
   }
 
   /// Changes the type of the givin paramater to `ty`, where index is
   /// a value in the range 0...(inputs.len + outputs.len)
-  pub fn set_param_ty(&mut self, index: usize, ty: RumType) {
+  pub fn set_param_ty(&mut self, index: usize, ty: RumTypeRef) {
     if index >= self.inputs.len() {
       let index = index - self.inputs.len();
       self.outputs[index].1 = ty;

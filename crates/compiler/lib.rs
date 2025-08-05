@@ -4,7 +4,7 @@
 #![feature(if_let_guard)]
 #![feature(str_from_raw_parts)]
 #![allow(mixed_script_confusables)]
-
+#![feature(let_chains)]
 // Temporary
 #![allow(unused)]
 #![allow(non_camel_case_types)]
