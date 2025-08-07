@@ -18,10 +18,12 @@ pub(crate) struct MemberEntry {
   pub ty:        RumTypeRef,
 }
 
-
 #[derive(Clone)]
 pub(crate) struct TypeVar {
   pub ty:         RumTypeRef,
+  /// A type definition that serves as a fullback if the main type
+  /// is not defined. This allows type resolution in cases where the
+  pub weak_ty:    RumTypeRef,
   pub id:         u32,
   pub ori_id:     u32,
   pub num:        Numeric,
@@ -36,6 +38,7 @@ impl Default for TypeVar {
       ori_id:     Default::default(),
       num:        Numeric::default(),
       ty:         Default::default(),
+      weak_ty:    Default::default(),
       attributes: Default::default(),
       members:    Default::default(),
     }
@@ -88,34 +91,35 @@ impl Debug for TypeVar {
 
 impl Display for TypeVar {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let Self { id, ty, attributes: constraints, members, .. } = self;
+    let Self { id, ty, attributes: constraints, members, weak_ty, .. } = self;
 
     if self.id != self.ori_id {
       f.write_fmt(format_args!("see {}", self.id))?;
     } else {
-
-      
-      if ty.is_generic() {
-        f.write_fmt(format_args!("[{id}] {ty:10} | {}",  self.num))?;
+      if !ty.is_open() {
+        f.write_fmt(format_args!("[{id}] v{id}: {ty:10} | {}", self.num))?;
+      } else if !weak_ty.is_open() {
+        f.write_fmt(format_args!("[{id}] v{id}:~{weak_ty:10}~| {}", self.num))?;
       } else {
-      f.write_fmt(format_args!("[{id}] v{id}: {ty:10} | {}", self.num))?;
-    }
-    if !constraints.is_empty() {
-      f.write_str(" <")?;
-      for constraint in constraints.iter() {
-        f.write_fmt(format_args!("{constraint:?},"))?;
+        f.write_fmt(format_args!("[{id}] {ty:10} | {}", self.num))?;
       }
-      f.write_str(">")?;
-    }
-    
-    if !members.is_empty() {
-      f.write_str(" [\n")?;
-      for MemberEntry { name, origin_op: origin_node, ty } in members.iter() {
-        f.write_fmt(format_args!("  {name}: {ty} @ `{origin_node},\n"))?;
+
+      if !constraints.is_empty() {
+        f.write_str(" <")?;
+        for constraint in constraints.iter() {
+          f.write_fmt(format_args!("{constraint:?},"))?;
+        }
+        f.write_str(">")?;
       }
-      f.write_str("]")?;
+
+      if !members.is_empty() {
+        f.write_str(" [\n")?;
+        for MemberEntry { name, origin_op: origin_node, ty } in members.iter() {
+          f.write_fmt(format_args!("  {name}: {ty} @ `{origin_node},\n"))?;
+        }
+        f.write_str("]")?;
+      }
     }
-  }
 
     Ok(())
   }
@@ -135,6 +139,7 @@ pub(crate) enum VarAttribute {
   MemOp {
     ptr_ty: RumTypeRef,
     val_ty: RumTypeRef,
+    weak:   bool,
   },
   Convert {
     dst: OpId,
@@ -142,12 +147,11 @@ pub(crate) enum VarAttribute {
   },
   /// This var represents an instance of the type defined at the given node.
   Deref {
-    op: OpId
+    op: OpId,
   },
-  Global(IString, Token),
   /// The operation that declares a heap variable
   HeapOp(OpId),
-  TypeRef(OpId)
+  TypeRef(OpId),
 }
 
 impl Debug for VarAttribute {
@@ -159,7 +163,13 @@ impl Debug for VarAttribute {
       Callable => f.write_str("()"),
       Psi => f.write_str("Ψ"),
       HeapType => f.write_str("Heap"),
-      MemOp { ptr_ty: ptr, val_ty: val } => f.write_fmt(format_args!("memop  *{ptr} = {val}",)),
+      MemOp { ptr_ty: ptr, val_ty: val, weak } => {
+        if *weak {
+          f.write_fmt(format_args!(" {ptr} *~> {val}" ))
+        } else {
+          f.write_fmt(format_args!(" {ptr} *=> {val}" ))
+        }
+      }
       Load(a, b) => f.write_fmt(format_args!("load (@ `{a}, src: `{b})",)),
       Convert { dst, src } => f.write_fmt(format_args!("{src} => {dst}",)),
       TypeRef(op) => f.write_fmt(format_args!("instanceof {op}",)),
@@ -167,8 +177,7 @@ impl Debug for VarAttribute {
       Agg => f.write_fmt(format_args!("agg",)),
       Index(index) => f.write_fmt(format_args!("*.[{index}]",)),
       HeapOp(op) => f.write_fmt(format_args!("heap_decl@{op}",)),
-      Global(ty, ..) => f.write_fmt(format_args!("typeof({ty})",)),
-      _ => {Ok(())}
+      _ => Ok(()),
     }
   }
 }

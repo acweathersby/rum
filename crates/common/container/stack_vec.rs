@@ -110,11 +110,19 @@ impl<const STACK_SIZE: usize, T> IndexMut<usize> for ArrayVec<STACK_SIZE, T> {
 
 impl<const STACK_SIZE: usize, T: Ord + PartialOrd + Debug> ArrayVec<STACK_SIZE, T> {
   fn binary_search(min: usize, max: usize, insert: &T, entries: &[T]) -> (usize, std::cmp::Ordering) {
+    
+
     let diff = max - min;
+    
     if diff <= 1 {
-      match insert.cmp(&entries[min]) {
-        cmp @ std::cmp::Ordering::Less | cmp @ std::cmp::Ordering::Equal => (min, cmp),
-        cmp @ std::cmp::Ordering::Greater => (max, cmp),
+      if min == 0  { 
+        (0, std::cmp::Ordering::Greater)
+      } else {
+
+        match insert.cmp(&entries[min]) {
+          cmp @ std::cmp::Ordering::Less | cmp @ std::cmp::Ordering::Equal => (min, cmp),
+          cmp @ std::cmp::Ordering::Greater => (max, cmp),
+        }
       }
     } else {
       let center = min + (diff >> 1);

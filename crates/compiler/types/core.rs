@@ -380,10 +380,10 @@ impl Debug for RumTypeProp {
 pub(crate) struct RumTypeObject {
   pub name:          &'static RumString,
   pub ele_count:     u32,
-  pub ele_byte_size: u32,
+  pub base_byte_size: u32,
   pub alignment:     u32,
   pub prop_count:    u32,
-  pub props:         [RumTypeProp; 6],
+ pub props:         [RumTypeProp; 6],
 }
 
 impl RumTypeObject {
@@ -392,7 +392,7 @@ impl RumTypeObject {
     //println!("\nRumString({})\n", (&*self.name) as *const _ as usize);
     strct.field("name", &self.name);
     strct.field("ele_count", &self.ele_count);
-    strct.field("ele_byte_size", &self.ele_byte_size);
+    strct.field("base_byte_size", &self.base_byte_size);
     strct.field("alignment", &self.alignment);
     strct.field("prop_count", &self.prop_count);
 
@@ -410,7 +410,7 @@ impl Debug for RumTypeObject {
     //println!("\nRumString({})\n", (&*self.name) as *const _ as usize);
     strct.field("name", &self.name);
     strct.field("ele_count", &self.ele_count);
-    strct.field("ele_byte_size", &self.ele_byte_size);
+    strct.field("ele_byte_size", &self.base_byte_size);
     strct.field("alignment", &self.alignment);
     strct.field("prop_count", &self.prop_count);
 
@@ -426,7 +426,7 @@ impl Debug for RumTypeObject {
 pub(crate) static RUM_TYPE_REF: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("type_ref"),
   ele_count:     1,
-  ele_byte_size: 8,
+  base_byte_size: 8,
   alignment:     4,
   prop_count:    2,
   props:         [
@@ -442,7 +442,7 @@ pub(crate) static RUM_TYPE_REF: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TYPE_TABLE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("core$$type_table"),
   ele_count:     0,
-  ele_byte_size: 0,
+  base_byte_size: 0,
   alignment:     8,
   prop_count:    2,
   props:         [
@@ -458,7 +458,7 @@ pub(crate) static RUM_TYPE_TABLE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_PRIM_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("prim_type"),
   ele_count:     1,
-  ele_byte_size: 4,
+  base_byte_size: 4,
   alignment:     1,
   prop_count:    4,
   props:         [
@@ -475,8 +475,8 @@ pub(crate) static RUM_PRIM_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("type"),
   ele_count:     1,
-  ele_byte_size: 224,
-  alignment:     1,
+  base_byte_size: 24,
+  alignment:     8,
   prop_count:    6,
   props:         [
     RumTypeProp { name: &RumString::from_static("name"), ty: ty_str.increment_ptr(), byte_offset: 0 },
@@ -491,7 +491,7 @@ pub(crate) static RUM_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TYPE_PROP: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("type_prop"),
   ele_count:     0,
-  ele_byte_size: 24,
+  base_byte_size: 24,
   alignment:     8,
   prop_count:    3,
   props:         [
@@ -507,7 +507,7 @@ pub(crate) static RUM_TYPE_PROP: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TEMP_F32_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("f32"),
   ele_count:     1,
-  ele_byte_size: 4,
+  base_byte_size: 4,
   alignment:     4,
   prop_count:    0,
   props:         [
@@ -523,7 +523,7 @@ pub(crate) static RUM_TEMP_F32_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TEMP_F64_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("f64"),
   ele_count:     1,
-  ele_byte_size: 8,
+  base_byte_size: 8,
   alignment:     8,
   prop_count:    0,
   props:         [
@@ -539,7 +539,7 @@ pub(crate) static RUM_TEMP_F64_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TEMP_U8_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("u8"),
   ele_count:     1,
-  ele_byte_size: 1,
+  base_byte_size: 1,
   alignment:     1,
   prop_count:    0,
   props:         [
@@ -555,7 +555,7 @@ pub(crate) static RUM_TEMP_U8_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TEMP_U16_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("u16"),
   ele_count:     1,
-  ele_byte_size: 2,
+  base_byte_size: 2,
   alignment:     2,
   prop_count:    0,
   props:         [
@@ -571,7 +571,7 @@ pub(crate) static RUM_TEMP_U16_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TEMP_U32_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("u32"),
   ele_count:     1,
-  ele_byte_size: 4,
+  base_byte_size: 4,
   alignment:     4,
   prop_count:    0,
   props:         [
@@ -587,7 +587,7 @@ pub(crate) static RUM_TEMP_U32_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TEMP_U64_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("u64"),
   ele_count:     1,
-  ele_byte_size: 8,
+  base_byte_size: 8,
   alignment:     8,
   prop_count:    0,
   props:         [
@@ -603,7 +603,7 @@ pub(crate) static RUM_TEMP_U64_TYPE: RumTypeObject = RumTypeObject {
 pub(crate) static RUM_TEMP_STRING_TYPE: RumTypeObject = RumTypeObject {
   name:          &RumString::from_static("str"),
   ele_count:     0,
-  ele_byte_size: 0,
+  base_byte_size: 0,
   alignment:     8,
   prop_count:    2,
   props:         [

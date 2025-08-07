@@ -20,8 +20,6 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
 pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::NodeHandle) {
   let node = node.get_mut().unwrap();
 
-  dbg!(&node);
-
   let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
   let mut used_ops: Vec<bool> = vec![false; node.operands.len()];
   let mut dissolved_operations = false;
@@ -66,7 +64,7 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
             }
           }
         }
-        Operation::MetaTypeRef(..) | Operation::Param(..) | Operation::Str(..) | Operation::StaticObj(..) => {}
+        Operation::MetaType(..) | Operation::MetaTypeReference(..) | Operation::Param(..) | Operation::Str(..) | Operation::StaticObj(..) => {}
         Operation::Call { routine, args, seq_op: mem_ctx_op, .. } => {
           op_queue.push_back(*routine);
 
@@ -75,9 +73,8 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
           }
           op_queue.push_back(*mem_ctx_op);
         }
-        Operation::AggDecl { alignment, size, seq_op: mem_ctx_op, ty_ref_op } => {
+        Operation::AggDecl {  reps: size, seq_op: mem_ctx_op, ty_op: ty_ref_op } => {
           op_queue.push_back(*size);
-          op_queue.push_back(*alignment);
           op_queue.push_back(*mem_ctx_op);
           op_queue.push_back(*ty_ref_op);
         }
@@ -121,21 +118,22 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
       match &node.operands[op_id.usize()] {
         Operation::Str(str_value) => {
           let comptime_str = RumString::new(str_value.to_str().as_str());
-
-          unsafe {
-            dbg!(&*comptime_str);
-            dbg!(comptime_str as usize)
-          };
-
           node.operands[op_id.usize()] = Operation::StaticObj(Reference::Integer(comptime_str as _));
         }
-        Operation::MetaTypeRef(base_ty) => {
+        Operation::MetaType(base_ty) => { 
+          let ty = get_resolved_ty(node, base_ty);
+          let ty = db.comptime_type_table[ty.type_id as usize];
+          println!("---- {}", ty as usize);
+          
+          node.operands[op_id.usize()] = Operation::StaticObj(Reference::Pointer(ty as _));
+        }
+        Operation::MetaTypeReference(base_ty) => {
           let ty = get_resolved_ty(node, base_ty);
 
           // Convert the MetaTypeRef to an actual RUM type ref value. This may need to be adjusted depending
           // on whether the compilation is for comptime or runtime.
 
-          node.operands[op_id.usize()] = Operation::StaticObj(Reference::SmallObj(ty.as_ref()));
+          node.operands[op_id.usize()] = Operation::StaticObj(Reference::SmallStruct(ty.as_ref()));
 
           /*     match type_name {
             Reference::UnresolvedName(type_name) => {
@@ -197,14 +195,14 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
               if slot_ty.ptr_depth() == src_ty.ptr_depth() && slot_ty.ptr_depth() == 1 {
 
                 let byte_size = if let Some(data) = slot_ty.get_type_data(db) {
-                  println!("SRC => {:?} {}", data.name, data.ele_byte_size);
-                  data.ele_byte_size
+                  println!("SRC => {:?} {}", data.name, data.base_byte_size);
+                  data.base_byte_size
                 } else {
                   slot_ty.prim_data().base_byte_size as _
                 };
 
                 if let Some(data) = src_ty.get_type_data(db) {
-                  println!("SLOT => {:?} {}", data.name, data.ele_byte_size);
+                  println!("SLOT => {:?} {}", data.name, data.base_byte_size);
                 }
 
 

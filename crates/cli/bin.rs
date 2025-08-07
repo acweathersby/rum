@@ -38,11 +38,11 @@ fn main() {
 
       let func = x86_eval::x86Function::new(&binary, entry_offset);
 
-      let out = func.access_as_call::<fn(u32) -> &'static (f32, u32)>()(1);
+      let out = func.access_as_call::<fn(u32) -> &'static (u32, u32)>()(1);
 
       dbg!( out as *const _ as *const usize);
 
-      assert_eq!(out, &(2f32, 3u32), "Failed to parse correctly");
+      assert_eq!(out, &(2u32, 3u32), "Failed to parse correctly");
 
       // TEMP: Run the binary.
 

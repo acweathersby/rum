@@ -261,7 +261,8 @@ pub(crate) enum Reference {
   Type(RumTypeRef),
   Intrinsic(IString),
   Integer(usize),
-  SmallObj(usize),
+  Pointer(usize),
+  SmallStruct(usize),
   Unknown,
 }
 
@@ -272,7 +273,8 @@ impl Debug for Reference {
       Self::Intrinsic(name) => f.write_fmt(format_args!("`{name}")),
       Self::Object(id) => f.write_fmt(format_args!("{id:?}")),
       Self::Integer(id) => f.write_fmt(format_args!("{id}")),
-      Self::SmallObj(id) => f.write_fmt(format_args!("Obj{id}")),
+      Self::Pointer(id) => f.write_fmt(format_args!("[{id}]")),
+      Self::SmallStruct(id) => f.write_fmt(format_args!("Obj{id}")),
       Self::Type(id) => f.write_fmt(format_args!("{id}")),
       Self::Unknown => f.write_fmt(format_args!("??")),
     }
@@ -292,9 +294,9 @@ pub(crate) enum Operation {
     seq_op:  OpId,
   },
   AggDecl {
-    size:      OpId,
-    alignment: OpId,
-    ty_ref_op: OpId,
+    /// Used to define number or repeating elements in this structure
+    reps:      OpId,
+    ty_op: OpId,
     seq_op:    OpId,
   },
   NamedOffsetPtr {
@@ -315,8 +317,10 @@ pub(crate) enum Operation {
   Const(ConstVal),
   //Data,
   Str(IString),
+  /// Provides a pointer to the static type entry for the ref type,
+  MetaType(RumTypeRef),
   /// Provides a TypeReference object for a given type reference
-  MetaTypeRef(RumTypeRef),
+  MetaTypeReference(RumTypeRef),
   // Extracts type information from operation
   InlineTypeRef(OpId),
   /// Reference to non local object
@@ -334,13 +338,14 @@ impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
-      Operation::MetaTypeRef(ty) => f.write_fmt(format_args!("type_ref_of::{ty}",)),
+      Operation::MetaType(ty) => f.write_fmt(format_args!("type_of::{ty}",)),
+      Operation::MetaTypeReference(ty) => f.write_fmt(format_args!("type_ref_of::{ty}",)),
       Operation::InlineTypeRef(op) => f.write_fmt(format_args!("type_ref_of::{op}",)),
       Operation::StaticObj(name) => f.write_fmt(format_args!("obj::{name:?}",)),
       Operation::Call { routine: routine_op, args, seq_op } => f.write_fmt(format_args!("{routine_op:?} ( {args:?} ) @ {seq_op}",)),
       Operation::NamedOffsetPtr { reference, base, seq_op } => f.write_fmt(format_args!("MEM [{base} + {reference:?}] @ ({seq_op})",)),
       Operation::CalcOffsetPtr { index, base, seq_op } => f.write_fmt(format_args!("MEM [{base} + {index:?}] @ ({seq_op})",)),
-      Operation::AggDecl { size, alignment, seq_op, ty_ref_op: ty_op, .. } => f.write_fmt(format_args!("alloc (size:{size:?} align:{alignment}) of {ty_op} @ {seq_op:?}",)),
+      Operation::AggDecl { reps,  seq_op, ty_op: ty_ref_op, .. } => f.write_fmt(format_args!("###### AGG_ALLOC (reps:{reps:?} type:{ty_ref_op}) @ {seq_op:?}",)),
       // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
       Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
       //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
@@ -551,14 +556,19 @@ impl Debug for RootNode {
 
 impl RootNode {
   pub(crate) fn get_base_ty_from_op(&self, op: OpId) -> RumTypeRef {
-    self.get_base_ty(self.op_types[op.usize()].clone())
+    self.get_base_ty(self.op_types[op.usize()])
   }
 
   pub(crate) fn get_base_ty(&self, ty: RumTypeRef) -> RumTypeRef {
     if let Some(index) = ty.generic_id() {
       let r_ty = get_root_var(index, &self.type_vars).ty;
+      let w_ty = get_root_var(index, &self.type_vars).weak_ty;
       if r_ty.is_open() {
-        ty
+        if w_ty.is_open() {
+          ty
+        } else {
+          w_ty
+        }
       } else {
         r_ty
       }
@@ -568,8 +578,8 @@ impl RootNode {
   }
 
   pub fn solve_state(&self) -> SolveState {
-    if self.type_vars.iter().any(|v| v.ty.is_open()) {
-      SolveState::Template
+    if self.type_vars.iter().any(|v| v.ty.is_open() && v.ori_id == v.id) {
+      SolveState::Unsolved
     } else {
       SolveState::Solved
     }

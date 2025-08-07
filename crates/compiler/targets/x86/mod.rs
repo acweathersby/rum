@@ -1,11 +1,11 @@
-use std::collections::{HashSet, VecDeque};
+use std::{any::Any, collections::{HashSet, VecDeque}};
 
 use x86_binary_writer::{BinaryFunction, PatchType};
 
 use crate::{
   basic_block_compiler::{self},
   ir_compiler::{ROUTINE_ID, STRUCT_ID},
-  types::{NodeHandle, SolveDatabase, TypeVar},
+  types::{CMPLXId, NodeHandle, RumTypeObject, RumTypeProp, RumTypeRef, SolveDatabase, TypeVar},
 };
 
 //pub(crate) mod x86_compiler;
@@ -16,12 +16,35 @@ pub mod x86_eval;
 pub mod x86_instructions;
 pub mod x86_types;
 
-extern "C" fn allocate(size: u64, alignment: u64, allocator_slot: u64) -> *mut u8 {
-  dbg!(size, alignment, allocator_slot);
-  let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment as _).expect("");
-  let ptr = unsafe { std::alloc::alloc(layout) };
+extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
+  println!("reps: {reps}, ty: {}",  ty as *const _ as usize);
+ 
+  dbg!(reps, ty);
+  let ptr = if reps > 0 {
+    if ty.name.as_str() == "type" {
+      let prop_size = std::mem::size_of::<RumTypeProp>();
+      let prop_size = prop_size * reps as usize;
+      let size = ty.base_byte_size as usize + prop_size;
+
+      dbg!(size);
+      let alignment = ty.alignment as usize;
+      let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
+      unsafe { std::alloc::alloc(layout) }
+
+
+    } else {
+      todo!("Implement variable length structs to allocate objects with reps larger than 1")
+    }
+  } else {
+      let size = ty.base_byte_size as usize;
+      let alignment = ty.alignment as usize;
+      dbg!(size, alignment);
+      let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
+      unsafe { std::alloc::alloc(layout) }
+  };
 
   dbg!(ptr);
+
   ptr
 }
 
@@ -44,10 +67,22 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
 
         // Collect complex node requirements
         for TypeVar { ty, .. } in super_node.type_vars.iter() {
-          todo!("Handle Complex Types");
-          //if ty.is_cmplx() {
-          //  queue.push_back(ty.cmplx_data().unwrap());
-          //}
+          //todo!("Handle Complex Types");
+          if ty.is_complex() {
+            
+            if ty.type_id < 0 { 
+              panic!("Unexpected negative type_id in complex ty");
+            }
+
+
+
+            let node_index=  ty.type_id as usize;
+
+            let id = CMPLXId(node_index as _);
+            
+            queue.push_back(id);
+            
+          }
         }
 
         let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db);

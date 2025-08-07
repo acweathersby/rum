@@ -83,10 +83,6 @@ pub fn add_module(db: &mut Database, module: &str) {
               node.get_mut().unwrap().nodes[0].type_str = INTERFACE_ID;
             }
 
-            dbg!(&node, &constraints);
-
-            //panic!("AAAA");
-
             db.add_object(name, node.clone(), constraints);
           }
           _ => unreachable!(),
@@ -119,11 +115,11 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
     let align_id = VarId::Name("align".intern());
     let prop_offset = VarId::Name("prop_offset".intern());
 
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: str_type, to: ty_str.increment_ptr() }); // TODO: Change string type to array reference
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: offset_ty, to: ty_u32 });
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: type_agg_ty, to: ty_type.increment_ptr() });
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: type_ty, to: ty_type.increment_ptr() });
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: type_prop_type, to: ty_type_prop.increment_ptr() });
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: str_type, to: ty_str.increment_ptr(), weak: false }); // TODO: Change string type to array reference
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: offset_ty, to: ty_u32, weak: false });
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: type_agg_ty, to: ty_type.increment_ptr(), weak: false });
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: type_ty, to: ty_type.increment_ptr(), weak: false });
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: type_prop_type, to: ty_type_prop.increment_ptr(), weak: false });
 
     declare_top_scope_var(bp, VarId::Return, Default::default(), type_agg_ty).origin_node_index = -1;
 
@@ -164,16 +160,14 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
 
     // Base offset value is
 
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: offset_ty.clone(), to: ty_u32 });
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: offset_ty.clone(), to: ty_u32, weak: false });
 
     // Insert type agg decl. It will receive the size and type of the object as values
+    let reps = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, props.len() as u32)), offset_ty, Default::default());
 
-    let alignment = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, 8u32)), offset_ty, Default::default());
-    let size = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, (props.len() * (8 + 8 + 4) + (8 + 4 + 4 + 4 + 4)) as u32)), offset_ty, Default::default());
+    let ty_ref_op = create_meta_ty(bp, type_agg_ty);
 
-    let ty_ref_op = create_meta_ty_ref(bp, type_agg_ty);
-
-    let type_agg_op = add_op(bp, Operation::AggDecl { size, alignment, seq_op: Default::default(), ty_ref_op }, type_agg_ty, Default::default());
+    let type_agg_op = add_op(bp, Operation::AggDecl { reps, seq_op: Default::default(), ty_op: ty_ref_op }, type_agg_ty, Default::default());
 
     update_mem_context(bp, type_agg_op);
 
@@ -191,7 +185,7 @@ pub(crate) fn compile_struct(db: &Database, name: IString, properties: &[(IStrin
       update_mem_context(bp, op);
     }
 
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: offset_ty, to: ty_u32 });
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: offset_ty, to: ty_u32, weak: false });
 
     // prop_type
     let ty_ref_op = create_meta_ty_ref(bp, type_prop_type);
@@ -265,23 +259,30 @@ fn create_call(bp: &mut BuildPack<'_>, args: Vec<OpId>, fn_name: IString, ret_ty
   fn_ret_op
 }
 
-fn create_member_pointer(bp: &mut BuildPack<'_>, agg_op: OpId, prop_name: IString) -> (OpId, RumTypeRef) {
+fn create_member_pointer(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, prop_name: IString) -> (OpId, RumTypeRef) {
   // Add member to aggregate.
 
-  let (ref_op, ref_ty) = create_member_ptr_op(bp, agg_op, prop_name, Default::default());
+  let member_ty = add_ty_var(bp).ty;
 
-  let agg_ty = &mut bp.super_node.op_types[agg_op.usize()];
+  let agg_ty = bp.super_node.op_types[agg_ptr_op.usize()];
   let agg_ty_index = agg_ty.generic_id().unwrap();
   let var = &mut bp.super_node.type_vars[agg_ty_index];
-  var.add_mem(prop_name, ref_ty.clone(), Default::default());
 
-  bp.super_node.type_vars[ref_ty.generic_id().unwrap()].add(VarAttribute::Member);
+  var.add_mem(prop_name, member_ty, Default::default());
 
-  (ref_op, ref_ty)
+  let (ref_op, mem_ref_ty) = create_member_ptr_op(bp, agg_ptr_op, prop_name, Default::default(), member_ty);
+
+  bp.super_node.type_vars[agg_ty.generic_id().unwrap()].add(VarAttribute::Member);
+
+  //add_constraint(bp, NodeConstraint::Deref { ptr_ty:mem_ref_ty, val_ty:  member_ty.clone(), weak: true });
+
+  (ref_op, mem_ref_ty)
 }
 
-fn create_member_ptr_op(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, name: IString, name_var: rum_lang::parser::script_parser::ast::ASTNode<Token>) -> (OpId, RumTypeRef) {
+fn create_member_ptr_op(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, name: IString, name_var: rum_lang::parser::script_parser::ast::ASTNode<Token>, member_ty: RumTypeRef) -> (OpId, RumTypeRef) {
   let member_reference_ty = add_ty_var(bp).ty;
+
+  add_constraint(bp, NodeConstraint::Deref { ptr_ty: member_reference_ty, val_ty: member_ty, weak: false });
 
   let (mem_op, _) = get_mem_context(bp);
 
@@ -301,7 +302,6 @@ fn create_offset_member_ptr(bp: &mut BuildPack<'_>, agg_op: OpId, offset_val_op:
   clone_op_heap(bp, agg_op, mem_ptr_op);
 
   let agg_ty = &mut bp.super_node.op_types[agg_op.usize()].clone();
-
   add_constraint(bp, NodeConstraint::GenTyToGenTy(ref_ty, *agg_ty));
 
   (mem_ptr_op, ref_ty)
@@ -315,12 +315,12 @@ fn add_type_constraints(bp: &mut BuildPack<'_>, gen_ty: &RumTypeRef, src_ty: &ty
   if !name.is_empty() {
     add_global_name_constraint(bp, name, Default::default(), *gen_ty);
   } else {
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: *gen_ty, to: defined_ty })
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: *gen_ty, to: defined_ty, weak: false })
   }
 
   if defined_ty.ptr_depth() > 0 {
     let base_ty = add_ty_var(bp).ty;
-    add_constraint(bp, NodeConstraint::Deref { ptr_ty: *gen_ty, val_ty: base_ty, mutable: false })
+    add_constraint(bp, NodeConstraint::Deref { ptr_ty: *gen_ty, val_ty: base_ty, weak: false })
   }
 }
 
@@ -669,7 +669,7 @@ fn get_mem_context(bp: &mut BuildPack) -> (OpId, RumTypeRef) {
   } else {
     let mem_ctx_ty = add_ty_var(bp).ty;
     declare_var(bp, var_id, Default::default(), mem_ctx_ty.clone(), 0);
-    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: mem_ctx_ty, to: RumTypeRef::mem_ctx(0) });
+    add_constraint(bp, NodeConstraint::ResolveGenTy { gen: mem_ctx_ty, to: RumTypeRef::mem_ctx(0), weak: false });
     return get_mem_context(bp);
   }
 }
@@ -757,10 +757,10 @@ fn clone_op_heap(bp: &mut BuildPack, from: OpId, to: OpId) {
 fn create_heap_internal(bp: &mut BuildPack, heap_name: IString, node_index: usize, tok: Token) -> RumTypeRef {
   let heap_var = add_ty_var(bp);
   heap_var.add(VarAttribute::HeapType);
-  let ty = heap_var.ty;
-  add_constraint(bp, NodeConstraint::GlobalHeapReference(ty, heap_name, tok));
-  bp.node_stack[node_index].heap_lu.insert(heap_name, ty);
-  ty
+  let heap_ty = heap_var.ty;
+  add_constraint(bp, NodeConstraint::GlobalHeapReference(heap_ty, heap_name, tok));
+  bp.node_stack[node_index].heap_lu.insert(heap_name, heap_ty);
+  heap_ty
 }
 
 fn create_node_heap(bp: &mut BuildPack, heap_name: IString, tok: Token) -> RumTypeRef {
@@ -908,19 +908,24 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
                 let agg_var = add_ty_var(bp);
                 let agg_ty = agg_var.ty;
 
-                let ty_ref_op = create_meta_ty_ref(bp, agg_ty);
+                let ty_ref_op = create_meta_ty(bp, agg_ty);
 
                 let heap_var = add_ty_var(bp);
                 heap_var.add(VarAttribute::HeapType);
-                let heap = heap_var.ty;
+                let heap_ty = heap_var.ty;
 
                 let (seq_op, _) = get_mem_context(bp);
 
-                let agg_ptr_op = add_op(bp, Operation::AggDecl { size: Default::default(), alignment: Default::default(), seq_op: Default::default(), ty_ref_op }, agg_ty, Default::default());
+
+                let rep_ty = add_ty_var(bp).ty;
+                add_constraint(bp, NodeConstraint::ResolveGenTy { gen: rep_ty, to: ty_u32, weak: false });
+                let single_rep_op = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, 0)), rep_ty, Default::default());
+
+                let agg_ptr_op = add_op(bp, Operation::AggDecl { reps: single_rep_op, seq_op: Default::default(), ty_op: ty_ref_op }, agg_ty, Default::default());
 
                 update_mem_context(bp, agg_ptr_op);
 
-                set_op_heap(bp, agg_ptr_op, heap.generic_id().unwrap());
+                set_op_heap(bp, agg_ptr_op, heap_ty.generic_id().unwrap());
 
                 let agg_var_index = agg_ty.generic_id().unwrap();
 
@@ -983,7 +988,7 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
                 let (expr_op, expr_ty, ..) = compile_expression(&expr.expr, bp, None);
                 if let Some((ty, _num)) = get_type(&decl.ty.clone().to_ast().into_type_Value().unwrap()) {
                   declare_top_scope_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
-                  add_constraint(bp, NodeConstraint::ResolveGenTy { gen: expr_ty.clone(), to: ty });
+                  add_constraint(bp, NodeConstraint::ResolveGenTy { gen: expr_ty.clone(), to: ty, weak: false });
                   //add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
                 } else if let non_array_type_Value::Type_Variable(type_var) = &decl.ty {
                   let var = add_ty_var(bp);
@@ -1009,13 +1014,20 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
                   todo!("Handle creation of undefined type")
                 };
 
+
+                todo!("unify this decleration");
                 let heap_var = add_ty_var(bp);
                 heap_var.add(VarAttribute::HeapType);
                 let heap = heap_var.ty;
 
                 let (seq_op, _) = get_mem_context(bp);
 
-                let agg_ptr_op = add_op(bp, Operation::AggDecl { size: Default::default(), alignment: Default::default(), seq_op: Default::default(), ty_ref_op }, agg_ty, Default::default());
+
+                let rep_ty = add_ty_var(bp).ty;
+                add_constraint(bp, NodeConstraint::ResolveGenTy { gen: rep_ty, to: ty_u32, weak: false });
+                let single_rep_op = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u32, 0)), rep_ty, Default::default());
+
+                let agg_ptr_op = add_op(bp, Operation::AggDecl { reps: single_rep_op, seq_op: Default::default(), ty_op: ty_ref_op }, agg_ty, Default::default());
 
                 update_mem_context(bp, agg_ptr_op);
 
@@ -1139,7 +1151,16 @@ fn create_meta_ty_ref(bp: &mut BuildPack<'_>, var_ty: RumTypeRef) -> OpId {
 
   add_global_name_constraint(bp, "type_ref".intern(), Default::default(), ty_ref_ty);
 
-  add_op(bp, Operation::MetaTypeRef(var_ty), ty_ref_ty, Default::default())
+  add_op(bp, Operation::MetaTypeReference(var_ty), ty_ref_ty, Default::default())
+}
+
+fn create_meta_ty(bp: &mut BuildPack<'_>, var_ty: RumTypeRef) -> OpId {
+  let ty_ref_var = add_ty_var(bp);
+  let ty_ref_ty = ty_ref_var.ty;
+
+  add_global_name_constraint(bp, "type".intern(), Default::default(), ty_ref_ty);
+
+  add_op(bp, Operation::MetaType(var_ty), ty_ref_ty, Default::default())
 }
 
 enum VarLookup {
@@ -1148,9 +1169,6 @@ enum VarLookup {
 }
 
 fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>, agg_ptr_op: OpId, agg_var_index: usize) {
-  let ty_var = add_ty_var(bp);
-  let addr_ty = ty_var.ty;
-  //add_constraint(bp, NodeConstraint::GenTyToTy(addr_ty.clone(), ty_addr));
 
   let mut indexed_mem_type = None;
 
@@ -1159,15 +1177,15 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
     if let Some(name_var) = &init.name {
       let name = name_var.id.intern();
 
-      let (mem_ptr_op, member_reference_ty) = create_member_ptr_op(bp, agg_ptr_op, name_var.id.intern(), name_var.clone().into());
+      //let mem_ty = add_ty_var(bp);
+      //mem_ty.add(VarAttribute::Member);
+      //let mem_ty = mem_ty.ty;
 
-      let mem_ty = add_ty_var(bp);
-      mem_ty.add(VarAttribute::Member);
-      let mem_ty = mem_ty.ty;
+      //let (mem_ptr_op, member_reference_ty) = create_member_ptr_op(bp, agg_ptr_op, name_var.id.intern(), name_var.clone().into(), mem_ty);
 
-      bp.super_node.type_vars[agg_var_index].add_mem(name, mem_ty.clone(), Default::default());
+      let (mem_ptr_op, member_reference_ty) = create_member_pointer(bp, agg_ptr_op, name_var.id.intern());
 
-      add_constraint(bp, NodeConstraint::Deref { ptr_ty: member_reference_ty, val_ty: mem_ty.clone(), mutable: false });
+      //bp.super_node.type_vars[agg_var_index].add_mem(name, mem_ty.clone(), Default::default());
 
       let (store_op, _) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, init.clone().into());
 
@@ -1175,8 +1193,9 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
 
       //update_var(bp, var_id, store_op, ty);
     } else {
+      let ty_var = add_ty_var(bp);
+      let addr_ty = ty_var.ty;
       let offset_op = add_op(bp, Operation::Const(ConstVal::new(prim_ty_u64, index as u64)), addr_ty.clone(), Default::default());
-
 
       let (mem_ptr_op, ref_ty) = create_offset_member_ptr(bp, agg_ptr_op, offset_op);
 
@@ -1196,7 +1215,7 @@ fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>,
         mem_ty
       };
 
-      add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: candidate_mem_ty.clone(), mutable: false });
+      add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: candidate_mem_ty.clone(), weak: false });
 
       let (store_op, _) = process_op(Op::STORE, &[mem_ptr_op, expr_op], bp, init.clone().into());
 
@@ -1413,19 +1432,19 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
 
           let var = &mut bp.super_node.type_vars[agg_ty_index];
           var.add_mem(index_name, member_ty.clone(), Default::default());
-
           member_ty
         };
 
         let ref_ty = add_ty_var(bp).ty;
         let (mem_op, _) = get_mem_context(bp);
-      
-        let member_op = add_op(bp, Operation::CalcOffsetPtr { index: expr_op, base: mem_ptr_op, seq_op: mem_op }, member_ty, Default::default());
+        let member_op = add_op(bp, Operation::CalcOffsetPtr { index: expr_op, base: mem_ptr_op, seq_op: mem_op }, ref_ty, Default::default());
+
+        add_constraint(bp, NodeConstraint::Deref { ptr_ty: ref_ty, val_ty: member_ty, weak: false });
 
         clone_op_heap(bp, mem_ptr_op, member_op);
 
         mem_ptr_op = member_op;
-        mem_ptr_ty = member_ty;
+        mem_ptr_ty = ref_ty;
 
         is_pointer = true;
       }
@@ -1452,12 +1471,14 @@ fn get_or_create_mem_op(bp: &mut BuildPack, mem: &MemberCompositeAccess<Token>, 
             mem_ptr_ty = ty;
           } else {
             debug_assert!(mem_ptr_op.is_valid(), "Member created invalid intermediary op  prev_index: {prev_index} mem: {:#?}", mem);
-            let (ref_op, ref_ty) = create_member_ptr_op(bp, mem_ptr_op, name, name_node.clone().into());
+            let mem_ty = add_ty_var(bp).ty;
+
+            let (ref_op, ref_ty) = create_member_ptr_op(bp, mem_ptr_op, name, name_node.clone().into(), mem_ty);
 
             bp.super_node.type_vars[ref_ty.generic_id().unwrap()].add(VarAttribute::Member);
 
             let var = &mut bp.super_node.type_vars[agg_ty_index];
-            var.add_mem(name, ref_ty.clone(), Default::default());
+            var.add_mem(name, mem_ty.clone(), Default::default());
 
             clone_op_heap(bp, mem_ptr_op, ref_op);
 
@@ -1578,7 +1599,7 @@ fn process_match(match_: &Arc<RawMatch<Token>>, bp: &mut BuildPack) -> ((OpId, R
 
   let activation_ty = {
     let activation_ty = add_ty_var(bp).ty;
-    bp.constraints.push(NodeConstraint::ResolveGenTy { gen: activation_ty.clone(), to: ty_bool });
+    bp.constraints.push(NodeConstraint::ResolveGenTy { gen: activation_ty.clone(), to: ty_bool, weak: false });
     activation_ty
   };
 
@@ -1903,7 +1924,12 @@ fn add_op_constraints(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu
     match annotation {
       annotation_Value::Deref(val) => {
         if let Some(target) = ty_lu.get(val.target.as_str()) {
-          add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty, mutable: false });
+          add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty, weak: false });
+        }
+      }
+      annotation_Value::WeakDeref(val) => {
+        if let Some(target) = ty_lu.get(val.target.as_str()) {
+          add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty, weak: true });
         }
       }
       annotation_Value::Converts(cvt) => {
@@ -1914,25 +1940,25 @@ fn add_op_constraints(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu
           }
         } */
       }
-      annotation_Value::MutDeref(val) => {
+/*       annotation_Value::MutDeref(val) => {
         if let Some(target) = ty_lu.get(val.target.as_str()) {
-          add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty, mutable: true });
+          add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty, weak: false });
         }
-      }
+      } */
 
       annotation_Value::Annotation(val) => match val.name.as_str() {
-        "poison" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_poison }),
-        "bool" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_bool }),
-        "u8" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u8 }),
-        "u16" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u16 }),
-        "u32" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u32 }),
-        "u64" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u64 }),
-        "i8" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s8 }),
-        "i16" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s16 }),
-        "i32" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s32 }),
-        "i64" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s64 }),
-        "f32" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_f32 }),
-        "f64" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_f64 }),
+        "poison" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_poison, weak: false }),
+        "bool" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_bool, weak: false }),
+        "u8" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u8, weak: false }),
+        "u16" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u16, weak: false }),
+        "u32" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u32, weak: false }),
+        "u64" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_u64, weak: false }),
+        "i8" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s8, weak: false }),
+        "i16" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s16, weak: false }),
+        "i32" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s32, weak: false }),
+        "i64" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_s64, weak: false }),
+        "f32" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_f32, weak: false }),
+        "f64" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_f64, weak: false }),
         _ => {}
       },
       _ => {}

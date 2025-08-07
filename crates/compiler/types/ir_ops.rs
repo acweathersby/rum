@@ -22,7 +22,7 @@ op: CAS prop [Prop] offset [Offset: Numeric] => offset [Offset]
 op: PROP  name [Name: agg] offset [Offset: Numeric] => out [PropData]
 
 
-op: STORE  ptr [ptr] val [val] ctx[read_ctx] => ptr [ptr] ctx[write_ctx]
+op: STORE  ptr [ptr] val [val: weak_deref(ptr)] ctx[read_ctx] => ptr [ptr] ctx[write_ctx]
 op: LOAD  ptr [ptr] ctx[read_ctx] => out [val: deref(ptr)]
 op: COPY to [Base] from [Other] ctx [read_ctx] => out [Base] ctx[write_ctx]
  

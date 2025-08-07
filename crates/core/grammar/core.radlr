@@ -28,7 +28,7 @@ EXPORT operators as rules
 <> annotation 
   > name                          :ast { t_Annotation, name }
   | "deref" "(" name^name ")"     :ast { t_Deref, target: $name }
-  | "mut_deref" "(" name^name ")" :ast { t_MutDeref, target: $name }
+  | "weak_deref" "(" name^name ")" :ast { t_WeakDeref, target: $name }
   | "converts" "(" name^name ")" :ast { t_Converts, target: $name }
 
 <> implementation 

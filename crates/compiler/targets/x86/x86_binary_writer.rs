@@ -125,8 +125,8 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
           }
           Operation::StaticObj(reference) => {
             match reference {
-              Reference::SmallObj(address) => {
-                // Store in IP and load at this point
+              Reference::SmallStruct(address) => {
+                // Store structure data in IP and load address into register
 
                 match out {
                   VarVal::Reg(red, _) => {
@@ -148,11 +148,13 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                     vec_rip_resolutions.push((instr_bytes.len(), aligned_offset));
                   }
                   VarVal::Stashed(..) => todo!(),
-                  VarVal::Const => {}
+                  VarVal::Const => {
+                    panic!("AA")
+                  }
                   _ => unreachable!(),
                 }
               },
-              Reference::Integer(address) => {
+              Reference::Integer(address) | Reference::Pointer(address) => {
                 // Store in IP and load at this point
 
                 match out {
@@ -496,7 +498,20 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
                 VarVal::Stashed(_) => todo!("Store using stashed base pointer"),
                 VarVal::Mem(..) => {
                   let Some(mem_arg) = mem_args.get(&operands[0]) else { unreachable!() };
-                  encode_x86(instr_bytes, &mov, bit_size, *mem_arg, val_arg, Arg::None, Arg::None);
+
+                  if bit_size == 0 {
+                    panic!("{} {:?} {:?}", sn.operands[op.usize()], get_op_type(sn, operands[1]).prim_data(), sn);
+                  }
+
+             /*      if !mem_arg.is_reg() && val_arg.is_immediate() {
+                    dbg!(mem_arg, val_arg);
+                    encode_x86(instr_bytes, &mov, bit_size, *mem_arg, val_arg, Arg::None, Arg::None);
+                    print_instructions(&instr_bytes, 0);
+                    todo!("Implement immediate to memory location at {op} {sn:?}")
+                  } else { */
+                    encode_x86(instr_bytes, &mov, bit_size, *mem_arg, val_arg, Arg::None, Arg::None);
+
+//                  }
                 }
                 _ => unreachable!(),
               }
@@ -637,7 +652,7 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
         handle_fix_up(instr_bytes, *post_fix);
       }
 
-      print_instructions(&instr_bytes[prev_offset as usize..], 0);
+      //print_instructions(&instr_bytes[prev_offset as usize..], 0);
       prev_offset = instr_bytes.len() as _;
     }
 
@@ -713,8 +728,10 @@ pub(crate) fn encode_routine(sn: &RootNode, bb_fn: &BasicBlockFunction, db: &Sol
   for (offset, _) in &mut patch_points {
     *offset += fn_offset
   }
-  println!("\n\n");
-  print_instructions(&data_store, 0);
+  
+  //  println!("\n\n");
+  
+  //  print_instructions(&data_store, 0);
 
   BinaryFunction { id: bb_fn.id, data_segment_size: data_offset, entry_offset: data_offset, binary: data_store, patch_points }
 }

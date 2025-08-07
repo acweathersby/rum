@@ -356,17 +356,17 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         dependency_ops[2] = *index;
         (dependency_ops.as_slice(), [get_vv(bb, vars, base), get_vv(bb, vars, index), Default::default()])
       }
-      Operation::AggDecl { size, alignment, .. } => {
+      Operation::AggDecl { reps: size, ty_op: ty_ref_op, .. } => {
         dependency_ops[0] = *size;
-        dependency_ops[1] = *alignment;
-        (dependency_ops.as_slice(), [get_vv(bb, vars, size), get_vv(bb, vars, alignment), Default::default()])
+        dependency_ops[1] = *ty_ref_op;
+        (dependency_ops.as_slice(), [get_vv(bb, vars, size), get_vv(bb, vars, ty_ref_op), Default::default()])
       }
       Operation::Call { routine, args, .. } => (args.as_slice(), Default::default()),
       Operation::Op { operands, .. } => {
         dependency_ops = *operands;
         (dependency_ops.as_slice(), [get_vv(bb, vars, &operands[0]), get_vv(bb, vars, &operands[1]), get_vv(bb, vars, &operands[2])])
       }
-      Operation::StaticObj(..) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeRef(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
+      Operation::StaticObj(..) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeReference(..) | Operation::MetaType(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
       Operation::Dead => unreachable!(),
       op => todo!("{op:?}"),
     };
@@ -529,9 +529,8 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           }
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
-        Operation::AggDecl { size, alignment, seq_op, ty_ref_op: ty_op } => {
+        Operation::AggDecl { reps: size, seq_op, ty_op } => {
           pending_ops.push_back((*size, rank + 1));
-          pending_ops.push_back((*alignment, rank + 1));
           pending_ops.push_back((*ty_op, rank + 1));
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
@@ -728,9 +727,9 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           dependency_ops[2] = *index;
           dependency_ops.as_slice()
         }
-        Operation::AggDecl { size, alignment, .. } => {
+        Operation::AggDecl { reps: size, ty_op: ref ty_ref_op, .. } => {
           dependency_ops[0] = *size;
-          dependency_ops[1] = *alignment;
+          dependency_ops[1] = *ty_ref_op;
           dependency_ops.as_slice()
         }
         Operation::Call { args, .. } => args.as_slice(),
@@ -738,7 +737,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           dependency_ops = *operands;
           dependency_ops.as_slice()
         }
-        Operation::StaticObj(_) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeRef(..) | Operation::Param(..) => &dependency_ops,
+        Operation::StaticObj(_) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeReference(..) | Operation::MetaType(..) | Operation::Param(..) => &dependency_ops,
         Operation::Dead => unreachable!("{sn:?}"),
         op => todo!("{op:?}"),
       };
@@ -1032,9 +1031,9 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             }
           }
         }
-        Operation::AggDecl { size, alignment, .. } => {
+        Operation::AggDecl { reps: size, ty_op, .. } => {
           *makes_ffi_call = true;
-          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, &[*size, *alignment]);
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, &[*size, *ty_op]);
         }
         Operation::Call { args, .. } => {
           process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, args);
@@ -1073,7 +1072,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
         Operation::StaticObj(_) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
         }
-        Operation::MetaTypeRef(..) => {
+        Operation::MetaTypeReference(..) | Operation::MetaType(..) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
         }
         Operation::Dead => unreachable!(),
@@ -1245,12 +1244,12 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
       active_block_id = active_block_id.max(level);
 
       match &sn.operands[op.usize()] {
-        Operation::AggDecl { size, alignment, seq_op: mem_ctx_op, .. } => {
+        Operation::AggDecl { reps: size, ty_op: ty_ref_op, seq_op: mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
 
           pending_ops.push_back((*mem_ctx_op, level));
           pending_ops.push_back((*size, level));
-          pending_ops.push_back((*alignment, level));
+          pending_ops.push_back((*ty_ref_op, level));
         }
         Operation::NamedOffsetPtr { base, seq_op: mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;

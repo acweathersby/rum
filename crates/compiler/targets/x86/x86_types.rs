@@ -273,6 +273,10 @@ impl Arg {
     }
   }
 
+  pub(crate) fn is_immediate(&self) -> bool {
+    matches!(self, Arg::Imm_Int(..))
+  }
+
   pub(crate) fn is_reg(&self) -> bool {
     matches!(self, Arg::Reg(..))
   }
