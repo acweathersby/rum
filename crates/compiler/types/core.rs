@@ -302,6 +302,7 @@ pub(crate) const ty_type_ref: RumTypeRef = RumTypeRef { raw_type: prim_ty_struct
 pub(crate) const ty_str: RumTypeRef = RumTypeRef { raw_type: prim_ty_struct, type_id: 5 };
 
 #[repr(C)]
+#[derive(Clone)]
 pub(crate) struct RumString {
   len:        u32,
   characters: [u8; 128],
@@ -331,6 +332,8 @@ impl RumString {
 
     out
   }
+
+
 
   pub fn new(string: &str) -> *const RumString {
     let len = string.len() as u32;

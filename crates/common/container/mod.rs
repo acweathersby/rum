@@ -21,3 +21,13 @@ fn test_get_aligned_value() {
   assert_eq!(get_aligned_value(8, 4), 8);
   assert_eq!(get_aligned_value(8, 8), 8);
 }
+
+#[inline(always)]
+pub fn align_buffer_to(preamble_data: &mut Vec<u8>, byte_alignment: u64, fill_byte: u8 ) {
+  let offset = preamble_data.len() as u64;
+  let aligned_offset = get_aligned_value(offset, byte_alignment);
+
+  for _ in 0..aligned_offset - offset {
+    preamble_data.push(fill_byte);
+  }
+}

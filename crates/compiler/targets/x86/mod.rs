@@ -1,11 +1,15 @@
-use std::{any::Any, collections::{HashSet, VecDeque}};
+use std::{
+  any::Any,
+  collections::{HashSet, VecDeque},
+};
 
-use x86_binary_writer::{BinaryFunction, PatchType};
+use x86_binary_writer::{ PatchType};
 
 use crate::{
   basic_block_compiler::{self},
   ir_compiler::{ROUTINE_ID, STRUCT_ID},
-  types::{CMPLXId, NodeHandle, RumTypeObject, RumTypeProp, RumTypeRef, SolveDatabase, TypeVar},
+  linker::BinaryObject,
+  types::{CMPLXId, NodeHandle, Operation, Reference, RumTypeObject, RumTypeProp, RumTypeRef, SolveDatabase, TypeVar},
 };
 
 //pub(crate) mod x86_compiler;
@@ -16,9 +20,11 @@ pub mod x86_eval;
 pub mod x86_instructions;
 pub mod x86_types;
 
-extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
-  println!("reps: {reps}, ty: {}",  ty as *const _ as usize);
- 
+pub(crate) extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
+
+  println!("AAAA");
+  println!("reps: {reps}, ty: {}", ty as *const _ as usize);
+
   dbg!(reps, ty);
   let ptr = if reps > 0 {
     if ty.name.as_str() == "type" {
@@ -30,17 +36,15 @@ extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
       let alignment = ty.alignment as usize;
       let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
       unsafe { std::alloc::alloc(layout) }
-
-
     } else {
       todo!("Implement variable length structs to allocate objects with reps larger than 1")
     }
   } else {
-      let size = ty.base_byte_size as usize;
-      let alignment = ty.alignment as usize;
-      dbg!(size, alignment);
-      let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
-      unsafe { std::alloc::alloc(layout) }
+    let size = ty.base_byte_size as usize;
+    let alignment = ty.alignment as usize;
+    dbg!(size, alignment);
+    let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
+    unsafe { std::alloc::alloc(layout) }
   };
 
   dbg!(ptr);
@@ -48,13 +52,13 @@ extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
   ptr
 }
 
-extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
+pub(crate) extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
   dbg!(size, ptr, allocator_slot);
   let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(8 as _).expect("");
   unsafe { std::alloc::dealloc(ptr, layout) };
 }
 
-pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
+pub fn compile(db: &SolveDatabase) -> Vec<(CMPLXId, BinaryObject)> {
   let mut functions = vec![];
   let mut queue = VecDeque::from_iter(db.roots.iter().map(|(_, id)| *id));
   let mut seen = HashSet::new();
@@ -65,39 +69,25 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
       if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {
         let super_node = handle.get_mut().unwrap();
 
-        // Collect complex node requirements
-        for TypeVar { ty, .. } in super_node.type_vars.iter() {
-          //todo!("Handle Complex Types");
-          if ty.is_complex() {
-            
-            if ty.type_id < 0 { 
-              panic!("Unexpected negative type_id in complex ty");
-            }
 
+        for op in &super_node.operands {
+          match op {
+            Operation::StaticObj(reference) => match reference {
+              Reference::Object(obj) => {
+                queue.push_back(*obj);
+              }
 
-
-            let node_index=  ty.type_id as usize;
-
-            let id = CMPLXId(node_index as _);
-            
-            queue.push_back(id);
-            
+              _ => {}
+            },
+            _ => {}
           }
         }
 
         let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db);
 
-        let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
+        let binary = x86_binary_writer::encode_routine(id, super_node, &register_assigned_basic_blocks, db);
 
-        for (_, patch) in &binary.patch_points {
-          match patch {
-            PatchType::Function(cmplx_id) => {
-              queue.push_back(*cmplx_id);
-            }
-          }
-        }
-
-        functions.push(binary);
+        functions.push((id, binary));
       }
     }
   }
@@ -105,16 +95,18 @@ pub fn compile(db: &SolveDatabase) -> Vec<BinaryFunction> {
   functions
 }
 
-pub(crate) fn compile_function(db: &SolveDatabase<'_>, functions: &mut Vec<BinaryFunction>, handle: NodeHandle, id: crate::types::CMPLXId) {
-    if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {
-        let super_node = handle.get_mut().unwrap();
 
-        let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db);
 
-        let binary = x86_binary_writer::encode_routine(super_node, &register_assigned_basic_blocks, db, allocate as _, free as _);
+pub(crate) fn compile_function(db: &SolveDatabase<'_>, handle: NodeHandle, id: crate::types::CMPLXId) -> Option<BinaryObject> {
+  if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {
+    let super_node = handle.get_mut().unwrap();
+    let register_assigned_basic_blocks = basic_block_compiler::encode_function(id, super_node, db);
+    let binary = x86_binary_writer::encode_routine(id, super_node, &register_assigned_basic_blocks, db);
 
-        functions.push(binary);
-      }
+    Some(binary)
+  } else {
+    None
+  }
 }
 
 #[inline]
@@ -161,6 +153,7 @@ pub fn print_instructions(binary: &[u8], mut offset: u64) -> u64 {
 
     offset = instruction.ip() + instruction.len() as u64
   }
+  println!("\n\n");
 
   offset
 }

@@ -362,11 +362,27 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         (dependency_ops.as_slice(), [get_vv(bb, vars, size), get_vv(bb, vars, ty_ref_op), Default::default()])
       }
       Operation::Call { routine, args, .. } => (args.as_slice(), Default::default()),
+      Operation::Asm { args, .. } => (args.as_slice(), Default::default()),
+      Operation::AsmInput { input, .. } => {
+        dependency_ops[1] = *input;
+        (dependency_ops.as_slice(), Default::default())
+      }
+      Operation::AsmOutput { asm_body, .. } => {
+        dependency_ops[1] = *asm_body;
+        (dependency_ops.as_slice(), Default::default())
+      }
       Operation::Op { operands, .. } => {
         dependency_ops = *operands;
         (dependency_ops.as_slice(), [get_vv(bb, vars, &operands[0]), get_vv(bb, vars, &operands[1]), get_vv(bb, vars, &operands[2])])
       }
-      Operation::StaticObj(..) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeReference(..) | Operation::MetaType(..) | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
+      Operation::Str(..)
+      | Operation::StaticObj(..)
+      | Operation::Const(..)
+      | Operation::_Gamma(..)
+      | Operation::Φ(..)
+      | Operation::MetaTypeReference(..)
+      | Operation::MetaType(..)
+      | Operation::Param(..) => (dependency_ops.as_slice(), arg_ops),
       Operation::Dead => unreachable!(),
       op => todo!("{op:?}"),
     };
@@ -376,30 +392,32 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         // Handle temp loads
         let var_index = get_vv_for_op(&bb.op_to_var_map, *input);
 
-        let var = &vars[var_index];
-        if var.temp_store || var.stored {
-          match var.out {
-            VarVal::Reg(reg, ty) => {
-              let offset = get_var_offset(vars, stack_ptr_offset, var_index);
+        if var_index < u32::MAX as usize {
+          let var = &vars[var_index];
+          if var.temp_store || var.stored {
+            match var.out {
+              VarVal::Reg(reg, ty) => {
+                let offset = get_var_offset(vars, stack_ptr_offset, var_index);
 
-              // If there is a subsequent move of a register after a load then we should
-              // just load into the target of the register and not remove temp store status
-              if let Some(fix_up) = pre_fixups.iter_mut().find(|fix_up| match fix_up {
-                FixUp::Move { src, .. } => *src == reg,
-                _ => false,
-              }) {
-                let FixUp::Move { dst, ty: ty_a, .. } = fix_up else { unreachable!() };
-                debug_assert!(*ty_a == ty);
-                let new_fixup = FixUp::Load(*dst, offset, ty);
-                *fix_up = new_fixup;
-              } else {
-                pre_fixups.insert(0, FixUp::Load(reg, offset, ty));
-                vars[var_index].temp_store = false;
+                // If there is a subsequent move of a register after a load then we should
+                // just load into the target of the register and not remove temp store status
+                if let Some(fix_up) = pre_fixups.iter_mut().find(|fix_up| match fix_up {
+                  FixUp::Move { src, .. } => *src == reg,
+                  _ => false,
+                }) {
+                  let FixUp::Move { dst, ty: ty_a, .. } = fix_up else { unreachable!() };
+                  debug_assert!(*ty_a == ty);
+                  let new_fixup = FixUp::Load(*dst, offset, ty);
+                  *fix_up = new_fixup;
+                } else {
+                  pre_fixups.insert(0, FixUp::Load(reg, offset, ty));
+                  vars[var_index].temp_store = false;
+                }
               }
+              VarVal::Mem(..) => {}
+              VarVal::Const => {}
+              _ => unreachable!(),
             }
-            VarVal::Mem(..) => {}
-            VarVal::Const => {}
-            _ => unreachable!(),
           }
         }
       }
@@ -529,6 +547,18 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           }
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
+        Operation::Asm { args, seq_op, .. } => {
+          for op in args {
+            pending_ops.push_back((*op, rank + 1));
+          }
+          pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
+        }
+        Operation::AsmInput { input, .. } => {
+          pending_ops.push_back((*input, rank + 1));
+        }
+        Operation::AsmOutput { asm_body, .. } => {
+          pending_ops.push_back((*asm_body, rank + 1));
+        }
         Operation::AggDecl { reps: size, seq_op, ty_op } => {
           pending_ops.push_back((*size, rank + 1));
           pending_ops.push_back((*ty_op, rank + 1));
@@ -548,7 +578,6 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             pending_ops.push_back((*op, rank + bump_offset(&mut call_offset)));
           }
         }
-
         _ => {}
       }
     }
@@ -685,7 +714,6 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
         match vars[var_index].out {
           VarVal::Reg(reg_index, _) | VarVal::Mem(reg_index, _) => {
             if reg_index != 255 {
-
               reg_alloc.acquire_specific_register(reg_index as _);
             }
           }
@@ -737,7 +765,23 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           dependency_ops = *operands;
           dependency_ops.as_slice()
         }
-        Operation::StaticObj(_) | Operation::Const(..) | Operation::_Gamma(..) | Operation::Φ(..) | Operation::MetaTypeReference(..) | Operation::MetaType(..) | Operation::Param(..) => &dependency_ops,
+        Operation::Asm { args, .. } => args.as_slice(),
+        Operation::AsmInput { input, reg_name } => {
+          dependency_ops[1] = *input;
+          dependency_ops.as_slice()
+        }
+        Operation::AsmOutput { asm_body, reg_name } => {
+          dependency_ops[1] = *asm_body;
+          dependency_ops.as_slice()
+        }
+        Operation::Str(..)
+        | Operation::StaticObj(_)
+        | Operation::Const(..)
+        | Operation::_Gamma(..)
+        | Operation::Φ(..)
+        | Operation::MetaTypeReference(..)
+        | Operation::MetaType(..)
+        | Operation::Param(..) => &dependency_ops,
         Operation::Dead => unreachable!("{sn:?}"),
         op => todo!("{op:?}"),
       };
@@ -937,7 +981,6 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             _ => {}
           }
 
-
           let base_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, base);
           match vars[base_var_index].out {
             VarVal::Mem(..) => {
@@ -1031,6 +1074,64 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             }
           }
         }
+        Operation::AsmInput { input, reg_name } => {
+          let out_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+          let input_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, *input);
+          let required_reg = match reg_name.to_str().as_str() {
+            "rax" | "RAX" => 5usize,
+            "rdi" | "RDI" => 3usize,
+            _ => unreachable!(),
+          };
+
+          let reg: Option<usize> = match vars[input_var_index].out {
+            VarVal::Reg(reg, _) => Some(reg as usize),
+            _ => {
+              // this should be a regular register
+              if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *input, Some(required_reg)).is_none() {
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, *input, None)
+              } else {
+                Some(required_reg)
+              }
+            }
+          };
+
+          if let Some(reg) = reg {
+            if reg != required_reg {
+              vars[out_var_index].pre_fixes.push(FixUp::Move { dst: required_reg as _, src: reg as _, ty: get_op_type(sn, *input).prim_data() });
+            }
+          } else {
+            panic!("Handle load")
+          }
+        }
+        Operation::AsmOutput { reg_name, .. } => {
+          let out_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+          let required_reg = match reg_name.to_str().as_str() {
+            "rax" | "RAX" => 5usize,
+            "rdi" | "RDI" => 3usize,
+            _ => unreachable!(),
+          };
+
+          let reg: Option<usize> = match vars[out_var_index].out {
+            VarVal::Reg(reg, _) => Some(reg as usize),
+            _ => {
+              // this should be a regular register
+              if allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, Some(required_reg)).is_none() {
+                allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, None)
+              } else {
+                Some(required_reg)
+              }
+            }
+          };
+
+          if let Some(reg) = reg {
+            if reg != required_reg {
+              dbg!(reg, required_reg);
+              vars[out_var_index].post_fixes.push(FixUp::Move { dst: reg as _, src: required_reg as _, ty: get_op_type(sn, out_op).prim_data() });
+            }
+          } else {
+            panic!("Handle load")
+          }
+        }
         Operation::AggDecl { reps: size, ty_op, .. } => {
           *makes_ffi_call = true;
           process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, &[*size, *ty_op]);
@@ -1075,6 +1176,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
         Operation::MetaTypeReference(..) | Operation::MetaType(..) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
         }
+        Operation::Asm { .. } => {}
         Operation::Dead => unreachable!(),
         opa => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
@@ -1257,21 +1359,38 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
           pending_ops.push_back((*mem_ctx_op, level));
           pending_ops.push_back((*base, level));
         }
-        Operation::CalcOffsetPtr { base, seq_op: mem_ctx_op, index, .. } => {
+        Operation::CalcOffsetPtr { base, seq_op, index, .. } => {
           op_data[op.usize()].block = level;
 
           pending_ops.push_back((*index, level));
-          pending_ops.push_back((*mem_ctx_op, level));
+          pending_ops.push_back((*seq_op, level));
           pending_ops.push_back((*base, level));
         }
-        Operation::Call { args, seq_op: mem_ctx_op, .. } => {
+        Operation::Call { args, seq_op, .. } => {
           op_data[op.usize()].block = level;
 
-          pending_ops.push_back((*mem_ctx_op, level));
+          pending_ops.push_back((*seq_op, level));
 
           for op in args {
             pending_ops.push_back((*op, level));
           }
+        }
+        Operation::Asm { args, seq_op, .. } => {
+          op_data[op.usize()].block = level;
+
+          pending_ops.push_back((*seq_op, level));
+
+          for op in args {
+            pending_ops.push_back((*op, level));
+          }
+        }
+        Operation::AsmInput { input, reg_name } => {
+          op_data[op.usize()].block = level;
+          pending_ops.push_back((*input, level));
+        }
+        Operation::AsmOutput { asm_body, reg_name } => {
+          op_data[op.usize()].block = level;
+          pending_ops.push_back((*asm_body, level));
         }
         Operation::Φ(node_id, ..) | Operation::_Gamma(node_id, ..) => {
           let sub_node = &sn.nodes[*node_id as usize];

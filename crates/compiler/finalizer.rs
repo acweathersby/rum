@@ -19,6 +19,8 @@ pub fn finalize<'a>(db: &SolveDatabase<'a>) -> SolveDatabase<'a> {
 
 pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::NodeHandle) {
   let node = node.get_mut().unwrap();
+  println!("BEGIN:");
+  dbg!(&node);
 
   let mut dissolved_ops = vec![OpId::default(); node.operands.len()];
   let mut used_ops: Vec<bool> = vec![false; node.operands.len()];
@@ -73,26 +75,26 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
           }
           op_queue.push_back(*mem_ctx_op);
         }
-        Operation::AggDecl {  reps: size, seq_op: mem_ctx_op, ty_op: ty_ref_op } => {
+        Operation::AggDecl {  reps: size, seq_op, ty_op: ty_ref_op } => {
           op_queue.push_back(*size);
-          op_queue.push_back(*mem_ctx_op);
+          op_queue.push_back(*seq_op);
           op_queue.push_back(*ty_ref_op);
         }
-        Operation::NamedOffsetPtr { base, seq_op: mem_ctx_op, .. } => {
+        Operation::NamedOffsetPtr { base, seq_op, .. } => {
           op_queue.push_back(*base);
-          op_queue.push_back(*mem_ctx_op);
+          op_queue.push_back(*seq_op);
         }
-        Operation::CalcOffsetPtr { base, index, seq_op: mem_ctx_op, .. } => {
+        Operation::CalcOffsetPtr { base, index, seq_op, .. } => {
           op_queue.push_back(*base);
           op_queue.push_back(*index);
-          op_queue.push_back(*mem_ctx_op);
+          op_queue.push_back(*seq_op);
         }
 
-        Operation::Op { operands, seq_op: mem_ctx_op, .. } => {
+        Operation::Op { operands, seq_op, .. } => {
           for op in operands {
             op_queue.push_back(*op);
           }
-          op_queue.push_back(*mem_ctx_op);
+          op_queue.push_back(*seq_op);
         }
         Operation::_Gamma(_, op) => {
           op_queue.push_back(*op);
@@ -101,6 +103,16 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
           for op in ops {
             op_queue.push_back(*op);
           }
+        }
+        Operation::Asm { args, data, seq_op } => {
+          op_queue.extend(args.iter().cloned());
+          op_queue.push_back(*seq_op);
+        }
+        Operation::AsmInput { input, reg_name } => {
+          op_queue.push_back(*input);
+        }
+        Operation::AsmOutput { asm_body,.. } => {
+          op_queue.push_back(*asm_body);
         }
 
         d => unreachable!("{op:?} {d} \n {node:?}"),
@@ -116,46 +128,11 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
       }
 
       match &node.operands[op_id.usize()] {
-        Operation::Str(str_value) => {
-          let comptime_str = RumString::new(str_value.to_str().as_str());
-          node.operands[op_id.usize()] = Operation::StaticObj(Reference::Integer(comptime_str as _));
-        }
-        Operation::MetaType(base_ty) => { 
-          let ty = get_resolved_ty(node, base_ty);
-          let ty = db.comptime_type_table[ty.type_id as usize];
-          println!("---- {}", ty as usize);
-          
-          node.operands[op_id.usize()] = Operation::StaticObj(Reference::Pointer(ty as _));
-        }
-        Operation::MetaTypeReference(base_ty) => {
-          let ty = get_resolved_ty(node, base_ty);
-
-          // Convert the MetaTypeRef to an actual RUM type ref value. This may need to be adjusted depending
-          // on whether the compilation is for comptime or runtime.
-
-          node.operands[op_id.usize()] = Operation::StaticObj(Reference::SmallStruct(ty.as_ref()));
-
-          /*     match type_name {
-            Reference::UnresolvedName(type_name) => {
-              if let GetResult::Existing(cplx) = db.get_type_by_name(*type_name) {
-                // This needs to be either compile at during compilation for use in compile time objects,
-                // or linked at link time to be used as a runtime data structure. The is depends if we
-                // are in comptime mode or in compile mode, which depends on the object we are finalizing
-                // and the context mode which should be passed down
-                if let Some(value) = db.comptime_type_name_lookup_table.get(&cplx) {
-                  let value = db.comptime_type_table[*value] as usize;
-                  node.operands[op_id.usize()] = Operation::MetaTypeRef(Reference::Integer(value));
-                } else {
-                  panic!("This is unstable")
-                }
-              } else {
-                panic!("Type {type_name} is not loaded into compiler's database");
-              }
-            }
-            ty => unreachable!("{ty:?}"),
-          } */
-        }
-        Operation::NamedOffsetPtr { reference, base, seq_op: mem_ctx_op } => {
+        //Operation::Str(str_value) => {
+        //  let comptime_str = RumString::new(str_value.to_str().as_str());
+        //  node.operands[op_id.usize()] = Operation::StaticObj(Reference::_Integer(comptime_str as _));
+        //}
+        Operation::NamedOffsetPtr { reference, base, seq_op: mem_ctx_op, .. } => {
           let parent_type = get_op_type(node, *base);
 
           if let Reference::UnresolvedName(name) = reference {
@@ -165,7 +142,7 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
 
               if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == name.to_str().as_str()) {
                 let offset = prop.byte_offset;
-                node.operands[op_id.usize()] = Operation::NamedOffsetPtr { reference: Reference::Integer(offset as _), base: *base, seq_op: *mem_ctx_op }
+                node.operands[op_id.usize()] = Operation::NamedOffsetPtr { reference: *reference, offset: offset as _, base: *base, seq_op: *mem_ctx_op }
               }
             } else {
               panic!("Could not get base type of type at op {op_id}  base_type: {parent_type} {node:#?}")
@@ -322,6 +299,8 @@ pub(crate) fn finalize_node<'a>(db: &SolveDatabase<'a>, node: &crate::types::Nod
       }
     }
   }
+  println!("END:");
+  dbg!(&node);
 }
 
 fn update_op(dissolved_ops: &[OpId], target_op: &mut OpId) {

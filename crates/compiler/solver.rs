@@ -1,16 +1,16 @@
 use crate::{
   finalizer::finalize_node,
   ir_compiler::{INTERFACE_ID, INTERNAL_STRUCT_ID, INTRINSIC_ROUTINE_ID, MEMORY_REGION_ID, ROUTINE_ID, ROUTINE_SIGNATURE_ID, STRUCT_ID},
-  linker,
+  linker::{self, apply_relocation, comptime_link, BinaryObject, Symbol},
   optimizer::{optimize, optimize_node_level_1},
   targets::{
     self,
-    x86::{compile_function, print_instructions, x86_eval},
+    x86::{self, compile_function, print_instructions, x86_eval},
   },
   types::*,
 };
 use radlr_rust_runtime::types::BlameColor;
-use rum_common::{CachedString, IString};
+use rum_common::{align_buffer_to, get_aligned_value, CachedString, IString};
 use rum_lang::todo_note;
 use std::{
   any::Any,
@@ -290,7 +290,7 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<(CMPLXId, Gl
 
               let mut nodes = HashMap::new();
               let mut queue = VecDeque::from_iter(vec![target_node_id]);
-              
+
               while let Some(node_id) = queue.pop_front() {
                 if nodes.insert(node_id, Option::<u32>::None).is_none() {
                   let handle = NodeHandle::from((node_id, &*db));
@@ -309,31 +309,44 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<(CMPLXId, Gl
                     }
                   }
 
-                  finalize_node(db, &handle);                  
+                  finalize_node(db, &handle);
                   optimize_node_level_1(&handle);
-                  compile_function(&db, &mut bin_functs, handle, node_id);
+
+                  // NODE at this point is fully ready to be submitted to comptime and runtime binary generators
+                  if let Some(binary) = compile_function(&db, handle, node_id) {
+                    bin_functs.push((node_id, binary));
+                  }
                 }
               }
 
-              let (entry_offset, binary) = linker::link(bin_functs, db);
-              let func = x86_eval::x86Function::new(&binary, entry_offset);
+              let (entries, comptime_executable) = comptime_link(db, bin_functs);
 
-              let out = func.access_as_call::<fn() -> &'static RumTypeObject>()();
+              if let Some(entry) = entries.get(&target_node_id) {
+                print_instructions(&comptime_executable, 0);
 
-              let ty = {
-                // Inject into type table
-                let index = db.comptime_type_table.len();
-                db.comptime_type_table.push(unsafe { std::mem::transmute(out) });
-                db.comptime_type_name_lookup_table.insert(target_node_id, index);
-                node.ty = RumTypeRef { raw_type: prim_ty_struct, type_id: index as _ };
-                node.ty
-              };
+                let func = x86_eval::x86Function::new(&comptime_executable, *entry);
 
-              if let Some(dependencies) = node_link_constraints.get(&target_node_id) {
-                for (dependent_node, ExternalReference { name, gen_ty, op }) in dependencies {
-                  let constraint = NodeConstraint::ResolveGenTy { gen: *gen_ty, to: ty.increment_ptr(), weak: false };
-                  add_global_constraint(*dependent_node, GlobalConstraint::ResolveLocalConstraints { constraints: vec![constraint] }, &mut gcq, &mut node_pending_work);
+                let out = func.access_as_call::<fn() -> &'static RumTypeObject>()();
+
+                dbg!(out);
+
+                let ty = {
+                  // Inject into type table
+                  let index = db.comptime_type_table.len();
+                  db.comptime_type_table.push(unsafe { std::mem::transmute(out) });
+                  db.comptime_type_name_lookup_table.insert(target_node_id, index);
+                  node.ty = RumTypeRef { raw_type: prim_ty_struct, type_id: index as _ };
+                  node.ty
+                };
+
+                if let Some(dependencies) = node_link_constraints.get(&target_node_id) {
+                  for (dependent_node, ExternalReference { name, gen_ty, op }) in dependencies {
+                    let constraint = NodeConstraint::ResolveGenTy { gen: *gen_ty, to: ty.increment_ptr(), weak: false };
+                    add_global_constraint(*dependent_node, GlobalConstraint::ResolveLocalConstraints { constraints: vec![constraint] }, &mut gcq, &mut node_pending_work);
+                  }
                 }
+              } else {
+                panic!("Unable to complete structure definition")
               }
             };
           }

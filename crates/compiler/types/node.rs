@@ -260,8 +260,6 @@ pub(crate) enum Reference {
   Object(CMPLXId),
   Type(RumTypeRef),
   Intrinsic(IString),
-  Integer(usize),
-  Pointer(usize),
   SmallStruct(usize),
   Unknown,
 }
@@ -272,8 +270,7 @@ impl Debug for Reference {
       Self::UnresolvedName(name) => f.write_fmt(format_args!("{name}?")),
       Self::Intrinsic(name) => f.write_fmt(format_args!("`{name}")),
       Self::Object(id) => f.write_fmt(format_args!("{id:?}")),
-      Self::Integer(id) => f.write_fmt(format_args!("{id}")),
-      Self::Pointer(id) => f.write_fmt(format_args!("[{id}]")),
+      //Self::Pointer(id) => f.write_fmt(format_args!("[{id}]")),
       Self::SmallStruct(id) => f.write_fmt(format_args!("Obj{id}")),
       Self::Type(id) => f.write_fmt(format_args!("{id}")),
       Self::Unknown => f.write_fmt(format_args!("??")),
@@ -288,11 +285,29 @@ pub(crate) enum Operation {
   Param(VarId, u32),
   Φ(u32, Vec<OpId>),
   _Gamma(u32, OpId),
+  AsmInput {
+    input: OpId,
+    reg_name: IString,
+  },
+  Asm { 
+    args: Vec<OpId>,
+    data: IString,
+    seq_op: OpId
+  },
+  AsmOutput {
+    asm_body: OpId,
+    reg_name: IString,
+  },
   Call {
     routine: OpId,
     args:    Vec<OpId>,
     seq_op:  OpId,
   },
+  /* SysCall {
+    name:    IString,
+    args:    Vec<OpId>,
+    seq_op:  OpId,
+  }, */
   AggDecl {
     /// Used to define number or repeating elements in this structure
     reps:      OpId,
@@ -300,6 +315,7 @@ pub(crate) enum Operation {
     seq_op:    OpId,
   },
   NamedOffsetPtr {
+    offset: i64, 
     reference: Reference,
     base:      OpId,
     seq_op:    OpId,
@@ -323,7 +339,8 @@ pub(crate) enum Operation {
   MetaTypeReference(RumTypeRef),
   // Extracts type information from operation
   InlineTypeRef(OpId),
-  /// Reference to non local object
+  /// Reference to non local object. 
+  /// Resolves to the address of, or a register with its value set to the address of, the static object.
   StaticObj(Reference),
   Dead,
 }
@@ -337,13 +354,16 @@ impl Debug for Operation {
 impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
+      Operation::AsmInput { input, reg_name } => f.write_fmt(format_args!("{input} ::> {reg_name}",)),
+      Operation::AsmOutput { asm_body, reg_name } => f.write_fmt(format_args!("{reg_name} ::> *",)),
+      Operation::Asm { args, data, seq_op } => f.write_fmt(format_args!("ASM: args: [{args:?}] {data} @ {seq_op}",)),
       Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
       Operation::MetaType(ty) => f.write_fmt(format_args!("type_of::{ty}",)),
       Operation::MetaTypeReference(ty) => f.write_fmt(format_args!("type_ref_of::{ty}",)),
       Operation::InlineTypeRef(op) => f.write_fmt(format_args!("type_ref_of::{op}",)),
       Operation::StaticObj(name) => f.write_fmt(format_args!("obj::{name:?}",)),
       Operation::Call { routine: routine_op, args, seq_op } => f.write_fmt(format_args!("{routine_op:?} ( {args:?} ) @ {seq_op}",)),
-      Operation::NamedOffsetPtr { reference, base, seq_op } => f.write_fmt(format_args!("MEM [{base} + {reference:?}] @ ({seq_op})",)),
+      Operation::NamedOffsetPtr { reference, base, seq_op, offset } => f.write_fmt(format_args!("MEM [{base} + {reference:?} | [{offset}]] @ ({seq_op})",)),
       Operation::CalcOffsetPtr { index, base, seq_op } => f.write_fmt(format_args!("MEM [{base} + {index:?}] @ ({seq_op})",)),
       Operation::AggDecl { reps,  seq_op, ty_op: ty_ref_op, .. } => f.write_fmt(format_args!("###### AGG_ALLOC (reps:{reps:?} type:{ty_ref_op}) @ {seq_op:?}",)),
       // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),

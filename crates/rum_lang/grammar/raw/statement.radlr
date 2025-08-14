@@ -13,6 +13,7 @@ IMPORT ../common/comment as cmt
   | expression_statement
   | iterator_definition
   | asm_statement
+  | multi_assignment_statement
 
 <> expression_statement > expr::expression
 
@@ -124,17 +125,33 @@ IMPORT ../common/comment as cmt
     :ast { t_RawIterStatement, var, iter, block, tok }
 
 
-<> asm_statement > "ASM" "{" asm_input(+",")^inputs ":" asm_data ( ":" asm_output(+","))?^outputs "}"
 
-  :ast { t_ASM, parser_type: str($parser_type), inputs, outputs, asm_data }
+<> multi_assignment_statement 
+
+  > multi_assignment "=" expr::member^expr
+
+    :ast { t_MultiInit, assignments: $1, express: $expr }
+
+<> multi_assignment 
+
+  > "(" multi_assignment_assignments(+",") ")" :ast $2
+
+<> multi_assignment_assignments 
+
+  > prim::var^var (":" ty::non_array_type)?^ty
+
+    :ast { t_MultiAssign, binding_name: $var, binding_type: $ty }
+
+
+
+
+<> asm_statement > (multi_assignment "=" :ast $1 )?^outputs ("ASM" | "asm") "::" prim::var^interpreter_name "(" asm_input(*",")^inputs ")" "{"  asm_data? "}"
+
+  :ast { t_ASM, parser_type: str($parser_type), inputs, outputs, asm_data, interpreter_name }
 
 <> asm_input > prim::var "=" expr::expression^expr 
 
   :ast { t_ASM_Input, mem_name:$1, expr }
-
-<> asm_output > prim::var "=" prim::var 
-  
-  :ast { t_ASM_Output, mem_name:$1, scope_name:$3 }
 
 <> asm_data > c:any+ 
             | "{" asm_data "}"

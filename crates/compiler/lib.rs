@@ -24,6 +24,8 @@ pub mod finalizer;
 
 pub mod linker;
 
+pub mod elf_link;
+
 pub mod solver;
 
 pub mod types;

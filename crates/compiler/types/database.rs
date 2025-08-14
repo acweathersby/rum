@@ -69,6 +69,7 @@ pub struct SolveDatabase<'a> {
   /// Solver owns all type vars. Should destroy the objects of these pointers when this object
   /// goes out of scope.
   pub(crate) comptime_type_table:      Vec<*const RumTypeObject>,
+  pub(crate) comptime_strings:         HashMap<IString, *const RumString>,
   /// Maps type name to an entry in the type_table.
   pub comptime_type_name_lookup_table: HashMap<CMPLXId, usize>,
 
@@ -101,6 +102,7 @@ impl<'a> SolveDatabase<'a> {
       interface_instances: Default::default(),
       heap_map: Default::default(),
       comptime_type_table: Default::default(),
+      comptime_strings: Default::default(),
       comptime_type_name_lookup_table: Default::default(),
       heap_count: 0,
     };

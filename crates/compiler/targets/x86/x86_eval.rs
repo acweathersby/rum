@@ -6,8 +6,8 @@ pub struct x86Function {
 }
 
 impl x86Function {
-  pub fn new(binary: &[u8], entry_offset: usize) -> x86Function {
-    let allocation_size = binary.len();
+  pub fn new(source: &[u8], entry_offset: usize) -> x86Function {
+    let allocation_size = source.len();
 
     let prot = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
     let flags: i32 = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
@@ -16,7 +16,7 @@ impl x86Function {
 
     let data = unsafe { std::slice::from_raw_parts_mut(ptr, allocation_size) };
 
-    data.copy_from_slice(&binary);
+    data.copy_from_slice(&source);
 
     Self { binary: ptr, binary_size: allocation_size, entry_offset }
   }

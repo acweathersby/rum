@@ -10,7 +10,6 @@ use rum_lang::{
     assignment_statement_group_Value,
     assignment_var_Value,
     ast::ASTNode,
-    base_type_Value,
     bitwise_Value as expression_Value,
     block_expression_group_Value,
     block_expression_list_2_Value,
@@ -19,14 +18,17 @@ use rum_lang::{
     member_group_Value,
     non_array_type_Value,
     type_Value,
+    ASM_Input,
     CallMember,
     MemberCompositeAccess,
+    MultiAssign,
     RawAggregateInstantiation,
     RawBlock,
     RawMatch,
     RawRoutineDefinition,
     RawRoutineType,
     ScopedLifetime,
+    Type_Name,
   },
   Token,
 };
@@ -43,7 +45,6 @@ pub(crate) const ROUTINE_ID: &'static str = "---ROUTINE---";
 pub(crate) const INTRINSIC_ROUTINE_ID: &'static str = "---INTRINSIC_ROUTINE---";
 pub(crate) const ROUTINE_SIGNATURE_ID: &'static str = "---ROUTINE_SIGNATURE---";
 pub(crate) const LOOP_ID: &'static str = "---LOOP---";
-pub(crate) const _ASM_ID: &'static str = "---ASM---";
 pub(crate) const MATCH_ID: &'static str = "---MATCH---";
 pub(crate) const CLAUSE_SELECTOR_ID: &'static str = "---SELECT---";
 pub(crate) const CLAUSE_ID: &'static str = "---CLAUSE---";
@@ -60,33 +61,39 @@ pub fn add_module(db: &mut Database, module: &str) {
   for module_mem in module_ast.members.members.iter() {
     match &module_mem {
       module_members_group_Value::AnnotatedModMember(mem) => match &mem.member {
-        module_member_Value::RawBoundType(bound_ty) => match &bound_ty.ty {
-          routine_definition_Value::RawRoutineDefinition(routine) => {
-            let (node, constraints) = compile_routine(db, routine.as_ref());
+        module_member_Value::RawBoundType(bound_ty) => {
+          let name = bound_ty.name.id.intern();
 
-            if let Some(annotation) = mem.annotation.as_ref() {
-              if &annotation.val == "intrinsic" {
-                node.get_mut().unwrap().nodes[0].type_str = INTRINSIC_ROUTINE_ID;
-              } else {
-                let id = annotation.val.intern();
-                node.get_mut().unwrap().annotations.push(id);
+          match &bound_ty.ty {
+            routine_definition_Value::RawRoutineDefinition(routine) => {
+              let (node, constraints) = compile_routine(db, routine.as_ref());
+
+              if let Some(annotation) = mem.annotation.as_ref() {
+                if &annotation.val == "intrinsic" {
+                  node.get_mut().unwrap().nodes[0].type_str = INTRINSIC_ROUTINE_ID;
+                } else {
+                  let id = annotation.val.intern();
+                  node.get_mut().unwrap().annotations.push(id);
+                }
               }
+              dbg!((name, &node, &constraints));
+
+              db.add_object(name, node.clone(), constraints);
             }
 
-            db.add_object(bound_ty.name.id.intern(), node.clone(), constraints);
-          }
-          routine_definition_Value::Type_Struct(strct) => {
-            let name = bound_ty.name.id.intern();
-            let (node, constraints) = compile_struct(db, name, &strct.properties.iter().map(|p| (p.name.id.intern(), p.ty.clone())).collect::<Vec<_>>(), strct.heap.as_ref().map(|d| d.val.intern()));
+            routine_definition_Value::Type_Struct(strct) => {
+              let name = bound_ty.name.id.intern();
+              let (node, constraints) = compile_struct(db, name, &strct.properties.iter().map(|p| (p.name.id.intern(), p.ty.clone())).collect::<Vec<_>>(), strct.heap.as_ref().map(|d| d.val.intern()));
 
-            if mem.annotation.as_ref().is_some_and(|a| a.val.as_str() == "interface") {
-              node.get_mut().unwrap().nodes[0].type_str = INTERFACE_ID;
+              if mem.annotation.as_ref().is_some_and(|a| a.val.as_str() == "interface") {
+                node.get_mut().unwrap().nodes[0].type_str = INTERFACE_ID;
+              }
+
+              db.add_object(name, node.clone(), constraints);
             }
-
-            db.add_object(name, node.clone(), constraints);
+            _ => unreachable!(),
           }
-          _ => unreachable!(),
-        },
+        }
         ty => todo!("handle {ty:#?}"),
       },
 
@@ -251,10 +258,14 @@ fn create_call(bp: &mut BuildPack<'_>, args: Vec<OpId>, fn_name: IString, ret_ty
   let var = add_ty_var(bp);
   let routine_ty = var.ty;
 
-  let routine = add_op(bp, Operation::StaticObj(Reference::UnresolvedName(fn_name)), routine_ty, Default::default());
-  let fn_ret_op = add_op(bp, Operation::Call { routine, args, seq_op: Default::default() }, ret_ty, Default::default());
+  let (mem_op, _) = get_mem_context(bp);
 
-  add_global_name_constraint(bp, fn_name, fn_ret_op, Default::default());
+  let routine = add_op(bp, Operation::StaticObj(Reference::UnresolvedName(fn_name)), routine_ty, Default::default());
+  let fn_ret_op = add_op(bp, Operation::Call { routine, args, seq_op: mem_op }, ret_ty, Default::default());
+
+  update_mem_context(bp, fn_ret_op);
+
+  add_global_name_constraint(bp, fn_name, fn_ret_op, routine_ty);
 
   fn_ret_op
 }
@@ -286,7 +297,7 @@ fn create_member_ptr_op(bp: &mut BuildPack<'_>, agg_ptr_op: OpId, name: IString,
 
   let (mem_op, _) = get_mem_context(bp);
 
-  let mem_ptr_op = add_op(bp, Operation::NamedOffsetPtr { reference: Reference::UnresolvedName(name), base: agg_ptr_op, seq_op: mem_op }, member_reference_ty, name_var);
+  let mem_ptr_op = add_op(bp, Operation::NamedOffsetPtr { offset: -1, reference: Reference::UnresolvedName(name), base: agg_ptr_op, seq_op: mem_op }, member_reference_ty, name_var);
 
   clone_op_heap(bp, agg_ptr_op, mem_ptr_op);
 
@@ -324,95 +335,6 @@ fn add_type_constraints(bp: &mut BuildPack<'_>, gen_ty: &RumTypeRef, src_ty: &ty
   }
 }
 
-fn get_type_data(ty: &type_Value<Token>) -> (RumTypeRef, Numeric, IString) {
-  use type_Value::*;
-  match ty {
-    Type_u8(_) => (ty_u8, u8_numeric, Default::default()),
-    Type_u16(_) => (ty_u16, u16_numeric, Default::default()),
-    Type_u32(_) => (ty_u32, u32_numeric, Default::default()),
-    Type_u64(_) => (ty_u64, u64_numeric, Default::default()),
-    Type_i8(_) => (ty_s8, s8_numeric, Default::default()),
-    Type_i16(_) => (ty_s16, s16_numeric, Default::default()),
-    Type_i32(_) => (ty_s32, s32_numeric, Default::default()),
-    Type_i64(_) => (ty_s64, s64_numeric, Default::default()),
-    Type_f32(_) => (ty_f32, f32_numeric, Default::default()),
-    Type_f64(_) => (ty_f64, f64_numeric, Default::default()),
-    Type_Struct(_strct) => todo!("handle anonymous struct. Add struct to database as anonym, that is based on signature. DB deconflits"),
-    Type_Variable(type_var) => {
-      if type_var.name.id == "addr" {
-        unreachable!("{}", ty.clone().to_ast().token().blame(1, 1, "\"addr\", is not valid", Default::default()))
-      } else {
-        (ty_undefined, Numeric::default(), type_var.name.id.intern())
-      }
-    }
-    Type_Pointer(ptr) => {
-      let (base_ty, num, name) = get_base_ty(&ptr.base_ty);
-      let ptr_ty = base_ty.increment_ptr();
-      (ptr_ty, num, name)
-    }
-    Type_Array(_arr) => {
-      todo!("Handle array types");
-      //let (ty, num, str) = get_type_data(&(arr.base_type.clone().to_ast().into_type_Value().unwrap()));
-      //(ty.to_array(), num, str)
-    }
-    ty => unreachable!("TypeVNew not implemented: {ty:#?}"),
-  }
-}
-
-fn get_base_ty(ty: &base_type_Value<Token>) -> (RumTypeRef, Numeric, IString) {
-  use base_type_Value::*;
-  match ty {
-    Type_u8(_) => (ty_u8, u8_numeric, Default::default()),
-    Type_u16(_) => (ty_u16, u16_numeric, Default::default()),
-    Type_u32(_) => (ty_u32, u32_numeric, Default::default()),
-    Type_u64(_) => (ty_u64, u64_numeric, Default::default()),
-    Type_i8(_) => (ty_s8, s8_numeric, Default::default()),
-    Type_i16(_) => (ty_s16, s16_numeric, Default::default()),
-    Type_i32(_) => (ty_s32, s32_numeric, Default::default()),
-    Type_i64(_) => (ty_s64, s64_numeric, Default::default()),
-    Type_f32(_) => (ty_f32, f32_numeric, Default::default()),
-    Type_f64(_) => (ty_f64, f64_numeric, Default::default()),
-    Type_Variable(type_var) => {
-      if type_var.name.id == "addr" {
-        unreachable!("{}", ty.clone().to_ast().token().blame(1, 1, "\"addr\", is not valid", Default::default()))
-      } else {
-        (ty_undefined, Numeric::default(), type_var.name.id.intern())
-      }
-    }
-    ty => unreachable!("TypeVNew not implemented: {ty:#?}"),
-  }
-}
-
-fn get_type(ir_type: &type_Value<Token>) -> Option<(RumTypeRef, Numeric)> {
-  use type_Value::*;
-  match ir_type {
-    Type_u8(_) => Some((ty_u8, u8_numeric)),
-    Type_u16(_) => Some((ty_u16, u16_numeric)),
-    Type_u32(_) => Some((ty_u32, u32_numeric)),
-    Type_u64(_) => Some((ty_u64, u64_numeric)),
-    Type_i8(_) => Some((ty_s8, s8_numeric)),
-    Type_i16(_) => Some((ty_s16, s16_numeric)),
-    Type_i32(_) => Some((ty_s32, s32_numeric)),
-    Type_i64(_) => Some((ty_s64, s64_numeric)),
-    Type_f32(_) => Some((ty_f32, f32_numeric)),
-    Type_f64(_) => Some((ty_f64, f64_numeric)),
-    /* Type_f32v2(_) => ty_db.get_ty("f32v2"),
-    Type_f32v4(_) => ty_db.get_ty("f32v4"),
-    Type_f64v2(_) => ty_db.get_ty("f64v2"),
-    Type_f64v4(_) => ty_db.get_ty("f64v4"), */
-    Type_Pointer(..) => Option::None,
-    Type_Variable(type_var) => {
-      if type_var.name.id == "addr" {
-        unreachable!("{}", ir_type.clone().to_ast().token().blame(1, 1, "\"addr\", is not valid", Default::default()))
-        //Some((ty_addr, Numeric::default()))
-      } else {
-        Option::None
-      }
-    }
-    _t => Option::None,
-  }
-}
-
 fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (NodeHandle, Vec<NodeConstraint>) {
   let mut super_node = RootNode::default();
 
@@ -437,6 +359,10 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
       add_constraint(&mut bp, NodeConstraint::GenTyToGenTy(ret_ty, out_gen_ty));
       clone_op_heap(&mut bp, out_op, ret_op);
     }
+  } else {
+    let (seq_op, ty) = get_mem_context(&mut bp);
+    bp.super_node.nodes[0].ports.push(NodePort { ty: PortType::Out, slot: seq_op, id: VarId::MemCTX });
+    add_constraint(&mut bp, NodeConstraint::ResolveGenTy { gen: return_ty, to: ty_nouse, weak: false });
   }
 
   pop_node(&mut bp, true, true);
@@ -451,8 +377,8 @@ fn compile_routine(db: &Database, routine: &RawRoutineDefinition<Token>) -> (Nod
 fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildPack<'_>) -> Option<(RumTypeRef, ASTNode<Token>)> {
   let mut param_var = HashMap::new();
 
-  // TODO: Prevent param names from colliding
-
+  // ###########################################################
+  // Create parameter types and ops
   for (index, param) in routine_ty.params.params.iter().enumerate() {
     let name = param.var.id.intern();
 
@@ -506,11 +432,11 @@ fn compile_routine_signature(routine_ty: &RawRoutineType<Token>, bp: &mut BuildP
         panic!("Return type must either be fully defined or it must define in terms of the param types\n{}", blame);
       }
     } else {
-      let out_ty = add_alpha_ty_var(bp).ty;
+      let ret_type = add_alpha_ty_var(bp).ty;
 
-      add_type_constraints(bp, &out_ty, &return_ty.clone().to_ast().into_type_Value().unwrap());
+      add_type_constraints(bp, &ret_type, &return_ty.clone().to_ast().into_type_Value().unwrap());
 
-      Some((out_ty, return_ty.clone().into()))
+      Some((ret_type, return_ty.clone().into()))
     }
   } else {
     None
@@ -580,10 +506,10 @@ fn declare_top_scope_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty:
 }
 
 /// Declare a variable within in the current node scope
-fn declare_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: RumTypeRef, declare_index: usize) -> &'a mut Var {
-  debug_assert!(declare_index < bp.node_stack.len());
+fn declare_var<'a>(bp: &'a mut BuildPack, var_id: VarId, op: OpId, ty: RumTypeRef, node_scope_index: usize) -> &'a mut Var {
+  debug_assert!(node_scope_index < bp.node_stack.len());
 
-  let node_data = &mut bp.node_stack[declare_index];
+  let node_data = &mut bp.node_stack[node_scope_index];
 
   let origin_node_index = node_data.node_index as _;
 
@@ -864,40 +790,44 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
           todo!("Handle move op of var")
         }
       },
-      statement_Value::ASM(_asm) => {
-        todo!("Inline assembly")
-        /*  let inputs = asm
+      statement_Value::ASM(asm) => {
+        let args = asm
           .inputs
           .iter()
           .map(|input| {
             let ASM_Input { expr, mem_name } = input.as_ref();
-            let (op, ..) = compile_expression(&expr.expr, bp, None);
-            (op, VarId::Name(mem_name.id.intern()))
+            let (op, ty, ..) = compile_expression(&expr.expr, bp, None);
+            let input = add_op(bp, Operation::AsmInput { input: op, reg_name: mem_name.id.intern() }, ty, Default::default());
+            (input)
           })
           .collect::<Vec<_>>();
 
-        push_node(bp, ASM_ID);
+        let (seq_op, _) = get_mem_context(bp);
+        let asm_op = add_op(bp, Operation::Asm { args, data: asm.asm_data.clone().unwrap_or_default().to_string().intern(), seq_op }, ty_nouse, Default::default());
+        update_mem_context(bp, asm_op);
 
-        let (heap_in_op, heap_ty) = get_mem_context(bp);
+        let existing_node_index = current_node_index(bp);
 
         for output in asm.outputs.iter() {
-          let ASM_Output { mem_name, scope_name } = output.as_ref();
+          let MultiAssign { binding_name, binding_type: register_name } = output.as_ref();
 
-          let out_op = add_op(
-            bp,
-            Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Merge, ops: Default::default() },
-            Default::default(),F
-            Default::default(),
-          );
-          update_var(bp, VarId::Name(scope_name.id.intern()), out_op, Default::default());
+          if let Some(register_name) = register_name {
+            if let non_array_type_Value::Type_Name(register_name) = register_name {
+              let ty = add_ty_var(bp).ty;
+              let reg_var_id = VarId::Name(register_name.name.id.intern());
+
+              let out_op = add_op(bp, Operation::AsmOutput { asm_body: asm_op, reg_name: register_name.name.id.intern() }, ty, Default::default());
+
+              let var_id = VarId::Name(binding_name.id.intern());
+
+              declare_var(bp, var_id, out_op, ty, existing_node_index);
+            } else {
+              panic!("Invalid type name")
+            }
+          } else {
+            panic!("Node does not have a register name")
+          }
         }
-
-        let mem_op =
-          add_op(bp, Operation::Port { node_id: current_node_index(bp) as u32, ty: PortType::Merge, ops: Default::default() }, heap_ty, Default::default());
-
-        pop_node(bp, false, false);
-
-        update_mem_context(bp, mem_op); */
       }
       statement_Value::RawAssignment(assign) => {
         match &assign.var {
@@ -915,7 +845,6 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
                 let heap_ty = heap_var.ty;
 
                 let (seq_op, _) = get_mem_context(bp);
-
 
                 let rep_ty = add_ty_var(bp).ty;
                 add_constraint(bp, NodeConstraint::ResolveGenTy { gen: rep_ty, to: ty_u32, weak: false });
@@ -986,24 +915,26 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
             match &assign.expression {
               assignment_statement_group_Value::Expression(expr) => {
                 let (expr_op, expr_ty, ..) = compile_expression(&expr.expr, bp, None);
-                if let Some((ty, _num)) = get_type(&decl.ty.clone().to_ast().into_type_Value().unwrap()) {
-                  declare_top_scope_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
-                  add_constraint(bp, NodeConstraint::ResolveGenTy { gen: expr_ty.clone(), to: ty, weak: false });
-                  //add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
-                } else if let non_array_type_Value::Type_Variable(type_var) = &decl.ty {
+
+                let (ty, num, ty_name) = get_type_data(&decl.ty.clone().to_ast().into_type_Value().unwrap());
+
+                if ty.is_undefined() {
                   let var = add_ty_var(bp);
                   let var_ty = var.ty;
                   update_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
 
-                  add_global_name_constraint(bp, type_var.name.id.intern(), Default::default(), var_ty);
+                  add_global_name_constraint(bp, ty_name, Default::default(), var_ty);
 
                   add_constraint(bp, NodeConstraint::GenTyToGenTy(var_ty, expr_ty));
+                } else {
+                  declare_top_scope_var(bp, VarId::Name(decl.var.id.intern()), expr_op, expr_ty.clone());
+                  add_constraint(bp, NodeConstraint::ResolveGenTy { gen: expr_ty.clone(), to: ty, weak: false });
                 }
               }
               assignment_statement_group_Value::RawAggregateInstantiation(agg_instantiation) => {
-                let (ty_ref_op, agg_ty) = if let Some((ty, _num)) = get_type(&decl.ty.clone().to_ast().into_type_Value().unwrap()) {
-                  todo!("Handle declaration of internal type")
-                } else if let non_array_type_Value::Type_Variable(type_var) = &decl.ty {
+                let (ty, num, ty_name) = get_type_data(&decl.ty.clone().to_ast().into_type_Value().unwrap());
+
+                let (ty_ref_op, agg_ty) = if ty.is_undefined() {
                   let var = add_ty_var(bp);
                   let var_ty = var.ty;
 
@@ -1011,9 +942,8 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
 
                   (op, var_ty)
                 } else {
-                  todo!("Handle creation of undefined type")
+                  todo!("Handle declaration of internal type")
                 };
-
 
                 todo!("unify this decleration");
                 let heap_var = add_ty_var(bp);
@@ -1021,7 +951,6 @@ fn compile_scope(block: &RawBlock<Token>, bp: &mut BuildPack) -> (OpId, RumTypeR
                 let heap = heap_var.ty;
 
                 let (seq_op, _) = get_mem_context(bp);
-
 
                 let rep_ty = add_ty_var(bp).ty;
                 add_constraint(bp, NodeConstraint::ResolveGenTy { gen: rep_ty, to: ty_u32, weak: false });
@@ -1169,7 +1098,6 @@ enum VarLookup {
 }
 
 fn agg_init(bp: &mut BuildPack<'_>, agg_init: &RawAggregateInstantiation<Token>, agg_ptr_op: OpId, agg_var_index: usize) {
-
   let mut indexed_mem_type = None;
 
   for (index, init) in agg_init.inits.iter().enumerate() {
@@ -1940,12 +1868,11 @@ fn add_op_constraints(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu
           }
         } */
       }
-/*       annotation_Value::MutDeref(val) => {
+      /*       annotation_Value::MutDeref(val) => {
         if let Some(target) = ty_lu.get(val.target.as_str()) {
           add_constraint(bp, NodeConstraint::Deref { ptr_ty: target.clone(), val_ty: ty, weak: false });
         }
       } */
-
       annotation_Value::Annotation(val) => match val.name.as_str() {
         "poison" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_poison, weak: false }),
         "bool" => add_constraint(bp, NodeConstraint::ResolveGenTy { gen: ty, to: ty_bool, weak: false }),
@@ -1963,5 +1890,51 @@ fn add_op_constraints(annotations: std::slice::Iter<'_, annotation_Value>, ty_lu
       },
       _ => {}
     }
+  }
+}
+
+fn get_type_data(ty: &type_Value<Token>) -> (RumTypeRef, Numeric, IString) {
+  use type_Value::*;
+  match ty {
+    Type_Struct(_strct) => todo!("handle anonymous struct. Add struct to database as anonym, that is based on signature. DB deconflits"),
+    Type_Name(ty_name) => {
+      get_base_ty(ty_name)
+      /*  if type_var.name.id == "addr" {
+        unreachable!("{}", ty.clone().to_ast().token().blame(1, 1, "\"addr\", is not valid", Default::default()))
+      } else {
+        (ty_undefined, Numeric::default(), type_var.name.id.intern())
+      } */
+    }
+    Type_Pointer(ptr) => {
+      let (base_ty, num, name) = get_base_ty(&ptr.base_ty);
+      let ptr_ty = base_ty.increment_ptr();
+      (ptr_ty, num, name)
+    }
+    Type_Array(_arr) => {
+      todo!("Handle array types");
+      //let (ty, num, str) = get_type_data(&(arr.base_type.clone().to_ast().into_type_Value().unwrap()));
+      //(ty.to_array(), num, str)
+    }
+    _ => (ty_undefined, Default::default(), Default::default()),
+  }
+}
+
+fn get_base_ty(ty: &Type_Name<Token>) -> (RumTypeRef, Numeric, IString) {
+  match ty.name.id.as_str() {
+    "u8" => (ty_u8, u8_numeric, Default::default()),
+    "u16" => (ty_u16, u16_numeric, Default::default()),
+    "u32" => (ty_u32, u32_numeric, Default::default()),
+    "u64" => (ty_u64, u64_numeric, Default::default()),
+    "i8" => (ty_s8, s8_numeric, Default::default()),
+    "i16" => (ty_s16, s16_numeric, Default::default()),
+    "i32" => (ty_s32, s32_numeric, Default::default()),
+    "i64" => (ty_s64, s64_numeric, Default::default()),
+    "f32" => (ty_f32, f32_numeric, Default::default()),
+    "f64" => (ty_f64, f64_numeric, Default::default()),
+    "addr" => {
+      unreachable!();
+      //unreachable!("{}", ty.clone().to_ast().token().blame(1, 1, "\"addr\", is not valid", Default::default()))
+    }
+    name => (ty_undefined, Numeric::default(), name.intern()),
   }
 }

@@ -1,8 +1,16 @@
 #![allow(unused_variables, dead_code)]
 
-use rum_compiler::{ir_compiler::add_module, linker, targets::{self, x86::{print_instructions, x86_eval}}, types::*};
+use std::{collections::HashMap, path::PathBuf};
 
+use rum_common::IString;
+use rum_compiler::{
+  elf_link::elf_link, ir_compiler::add_module, linker::comptime_link, targets::{self, x86::x86_eval}, types::*
+};
 
+struct SymbolTable {
+  symbol_lookup: HashMap<IString, usize>,
+  symbols:       Vec<(usize, *const u8)>,
+}
 
 // Stage 0 - Compiles single file and runs all "#test" annotated functions, which should have this signature `#test name => () `
 
@@ -21,47 +29,44 @@ fn main() {
 
       add_module(&mut db, input);
 
-      let sdb: SolveDatabase<'_> = SolveDatabase::solve_for("#test", &db);
+      // Process an executable file
+      if true {
+        let sdb: SolveDatabase<'_> = SolveDatabase::solve_for("#main", &db);
+        
+        let sdb_fin = sdb.finalize();
+        
+        let mut sdb_opt = sdb_fin.optimize(rum_compiler::types::OptimizeLevel::MemoryOperations_01);
 
-      let sdb_fin = sdb.finalize();
+        let bin_functs = targets::x86::compile(&sdb_opt);
 
-      let sdb_opt = sdb_fin.optimize(rum_compiler::types::OptimizeLevel::MemoryOperations_01);
+        let main = sdb.roots[0].1;
 
-      let bin_functs = targets::x86::compile(&sdb_opt);
+        elf_link(&mut sdb_opt, main, bin_functs, &PathBuf::from("/home/work/test/"), "test_main");
+      } else
+      // Process a test file
+      {
+        let sdb: SolveDatabase<'_> = SolveDatabase::solve_for("#test", &db);
+        
+        let sdb_fin = sdb.finalize();
 
-      // LINKER ====================================================
+        let mut sdb_opt = sdb_fin.optimize(rum_compiler::types::OptimizeLevel::MemoryOperations_01);
 
-      let (entry_offset, binary) = linker::link(bin_functs, &sdb_opt);
+        let bin_functs = targets::x86::compile(&sdb_opt);
 
-      println!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa\n\n\n");
-      print_instructions(&binary, 0);
+        // LINKER ====================================================
 
-      let func = x86_eval::x86Function::new(&binary, entry_offset);
+        let (entries, binary) = comptime_link(&mut sdb_opt, bin_functs);
 
-      let out = func.access_as_call::<fn(u32) -> &'static (u32, u32)>()(1);
+        if let Some(offset) = sdb_opt.roots.first().and_then(|f| entries.get(&f.1)) {
+          let func = x86_eval::x86Function::new(&binary, *offset);
 
-      dbg!( out as *const _ as *const usize);
+          let out = func.access_as_call::<fn() -> u8>()();
 
-      assert_eq!(out, &(2u32, 3u32), "Failed to parse correctly");
+          dbg!(out, out);
 
-      // TEMP: Run the binary.
-
-      panic!("Finished: Have binary. Need to wrap in some kind of portable unit to allow progress of compilation and linking.");
-
-
-    /*      let func = x86_eval::x86Function::new(&binary);
-
-    assert_eq!(func.access_as_call::<fn(f32, f32) -> &'static (f32, u32)>()(10f32, 3f32), &(2f32, 3u32), "Failed to parse correctly");
-
-    // TEMP: Run the binary.
-
-    panic!("Finished: Have binary. Need to wrap in some kind of portable unit to allow progress of compilation and linking.");
-
-    for item in sdb_opt.get("#test") {
-      let val = interpret(item, &[], &sdb_opt);
-
-      println!("{item:?} = {val:?}");
-    } */
+          assert_eq!(out, 8, "Failed to parse correctly");
+        }
+      }
     } else {
       panic!("Could not read {}", args[0])
     }
