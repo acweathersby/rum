@@ -6,5 +6,6 @@
   "cSpell.words": [
     "Deconflict",
     "descriminant"
-  ]
+  ],
+  "license.default": "gpl-3.0"
 }

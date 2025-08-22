@@ -1,12 +1,16 @@
-
 sys_call :: (call_id: u64, arg1: u64) : u64 {
-  (r:rax) = asm :: bytes ( rax = call_id, rdi = arg1 ) { 0F 05 }
+  (r: rax) = asm :: bytes ( rax = call_id, rdi = arg1 ) { 
+    // x86-64 opcode for "SYSCALL"
+    0F 05 
+  }
   r
 }
 
-
 #main 
-zero_exit :: () { 
+exit_with_code :: () { 
+  
+  exit_syscall_id = 60
+  exit_code = 0
 
-  sys_call(60, 16)
+  sys_call(exit_syscall_id, exit_code)
 }
