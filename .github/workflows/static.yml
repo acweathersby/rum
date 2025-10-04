@@ -45,7 +45,6 @@ jobs:
         run: mkdir public
     
       - name: Copy to Public
-        working-directory: ${{ env.WEB_SRC_DIR }}
         run: cp -r ${{ env.WEB_SRC_DIR }}/* ${{ env.WEB_DST_DIR }}
 
   # Single deploy job since we're just deploying
