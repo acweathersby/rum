@@ -27,9 +27,14 @@ defaults:
     shell: bash
 
 jobs:
-  build: 
+  build_deploy: 
 
     runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
 
     env:
       ROOT: ./
@@ -40,35 +45,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create  Public
+      - name: Create Public Folder
         working-directory: ${{ env.ROOT }}
         run: mkdir ${{ env.WEB_DST_DIR }}
     
       - name: Copy to Public
         run: cp -r ${{ env.WEB_SRC_DIR }}/* ${{ env.WEB_DST_DIR }}
 
-      - name: List files  
-        run: tree .
-
-  # Single deploy job since we're just deploying
-  deploy:
-    
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    
-    runs-on: ubuntu-latest
-    
-    steps:
-
-      - name: List files  
-        run: tree .
-      
       - name: Setup Pages
         uses: actions/configure-pages@v5
-
-      - name: List files  
-        run: tree .
       
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
