@@ -54,10 +54,10 @@ op: ADD  l [A]  r [B]  => out [C: numeric]
 
 macro_rules! op_name_list {
   ($sym:ident, $name:ident , $($rest:ident),*) => {
-if $sym == stringify!($name) { return Op::$name; } else { op_name_list!($sym, $($rest),*) }
+if $sym == stringify!($name) { return OpName::$name; } else { op_name_list!($sym, $($rest),*) }
   };
   ($sym:ident, $name:ident) => {
-if $sym == stringify!($name) { return Op::$name; } else { return Op::None }
+if $sym == stringify!($name) { return OpName::$name; } else { return OpName::None }
   };
 }
 
@@ -88,22 +88,24 @@ macro_rules! _op_list {
   };
 }
 
+
+
 macro_rules! inter_op_gen {
   ($($macro_names:ident),*) => {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub enum Op {
+pub enum OpName {
   $($macro_names),*
 }
 
-impl Debug for Op {
+impl Debug for OpName {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     Display::fmt(self, f)
   }
 }
 
-impl Display for Op {
+impl Display for OpName {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     op_name_list2!(self, f, $($macro_names),*);
     Ok(())
@@ -111,8 +113,8 @@ impl Display for Op {
   }
 }
 
-impl Op {
-  pub fn get_op_from_str_name(d: &str) -> Op {
+impl OpName {
+  pub fn get_op_from_str_name(d: &str) -> OpName {
       op_name_list!(d, $($macro_names),*)
   }
 

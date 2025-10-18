@@ -22,22 +22,35 @@ pub mod x86_types;
 
 pub(crate) extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
 
-  println!("AAAA");
-  println!("reps: {reps}, ty: {}", ty as *const _ as usize);
 
-  dbg!(reps, ty);
+
+
   let ptr = if reps > 0 {
     if ty.name.as_str() == "type" {
       let prop_size = std::mem::size_of::<RumTypeProp>();
       let prop_size = prop_size * reps as usize;
       let size = ty.base_byte_size as usize + prop_size;
 
-      dbg!(size);
       let alignment = ty.alignment as usize;
       let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
       unsafe { std::alloc::alloc(layout) }
     } else {
-      todo!("Implement variable length structs to allocate objects with reps larger than 1")
+      if let Some(prop) = ty.props().last() {
+        if prop.len < 0  {
+
+          let var_len_size = 4 * reps;
+          let size = ty.base_byte_size as usize + var_len_size as usize;
+
+          let alignment = ty.alignment as usize;
+          let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
+          unsafe { std::alloc::alloc(layout) }
+
+        } else {
+          panic!("Invalid type for var length assignment")
+        }
+      }  else {
+        todo!("Implement variable length structs to allocate objects with reps larger than 1")
+      }
     }
   } else {
     let size = ty.base_byte_size as usize;
@@ -46,8 +59,6 @@ pub(crate) extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
     let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
     unsafe { std::alloc::alloc(layout) }
   };
-
-  dbg!(ptr);
 
   ptr
 }

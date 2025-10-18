@@ -1,5 +1,5 @@
 use crate::{
-  targets::x86::{self, print_instructions, x86_binary_writer::PatchType},
+  targets::x86::{self, x86_binary_writer::PatchType},
   types::{CMPLXId, RumString, RumTypeRef, SolveDatabase},
 };
 use rum_common::{align_buffer_to, get_aligned_value, IString};
@@ -86,8 +86,6 @@ impl BinaryObject {
             let address = text.len();
 
             text.extend(bytes);
-
-            dbg!(address, address as i64 - (r.offset as i64 + r.byte_size as i64));
 
             apply_relocation(&mut text, &r, address as i64 - (r.offset as i64 + r.byte_size as i64));
 

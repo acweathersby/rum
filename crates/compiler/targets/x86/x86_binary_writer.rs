@@ -11,7 +11,7 @@ use crate::{
     reg::Reg,
     x86::x86_encoder::{encode_binary, encode_unary, OpEncoder, OpSignature},
   },
-  types::{prim_ty_bool, CMPLXId, Op, Operation, Reference, RootNode, RumPrimitiveBaseType, RumPrimitiveType, SolveDatabase},
+  types::{prim_ty_bool, CMPLXId, OpName, Operation, Reference, RootNode, RumPrimitiveBaseType, RumPrimitiveType, SolveDatabase},
 };
 use rum_common::{get_aligned_value, CachedString};
 use std::{
@@ -76,6 +76,8 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
 
     for (op, out, args, pre_fixes, post_fixes, is_last_op) in op_iter {
       //println!("----------- \n {op} => {:?}\n  {out:?} | {args:?} \n pre: {:?} \npost: {:?} \n ----------->", &sn.operands[op.usize()], pre_fixes, post_fixes);
+
+      let byte_start = data_store.len();
 
       let op_prim_ty = get_op_type(&sn, op).prim_data();
       let byte_size = op_prim_ty.base_byte_size as u64;
@@ -212,7 +214,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
             ty => unreachable!("{ty:?}"),
           },
           Operation::Op { op_name, operands, seq_op } => match op_name {
-            Op::GR | Op::LS | Op::EQ | Op::NE | Op::LE | Op::GE => {
+            OpName::GR | OpName::LS | OpName::EQ | OpName::NE | OpName::LE | OpName::GE => {
               // LEFT ===================
               let left_op = match args[0] {
                 VarVal::Reg(left_reg, _) => REGISTERS[left_reg as usize].as_reg_op(),
@@ -238,21 +240,21 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
               if is_last_op {
                 let (fail_next, pass_next) = match cmpr_type.base_ty {
                   RumPrimitiveBaseType::Float | RumPrimitiveBaseType::Unsigned => match op_name {
-                    Op::NE => (&jne, &je),
-                    Op::EQ => (&je, &jne),
-                    Op::LS => (&jb, &jae),
-                    Op::LE => (&jbe, &ja),
-                    Op::GR => (&ja, &jbe),
-                    Op::GE => (&jae, &jb),
+                    OpName::NE => (&jne, &je),
+                    OpName::EQ => (&je, &jne),
+                    OpName::LS => (&jb, &jae),
+                    OpName::LE => (&jbe, &ja),
+                    OpName::GR => (&ja, &jbe),
+                    OpName::GE => (&jae, &jb),
                     _ => unreachable!(),
                   },
                   RumPrimitiveBaseType::Signed => match op_name {
-                    Op::NE => (&jne, &je),
-                    Op::EQ => (&je, &jne),
-                    Op::LS => (&jl, &jge),
-                    Op::LE => (&jle, &jg),
-                    Op::GR => (&jg, &jle),
-                    Op::GE => (&jge, &jl),
+                    OpName::NE => (&jne, &je),
+                    OpName::EQ => (&je, &jne),
+                    OpName::LS => (&jl, &jge),
+                    OpName::LE => (&jle, &jg),
+                    OpName::GR => (&jg, &jle),
+                    OpName::GE => (&jge, &jl),
                     _ => unreachable!(),
                   },
 
@@ -278,7 +280,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
                 todo!("Handle store to bool")
               }
             }
-            Op::ADD | Op::SUB | Op::MUL | Op::BIT_AND | Op::BIT_OR => {
+            OpName::ADD | OpName::SUB | OpName::MUL | OpName::BIT_AND | OpName::BIT_OR => {
               if op_prim_ty.base_ty == RumPrimitiveBaseType::Float {
                 if op_prim_ty.base_vector_size == 1 {
                   let left_arg = match args[0] {
@@ -311,10 +313,10 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
               } else {
                 type OpTable = (&'static str, [(OpSignature, (u32, u8, OpEncoding, *const OpEncoder))]);
                 let (op_table, is_commutative): (&OpTable, bool) = match op_name {
-                  Op::ADD => (&add, true),
-                  Op::MUL => (&imul, true),
-                  Op::SUB => (&sub, false),
-                  Op::BIT_AND => (&and, true),
+                  OpName::ADD => (&add, true),
+                  OpName::MUL => (&imul, true),
+                  OpName::SUB => (&sub, false),
+                  OpName::BIT_AND => (&and, true),
                   //Op::BIT_OR => (&or, true),
                   _ => unreachable!(),
                 };
@@ -391,7 +393,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
               }
             }
 
-            Op::LOAD => {
+            OpName::LOAD => {
               let val_arg = match out {
                 VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
                 VarVal::Stashed(val_stash_loc) => Arg::RSP_REL(val_stash_loc as _),
@@ -432,7 +434,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
               }
             }
 
-            Op::STORE => {
+            OpName::STORE => {
               let bit_size = get_op_type(sn, operands[1]).prim_data().base_byte_size as u64 * 8;
               let val_arg = match args[1] {
                 VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
@@ -471,7 +473,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
                 _ => unreachable!(),
               }
             }
-            Op::COPY => {
+            OpName::COPY => {
               let src_reg = match args[1] {
                 VarVal::Reg(val_reg_id, _) => REGISTERS[val_reg_id as usize].as_reg_op(),
                 v => unreachable!("{op:?} {v:?}"),
@@ -483,10 +485,12 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
               };
 
               // load source into source
+              
               encode_x86(instr_bytes, &mov, bit_size, TMP_REG.as_reg_op(), src_reg.to_mem(), Arg::None, Arg::None);
               encode_x86(instr_bytes, &mov, bit_size, dst_reg.to_mem(), TMP_REG.as_reg_op(), Arg::None, Arg::None);
+        
             }
-            Op::RET => {
+            OpName::RET => {
               if args[0] != VarVal::None && args[0] != out {
                 let from_op = match args[0] {
                   VarVal::Const => {
@@ -600,7 +604,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
               VarVal::Reg(red, _) => {
                 // Store the primitive value in the data segment of the function.
                 let out_reg = REGISTERS[red as usize].as_reg_op();
-                encode_binary(instr_bytes, &mov, 64, out_reg, Arg::Imm_Int(0xF0F0_F00F));
+                encode_binary(instr_bytes, &mov, 64, out_reg, Arg::Imm_Int(12345678));
                 instr_relocations.push(Relocation {
                   endianess:  Endianess::Little,
                   byte_size:  8,
@@ -619,7 +623,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
               VarVal::Reg(red, _) => {
                 // Store the primitive value in the data segment of the function.
                 let out_reg = REGISTERS[red as usize].as_reg_op();
-                encode_binary(instr_bytes, &lea, 64, out_reg, Arg::RIP_REL(0xF0F0_F00F));
+                encode_binary(instr_bytes, &lea, 64, out_reg, Arg::RIP_REL(12345678));
                 instr_relocations.push(Relocation {
                   endianess:  Endianess::Little,
                   byte_size:  4,
@@ -662,6 +666,8 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
         handle_fix_up(instr_bytes, *post_fix);
       }
 
+
+
       //print_instructions(&instr_bytes[prev_offset as usize..], 0);
       prev_offset = instr_bytes.len() as _;
     }
@@ -699,7 +705,7 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
   }
 
 
-  print_instructions(&instr_bytes, 0);
+  //print_instructions(&instr_bytes, 0);
   
   let mut preamble_bytes_obj = BinaryObject::default();
   preamble_bytes_obj.relocations.push(Relocation { resolution: StaticResolution::RoutineStatic, symbol: Symbol::EntryPoint(id), offset: 0, endianess: Endianess::Little, byte_size: 0 });

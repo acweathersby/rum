@@ -260,7 +260,8 @@ pub(crate) fn gen_multi_op(props: &mut InstructionProps, op_code: u32, bit_size:
 
 fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
   const SIB_SCALE_OFFSET: u8 = 6;
-  const SIB_INDEX_NOT_USED: u8 = 0b100;
+  const SIB_INDEX_OFFSET: u8 = 3;
+  const SIB_INDEX_NOT_USED: u8 = 0b100 << SIB_INDEX_OFFSET;
   const SIB_NO_INDEX_SCALE: u8 = 0b00 << SIB_SCALE_OFFSET;
   const DISPLACEMENT_INDEX: u8 = 0b101;
   const MOD_IMM_8_FOLLOWS: u8 = 0b10;
@@ -270,14 +271,13 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
   let mut displace_val = 0 as i64;
 
   let (sib_byte, rm_bits) = if let Arg::SIBAddress { base, index, scale, disp } = r_m {
-
     mod_bits = match disp {
       0 => 0,
       1..254 | -255..0 => 0b01,
       _ => 0b10,
     };
 
-    let scale_bits = match scale  {
+    let scale_bits = match scale {
       0 | 1 => 0b00,
       2 => 0b01,
       4 => 0b10,
@@ -288,11 +288,10 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
     let base = base.as_reg_op().reg_index() & 0b111;
 
     let sib = scale_bits << 6 | index << 3 | base;
-    
 
     (sib, 0b100)
   } else {
-    let rm_index = r_m.reg_index();
+    let rm_index = r_m.reg_index() % 8;
     let sib = match rm_index {
       4 => match r_m {
         Arg::Mem(RSP) | Arg::Mem(R12) => {
@@ -310,7 +309,7 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
           displace_val = val;
 
           let sib_scale = 0b00 << 6;
-          let sib_index = SIB_INDEX_NOT_USED << 3;
+          let sib_index = SIB_INDEX_NOT_USED;
           let sib_base = ((RSP.0 & 7) as u8) << 0;
 
           sib_scale | sib_index | sib_base
@@ -325,7 +324,7 @@ fn encode_mod_rm_reg(props: &mut InstructionProps, r_m: Arg, reg: Arg) {
         Arg::Mem(RBP) | Arg::Mem(R13) => {
           // use sib index to access the RSP register
           mod_bits = 0b01;
-          (SIB_NO_INDEX_SCALE | (0b000 << 3) | 0b000) as u8
+          (SIB_NO_INDEX_SCALE | 0b000) as u8
         }
         _ => 0,
       },
@@ -384,13 +383,13 @@ fn encode_rex(props: &mut InstructionProps, bit_size: u64, r_m: Arg, reg: Arg) {
   const REX_R_REG_EX: u8 = 0b0100_0100;
   const REX_X_SIP: u8 = 0b0100_0010;
   const REX_B_MEM_REG_EX: u8 = 0b0100_0001;
-  
+
   let mut rex = 0;
   rex |= (bit_size == 64).then_some(REX_W_64B).unwrap_or(0);
   rex |= (reg.is_upper_8_reg()).then_some(REX_R_REG_EX).unwrap_or(0);
 
   match (r_m, reg) {
-    (Arg::SIBAddress { base, index, scale, disp }, _) |(_, Arg::SIBAddress { base, index, scale, disp }) =>{
+    (Arg::SIBAddress { base, index, scale, disp }, _) | (_, Arg::SIBAddress { base, index, scale, disp }) => {
       rex |= (base.is_upper_8_reg()).then_some(REX_B_MEM_REG_EX).unwrap_or(0);
       rex |= (index.is_upper_8_reg()).then_some(REX_X_SIP).unwrap_or(0);
     }
@@ -398,12 +397,10 @@ fn encode_rex(props: &mut InstructionProps, bit_size: u64, r_m: Arg, reg: Arg) {
       rex |= (r_m.is_upper_8_reg()).then_some(REX_B_MEM_REG_EX).unwrap_or(0);
     }
   }
-  
+
   if rex > 0 {
     props.bin.push(rex);
   }
-
-
 }
 
 fn encode_evex(op_code: u32, r_m: Arg, reg: Arg, op3: Arg, bit_size: u64, props: &mut InstructionProps<'_>, w: u8) -> u32 {

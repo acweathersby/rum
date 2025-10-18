@@ -9,7 +9,7 @@ use crate::{
       x86_types::*,
     },
   },
-  types::{CMPLXId, Node, Op, OpId, Operation, PortType, RegisterSet, RootNode, RumPrimitiveBaseType, RumPrimitiveType, RumTypeRef, SolveDatabase, VarId},
+  types::{CMPLXId, Node, OpName, OpId, Operation, PortType, RegisterSet, RootNode, RumPrimitiveBaseType, RumPrimitiveType, RumTypeRef, SolveDatabase, VarId},
 };
 use rum_common::get_aligned_value;
 use rum_lang::todo_note;
@@ -202,6 +202,8 @@ impl BasicBlockFunction {
 }
 
 fn get_vv_for_op_mut(sn: &RootNode, op_to_var_map: &mut Vec<u32>, vars: &mut Vec<VarOP>, op: OpId) -> usize {
+  debug_assert!(op.is_valid(), "Invalid node reached in {sn:#?}");
+
   if op_to_var_map[op.usize()] == u32::MAX {
     op_to_var_map[op.usize()] = vars.len() as u32;
     let mut var = VarOP::default();
@@ -700,7 +702,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           RegisterClass::INT
         } else {
           match ty.base_ty {
-            RumPrimitiveBaseType::Undefined | RumPrimitiveBaseType::NoUse | RumPrimitiveBaseType::Poison => unreachable!(),
+            RumPrimitiveBaseType::Undefined | RumPrimitiveBaseType::NoUse | RumPrimitiveBaseType::Poison => unreachable!("{ty:?}"),
             RumPrimitiveBaseType::Float => RegisterClass::FP,
             _ => RegisterClass::INT,
           }
@@ -828,7 +830,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
 
       match &sn.operands[out_op.usize()] {
         Operation::Op { op_name, operands, .. } => match op_name {
-          Op::RET => {
+          OpName::RET => {
             let arg_op: OpId = operands[0];
             let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, arg_op);
             let ty = get_op_type(sn, arg_op).prim_data();
@@ -838,7 +840,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             vars[var_index].out = VarVal::Reg(OUTPUT_REGISTERS[0] as _, ty);
             // Set the require register of the output to RAX at this op_position
           }
-          Op::COPY => {
+          OpName::COPY => {
             let dst_ptr = operands[0];
             let dst_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, dst_ptr);
             allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, dst_ptr, None);
@@ -847,7 +849,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             let src_index = get_vv_for_op_mut(sn, op_to_var_map, vars, src_ptr);
             allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, src_ptr, None);
           }
-          Op::STORE => {
+          OpName::STORE => {
             let mem_ptr = operands[0];
             let mem_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, mem_ptr);
 
@@ -869,7 +871,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
               }
             }
           }
-          Op::LOAD => {
+          OpName::LOAD => {
             let out_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
 
             match vars[out_var_index].out {
@@ -893,7 +895,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
             }
           }
 
-          Op::ADD | Op::MUL | Op::BIT_AND | Op::BIT_OR | Op::SUB => {
+          OpName::ADD | OpName::MUL | OpName::BIT_AND | OpName::BIT_OR | OpName::SUB => {
             let own_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
 
             let left = operands[0];
@@ -920,7 +922,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
               }
             }
           }
-          Op::EQ | Op::NEQ | Op::GR => {
+          OpName::EQ | OpName::NEQ | OpName::GR => {
             let left = operands[0];
             let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, left);
 
@@ -1187,7 +1189,7 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
   }
 
   let var_map = bb_funct.op_to_var_map.clone();
-  //*
+  /*
   for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
     let block_id = block.block_id as usize;
     let outs = block_op_bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();

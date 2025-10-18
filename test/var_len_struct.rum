@@ -5,7 +5,7 @@ get_byte_size :: ( a: type ) : u32
 
 
 #core
-get_type :: ( ref: type_ref ) : type 
+get_type :: ( ref : type_ref ) : type 
   type_table@core.[ref.type_id]
 
 
@@ -27,13 +27,20 @@ max :: (a:u32, b:u32) : u32
 min :: (a:u32, b:u32) : u32
   if a < b { a } otherwise { b }
 
-
 // END META =============================================
 
-DD :: [ test: u32, rainbow: u32  ]
+DD :: [ test: u32, rainbow: [ u32; test ]  ]
 
 #test
-trivial :: (u:u32) : u32 {
-  d: DD = [ test = 2.0 , rainbow = 8.0 ]
-  d.rainbow
+trivial :: ( u: u32) : DD {
+  a = 20
+
+  len = 200 + 30 + u
+
+  d = [ test = len, rainbow = [2.0, 3.0, 4.5 + a + u, 2,3,4,5,6,76] ]
+
+  // Will resize the out put if 
+  d.test = 22
+
+  d
 }

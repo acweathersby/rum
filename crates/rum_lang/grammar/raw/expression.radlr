@@ -12,6 +12,15 @@ IMPORT ../common/comment as cmt
 
   > bitwise
 
+  | arrayed
+
+
+<> arrayed >
+
+  "[" bitwise(+",")^expressions "]"
+
+    :ast  { t_Arrayed, expressions, tok }
+
 <> boolean 
 
   > boolean^left "||"{1}  boolean{0}^right
@@ -130,9 +139,13 @@ IMPORT ../common/comment as cmt
 
   > r_val
 
-  | "(" expression_types ")"
+  | "(" bitwise ")"
 
     :ast $2
+
+  | "(" bitwise^expr "->" ty::type^ty ")"
+
+    :ast { t_TypeCast, expr, ty, tok }
 
 <> r_val 
 
@@ -163,7 +176,7 @@ IMPORT ../common/comment as cmt
 
 <> indexed_member 
 
-  >  "[" bitwise^expression "]"
+  >  ".[" bitwise^expression "]"
 
     :ast  { t_IndexedMember, expression, tok }
 
@@ -223,7 +236,7 @@ IMPORT ../common/comment as cmt
 
 <> aggregate_member_initializer 
 
-  > (prim::var "=" :ast $1 )?^name expression
+  > (prim::var "=" :ast $1 )^name expression
 
     :ast  { t_RawAggregateMemberInit, name, expression, tok  }
 

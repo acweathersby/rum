@@ -1,6 +1,6 @@
 use crate::{
   _interpreter::get_op_type,
-  types::{NodePort, Op, OpId, OptimizeLevel, PortType, SolveDatabase, VarId},
+  types::{NodePort, OpName, OpId, OptimizeLevel, PortType, SolveDatabase, VarId},
 };
 
 pub fn optimize<'a>(db: &SolveDatabase<'a>, opt_level: OptimizeLevel) -> SolveDatabase<'a> {
@@ -92,7 +92,7 @@ pub(crate) fn optimize_node_level_1(node: &crate::types::NodeHandle) {
             let (_, ctx_op) = mem_context;
 
             let new_mem_op = OpId(node.operands.len() as u32);
-            node.operands.push(crate::types::Operation::Op { op_name: Op::FREE, operands: [op, Default::default(), Default::default()], seq_op: ctx_op });
+            node.operands.push(crate::types::Operation::Op { op_name: OpName::FREE, operands: [op, Default::default(), Default::default()], seq_op: ctx_op });
 
             //node.op_types.push(TypeVNew::util());
             node.source_tokens.push(Default::default());

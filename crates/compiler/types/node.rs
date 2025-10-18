@@ -326,7 +326,7 @@ pub(crate) enum Operation {
     seq_op:    OpId,
   },
   Op {
-    op_name:  Op,
+    op_name:  OpName,
     operands: [OpId; 3],
     seq_op:   OpId,
   },
@@ -342,6 +342,7 @@ pub(crate) enum Operation {
   /// Reference to non local object. 
   /// Resolves to the address of, or a register with its value set to the address of, the static object.
   StaticObj(Reference),
+  MetaValue{ value: u64, op: OpId },
   Dead,
 }
 
@@ -373,6 +374,7 @@ impl Display for Operation {
       Operation::_Gamma(node, op) => f.write_fmt(format_args!("Gamma  {op:?} @ {node}",)),
       Operation::Φ(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
       Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
+      Operation::MetaValue { value, op } => f.write_fmt(format_args!("M-VAL {value}@({op})",)),
       // Operation::Data => f.write_fmt(format_args!("DATA",)),
       Operation::Dead => f.write_fmt(format_args!("XXXX",)),
     }

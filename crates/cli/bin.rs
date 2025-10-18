@@ -30,7 +30,7 @@ fn main() {
       add_module(&mut db, input);
 
       // Process an executable file
-      if true {
+      if false {
         let sdb: SolveDatabase<'_> = SolveDatabase::solve_for("#main", &db);
         
         let sdb_fin = sdb.finalize();
@@ -60,11 +60,11 @@ fn main() {
         if let Some(offset) = sdb_opt.roots.first().and_then(|f| entries.get(&f.1)) {
           let func = x86_eval::x86Function::new(&binary, *offset);
 
-          let out = func.access_as_call::<fn() -> u8>()();
+          let out = func.access_as_call::<fn(u32) -> &'static (u32, [u32;9] )>()(2);
 
           dbg!(out, out);
 
-          assert_eq!(out, 8, "Failed to parse correctly");
+          //assert_eq!(out, 8, "Failed to parse correctly");
         }
       }
     } else {

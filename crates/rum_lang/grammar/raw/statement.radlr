@@ -52,11 +52,11 @@ IMPORT ../common/comment as cmt
 
 <> assignment_var 
 
-  > prim::var^var ":" ty::non_array_type
+  > prim::var^var ":" ty::type
 
     :ast { t_RawAssignmentDeclaration, var:$1, ty:$3, tok  }
 
-  | prim::var^var ":" anno::lifetime?^heap "[" ty::non_array_type^base_type (";" expr::expression)?^size_expression "]"
+  | prim::var^var ":" anno::lifetime?^heap "[" ty::type^base_type (";" expr::expression)?^size_expression "]"
 
     :ast { t_RawArrayDeclaration, var, base_type, heap, size_expression, tok }
 
@@ -138,7 +138,7 @@ IMPORT ../common/comment as cmt
 
 <> multi_assignment_assignments 
 
-  > prim::var^var (":" ty::non_array_type)?^ty
+  > prim::var^var (":" ty::type)?^ty
 
     :ast { t_MultiAssign, binding_name: $var, binding_type: $ty }
 

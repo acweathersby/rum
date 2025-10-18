@@ -642,6 +642,10 @@ op_table!(mov [
 
 #[test]
 fn test_mov__() {
+
+  assert_eq!("mov r8d,[rdx+r8*1]", test_enc_dos(&mov, 64, R15.as_reg_op(), R12.as_mem_op()));
+
+
   // With sib
   assert_eq!("mov r8d,[rdx+r8*1]", test_enc_dos(&mov, 32, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 0, disp: 0 }));
   assert_eq!("mov r8d,[rdx+r8*2]", test_enc_dos(&mov, 32, R8.as_reg_op(), Arg::SIBAddress { base: RDX, index: R8, scale: 2, disp: 0 }));

@@ -1,0 +1,13 @@
+- 8/6 
+  - Added overview of compilation steps, need to fill out finalizer, optimizer, SSA/BB lowering, and machine code compiler
+  - Worked on post solver steps, changed allocator signature to receive repetition and rum type values.
+  - Finally compiled struct with new type scheme.
+  - Need refine distinction between type and type_refs, or remove type_refs. Type refs are convient for quick local type information, 
+    particularly in cases where the type is primitive, but only stores Table offset to resident type table, which is harder to use in 
+    rust allocator. This may not be a problem if we create a wrapper function that handles type table resolution before calling rust function.
+
+- 8/9
+  - Started work on dedicated linking code. Preparing to add support for simple ELF executable files, and aligning linking semantics to 
+    support multiple architectures.
+
+

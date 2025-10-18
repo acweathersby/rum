@@ -10,7 +10,7 @@ sys_call :: (call_id: u64, arg1: u64) : u64 {
 exit_with_code :: () { 
   
   exit_syscall_id = 60
-  exit_code = 0
+  exit_code = 101
 
   sys_call(exit_syscall_id, exit_code)
 }

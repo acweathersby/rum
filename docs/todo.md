@@ -7,9 +7,13 @@
 
 # Types Database as hierarchy
 
-Types should be accessible the same way as variables are accessed, as named and scoped bindings that can be quired for the value, and 
+Types should be accessible the same way as variables are accessed, as named and scoped bindings that can be queried for the value, and 
 also added and removed from the given scope as needed. The creation of a type (that is all types that are not primitive) can either be
-through manual definitions in user's source code, or ad hoc
+through manual definitions in user's source code, or ad hoc definitions at runtime. 
+
+Struct types are a collection= of primitive, non-primitive, and pointer values defined by a Struct definition data structure. This structure
+
+Array types are
 
 # Inherit state machine syntax
 State machines are common, lets make them more so.

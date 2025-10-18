@@ -8,10 +8,7 @@ IMPORT ../common/comment as cmt
 IGNORE { c:sp c:nl }
 
 <> type 
-  > non_array_type 
-  | array_type
-
-<> non_array_type > base_type 
+  > base_type 
   | pointer_type
   | structure_type
   | type_type
@@ -21,24 +18,24 @@ IGNORE { c:sp c:nl }
 
 <> base_type > prim::var^name :ast { t_Type_Name, name }
 
-<> complex_type > array_type | structure_type
+<> complex_type > structure_type
 
 <> type_type > ("ty" | "type") :ast { t_Type_Type }
 
 <> var_type > tk:( "^" prim::var^name )^name  :ast { t_Var_Type, name: str($name<1,0>) }
 
-<> array_type 
-  
-  > anno::lifetime?^heap "[" non_array_type^base_type ( ";"  ( prim::uint :ast u32($1) )(+) )?^dimensions   "]"
-
-    :ast { t_Type_Array, base_type, heap, dimensions, tok }
-
-
 <> structure_type
 
-  > anno::lifetime?^heap "[" property(+",")^properties ","(*) "]"
+  > anno::lifetime?^heap "[" property(+",")^properties ( "," var_len_property )?^var_len_property ( "," )(*) "]"
 
-    :ast { t_Type_Struct, properties, heap, tok }
+    :ast { t_Type_Struct, properties, var_len_property, heap, tok }
+
+<> var_len_property 
+
+  > prim::var^name ":" "[" type^ty ";" prim::var^len_prop "]"
+
+    :ast  { t_VarLenProperty, name, ty, len_prop, tok  }
+
 
 <> property 
 

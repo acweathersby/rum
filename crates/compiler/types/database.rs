@@ -108,15 +108,16 @@ impl<'a> SolveDatabase<'a> {
     };
 
     for (index, (name, prim_ty, type_struct)) in [
-      ("type".intern(), prim_ty_struct, &RUM_TYPE),
-      ("type_prop".intern(), prim_ty_struct, &RUM_TYPE_PROP),
-      ("type_prim".intern(), prim_ty_struct, &RUM_PRIM_TYPE),
-      ("type_ref".intern(), prim_ty_struct, &RUM_TYPE_REF),
-      ("core$$type_table".intern(), prim_ty_struct, &RUM_TYPE_TABLE),
-      ("str".intern(), prim_ty_struct, &RUM_TEMP_STRING_TYPE),
-      ("u32".intern(), prim_ty_u32, &RUM_TEMP_U32_TYPE),
-      ("f32".intern(), prim_ty_f32, &RUM_TEMP_F32_TYPE),
-      ("u64".intern(), prim_ty_u64, &RUM_TEMP_U64_TYPE),
+      /* 0 */ ("type".intern(), prim_ty_struct, &RUM_TYPE),
+      /* 1 */ ("type_prop".intern(), prim_ty_struct, &RUM_TYPE_PROP),
+      /* 2 */ ("type_prim".intern(), prim_ty_struct, &RUM_PRIM_TYPE),
+      /* 3 */ ("type_ref".intern(), prim_ty_struct, &RUM_TYPE_REF),
+      /* 4 */ ("core$$type_table".intern(), prim_ty_struct, &RUM_TYPE_TABLE),
+      /* 5 */ ("str".intern(), prim_ty_struct, &RUM_TEMP_STRING_TYPE),
+      /* 6 */ ("u32".intern(), prim_ty_u32, &RUM_TEMP_U32_TYPE),
+      /* 7 */ ("f32".intern(), prim_ty_f32, &RUM_TEMP_F32_TYPE),
+      /* 8 */ ("u64".intern(), prim_ty_u64, &RUM_TEMP_U64_TYPE),
+      /* 9 */ ("s64".intern(), prim_ty_s64, &RUM_TEMP_S64_TYPE),
     ]
     .into_iter()
     .enumerate()
@@ -377,7 +378,7 @@ pub(crate) fn add_ops_to_db(db: &mut DatabaseCore, ops: &str) {
   }
 }
 
-pub fn get_op_from_db(db: &Database, op: Op) -> Option<Arc<core_lang::parser::ast::Op>> {
+pub fn get_op_from_db(db: &Database, op: OpName) -> Option<Arc<core_lang::parser::ast::Op>> {
   let op_name = op.get_name();
   for op in &db.get_ref().ops {
     if op.name == op_name {

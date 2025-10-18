@@ -68,15 +68,15 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<(CMPLXId, Gl
             } else {
               if let Some((dependecy_node, node)) = get_node(db, global_constraint.name, &mut gcq, &mut node_pending_work) {
                 if node.get_type() == INTERNAL_STRUCT_ID {
+
                   let constraint = NodeConstraint::ResolveGenTy { gen: global_constraint.gen_ty, to: node.get_rum_ty().increment_ptr(), weak: false };
+
                   let constraint = GlobalConstraint::ResolveLocalConstraints { constraints: vec![constraint] };
                   add_global_constraint(target_node_id, constraint, &mut gcq, &mut node_pending_work);
                 } else {
                   let ty = global_constraint.gen_ty;
 
                   debug_assert!(node.get_type() != ROUTINE_ID, "Routine lookups should be mapped to call ops. lookup name: {} current op: {}", global_constraint.name, global_constraint.op);
-
-                  //let constraint = NodeConstraint::ResolveGenTy { gen: ty, to: node.get_rum_ty().increment_ptr() };
                   node_link_constraints.entry(dependecy_node).or_default().push((target_node_id, *global_constraint));
                 }
               } else {
@@ -165,7 +165,9 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<(CMPLXId, Gl
                         panic!("open types {routine_ty}, {caller_ty}")
                       }
                       (false, true) => {
-                        caller_constraints.push(NodeConstraint::ResolveGenTy { gen: *caller_ty, to: *routine_ty, weak: false });
+                        let constraint = NodeConstraint::ResolveGenTy { gen: *caller_ty, to: *routine_ty, weak: false };
+
+                        caller_constraints.push(constraint);
                       }
                       (true, false) => {
                         // TODO: Implement template types.
@@ -176,8 +178,8 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<(CMPLXId, Gl
                         } else {
                           panic!("ADA \n {routine_ty} {routine_node_id:?}  {gcq:#?}");
                         }
-
-                        routine_constraints.push(NodeConstraint::ResolveGenTy { gen: *routine_ty, to: *caller_ty, weak: false });
+                        let constraint = NodeConstraint::ResolveGenTy { gen: *routine_ty, to: *caller_ty, weak: false };
+                        routine_constraints.push(constraint);
                       }
                       (false, false) => {
                         // Check for an interface type.
@@ -328,8 +330,6 @@ pub(crate) fn solve(db: &mut SolveDatabase, global_constraints: Vec<(CMPLXId, Gl
 
                 let out = func.access_as_call::<fn() -> &'static RumTypeObject>()();
 
-                dbg!(out);
-
                 let ty = {
                   // Inject into type table
                   let index = db.comptime_type_table.len();
@@ -415,7 +415,7 @@ pub(crate) fn solve_node_expressions(node: NodeHandle) {
   for (index, op) in operands.iter().enumerate().rev() {
     match op {
       Operation::Op { op_name, operands, .. } => match *op_name {
-        Op::ADD => {
+        OpName::ADD => {
           let op_ty = &type_vars[types[index].generic_id().unwrap()].ty;
 
           if op_ty.is_generic() {
@@ -456,9 +456,11 @@ pub(crate) fn solve_inner_constraints(
         if weak {
           if !var_ptr.ty.is_open() {
             debug_assert!(var_ptr.ty.ptr_depth() > 0, "Type {} is not a pointer in {node:?}", var_ptr.ty);
-            constraint_queue.push_back(NodeConstraint::ResolveGenTy { gen: val_ty, to: var_ptr.ty.decrement_ptr(), weak });
+            let constraint = NodeConstraint::ResolveGenTy { gen: val_ty, to: var_ptr.ty.decrement_ptr(), weak };
+            constraint_queue.push_back(constraint);
           } else if !var_val.ty.is_open() {
-            constraint_queue.push_back(NodeConstraint::ResolveGenTy { gen: ptr_ty, to: var_val.ty.increment_ptr(), weak });
+            let constraint = NodeConstraint::ResolveGenTy { gen: ptr_ty, to: var_val.ty.increment_ptr(), weak };
+            constraint_queue.push_back(constraint);
           } else {
             let mem_op = VarAttribute::MemOp { ptr_ty, val_ty, weak };
             var_ptr.add(mem_op.clone());
@@ -467,9 +469,11 @@ pub(crate) fn solve_inner_constraints(
         } else {
           if !var_ptr.ty.is_open() {
             debug_assert!(var_ptr.ty.ptr_depth() > 0, "Type {} is not a pointer in {node:?}", var_ptr.ty);
-            constraint_queue.push_back(NodeConstraint::ResolveGenTy { gen: val_ty, to: var_ptr.ty.decrement_ptr(), weak: false });
+            let constraint = NodeConstraint::ResolveGenTy { gen: val_ty, to: var_ptr.ty.decrement_ptr(), weak: false };
+            constraint_queue.push_back(constraint);
           } else if !var_val.ty.is_open() {
-            constraint_queue.push_back(NodeConstraint::ResolveGenTy { gen: ptr_ty, to: var_val.ty.increment_ptr(), weak: false });
+            let constraint = NodeConstraint::ResolveGenTy { gen: ptr_ty, to: var_val.ty.increment_ptr(), weak: false };
+            constraint_queue.push_back(constraint);
           } else {
             let mem_op = VarAttribute::MemOp { ptr_ty, val_ty, weak };
             var_ptr.add(mem_op.clone());
@@ -527,6 +531,7 @@ pub(crate) fn solve_inner_constraints(
         }
       }
       NodeConstraint::ResolveGenTy { gen, to, weak } => {
+
         debug_assert!(gen.is_generic(), "{}", gen);
         debug_assert!(!to.is_open(), "Expected {to} to be a non open type when resolving {gen} \n{node:#?}");
 
@@ -569,9 +574,10 @@ pub(crate) fn solve_inner_constraints(
                 let mem_str = member.name.to_str();
                 let lookup_name = mem_str.as_str();
 
-                if let Some(prop) = out.props.iter().find(|p| p.name.as_str() == lookup_name) {
+                if let Some(prop) = out.props().iter().find(|p| p.name.as_str() == lookup_name) {
                   if !ty.is_open() {
-                    constraint_queue.push_back(NodeConstraint::ResolveGenTy { gen: member.ty, to: prop.ty, weak: false });
+                    let constraint = NodeConstraint::ResolveGenTy { gen: member.ty, to: prop.ty, weak: false };
+                    constraint_queue.push_back(constraint);
                   }
                 } else {
                   panic!("Complex type does not have member {}@{} {node:?} {out:#?}", member.name, member.ty)

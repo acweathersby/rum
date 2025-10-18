@@ -26,7 +26,10 @@ IMPORT ../common/comment as cmt
 
 <> param_binding 
 
-  > prim::var^var (":" ty::type)?^ty
+  > ":>"? prim::var^var (":" ty::type)?^ty
 
-    :ast { t_RawParamBinding, var, ty, tok }
+    :ast { t_RawParamBinding, moved: bool($1),
+    
+    
+     var, ty, tok }
 
