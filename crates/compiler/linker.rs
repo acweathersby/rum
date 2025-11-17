@@ -169,6 +169,10 @@ pub fn link(db: &SolveDatabase<'_>, mut bin_functs: Vec<(CMPLXId, BinaryObject)>
           let address: usize = x86::allocate as _;
           apply_relocation(&mut data.text, &relocation, unsafe { std::mem::transmute(address) });
         }
+        "core$$free" => {
+          let address: usize = x86::free as _;
+          apply_relocation(&mut data.text, &relocation, unsafe { std::mem::transmute(address) });
+        }
         _ => {
           panic!("Unknown object: {name}")
         }
@@ -257,6 +261,10 @@ pub fn comptime_link(db: &mut SolveDatabase<'_>, mut bin_functs: Vec<(CMPLXId, B
         }
         "core$$alloc" => {
           let address: usize = x86::allocate as _;
+          apply_relocation(&mut data.text, &relocation, unsafe { std::mem::transmute(address) });
+        }
+        "core$$free" => {
+          let address: usize = x86::free as _;
           apply_relocation(&mut data.text, &relocation, unsafe { std::mem::transmute(address) });
         }
         _ => {

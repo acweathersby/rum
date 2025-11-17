@@ -272,7 +272,7 @@ pub(crate) const prim_ty_f32: RumPrimitiveType = RumPrimitiveType { base_ty: Rum
 pub(crate) const prim_ty_generic: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Generic, base_vector_size: 0, base_byte_size: 0, ptr_count: 0 };
 pub(crate) const prim_ty_no_use: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::NoUse, base_vector_size: 0, base_byte_size: 0, ptr_count: 0 };
 pub(crate) const prim_ty_mem_ctx: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::MemCtx, base_vector_size: 0, base_byte_size: 0, ptr_count: 0 };
-pub(crate) const _prim_ty_addr: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Address, base_vector_size: 0, base_byte_size: 0, ptr_count: 0 };
+pub(crate) const _prim_ty_addr: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Address, base_vector_size: 1, base_byte_size: 8, ptr_count: 0 };
 
 pub(crate) const prim_ty_routine: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Routine, base_vector_size: 1, base_byte_size: 0, ptr_count: 1 };
 pub(crate) const prim_ty_struct: RumPrimitiveType = RumPrimitiveType { base_ty: RumPrimitiveBaseType::Struct, base_vector_size: 1, base_byte_size: 8, ptr_count: 0 };

@@ -11,7 +11,7 @@ use crate::{
     reg::Reg,
     x86::x86_encoder::{encode_binary, encode_unary, OpEncoder, OpSignature},
   },
-  types::{prim_ty_bool, CMPLXId, OpName, Operation, Reference, RootNode, RumPrimitiveBaseType, RumPrimitiveType, SolveDatabase},
+  types::{prim_ty_bool, CMPLXId, OpName, Operation, PortType, Reference, RootNode, RumPrimitiveBaseType, RumPrimitiveType, SolveDatabase},
 };
 use rum_common::{get_aligned_value, CachedString};
 use std::{
@@ -107,22 +107,48 @@ pub(crate) fn encode_routine(id: CMPLXId, sn: &RootNode, bb_fn: &BasicBlockFunct
             _ => unreachable!(),
           },
           Operation::AggDecl { .. } => {
-            let VarVal::Reg(out_reg_id, _) = out else { unreachable!() };
-            let out_reg = REGISTERS[out_reg_id as usize];
+            let call_reg = if let Some(FixUp::CallReg(reg_index)) = pre_fixes.iter().find(|d| matches!(d, FixUp::CallReg(_))) {
+              // Load Rax with the location for the allocator pointer.
+              let out_reg = REGISTERS[*reg_index as usize];
+              encode_x86(instr_bytes, &mov, 64, out_reg.as_reg_op(), Arg::Imm_Int(0 as _), Arg::None, Arg::None);
+              out_reg
+            } else {
+              panic!("AggDecl defined without call register")
+            };
 
-            // Load Rax with the location for the allocator pointer.
-            encode_x86(instr_bytes, &mov, 64, out_reg.as_reg_op(), Arg::Imm_Int(0 as _), Arg::None, Arg::None);
 
             instr_relocations.push(Relocation {
               endianess:  Endianess::Little,
-              byte_size:  8,
+              byte_size:  8,  
               offset:     instr_bytes.len() - 8,
               resolution: StaticResolution::PCRelative,
               symbol:     Symbol::Object("core$$alloc".intern()),
             });
 
             // Make a call to the allocator dispatcher.
-            encode_x86(instr_bytes, &call_abs, 64, out_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
+            encode_x86(instr_bytes, &call_abs, 64, call_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
+          }
+          Operation::AggFree { .. } => {
+            
+            let call_reg = if let Some(FixUp::CallReg(reg_index)) = pre_fixes.iter().find(|d| matches!(d, FixUp::CallReg(_))) {
+              // Load Rax with the location for the allocator pointer.
+              let out_reg = REGISTERS[*reg_index as usize];
+              encode_x86(instr_bytes, &mov, 64, out_reg.as_reg_op(), Arg::Imm_Int(0 as _), Arg::None, Arg::None);
+              out_reg
+            } else {
+              panic!("AggDecl defined without call register")
+            };
+
+            instr_relocations.push(Relocation {
+              endianess:  Endianess::Little,
+              byte_size:  8,
+              offset:     instr_bytes.len() - 8,
+              resolution: StaticResolution::PCRelative,
+              symbol:     Symbol::Object("core$$free".intern()),
+            });
+
+            // Make a call to the allocator dispatcher.
+            encode_x86(instr_bytes, &call_abs, 64, call_reg.as_reg_op(), Arg::None, Arg::None, Arg::None);
           }
           Operation::StaticObj(reference) => {
             match reference {
@@ -761,7 +787,7 @@ fn handle_fix_up(instr_bytes: &mut Vec<u8>, fix: FixUp) {
     FixUp::Load(reg, rsp_loc, ty) => {
       encode_x86(instr_bytes, &mov, (ty.base_byte_size * 8) as _, REGISTERS[reg as usize].as_reg_op(), Arg::RSP_REL(rsp_loc as _), Arg::None, Arg::None);
     }
-    FixUp::TempStore(..) => {}
+    FixUp::TempStore(..) | FixUp::CallReg(..) => {}
     _fix => {
       print_instructions(&instr_bytes, 0);
       todo!("{_fix:?}")

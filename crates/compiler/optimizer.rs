@@ -29,20 +29,12 @@ pub(crate) fn optimize_node_level_1(node: &crate::types::NodeHandle) {
 
     // Add free instructions for all memory operations that do not exit this scope.
 
-    // Identify all memory allocations that fail invariants and report errors.
-    //
-    // ### Memory Invariants:
-    // - A memory object cannot persist pass the scope of its memory allocator context
-    // - Any pointer in a memory object must have the same or shorter lifetime than that of
-    //   of it's host memory object.
-    // - If a pointer in a memory object has a shorter lifetime than that of its host, that
-    //   MUST be nullable. All accesses to this pointer MUST be challenged and locked.
 
     // Link to the mem_ctx node
 
     let mut mem_context = (0, Default::default());
 
-    let mut new_nodes = vec![];
+    //let mut new_nodes = vec![];
 
     //let outputs = node.nodes[0].get_outputs();
     let inputs = node.nodes[0].get_inputs();
@@ -56,63 +48,12 @@ pub(crate) fn optimize_node_level_1(node: &crate::types::NodeHandle) {
       }
     }
 
-    // Check for free nodes.
-    for (i, port) in node.nodes[0].ports.iter().enumerate() {
-      if port.ty == PortType::Out {
-        if let VarId::Freed = port.id {
-          let op = port.slot;
-          let mut node_escapes = false;
-
-          for (j, other) in node.nodes[0].ports.iter().enumerate() {
-            if j == i {
-              continue;
-            }
-
-            if other.slot == op {
-              node_escapes = true;
-              break;
-            }
-          }
-
-          for (o_op, _) in inputs.iter() {
-            if *o_op == op {
-              node_escapes = true;
-              break;
-            }
-          }
-
-          let ty = get_op_type(node, op);
-
-          // Do not insert free if type is not a memory type.
-          node_escapes |= !ty.is_complex() && ty.ptr_depth() == 0;
-
-          if !node_escapes {
-            // Insert free
-
-            let (_, ctx_op) = mem_context;
-
-            let new_mem_op = OpId(node.operands.len() as u32);
-            node.operands.push(crate::types::Operation::Op { op_name: OpName::FREE, operands: [op, Default::default(), Default::default()], seq_op: ctx_op });
-
-            //node.op_types.push(TypeVNew::util());
-            node.source_tokens.push(Default::default());
-            node.heap_id.push(node.heap_id[op.usize()]);
-        
-            new_nodes.push(NodePort { id: VarId::Freed, ty: PortType::Out, slot: new_mem_op });
-            todo!("Create type for Free");
-          } else {
-            println!("TODO: Check that we are not in the entry process entry function, and ");
-          }
-        }
-      }
-    }
-
     if mem_context.1 != Default::default() {
       node.nodes[0].ports[mem_context.0].slot = mem_context.1;
     }
 
     // remove Freed entries
 
-    node.nodes[0].ports = node.nodes[0].ports.iter().filter(|p| p.id != VarId::Freed).cloned().collect();
-    node.nodes[0].ports.extend(new_nodes);
+    //node.nodes[0].ports = node.nodes[0].ports.iter()/* .filter(|p| p.id != VarId::Freed) */.cloned().collect();
+    //node.nodes[0].ports.extend(new_nodes);
 }

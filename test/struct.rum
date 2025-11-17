@@ -34,6 +34,7 @@ DD :: [ test: u32, rainbow: u32  ]
 
 #test
 trivial :: (u:u32) : u32 {
-  d: DD = [ test = 2.0 , rainbow = 8.0 ]
+  e: DD = [ test = 2.0 , rainbow = u ]
+  d: DD = [ test = u , rainbow = 8.0 + u ]
   d.rainbow
 }

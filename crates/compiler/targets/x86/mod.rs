@@ -3,7 +3,7 @@ use std::{
   collections::{HashSet, VecDeque},
 };
 
-use x86_binary_writer::{ PatchType};
+use x86_binary_writer::PatchType;
 
 use crate::{
   basic_block_compiler::{self},
@@ -22,10 +22,8 @@ pub mod x86_types;
 
 pub(crate) extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
 
-
-
-
-  let ptr = if reps > 0 {
+  dbg!(reps, ty);
+  let ptr = if reps > 1 {
     if ty.name.as_str() == "type" {
       let prop_size = std::mem::size_of::<RumTypeProp>();
       let prop_size = prop_size * reps as usize;
@@ -36,19 +34,17 @@ pub(crate) extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
       unsafe { std::alloc::alloc(layout) }
     } else {
       if let Some(prop) = ty.props().last() {
-        if prop.len < 0  {
-
+        if prop.len < 0 {
           let var_len_size = 4 * reps;
           let size = ty.base_byte_size as usize + var_len_size as usize;
 
           let alignment = ty.alignment as usize;
           let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(alignment).expect("");
           unsafe { std::alloc::alloc(layout) }
-
         } else {
-          panic!("Invalid type for var length assignment")
+          panic!("Invalid type for var length assignment reps: {reps}")
         }
-      }  else {
+      } else {
         todo!("Implement variable length structs to allocate objects with reps larger than 1")
       }
     }
@@ -63,10 +59,17 @@ pub(crate) extern "C" fn allocate(reps: u64, ty: &RumTypeObject) -> *mut u8 {
   ptr
 }
 
-pub(crate) extern "C" fn free(ptr: *mut u8, size: u64, allocator_slot: u64) {
-  dbg!(size, ptr, allocator_slot);
-  let layout = std::alloc::Layout::array::<u8>(size as usize).expect("").align_to(8 as _).expect("");
-  unsafe { std::alloc::dealloc(ptr, layout) };
+pub(crate) extern "C" fn free(ptr: *mut u8, ty: &RumTypeObject) {
+  dbg!(ptr, ty);
+  if (ty.props().last().unwrap().len < 0) {
+    panic!("Handle var length type")
+  } else {
+    let size = ty.base_byte_size as usize;
+    let alignment = ty.alignment as usize;
+    dbg!(size, alignment);
+    let layout = std::alloc::Layout::array::<u8>(size  as usize).expect("").align_to(alignment).expect("");
+    unsafe { std::alloc::dealloc(ptr, layout) };
+  }
 }
 
 pub fn compile(db: &SolveDatabase) -> Vec<(CMPLXId, BinaryObject)> {
@@ -79,7 +82,6 @@ pub fn compile(db: &SolveDatabase) -> Vec<(CMPLXId, BinaryObject)> {
       let handle: NodeHandle = (id, db).into();
       if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {
         let super_node = handle.get_mut().unwrap();
-
 
         for op in &super_node.operands {
           match op {
@@ -105,8 +107,6 @@ pub fn compile(db: &SolveDatabase) -> Vec<(CMPLXId, BinaryObject)> {
 
   functions
 }
-
-
 
 pub(crate) fn compile_function(db: &SolveDatabase<'_>, handle: NodeHandle, id: crate::types::CMPLXId) -> Option<BinaryObject> {
   if handle.get_type() == ROUTINE_ID || handle.get_type() == STRUCT_ID {

@@ -9,7 +9,7 @@ use crate::{
       x86_types::*,
     },
   },
-  types::{CMPLXId, Node, OpName, OpId, Operation, PortType, RegisterSet, RootNode, RumPrimitiveBaseType, RumPrimitiveType, RumTypeRef, SolveDatabase, VarId},
+  types::{CMPLXId, Node, OpId, OpName, Operation, PortType, RegisterSet, RootNode, RumPrimitiveBaseType, RumPrimitiveType, RumTypeRef, SolveDatabase, VarId},
 };
 use rum_common::get_aligned_value;
 use rum_lang::todo_note;
@@ -35,6 +35,7 @@ impl OpData {
 pub(crate) enum VarVal {
   #[default]
   None,
+  Unused,
   Var(u32),
   Reg(u8, RumPrimitiveType),
   // Represents a memery offset relative to the value of the given pointer
@@ -46,6 +47,7 @@ pub(crate) enum VarVal {
 impl Debug for VarVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
+      VarVal::Unused => f.write_str("UNUSED  "),
       VarVal::None => f.write_str("----  "),
       VarVal::Const => f.write_str("CONST "),
       VarVal::Reg(r, t) => f.write_fmt(format_args!("r{r:02}[{t:?}] ")),
@@ -363,6 +365,11 @@ impl<'a> Iterator for BasicBlockFunctionIter<'a> {
         dependency_ops[1] = *ty_ref_op;
         (dependency_ops.as_slice(), [get_vv(bb, vars, size), get_vv(bb, vars, ty_ref_op), Default::default()])
       }
+      Operation::AggFree { agg_op, ty_op, .. } => {
+        dependency_ops[0] = *agg_op;
+        dependency_ops[1] = *ty_op;
+        (dependency_ops.as_slice(), [get_vv(bb, vars, agg_op), get_vv(bb, vars, ty_op), Default::default()])
+      }
       Operation::Call { routine, args, .. } => (args.as_slice(), Default::default()),
       Operation::Asm { args, .. } => (args.as_slice(), Default::default()),
       Operation::AsmInput { input, .. } => {
@@ -461,6 +468,7 @@ pub(crate) enum FixUp {
   Store(u8, u64, RumPrimitiveType),
   TempStore(usize),
   UniPHI(usize, usize),
+  CallReg(usize),
 }
 
 #[derive(Default, Debug, Clone)]
@@ -508,7 +516,11 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
   // Sort ops based on dependency graph
 
   {
-    let mut pending_ops = VecDeque::from_iter(sn.nodes[0].ports.iter().filter(|p| matches!(p.ty, PortType::Out | PortType::Passthrough | PortType::Merge)).map(|p| p.slot).map(|o| (o, 0)));
+    let mut pending_ops = VecDeque::from_iter(sn.nodes[0].ports.iter().filter_map(|p| match p.ty {
+      PortType::Free => Some((p.slot, 1000)),
+      PortType::Passthrough | PortType::Merge | PortType::Out => Some((p.slot, 0)),
+      _ => None,
+    }));
     let mut call_offset = 1000;
 
     fn bump_offset(offset: &mut i32) -> i32 {
@@ -566,6 +578,11 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
           pending_ops.push_back((*ty_op, rank + 1));
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
         }
+        Operation::AggFree { agg_op, seq_op, ty_op } => {
+          pending_ops.push_back((*ty_op, rank + 1));
+          pending_ops.push_back((*agg_op, rank + 1));
+          pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
+        }
         Operation::NamedOffsetPtr { base, seq_op, .. } => {
           pending_ops.push_back((*base, rank + 1));
           pending_ops.push_back((*seq_op, rank + bump_offset(&mut call_offset)));
@@ -598,8 +615,21 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
   let mut block_op_bf = bitfield::BitFieldArena::new(bitfield_graph_row_count, sn.operands.len());
   let mut queue = VecDeque::from_iter(0..bb_funct.blocks.len());
 
-  fn process_call(sn: &RootNode, op_to_var_map: &mut Vec<u32>, op_interference_offset: usize, vars: &mut Vec<VarOP>, block_op_bf: &bitfield::BitFieldArena, op: OpId, args: &[OpId]) {
+  /**
+   * pass OpId::Invalid to args to acquire a free register for arbitrary usage.
+   */
+  fn process_call(
+    sn: &RootNode,
+    op_to_var_map: &mut Vec<u32>,
+    op_interference_offset: usize,
+    vars: &mut Vec<VarOP>,
+    block_op_bf: &bitfield::BitFieldArena,
+    op: OpId,
+    args: &[OpId],
+    create_call_fixup: bool,
+  ) {
     let out_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+    let mut call_fix_up = X86registers::new(44);
 
     // Store variables that persist across this call.
     for op in block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()) {
@@ -622,11 +652,13 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       } else {
         let id = int_index;
         int_index += 1;
+        call_fix_up.acquire_specific_register(INT_PARAM_REGISTERS[id as usize]);
         INT_PARAM_REGISTERS[id as usize]
       };
 
       match vars[var_index].out {
-        VarVal::None | VarVal::Const => {
+        VarVal::Unused => {}
+        VarVal::None => {
           // Attempt allocate the arg register to the op.
           if allocate_register(sn, op_to_var_map, op_interference_offset, vars, block_op_bf, *arg, Some(arg_reg)).is_none() {
             // Failing that, get any register available and then move it to the arg reg
@@ -657,8 +689,62 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       VarVal::Stashed(slot) => {
         vars[out_index].post_fixes.push(FixUp::Store(OUTPUT_REGISTERS[0] as _, slot as _, ty));
       }
-      VarVal::None => {}
+      VarVal::None | VarVal::Unused => {}
       _ => unreachable!(),
+    }
+
+    if create_call_fixup {
+      let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, op);
+      let ty_a = get_op_type(&sn, op).prim_data();
+
+      // Mask out all fp registers
+      call_fix_up.mask(VEC_REG_MASK);
+
+      for other_op in block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()) {
+        let other_op = OpId(other_op as _);
+
+        debug_assert_ne!(other_op, op);
+
+        let ty_b = get_op_type(&sn, other_op).prim_data();
+
+        #[derive(Debug, PartialEq, Eq)]
+        enum RegisterClass {
+          FP,
+          INT,
+        }
+
+        fn get_register_class(ty: RumPrimitiveType) -> RegisterClass {
+          if ty.ptr_count > 0 {
+            RegisterClass::INT
+          } else {
+            match ty.base_ty {
+              RumPrimitiveBaseType::Undefined | RumPrimitiveBaseType::Poison => unreachable!("{ty:?}"),
+              RumPrimitiveBaseType::Float => RegisterClass::FP,
+              _ => RegisterClass::INT,
+            }
+          }
+        }
+
+        let types_interfere = RegisterClass::INT == get_register_class(ty_b);
+
+        if types_interfere {
+          let var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, other_op);
+          match vars[var_index].out {
+            VarVal::Reg(reg_index, _) | VarVal::Mem(reg_index, _) => {
+              if reg_index != 255 {
+                call_fix_up.acquire_specific_register(reg_index as _);
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+
+      if let Some(reg) = call_fix_up.acquire_random_register() {
+        vars[out_index].pre_fixes.push(FixUp::CallReg(reg));
+      } else {
+        panic!("Could not get call reg for op ${op}")
+      }
     }
   }
 
@@ -698,11 +784,11 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
       }
 
       fn get_register_class(ty: RumPrimitiveType) -> RegisterClass {
-        if ty.ptr_count > 0 {
+        if ty.ptr_count > 0  {
           RegisterClass::INT
         } else {
           match ty.base_ty {
-            RumPrimitiveBaseType::Undefined | RumPrimitiveBaseType::NoUse | RumPrimitiveBaseType::Poison => unreachable!("{ty:?}"),
+            RumPrimitiveBaseType::Undefined | RumPrimitiveBaseType::Poison => unreachable!("{ty:?}"),
             RumPrimitiveBaseType::Float => RegisterClass::FP,
             _ => RegisterClass::INT,
           }
@@ -760,6 +846,11 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
         Operation::AggDecl { reps: size, ty_op: ref ty_ref_op, .. } => {
           dependency_ops[0] = *size;
           dependency_ops[1] = *ty_ref_op;
+          dependency_ops.as_slice()
+        }
+        Operation::AggFree { agg_op, ty_op, .. } => {
+          dependency_ops[0] = *agg_op;
+          dependency_ops[1] = *ty_op;
           dependency_ops.as_slice()
         }
         Operation::Call { args, .. } => args.as_slice(),
@@ -1136,10 +1227,18 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
         }
         Operation::AggDecl { reps: size, ty_op, .. } => {
           *makes_ffi_call = true;
-          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, &[*size, *ty_op]);
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, &[*size, *ty_op], true);
+        }
+        Operation::AggFree { agg_op, seq_op, ty_op } => {
+          *makes_ffi_call = true;
+          let out_var_index = get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
+          vars[out_var_index].out = VarVal::Unused;
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, &[*agg_op, *ty_op], true);
+
+          if let Some(reg) = allocate_register(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, None) {}
         }
         Operation::Call { args, .. } => {
-          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, args);
+          process_call(sn, op_to_var_map, op_interference_offset, vars, &block_op_bf, out_op, args, false);
         }
         Operation::Const(..) => {
           get_vv_for_op_mut(sn, op_to_var_map, vars, out_op);
@@ -1189,38 +1288,39 @@ pub(crate) fn encode_function(id: CMPLXId, sn: &mut RootNode, _db: &SolveDatabas
   }
 
   let var_map = bb_funct.op_to_var_map.clone();
-  /*
-  for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
-    let block_id = block.block_id as usize;
-    let outs = block_op_bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();
-    let ins = block_op_bf.iter_set_indices_of_row(block_id << 1).collect::<Vec<_>>();
+  if sn.nodes[0].ports.iter().any(|p| p.ty == PortType::Free) {
+    for (block, next, op_iter) in bb_funct.iter_blocks(sn) {
+      let block_id = block.block_id as usize;
+      let outs = block_op_bf.iter_set_indices_of_row((block_id << 1) + 1).collect::<Vec<_>>();
+      let ins = block_op_bf.iter_set_indices_of_row(block_id << 1).collect::<Vec<_>>();
 
-    println!("BLOCK {}", block_id);
+      println!("BLOCK {}", block_id);
 
-    for (op, out_val, vals, pre_fixes, post_fixes, ..) in op_iter {
-      if op.is_valid() {
-        debug_assert!(op.is_valid(), "Invalid op id encountered, {op:?} {:?} {bb_funct:#?}", bb_funct.blocks[block.block_id as usize].ops);
-        let ty = get_op_type(sn, op);
-        println!("{{{out_val:?}}}{op:?} {ty} {} [{:?}]  {} pre:{:?} post:{:?}", op_data[op.usize()].dep_rank, out_val, sn.operands[op.usize()], &pre_fixes, &post_fixes);
+      for (op, out_val, vals, pre_fixes, post_fixes, ..) in op_iter {
+        if op.is_valid() {
+          debug_assert!(op.is_valid(), "Invalid op id encountered, {op:?} {:?} {bb_funct:#?}", bb_funct.blocks[block.block_id as usize].ops);
+          let ty = get_op_type(sn, op);
+          println!("{{{out_val:?}}}{op:?} {ty} {} [{:?}]  {} pre:{:?} post:{:?}", op_data[op.usize()].dep_rank, out_val, sn.operands[op.usize()], &pre_fixes, &post_fixes);
 
-        //if let VarVal::Var(index) = op.out {
-        let ig = &block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).collect::<Vec<_>>();
-        println!("     used_by   {ig:?}");
+          //if let VarVal::Var(index) = op.out {
+          let ig = &block_op_bf.iter_set_indices_of_row(op_usage_offset + op.usize()).collect::<Vec<_>>();
+          println!("     used_by   {ig:?}");
 
-        let ig = &block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()).collect::<Vec<_>>();
-        println!("     interfers_with   {ig:?}");
-        println!("");
+          let ig = &block_op_bf.iter_set_indices_of_row(op_interference_offset + op.usize()).collect::<Vec<_>>();
+          println!("     interfers_with   {ig:?}");
+          println!("");
 
-        //}
-      } else {
-        println!("pre:{:?} post:{:?}", &pre_fixes, &post_fixes);
+          //}
+        } else {
+          println!("pre:{:?} post:{:?}", &pre_fixes, &post_fixes);
+        }
       }
-    }
-    println!("  preds {:?} ", bb_funct.blocks[block.block_id as usize].predecessors);
-    println!("  fixups {:?} ", bb_funct.blocks[block.block_id as usize].post_fixups);
+      println!("  preds {:?} ", bb_funct.blocks[block.block_id as usize].predecessors);
+      println!("  fixups {:?} ", bb_funct.blocks[block.block_id as usize].post_fixups);
 
-    println!("\n    ins:  {ins:?} \n    outs: {outs:?}\n\n");
-  } // */
+      println!("\n    ins:  {ins:?} \n    outs: {outs:?}\n\n");
+    }
+  }
   bb_funct
 }
 
@@ -1332,7 +1432,8 @@ fn create_merge_block(sn: &RootNode, node: &Node, blocks: &mut Vec<BasicBlock>, 
 fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut Vec<BasicBlock>, outside_ops: &BTreeSet<OpId>, vars: &mut Vec<VarOP>, op_var_map: &mut Vec<u32>) -> (usize, usize) {
   let block_start = blocks.len() as i32;
 
-  let mut pending_ops = VecDeque::from_iter(node.ports.iter().filter(|p| matches!(p.ty, PortType::Out | PortType::Passthrough | PortType::Merge)).map(|p| p.slot).map(|o| (o, block_start)));
+  let mut pending_ops =
+    VecDeque::from_iter(node.ports.iter().filter(|p| matches!(p.ty, PortType::Out | PortType::Passthrough | PortType::Merge | PortType::Free)).map(|p| p.slot).map(|o| (o, block_start)));
 
   let mut active_block_id = block_start;
   let mut nodes: BTreeMap<u32, i32> = BTreeMap::new();
@@ -1354,6 +1455,13 @@ fn process_node(sn: &RootNode, node: &Node, op_data: &mut [OpData], blocks: &mut
           pending_ops.push_back((*mem_ctx_op, level));
           pending_ops.push_back((*size, level));
           pending_ops.push_back((*ty_ref_op, level));
+        }
+        Operation::AggFree { seq_op, agg_op, ty_op } => {
+          op_data[op.usize()].block = level;
+
+          pending_ops.push_back((*ty_op, level));
+          pending_ops.push_back((*seq_op, level));
+          pending_ops.push_back((*agg_op, level));
         }
         Operation::NamedOffsetPtr { base, seq_op: mem_ctx_op, .. } => {
           op_data[op.usize()].block = level;
