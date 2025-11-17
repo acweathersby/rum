@@ -18,7 +18,7 @@ pub struct ConstVal {
 impl Display for ConstVal {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     fn fmt_val<T: Display + Default>(val: &ConstVal, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-      f.write_fmt(format_args!("const_{:?}:[{}]", val.ty, val.load::<T>()))
+      f.write_fmt(format_args!("{:?}:[{}]", val.ty, val.load::<T>()))
     }
 
     match self.ty.base_ty {

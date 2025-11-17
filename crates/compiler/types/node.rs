@@ -208,7 +208,7 @@ impl Display for OpId {
       f.write_fmt(format_args!("{:>6}", format!("`{}", self.0)))
     } else {
       if self.0 == u32::MAX {
-        f.write_fmt(format_args!("    xxx"))
+        f.write_fmt(format_args!("   xxx"))
       } else {
         f.write_fmt(format_args!("[*{:>3}]", self.meta()))
       }
@@ -245,6 +245,7 @@ pub enum PortType {
   Merge,
   Passthrough,
   CallTarget,
+  Free,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -286,13 +287,13 @@ pub(crate) enum Operation {
   Φ(u32, Vec<OpId>),
   _Gamma(u32, OpId),
   AsmInput {
-    input: OpId,
+    input:    OpId,
     reg_name: IString,
   },
-  Asm { 
-    args: Vec<OpId>,
-    data: IString,
-    seq_op: OpId
+  Asm {
+    args:   Vec<OpId>,
+    data:   IString,
+    seq_op: OpId,
   },
   AsmOutput {
     asm_body: OpId,
@@ -310,26 +311,32 @@ pub(crate) enum Operation {
   }, */
   AggDecl {
     /// Used to define number or repeating elements in this structure
-    reps:      OpId,
-    ty_op: OpId,
-    seq_op:    OpId,
+    reps:   OpId,
+    ty_op:  OpId,
+    seq_op: OpId,
+  },
+  AggFree {
+    agg_op: OpId,
+    seq_op: OpId,
+    ty_op:  OpId,
   },
   NamedOffsetPtr {
-    offset: i64, 
+    offset:    i64,
     reference: Reference,
     base:      OpId,
     seq_op:    OpId,
   },
   CalcOffsetPtr {
     index:  OpId,
-    base:      OpId,
-    seq_op:    OpId,
+    base:   OpId,
+    seq_op: OpId,
   },
   Op {
     op_name:  OpName,
     operands: [OpId; 3],
     seq_op:   OpId,
   },
+
   Const(ConstVal),
   //Data,
   Str(IString),
@@ -339,10 +346,13 @@ pub(crate) enum Operation {
   MetaTypeReference(RumTypeRef),
   // Extracts type information from operation
   InlineTypeRef(OpId),
-  /// Reference to non local object. 
+  /// Reference to non local object.
   /// Resolves to the address of, or a register with its value set to the address of, the static object.
   StaticObj(Reference),
-  MetaValue{ value: u64, op: OpId },
+  MetaValue {
+    value: u64,
+    op:    OpId,
+  },
   Dead,
 }
 
@@ -355,28 +365,33 @@ impl Debug for Operation {
 impl Display for Operation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Operation::AsmInput { input, reg_name } => f.write_fmt(format_args!("{input} ::> {reg_name}",)),
-      Operation::AsmOutput { asm_body, reg_name } => f.write_fmt(format_args!("{reg_name} ::> *",)),
-      Operation::Asm { args, data, seq_op } => f.write_fmt(format_args!("ASM: args: [{args:?}] {data} @ {seq_op}",)),
-      Operation::Str(name) => f.write_fmt(format_args!("\"{name}\"",)),
-      Operation::MetaType(ty) => f.write_fmt(format_args!("type_of::{ty}",)),
-      Operation::MetaTypeReference(ty) => f.write_fmt(format_args!("type_ref_of::{ty}",)),
-      Operation::InlineTypeRef(op) => f.write_fmt(format_args!("type_ref_of::{op}",)),
-      Operation::StaticObj(name) => f.write_fmt(format_args!("obj::{name:?}",)),
-      Operation::Call { routine: routine_op, args, seq_op } => f.write_fmt(format_args!("{routine_op:?} ( {args:?} ) @ {seq_op}",)),
-      Operation::NamedOffsetPtr { reference, base, seq_op, offset } => f.write_fmt(format_args!("MEM [{base} + {reference:?} | [{offset}]] @ ({seq_op})",)),
-      Operation::CalcOffsetPtr { index, base, seq_op } => f.write_fmt(format_args!("MEM [{base} + {index:?}] @ ({seq_op})",)),
-      Operation::AggDecl { reps,  seq_op, ty_op: ty_ref_op, .. } => f.write_fmt(format_args!("###### AGG_ALLOC (reps:{reps:?} type:{ty_ref_op}) @ {seq_op:?}",)),
+      Operation::AsmInput { input, reg_name } => f.write_fmt(format_args!("ASMOU {input} ::> {reg_name}",)),
+      Operation::AsmOutput { asm_body, reg_name } => f.write_fmt(format_args!("ASMIN {reg_name} ::> *",)),
+      Operation::AggDecl { reps, seq_op, ty_op: ty_ref_op, .. } => f.write_fmt(format_args!("ALLOC   {seq_op:}#     {reps:?}:reps     {ty_ref_op}:ty ",)),
+      Operation::Asm { args, data, seq_op } => f.write_fmt(format_args!("ASM     {seq_op:}#   args: [{args:?}] {data}",)),
+      Operation::Str(name) => f.write_fmt(format_args!("STRING            \"{name}\"",)),
+      Operation::MetaType(ty) => f.write_fmt(format_args!("META_T              {: >6}", ty.to_string())),
+      Operation::MetaTypeReference(ty) => f.write_fmt(format_args!("META_R             {ty}",)),
+      Operation::InlineTypeRef(op) => f.write_fmt(format_args!("ITREF             {op}",)),
+      Operation::AggFree { agg_op, seq_op, ty_op } => f.write_fmt(format_args!("FREE    {seq_op:}#     {agg_op}  {ty_op}",)),
+      Operation::StaticObj(name) => f.write_fmt(format_args!("STATIC            {name:?}",)),
+      Operation::Call { routine: routine_op, args, seq_op } => f.write_fmt(format_args!("CALL    {seq_op:}#   {routine_op} ( {args:?} ) ",)),
+      Operation::NamedOffsetPtr { reference, base, seq_op, offset } => {
+        f.write_fmt(format_args!("NAMOFF  {seq_op:}#   [{:6X}]  {base}+\"{reference:?}\" ", if *offset >= 0 { *offset } else { 0xFFFFFF }))
+      }
+      Operation::CalcOffsetPtr { index, base, seq_op } => f.write_fmt(format_args!("NUMOFF  {seq_op:}#    {base} + {index:?}",)),
       // Operation::MemCheck(op) => f.write_fmt(format_args!("MemCheck({op})",)),
-      Operation::Param(name, index) => f.write_fmt(format_args!("{:12}  {name}[{index}]", "PARAM")),
+      Operation::Param(name, index) => f.write_fmt(format_args!("PARAM             [{index: >6}]       {name}")),
       //  Operation::Heap(name) => f.write_fmt(format_args!("{:12}  {name}", "HEAP")),
-      Operation::Op { op_name, operands, seq_op } => f.write_fmt(format_args!("{op_name:12} [{seq_op}]  {:}", operands.iter().map(|o| format!("{:5}", format!("{o}"))).collect::<Vec<_>>().join("  "))),
-      Operation::_Gamma(node, op) => f.write_fmt(format_args!("Gamma  {op:?} @ {node}",)),
-      Operation::Φ(node, ops) => f.write_fmt(format_args!("PHI  {ops:?} @ {node}",)),
-      Operation::Const(const_val) => f.write_fmt(format_args!("{const_val}",)),
-      Operation::MetaValue { value, op } => f.write_fmt(format_args!("M-VAL {value}@({op})",)),
+      Operation::Op { op_name, operands, seq_op } => {
+        f.write_fmt(format_args!("{:<6}  {seq_op:}#     {:}", op_name.to_string(), operands.iter().map(|o| format!("{o}")).collect::<Vec<_>>().join("  ")))
+      }
+      Operation::_Gamma(node, op) => f.write_fmt(format_args!("GAMMA             {op:?} @ {node}",)),
+      Operation::Φ(node, ops) => f.write_fmt(format_args!("PHI               {ops:?} @ {node}",)),
+      Operation::Const(const_val) => f.write_fmt(format_args!("CONST  {const_val}",)),
+      Operation::MetaValue { value, op } => f.write_fmt(format_args!("METAV             {value}@({op})",)),
       // Operation::Data => f.write_fmt(format_args!("DATA",)),
-      Operation::Dead => f.write_fmt(format_args!("XXXX",)),
+      Operation::Dead => f.write_fmt(format_args!("XXXXXXXXXXXXXXXXXX",)),
     }
   }
 }
@@ -554,7 +569,7 @@ impl Debug for RootNode {
 
         let heap = if heap == usize::MAX { "".to_string() } else { heap.to_string() };
 
-        f.write_fmt(format_args!("\n  {index:3} @ [{parent_node:3}] <= {:36} @{heap:10} :{:32} {}: {:}", format!("{op}"), format!("{ty}"), tok.get_line(), source))?
+        f.write_fmt(format_args!("\n  {index:3} @ [{parent_node:3}] <= {:48} @{heap:10} :{:8} {}: {:}", format!("{op}"), format!("{ty}"), tok.get_line(), source))?
       }
     }
     f.write_str("\nnodes:")?;
